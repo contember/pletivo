@@ -4,12 +4,15 @@ import { scanRoutes, routeToOutputPath, type Route, type StaticPath } from "./ro
 import { initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
+import { bundleCss } from "./css";
+import type { PavoukConfig } from "./config";
 
-export async function build(projectRoot: string) {
-  const pagesDir = path.join(projectRoot, "src/pages");
-  const distDir = path.join(projectRoot, "dist");
-  const publicDir = path.join(projectRoot, "public");
-  const islandsDir = path.join(projectRoot, "src/islands");
+export async function build(projectRoot: string, config: PavoukConfig) {
+  const pagesDir = path.join(projectRoot, config.srcDir, "pages");
+  const distDir = path.join(projectRoot, config.outDir);
+  const publicDir = path.join(projectRoot, config.publicDir);
+  const islandsDir = path.join(projectRoot, config.srcDir, "islands");
+  const base = config.base.replace(/\/$/, "");
 
   // Init content collections
   await initCollections(projectRoot);
@@ -22,8 +25,11 @@ export async function build(projectRoot: string) {
   try {
     await copyDir(publicDir, distDir);
   } catch {
-    // no public dir, that's fine
+    // no public dir
   }
+
+  // Bundle CSS from src/
+  const cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
 
   // Scan routes
   const routes = await scanRoutes(pagesDir);
@@ -32,21 +38,24 @@ export async function build(projectRoot: string) {
   // Track all islands used across all pages
   const allIslands = new Map<string, string>();
   let pageCount = 0;
+  let totalSize = 0;
 
   for (const route of routes) {
+    // Skip 404 page in normal route processing (handled separately)
+    if (route.file === "404.tsx" || route.file === "404.jsx") continue;
+
     const fullPath = path.join(pagesDir, route.file);
     const mod = await import(fullPath);
     const component = mod.default;
 
     if (typeof component !== "function") {
-      console.warn(`Skipping ${route.file}: no default export function`);
+      console.warn(`  Skipping ${route.file}: no default export function`);
       continue;
     }
 
     if (route.isDynamic) {
-      // Dynamic route - needs getStaticPaths
       if (typeof mod.getStaticPaths !== "function") {
-        console.warn(`Skipping ${route.file}: dynamic route without getStaticPaths()`);
+        console.warn(`  Skipping ${route.file}: dynamic route without getStaticPaths()`);
         continue;
       }
 
@@ -59,43 +68,46 @@ export async function build(projectRoot: string) {
 
         const outFile = routeToOutputPath(route, params);
         const outPath = path.join(distDir, outFile);
-        await writeHtml(outPath, html, projectRoot);
+        const size = await writeHtml(outPath, html, base, cssPath);
+        totalSize += size;
         pageCount++;
-        console.log(`  ${route.file} [${Object.values(params).join("/")}] → ${path.relative(projectRoot, outPath)}`);
+        console.log(`  ${route.file} [${Object.values(params).join("/")}] → ${path.relative(projectRoot, outPath)} (${formatSize(size)})`);
 
-        // Collect islands
         for (const [name, filePath] of getUsedIslands()) {
           allIslands.set(name, filePath);
         }
       }
     } else {
-      // Static route
       resetIslandRegistry();
       const html = await renderComponent(component, {});
       if (html === null) {
-        console.warn(`Skipping ${route.file}: default export didn't return HTML`);
+        console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         continue;
       }
 
       const outFile = routeToOutputPath(route, {});
       const outPath = path.join(distDir, outFile);
-      await writeHtml(outPath, html, projectRoot);
+      const size = await writeHtml(outPath, html, base, cssPath);
+      totalSize += size;
       pageCount++;
-      console.log(`  ${route.file} → ${path.relative(projectRoot, outPath)}`);
+      console.log(`  ${route.file} → ${path.relative(projectRoot, outPath)} (${formatSize(size)})`);
 
-      // Collect islands
       for (const [name, filePath] of getUsedIslands()) {
         allIslands.set(name, filePath);
       }
     }
   }
 
+  // Build custom 404 page
+  await build404(pagesDir, distDir, base, cssPath);
+
   // Bundle islands
   if (allIslands.size > 0) {
     await bundleIslands(allIslands, islandsDir, distDir);
   }
 
-  console.log(`\nBuilt ${pageCount} pages${allIslands.size > 0 ? `, ${allIslands.size} islands` : ""}.`);
+  // Summary
+  console.log(`\nBuilt ${pageCount} pages${allIslands.size > 0 ? `, ${allIslands.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
 }
 
 async function renderComponent(
@@ -103,11 +115,7 @@ async function renderComponent(
   props: Record<string, unknown>,
 ): Promise<string | null> {
   let result = component(props);
-
-  // Handle async components
-  if (result instanceof Promise) {
-    result = await result;
-  }
+  if (result instanceof Promise) result = await result;
 
   if (typeof result === "string") return result;
   if (result && typeof result === "object" && "__html" in result) {
@@ -116,10 +124,20 @@ async function renderComponent(
   return null;
 }
 
-async function writeHtml(outPath: string, html: string, projectRoot: string) {
-  // Add doctype if needed
+async function writeHtml(
+  outPath: string,
+  html: string,
+  base: string,
+  cssPath: string | null,
+): Promise<number> {
+  // Add doctype
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
     html = "<!DOCTYPE html>\n" + html;
+  }
+
+  // Inject CSS bundle link
+  if (cssPath && html.includes("</head>")) {
+    html = html.replace("</head>", `<link rel="stylesheet" href="${base}${cssPath}">\n</head>`);
   }
 
   // Inject hydration script if page contains islands
@@ -134,7 +152,29 @@ async function writeHtml(outPath: string, html: string, projectRoot: string) {
   }
 
   await fs.mkdir(path.dirname(outPath), { recursive: true });
+  const bytes = Buffer.byteLength(html, "utf-8");
   await fs.writeFile(outPath, html);
+  return bytes;
+}
+
+async function build404(pagesDir: string, distDir: string, base: string, cssPath: string | null) {
+  for (const ext of [".tsx", ".jsx"]) {
+    const fullPath = path.join(pagesDir, `404${ext}`);
+    const file = Bun.file(fullPath);
+    if (await file.exists()) {
+      const mod = await import(fullPath);
+      if (typeof mod.default === "function") {
+        resetIslandRegistry();
+        const html = await renderComponent(mod.default, {});
+        if (html) {
+          const outPath = path.join(distDir, "404.html");
+          await writeHtml(outPath, html, base, cssPath);
+          console.log(`  404.tsx → 404.html`);
+        }
+      }
+      break;
+    }
+  }
 }
 
 async function bundleIslands(
@@ -145,7 +185,6 @@ async function bundleIslands(
   const islandOutDir = path.join(distDir, "_islands");
   await fs.mkdir(islandOutDir, { recursive: true });
 
-  // Create temp wrapper files that only export mount() to tree-shake server code
   const tmpDir = path.join(distDir, "_islands_tmp");
   await fs.mkdir(tmpDir, { recursive: true });
 
@@ -169,7 +208,6 @@ async function bundleIslands(
     }
     if (!sourcePath) continue;
 
-    // Create wrapper that only re-exports mount
     const wrapperPath = path.join(tmpDir, name + ".ts");
     await fs.writeFile(wrapperPath, `export { mount } from "${sourcePath}";\n`);
     entrypoints.push(wrapperPath);
@@ -190,7 +228,6 @@ async function bundleIslands(
     naming: "[name].js",
   });
 
-  // Cleanup temp dir
   await fs.rm(tmpDir, { recursive: true, force: true });
 
   if (!result.success) {
@@ -198,7 +235,17 @@ async function bundleIslands(
     for (const log of result.logs) {
       console.error(`  ${log}`);
     }
+  } else {
+    for (const output of result.outputs) {
+      console.log(`  _islands/${path.basename(output.path)} (${formatSize(output.size)})`);
+    }
   }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 async function copyDir(src: string, dest: string) {

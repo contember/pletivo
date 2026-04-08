@@ -63,9 +63,11 @@ describe("dev server - pages", () => {
     expect(html).toContain("<h1>First Post</h1>");
   });
 
-  test("GET /nonexistent returns 404", async () => {
+  test("GET /nonexistent returns custom 404", async () => {
     const res = await fetch(BASE + "/nonexistent");
     expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("404 - Page Not Found");
   });
 });
 

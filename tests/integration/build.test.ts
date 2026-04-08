@@ -2,13 +2,22 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
 import fs from "fs/promises";
 import { build } from "../../src/build";
+import type { PavoukConfig } from "../../src/config";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
 const distDir = path.join(fixtureRoot, "dist");
 
+const config: PavoukConfig = {
+  outDir: "dist",
+  port: 3000,
+  base: "/",
+  srcDir: "src",
+  publicDir: "public",
+};
+
 describe("build", () => {
   beforeAll(async () => {
-    await build(fixtureRoot);
+    await build(fixtureRoot, config);
   });
 
   afterAll(async () => {
@@ -81,6 +90,11 @@ describe("build", () => {
   test("public files are copied to dist", async () => {
     const css = await Bun.file(path.join(distDir, "style.css")).text();
     expect(css).toContain("font-family");
+  });
+
+  test("generates custom 404 page", async () => {
+    const content = await Bun.file(path.join(distDir, "404.html")).text();
+    expect(content).toContain("404 - Page Not Found");
   });
 
   test("all pages have DOCTYPE", async () => {

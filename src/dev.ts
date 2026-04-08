@@ -1,11 +1,13 @@
 import path from "path";
 import fs from "fs";
 import { watch } from "fs";
-import { scanRoutes, findRoute, routeToOutputPath, type Route, type StaticPath } from "./router";
+import { scanRoutes, findRoute, type Route, type StaticPath } from "./router";
 import { initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
+import { devCss } from "./css";
+import type { PavoukConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 
 const MIME_TYPES: Record<string, string> = {
@@ -24,18 +26,15 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-export async function dev(projectRoot: string, port = 3000) {
-  const pagesDir = path.join(projectRoot, "src/pages");
-  const publicDir = path.join(projectRoot, "public");
-  const islandsDir = path.join(projectRoot, "src/islands");
+export async function dev(projectRoot: string, config: PavoukConfig) {
+  const pagesDir = path.join(projectRoot, config.srcDir, "pages");
+  const publicDir = path.join(projectRoot, config.publicDir);
+  const islandsDir = path.join(projectRoot, config.srcDir, "islands");
 
   const sockets = new Set<ServerWebSocket<unknown>>();
   let moduleVersion = 0;
 
-  // Init collections
   await initCollections(projectRoot);
-
-  // Scan routes initially
   let routes = await scanRoutes(pagesDir);
 
   function escapeHtmlSimple(s: string) {
@@ -54,15 +53,12 @@ export async function dev(projectRoot: string, port = 3000) {
 
       let props: Record<string, unknown> = {};
 
-      // For dynamic routes, find matching props from getStaticPaths
       if (route.isDynamic && typeof mod.getStaticPaths === "function") {
         const staticPaths: StaticPath[] = await mod.getStaticPaths();
         const match = staticPaths.find((sp) => {
           return Object.entries(params).every(([k, v]) => sp.params[k] === v);
         });
-        if (match?.props) {
-          props = match.props;
-        }
+        if (match?.props) props = match.props;
       }
 
       resetIslandRegistry();
@@ -88,7 +84,6 @@ export async function dev(projectRoot: string, port = 3000) {
         html += scripts;
       }
 
-      // Add doctype
       if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
         html = "<!DOCTYPE html>\n" + html;
       }
@@ -100,8 +95,34 @@ export async function dev(projectRoot: string, port = 3000) {
     }
   }
 
+  async function render404(): Promise<string | null> {
+    for (const ext of [".tsx", ".jsx"]) {
+      const fullPath = path.join(pagesDir, `404${ext}`);
+      if (fs.existsSync(fullPath)) {
+        try {
+          const mod = await import(fullPath + `?v=${moduleVersion}`);
+          if (typeof mod.default === "function") {
+            resetIslandRegistry();
+            let result = mod.default({});
+            if (result instanceof Promise) result = await result;
+            let html: string;
+            if (typeof result === "string") html = result;
+            else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
+            else return null;
+
+            html = html + hmrClientScript;
+            return html;
+          }
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
   const server = Bun.serve({
-    port,
+    port: config.port,
     async fetch(req, server) {
       const url = new URL(req.url);
 
@@ -109,6 +130,14 @@ export async function dev(projectRoot: string, port = 3000) {
       if (url.pathname === "/__hmr") {
         if (server.upgrade(req)) return;
         return new Response("WebSocket upgrade failed", { status: 500 });
+      }
+
+      // Serve bundled CSS from src/ on-the-fly
+      if (url.pathname === "/__styles.css") {
+        const css = await devCss(projectRoot, config.srcDir);
+        return new Response(css, {
+          headers: { "Content-Type": "text/css; charset=utf-8" },
+        });
       }
 
       // Serve island bundles on-the-fly
@@ -123,7 +152,6 @@ export async function dev(projectRoot: string, port = 3000) {
 
         for (const candidate of candidates) {
           if (fs.existsSync(candidate)) {
-            // Build a wrapper that only exports mount() to exclude server code
             const wrapper = `export { mount } from "${candidate}";`;
             const tmpDir = path.join(projectRoot, "node_modules/.pavouk");
             const fsP = await import("fs/promises");
@@ -162,9 +190,6 @@ export async function dev(projectRoot: string, port = 3000) {
 
       // Route matching
       const pathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/$/, "");
-      const urlParts = pathname.split("/").filter(Boolean);
-
-      // Try to find matching route
       const match = findRoute(routes, pathname);
       if (match) {
         const html = await renderPage(match.route, match.params);
@@ -175,33 +200,38 @@ export async function dev(projectRoot: string, port = 3000) {
         }
       }
 
+      // Custom 404 page
+      const custom404 = await render404();
+      if (custom404) {
+        return new Response(custom404, {
+          status: 404,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+
       return new Response("Not Found", { status: 404 });
     },
 
     websocket: {
-      open(ws) {
-        sockets.add(ws);
-      },
-      close(ws) {
-        sockets.delete(ws);
-      },
+      open(ws) { sockets.add(ws); },
+      close(ws) { sockets.delete(ws); },
       message() {},
     },
   });
 
   // Watch for file changes
-  const srcDir = path.join(projectRoot, "src");
+  const srcDir = path.join(projectRoot, config.srcDir);
   const watcher = watch(srcDir, { recursive: true }, async (_event, filename) => {
     if (!filename) return;
-    console.log(`  Changed: src/${filename}`);
+    // Skip tmp files
+    if (filename.includes("_tmp_")) return;
+    console.log(`  Changed: ${config.srcDir}/${filename}`);
     moduleVersion++;
 
-    // Re-init collections if content changed
     if (filename.startsWith("content/") || filename === "content.config.ts") {
       await initCollections(projectRoot);
     }
 
-    // Re-scan routes if pages changed
     if (filename.startsWith("pages/")) {
       routes = await scanRoutes(pagesDir);
     }
@@ -211,7 +241,6 @@ export async function dev(projectRoot: string, port = 3000) {
     }
   });
 
-  // Also watch public/
   try {
     watch(publicDir, { recursive: true }, () => {
       for (const ws of sockets) {
@@ -222,7 +251,7 @@ export async function dev(projectRoot: string, port = 3000) {
     // no public dir
   }
 
-  console.log(`\n  pavouk dev server running at http://localhost:${port}\n`);
+  console.log(`\n  pavouk dev server running at http://localhost:${config.port}\n`);
 
   process.on("SIGINT", () => {
     watcher.close();
