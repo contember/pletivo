@@ -28,19 +28,22 @@ const collectionCache = new Map<string, CollectionEntry[]>();
 // Registered collections config (loaded from user's content.config.ts)
 let collectionsConfig: Record<string, CollectionConfig> | null = null;
 let configProjectRoot: string = "";
+let configVersion = 0;
 
 /**
- * Initialize collections from the project's content.config.ts
+ * Initialize collections from the project's content.config.ts.
+ * Busts Bun's module cache via query string to pick up changes in dev.
  */
 export async function initCollections(projectRoot: string): Promise<void> {
   configProjectRoot = projectRoot;
   collectionCache.clear();
+  configVersion++;
 
   const configPath = path.join(projectRoot, "src/content.config.ts");
   const configFile = Bun.file(configPath);
 
   if (await configFile.exists()) {
-    const mod = await import(configPath);
+    const mod = await import(configPath + `?v=${configVersion}`);
     collectionsConfig = mod.collections || {};
   } else {
     collectionsConfig = {};

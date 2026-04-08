@@ -24,7 +24,7 @@ export default function Home() {
 
       <h2>Interactive Island</h2>
       <p>This counter is an island - it ships JavaScript only for this component:</p>
-      <Counter client="load" initial={0} __islandName="Counter" />
+      <Counter client="load" initial={0} />
     </Layout>
   );
 }

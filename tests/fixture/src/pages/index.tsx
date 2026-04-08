@@ -5,7 +5,7 @@ export default function Home() {
   return (
     <Layout title="Home">
       <h1>Home Page</h1>
-      <Counter client="load" initial={5} __islandName="Counter" />
+      <Counter client="load" initial={5} />
     </Layout>
   );
 }

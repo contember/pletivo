@@ -159,6 +159,37 @@ describe("async components", () => {
     expect(result).toBeInstanceOf(Promise);
     expect(html(await result)).toBe("<div>async</div>");
   });
+
+  test("async children in HTML element", async () => {
+    async function AsyncChild() {
+      return jsx("span", { children: "loaded" });
+    }
+    const result = jsx("div", { children: jsx(AsyncChild, {}) });
+    expect(result).toBeInstanceOf(Promise);
+    expect(html(await result)).toBe("<div><span>loaded</span></div>");
+  });
+
+  test("mixed sync and async children", async () => {
+    async function AsyncItem() {
+      return jsx("li", { children: "async" });
+    }
+    const children = [
+      jsx("li", { children: "sync" }),
+      jsx(AsyncItem, {}),
+    ];
+    const result = jsx("ul", { children });
+    expect(result).toBeInstanceOf(Promise);
+    expect(html(await result)).toBe("<ul><li>sync</li><li>async</li></ul>");
+  });
+
+  test("async Fragment children", async () => {
+    async function AsyncPart() {
+      return jsx("b", { children: "async" });
+    }
+    const result = Fragment({ children: [jsx("i", { children: "sync" }), jsx(AsyncPart, {})] });
+    expect(result).toBeInstanceOf(Promise);
+    expect((await result).__html).toBe("<i>sync</i><b>async</b>");
+  });
 });
 
 describe("island detection", () => {
@@ -170,7 +201,7 @@ describe("island detection", () => {
     function MyIsland(props: { count: number }) {
       return jsx("button", { children: String(props.count) });
     }
-    const result = jsx(MyIsland, { client: "load", count: 5, __islandName: "MyIsland" });
+    const result = jsx(MyIsland, { client: "load", count: 5,  });
     const h = html(result);
     expect(h).toContain("<pavouk-island");
     expect(h).toContain('data-component="MyIsland"');
@@ -182,7 +213,7 @@ describe("island detection", () => {
     function TestIsland() {
       return jsx("div", { children: "test" });
     }
-    jsx(TestIsland, { client: "visible", __islandName: "TestIsland" });
+    jsx(TestIsland, { client: "visible",  });
     const islands = getUsedIslands();
     expect(islands.has("TestIsland")).toBe(true);
   });
@@ -191,9 +222,8 @@ describe("island detection", () => {
     function Counter(props: { initial: number }) {
       return jsx("span", { children: String(props.initial) });
     }
-    const h = html(jsx(Counter, { client: "idle", initial: 10, __islandName: "Counter" }));
+    const h = html(jsx(Counter, { client: "idle", initial: 10,  }));
     expect(h).toContain('"initial":10');
-    expect(h).not.toContain("__islandName");
     expect(h).not.toContain('"client"');
   });
 
@@ -202,16 +232,16 @@ describe("island detection", () => {
       return jsx("div", { children: "w" });
     }
 
-    expect(html(jsx(W, { client: "load", __islandName: "W" }))).toContain('data-hydrate="load"');
+    expect(html(jsx(W, { client: "load",  }))).toContain('data-hydrate="load"');
 
     resetIslandRegistry();
-    expect(html(jsx(W, { client: "idle", __islandName: "W" }))).toContain('data-hydrate="idle"');
+    expect(html(jsx(W, { client: "idle",  }))).toContain('data-hydrate="idle"');
 
     resetIslandRegistry();
-    expect(html(jsx(W, { client: "visible", __islandName: "W" }))).toContain('data-hydrate="visible"');
+    expect(html(jsx(W, { client: "visible",  }))).toContain('data-hydrate="visible"');
 
     resetIslandRegistry();
-    expect(html(jsx(W, { client: "media(max-width: 768px)", __islandName: "W" }))).toContain('data-hydrate="media(max-width: 768px)"');
+    expect(html(jsx(W, { client: "media(max-width: 768px)",  }))).toContain('data-hydrate="media(max-width: 768px)"');
   });
 });
 

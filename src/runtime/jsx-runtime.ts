@@ -17,16 +17,25 @@ function escapeAttr(str: string): string {
   return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
-function renderChildren(children: unknown): string {
+function renderChildren(children: unknown): string | Promise<string> {
   if (children == null || children === false || children === true) return "";
   if (typeof children === "string") return escapeHtml(children);
   if (typeof children === "number") return String(children);
-  if (Array.isArray(children)) return children.map(renderChildren).join("");
+
+  // Async child — await and re-render
   if (children instanceof Promise) {
-    throw new Error(
-      "Async children detected. Wrap async components with await or use async page components.",
-    );
+    return children.then((resolved) => renderChildren(resolved));
   }
+
+  if (Array.isArray(children)) {
+    const parts = children.map(renderChildren);
+    const hasAsync = parts.some((p) => p instanceof Promise);
+    if (hasAsync) {
+      return Promise.all(parts).then((resolved) => resolved.join(""));
+    }
+    return (parts as string[]).join("");
+  }
+
   // Already rendered JSX (raw HTML string from jsx())
   if (typeof children === "object" && children !== null && "__html" in children) {
     return (children as HtmlString).__html;
@@ -40,7 +49,7 @@ function renderAttrs(props: Props): string {
   let result = "";
   for (const [key, value] of Object.entries(props)) {
     if (key === "children" || key === "key" || key === "ref") continue;
-    if (key === "client" || key === "__source" || key === "__islandName") continue;
+    if (key === "client") continue;
     if (value == null || value === false) continue;
     if (key === "dangerouslySetInnerHTML") continue;
     if (key === "className") {
@@ -98,11 +107,14 @@ export function jsx(
     return createHtml(`<${tag}${attrs}>`);
   }
 
-  let inner: string;
   if (props.dangerouslySetInnerHTML) {
-    inner = (props.dangerouslySetInnerHTML as { __html: string }).__html;
-  } else {
-    inner = renderChildren(props.children);
+    const inner = (props.dangerouslySetInnerHTML as { __html: string }).__html;
+    return createHtml(`<${tag}${attrs}>${inner}</${tag}>`);
+  }
+
+  const inner = renderChildren(props.children);
+  if (inner instanceof Promise) {
+    return inner.then((resolved) => createHtml(`<${tag}${attrs}>${resolved}</${tag}>`));
   }
 
   return createHtml(`<${tag}${attrs}>${inner}</${tag}>`);
@@ -110,25 +122,31 @@ export function jsx(
 
 export { jsx as jsxs, jsx as jsxDEV };
 
-export function Fragment(props: { children?: unknown }): HtmlString {
-  return createHtml(renderChildren(props.children));
+export function Fragment(
+  props: { children?: unknown },
+): HtmlString | Promise<HtmlString> {
+  const inner = renderChildren(props.children);
+  if (inner instanceof Promise) {
+    return inner.then((resolved) => createHtml(resolved));
+  }
+  return createHtml(inner);
 }
 
 /**
- * Render a component as an island with hydration marker
+ * Render a component as an island with hydration marker.
+ * Component name is auto-detected from function.name — no need for __islandName.
  */
 function renderIsland(
   tag: (props: Props) => HtmlString | string | Promise<HtmlString | string>,
   props: Props,
 ): HtmlString {
   const hydrate = props.client as string;
-  const componentName = props.__islandName as string || tag.name || "anonymous";
-  const componentSource = props.__source as string | undefined;
+  const componentName = tag.name || "anonymous";
 
   // Extract component props (without island-specific ones)
   const componentProps: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(props)) {
-    if (key === "client" || key === "__source" || key === "__islandName" || key === "children") continue;
+    if (key === "client" || key === "children") continue;
     componentProps[key] = value;
   }
 
@@ -145,8 +163,8 @@ function renderIsland(
     // SSR failed, island will render empty and hydrate on client
   }
 
-  // Register island for bundling (always register by name)
-  registerIsland(componentName, componentSource || componentName);
+  // Register island for bundling
+  registerIsland(componentName, componentName);
 
   return createHtml(renderIslandWrapper(componentName, hydrate, componentProps, innerHtml));
 }
