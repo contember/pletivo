@@ -1,8 +1,8 @@
-import { defineCollection, z } from "../../../packages/pavouk/src/content/collection";
+import { defineCollection, glob, z } from "../../../packages/pavouk/src/content/collection";
 
 export const collections = {
   blog: defineCollection({
-    directory: "src/content/blog",
+    loader: glob({ base: "src/content/blog" }),
     schema: z.object({
       title: z.string(),
       date: z.coerce.date(),

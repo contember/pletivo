@@ -3,8 +3,24 @@ import { Glob } from "bun";
 import { z } from "zod";
 import { parseMarkdown } from "./markdown";
 
+// ── Types ──
+
+export interface RawEntry {
+  id: string;
+  body: string;
+  data: Record<string, unknown>;
+}
+
+export interface Loader {
+  load(projectRoot: string): Promise<RawEntry[]>;
+}
+
 export interface CollectionConfig {
-  directory: string;
+  /** Loader that provides raw entries. Use glob() for file-based collections. */
+  loader?: Loader;
+  /** Shorthand for loader: glob({ base: directory }) */
+  directory?: string;
+  /** Zod schema for frontmatter validation */
   schema: z.ZodType;
   /** Optional HTML transform applied after markdown rendering */
   transform?: (html: string, data: Record<string, unknown>) => string;
@@ -21,25 +37,61 @@ export interface CollectionEntry<T = Record<string, unknown>> {
   render(): Promise<RenderResult>;
 }
 
+// ── Built-in loaders ──
+
+export interface GlobOptions {
+  /** Glob pattern (default: "**\/*.md") */
+  pattern?: string;
+  /** Base directory relative to project root */
+  base: string;
+}
+
 /**
- * Define a content collection with schema validation
+ * File-based loader — scans a directory for content files.
+ * Compatible with Astro's glob() loader pattern.
  */
+export function glob(options: GlobOptions): Loader {
+  return {
+    async load(projectRoot: string): Promise<RawEntry[]> {
+      const dir = path.resolve(projectRoot, options.base);
+      const globPattern = new Glob(options.pattern ?? "**/*.md");
+      const entries: RawEntry[] = [];
+
+      for await (const file of globPattern.scan(dir)) {
+        const fullPath = path.join(dir, file);
+        const content = await Bun.file(fullPath).text();
+        const parsed = parseMarkdown(content);
+        const id = file.replace(/\.md$/, "").replace(/\//g, "-");
+
+        entries.push({
+          id,
+          body: parsed.body,
+          data: { ...parsed.frontmatter, _html: parsed.html },
+        });
+      }
+
+      return entries;
+    },
+  };
+}
+
+// ── defineCollection ──
+
 export function defineCollection(config: CollectionConfig): CollectionConfig {
+  // Sugar: directory → glob loader
+  if (config.directory && !config.loader) {
+    config.loader = glob({ base: config.directory });
+  }
   return config;
 }
 
-// Cache for loaded collections
-const collectionCache = new Map<string, CollectionEntry[]>();
+// ── Runtime state ──
 
-// Registered collections config (loaded from user's content.config.ts)
+const collectionCache = new Map<string, CollectionEntry[]>();
 let collectionsConfig: Record<string, CollectionConfig> | null = null;
 let configProjectRoot: string = "";
 let configVersion = 0;
 
-/**
- * Initialize collections from the project's content.config.ts.
- * Busts Bun's module cache via query string to pick up changes in dev.
- */
 export async function initCollections(projectRoot: string): Promise<void> {
   configProjectRoot = projectRoot;
   collectionCache.clear();
@@ -56,9 +108,8 @@ export async function initCollections(projectRoot: string): Promise<void> {
   }
 }
 
-/**
- * Get all entries from a collection, with optional filter
- */
+// ── Query API ──
+
 export async function getCollection<T = Record<string, unknown>>(
   name: string,
   filter?: (entry: CollectionEntry<T>) => boolean,
@@ -72,24 +123,18 @@ export async function getCollection<T = Record<string, unknown>>(
     throw new Error(`Collection "${name}" not found. Define it in src/content.config.ts`);
   }
 
-  // Check cache
   if (!collectionCache.has(name)) {
     const entries = await loadCollection(config, name);
     collectionCache.set(name, entries);
   }
 
   let entries = collectionCache.get(name)! as CollectionEntry<T>[];
-
   if (filter) {
     entries = entries.filter(filter);
   }
-
   return entries;
 }
 
-/**
- * Get a single entry by ID
- */
 export async function getEntry<T = Record<string, unknown>>(
   name: string,
   id: string,
@@ -98,40 +143,38 @@ export async function getEntry<T = Record<string, unknown>>(
   return entries.find((e) => e.id === id);
 }
 
-/**
- * Load all entries from a collection directory
- */
+// ── Internal ──
+
 async function loadCollection(config: CollectionConfig, name: string): Promise<CollectionEntry[]> {
-  const dir = path.resolve(configProjectRoot, config.directory);
-  const glob = new Glob("**/*.md");
+  if (!config.loader) {
+    throw new Error(`Collection "${name}" has no loader. Use glob() or set directory.`);
+  }
+
+  const rawEntries = await config.loader.load(configProjectRoot);
   const entries: CollectionEntry[] = [];
 
-  for await (const file of glob.scan(dir)) {
-    const fullPath = path.join(dir, file);
-    const content = await Bun.file(fullPath).text();
-    const parsed = parseMarkdown(content);
+  for (const raw of rawEntries) {
+    // Separate internal _html from user data before validation
+    const { _html, ...userData } = raw.data;
 
-    // Validate with schema
-    const result = config.schema.safeParse(parsed.frontmatter);
+    const result = config.schema.safeParse(userData);
     if (!result.success) {
       const errors = result.error instanceof z.ZodError
         ? result.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n")
         : String(result.error);
-      console.error(`Validation error in ${name}/${file}:\n${errors}`);
+      console.error(`Validation error in ${name}/${raw.id}:\n${errors}`);
       continue;
     }
 
-    const id = file.replace(/\.md$/, "").replace(/\//g, "-");
-
-    let html = parsed.html;
+    let html = (_html as string) ?? "";
     if (config.transform) {
       html = config.transform(html, result.data as Record<string, unknown>);
     }
 
     entries.push({
-      id,
+      id: raw.id,
       data: result.data as Record<string, unknown>,
-      body: parsed.body,
+      body: raw.body,
       render: async () => ({ html }),
     });
   }
@@ -139,5 +182,4 @@ async function loadCollection(config: CollectionConfig, name: string): Promise<C
   return entries;
 }
 
-// Re-export z for user convenience
 export { z } from "zod";
