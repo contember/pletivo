@@ -150,25 +150,26 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
           path.join(islandsDir, name + ".js"),
         ];
 
-        const clientRuntimePath = path.resolve(import.meta.dir, "runtime/client-runtime.ts");
         for (const candidate of candidates) {
           if (fs.existsSync(candidate)) {
             const wrapper =
-              `import { mountIsland } from "${clientRuntimePath}";\n` +
+              `import { hydrate, h } from "preact";\n` +
               `import Component from "${candidate}";\n` +
-              `export function mount(el, props) { mountIsland(Component, el, props); }\n`;
+              `export function mount(el, props) { hydrate(h(Component, props), el); }\n`;
             const tmpDir = path.join(projectRoot, "node_modules/.pavouk");
             const fsP = await import("fs/promises");
             await fsP.mkdir(tmpDir, { recursive: true });
             const tmpFile = path.join(tmpDir, `${name}.ts`);
             await fsP.writeFile(tmpFile, wrapper);
             try {
+              const preactJsx = require.resolve("preact/jsx-runtime");
+              const preactHooks = require.resolve("preact/hooks");
               const islandPlugin = {
                 name: "pavouk-island",
                 setup(build: any) {
-                  build.onResolve({ filter: /pavouk\/jsx-runtime$/ }, () => ({ path: clientRuntimePath }));
-                  build.onResolve({ filter: /pavouk\/jsx-dev-runtime$/ }, () => ({ path: clientRuntimePath }));
-                  build.onResolve({ filter: /pavouk\/hooks$/ }, () => ({ path: clientRuntimePath }));
+                  build.onResolve({ filter: /^pavouk\/jsx-runtime$/ }, () => ({ path: preactJsx }));
+                  build.onResolve({ filter: /^pavouk\/jsx-dev-runtime$/ }, () => ({ path: preactJsx }));
+                  build.onResolve({ filter: /^pavouk\/hooks$/ }, () => ({ path: preactHooks }));
                 },
               };
               const result = await Bun.build({

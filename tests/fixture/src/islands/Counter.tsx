@@ -1,4 +1,4 @@
-import { useState } from "pavouk/hooks";
+import { useState } from "preact/hooks";
 
 export default function Counter(props: { initial: number }) {
   const [count, setCount] = useState(props.initial);

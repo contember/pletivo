@@ -232,13 +232,12 @@ async function bundleIslands(
     }
     if (!sourcePath) continue;
 
-    const clientRuntimePath = path.resolve(import.meta.dir, "runtime/client-runtime.ts");
     const wrapperPath = path.join(tmpDir, name + ".ts");
     await fs.writeFile(
       wrapperPath,
-      `import { mountIsland } from "${clientRuntimePath}";\n` +
+      `import { hydrate, h } from "preact";\n` +
       `import Component from "${sourcePath}";\n` +
-      `export function mount(el, props) { mountIsland(Component, el, props); }\n`,
+      `export function mount(el, props) { hydrate(h(Component, props), el); }\n`,
     );
     entrypoints.push(wrapperPath);
   }
@@ -250,14 +249,13 @@ async function bundleIslands(
 
   console.log(`\nBundling ${entrypoints.length} islands...`);
 
-  const clientRuntimePath = path.resolve(import.meta.dir, "runtime/client-runtime.ts");
   const result = await Bun.build({
     entrypoints,
     outdir: islandOutDir,
     format: "esm",
     minify: true,
     naming: "[name].js",
-    plugins: [islandPlugin(clientRuntimePath)],
+    plugins: [islandPlugin()],
   });
 
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -274,21 +272,27 @@ async function bundleIslands(
   }
 }
 
-/** Bun plugin that redirects server JSX/hooks imports to client runtime for island bundles */
-function islandPlugin(clientRuntimePath: string) {
+/**
+ * Bun plugin that redirects server-side imports to Preact for island bundles.
+ * - pavouk/jsx-runtime → preact/jsx-runtime (DOM-based JSX)
+ * - pavouk/hooks → preact/hooks (real reactive hooks)
+ * - preact/hooks → preact/hooks (bypass tsconfig path override)
+ */
+function islandPlugin() {
+  const preactJsx = require.resolve("preact/jsx-runtime");
+  const preactHooks = require.resolve("preact/hooks");
+
   return {
     name: "pavouk-island",
     setup(build: any) {
-      // Redirect JSX runtime imports to client runtime
-      build.onResolve({ filter: /pavouk\/jsx-runtime$/ }, () => ({
-        path: clientRuntimePath,
+      build.onResolve({ filter: /^pavouk\/jsx-runtime$/ }, () => ({
+        path: preactJsx,
       }));
-      build.onResolve({ filter: /pavouk\/jsx-dev-runtime$/ }, () => ({
-        path: clientRuntimePath,
+      build.onResolve({ filter: /^pavouk\/jsx-dev-runtime$/ }, () => ({
+        path: preactJsx,
       }));
-      // Redirect hooks imports to client runtime
-      build.onResolve({ filter: /pavouk\/hooks$/ }, () => ({
-        path: clientRuntimePath,
+      build.onResolve({ filter: /^pavouk\/hooks$/ }, () => ({
+        path: preactHooks,
       }));
     },
   };
