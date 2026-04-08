@@ -6,7 +6,11 @@
     "pavouk": "./src/cli.ts"
   },
   "exports": {
+    ".": "./src/index.ts",
     "./jsx-runtime": "./src/runtime/jsx-runtime.ts",
     "./jsx-dev-runtime": "./src/runtime/jsx-runtime.ts"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
   }
 }
