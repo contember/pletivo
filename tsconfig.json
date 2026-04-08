@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "pavouk",
+    "strict": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ESNext",
+    "paths": {
+      "pavouk/jsx-runtime": ["./src/runtime/jsx-runtime.ts"]
+    }
+  }
+}

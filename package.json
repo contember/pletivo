@@ -1,0 +1,12 @@
+{
+  "name": "pavouk",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "pavouk": "./src/cli.ts"
+  },
+  "exports": {
+    "./jsx-runtime": "./src/runtime/jsx-runtime.ts",
+    "./jsx-dev-runtime": "./src/runtime/jsx-runtime.ts"
+  }
+}
