@@ -16,4 +16,14 @@ describe("defineCollection", () => {
     expect(result.directory).toBe("content/docs");
     expect(result.schema).toBe(schema);
   });
+
+  test("accepts transform function", () => {
+    const transform = (html: string) => html.replace(/<h1>/g, '<h1 class="title">');
+    const result = defineCollection({
+      directory: "content/blog",
+      schema: z.object({ title: z.string() }),
+      transform,
+    });
+    expect(result.transform).toBe(transform);
+  });
 });

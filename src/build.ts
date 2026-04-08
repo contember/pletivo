@@ -2,10 +2,18 @@ import path from "path";
 import fs from "fs/promises";
 import { scanRoutes, routeToOutputPath, type Route, type StaticPath } from "./router";
 import { initCollections } from "./content/collection";
-import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
+import { resetIslandRegistry } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
+import { generateSitemap } from "./sitemap";
 import type { PavoukConfig } from "./config";
+
+interface PageResult {
+  file: string;
+  label: string;
+  outPath: string;
+  html: string;
+}
 
 export async function build(projectRoot: string, config: PavoukConfig) {
   const pagesDir = path.join(projectRoot, config.srcDir, "pages");
@@ -14,7 +22,6 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   const islandsDir = path.join(projectRoot, config.srcDir, "islands");
   const base = config.base.replace(/\/$/, "");
 
-  // Init content collections
   await initCollections(projectRoot);
 
   // Clean dist
@@ -35,79 +42,99 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   const routes = await scanRoutes(pagesDir);
   console.log(`Found ${routes.length} routes`);
 
-  // Track all islands used across all pages
-  const allIslands = new Map<string, string>();
-  let pageCount = 0;
-  let totalSize = 0;
+  // Render all pages — static pages in parallel, dynamic sequentially
+  const staticRoutes = routes.filter((r) => !r.isDynamic && r.file !== "404.tsx" && r.file !== "404.jsx");
+  const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
-  for (const route of routes) {
-    // Skip 404 page in normal route processing (handled separately)
-    if (route.file === "404.tsx" || route.file === "404.jsx") continue;
+  const results: PageResult[] = [];
 
+  // Static pages — parallel
+  const staticResults = await Promise.all(
+    staticRoutes.map(async (route): Promise<PageResult | null> => {
+      const fullPath = path.join(pagesDir, route.file);
+      const mod = await import(fullPath);
+      if (typeof mod.default !== "function") {
+        console.warn(`  Skipping ${route.file}: no default export function`);
+        return null;
+      }
+      resetIslandRegistry();
+      const html = await renderComponent(mod.default, {});
+      if (html === null) {
+        console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
+        return null;
+      }
+      const outFile = routeToOutputPath(route, {});
+      return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html };
+    }),
+  );
+  results.push(...staticResults.filter((r): r is PageResult => r !== null));
+
+  // Dynamic pages — sequential (getStaticPaths may share data)
+  for (const route of dynamicRoutes) {
     const fullPath = path.join(pagesDir, route.file);
     const mod = await import(fullPath);
-    const component = mod.default;
-
-    if (typeof component !== "function") {
+    if (typeof mod.default !== "function") {
       console.warn(`  Skipping ${route.file}: no default export function`);
       continue;
     }
+    if (typeof mod.getStaticPaths !== "function") {
+      console.warn(`  Skipping ${route.file}: dynamic route without getStaticPaths()`);
+      continue;
+    }
 
-    if (route.isDynamic) {
-      if (typeof mod.getStaticPaths !== "function") {
-        console.warn(`  Skipping ${route.file}: dynamic route without getStaticPaths()`);
-        continue;
-      }
-
-      const staticPaths: StaticPath[] = await mod.getStaticPaths();
-
-      for (const { params, props: pathProps } of staticPaths) {
-        resetIslandRegistry();
-        const html = await renderComponent(component, pathProps || {});
-        if (html === null) continue;
-
-        const outFile = routeToOutputPath(route, params);
-        const outPath = path.join(distDir, outFile);
-        const size = await writeHtml(outPath, html, base, cssPath);
-        totalSize += size;
-        pageCount++;
-        console.log(`  ${route.file} [${Object.values(params).join("/")}] → ${path.relative(projectRoot, outPath)} (${formatSize(size)})`);
-
-        for (const [name, filePath] of getUsedIslands()) {
-          allIslands.set(name, filePath);
-        }
-      }
-    } else {
+    const staticPaths: StaticPath[] = await mod.getStaticPaths();
+    for (const { params, props: pathProps } of staticPaths) {
       resetIslandRegistry();
-      const html = await renderComponent(component, {});
-      if (html === null) {
-        console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
-        continue;
-      }
+      const html = await renderComponent(mod.default, pathProps || {});
+      if (html === null) continue;
 
-      const outFile = routeToOutputPath(route, {});
-      const outPath = path.join(distDir, outFile);
-      const size = await writeHtml(outPath, html, base, cssPath);
-      totalSize += size;
-      pageCount++;
-      console.log(`  ${route.file} → ${path.relative(projectRoot, outPath)} (${formatSize(size)})`);
-
-      for (const [name, filePath] of getUsedIslands()) {
-        allIslands.set(name, filePath);
-      }
+      const outFile = routeToOutputPath(route, params);
+      const label = `${route.file} [${Object.values(params).join("/")}]`;
+      results.push({ file: route.file, label, outPath: path.join(distDir, outFile), html });
     }
   }
+
+  // Write all pages — parallel
+  let totalSize = 0;
+  await Promise.all(
+    results.map(async (result) => {
+      const size = await writeHtml(result.outPath, result.html, base, cssPath);
+      totalSize += size;
+      console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
+    }),
+  );
 
   // Build custom 404 page
   await build404(pagesDir, distDir, base, cssPath);
 
-  // Bundle islands
-  if (allIslands.size > 0) {
-    await bundleIslands(allIslands, islandsDir, distDir);
+  // Detect islands from rendered HTML
+  const islandNames = new Set<string>();
+  for (const result of results) {
+    for (const name of extractIslandNames(result.html)) {
+      islandNames.add(name);
+    }
   }
 
-  // Summary
-  console.log(`\nBuilt ${pageCount} pages${allIslands.size > 0 ? `, ${allIslands.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
+  // Bundle islands
+  if (islandNames.size > 0) {
+    await bundleIslands(islandNames, islandsDir, distDir);
+  }
+
+  // Generate sitemap
+  await generateSitemap(distDir, base);
+
+  console.log(`\nBuilt ${results.length} pages${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
+}
+
+/** Extract island component names from rendered HTML */
+function extractIslandNames(html: string): string[] {
+  const names: string[] = [];
+  const regex = /data-component="([^"]+)"/g;
+  let match;
+  while ((match = regex.exec(html)) !== null) {
+    names.push(match[1]);
+  }
+  return names;
 }
 
 async function renderComponent(
@@ -130,17 +157,14 @@ async function writeHtml(
   base: string,
   cssPath: string | null,
 ): Promise<number> {
-  // Add doctype
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
     html = "<!DOCTYPE html>\n" + html;
   }
 
-  // Inject CSS bundle link
   if (cssPath && html.includes("</head>")) {
     html = html.replace("</head>", `<link rel="stylesheet" href="${base}${cssPath}">\n</head>`);
   }
 
-  // Inject hydration script if page contains islands
   if (html.includes("<pavouk-island")) {
     if (html.includes("</head>")) {
       html = html.replace("</head>", hydrationScript + "\n</head>");
@@ -178,7 +202,7 @@ async function build404(pagesDir: string, distDir: string, base: string, cssPath
 }
 
 async function bundleIslands(
-  islands: Map<string, string>,
+  islandNames: Set<string>,
   islandsDir: string,
   distDir: string,
 ) {
@@ -189,7 +213,7 @@ async function bundleIslands(
   await fs.mkdir(tmpDir, { recursive: true });
 
   const entrypoints: string[] = [];
-  for (const [name] of islands) {
+  for (const name of islandNames) {
     const candidates = [
       path.join(islandsDir, name + ".tsx"),
       path.join(islandsDir, name + ".ts"),

@@ -97,6 +97,16 @@ describe("build", () => {
     expect(content).toContain("404 - Page Not Found");
   });
 
+  test("generates sitemap.xml", async () => {
+    const sitemap = await Bun.file(path.join(distDir, "sitemap.xml")).text();
+    expect(sitemap).toContain('<?xml version="1.0"');
+    expect(sitemap).toContain("<urlset");
+    expect(sitemap).toContain("<loc>");
+    // Should include pages but not 404
+    expect(sitemap).toContain("/blog/post-one");
+    expect(sitemap).not.toContain("404");
+  });
+
   test("all pages have DOCTYPE", async () => {
     const files = [
       "index.html",

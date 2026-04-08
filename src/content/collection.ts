@@ -6,6 +6,8 @@ import { parseMarkdown } from "./markdown";
 export interface CollectionConfig {
   directory: string;
   schema: z.ZodType;
+  /** Optional HTML transform applied after markdown rendering */
+  transform?: (html: string, data: Record<string, unknown>) => string;
 }
 
 export interface CollectionEntry<T = Record<string, unknown>> {
@@ -117,11 +119,16 @@ async function loadCollection(config: CollectionConfig, name: string): Promise<C
 
     const id = file.replace(/\.md$/, "").replace(/\//g, "-");
 
+    let html = parsed.html;
+    if (config.transform) {
+      html = config.transform(html, result.data as Record<string, unknown>);
+    }
+
     entries.push({
       id,
       data: result.data as Record<string, unknown>,
       body: parsed.body,
-      html: parsed.html,
+      html,
     });
   }
 
