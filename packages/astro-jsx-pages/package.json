@@ -1,5 +1,5 @@
 {
-  "name": "@anthropic/astro-jsx-pages",
+  "name": "@pavouk/astro-jsx-pages",
   "description": "Use TSX/JSX files as pages in Astro (SSG)",
   "version": "0.0.1",
   "type": "module",

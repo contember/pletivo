@@ -4,7 +4,7 @@
   "devDependencies": {
     "pavouk": "workspace:*",
     "pavouk-astro": "workspace:*",
-    "@anthropic/astro-jsx-pages": "workspace:*",
+    "@pavouk/astro-jsx-pages": "workspace:*",
     "zod": "^4",
     "preact": "^10"
   }

@@ -1,4 +1,4 @@
-import tsxPages, { type TsxPagesOptions } from "@anthropic/astro-jsx-pages";
+import tsxPages, { type TsxPagesOptions } from "@pavouk/astro-jsx-pages";
 import { pavoukCompatPlugin } from "./vite-plugin";
 import type { AstroIntegration } from "astro";
 
@@ -12,7 +12,7 @@ export interface PavoukAstroOptions {
 /**
  * Astro integration that enables pavouk-compatible TSX pages.
  *
- * Wraps @anthropic/astro-jsx-pages and adds:
+ * Wraps @pavouk/astro-jsx-pages and adds:
  * - Transform `client="load"` → `client:load` (pavouk syntax → Astro directives)
  * - Alias pavouk/hooks → preact/hooks
  *

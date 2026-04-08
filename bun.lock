@@ -4,7 +4,7 @@
   "workspaces": {
     "": {
       "devDependencies": {
-        "@anthropic/astro-jsx-pages": "workspace:*",
+        "@pavouk/astro-jsx-pages": "workspace:*",
         "pavouk": "workspace:*",
         "pavouk-astro": "workspace:*",
         "preact": "^10",
@@ -12,7 +12,7 @@
       },
     },
     "packages/astro-jsx-pages": {
-      "name": "@anthropic/astro-jsx-pages",
+      "name": "@pavouk/astro-jsx-pages",
       "version": "0.0.1",
       "dependencies": {
         "@babel/generator": "^7.26.0",
@@ -53,7 +53,7 @@
       "name": "pavouk-astro",
       "version": "0.1.0",
       "dependencies": {
-        "@anthropic/astro-jsx-pages": "workspace:*",
+        "@pavouk/astro-jsx-pages": "workspace:*",
       },
       "peerDependencies": {
         "astro": "^5.0.0 || ^6.0.0",
@@ -61,8 +61,6 @@
     },
   },
   "packages": {
-    "@anthropic/astro-jsx-pages": ["@anthropic/astro-jsx-pages@workspace:packages/astro-jsx-pages"],
-
     "@astrojs/compiler": ["@astrojs/compiler@2.13.1", "", {}, "sha512-f3FN83d2G/v32ipNClRKgYv30onQlMZX1vCeZMjPsMMPl1mDpmbl0+N5BYo4S/ofzqJyS5hvwacEo0CCVDn/Qg=="],
 
     "@astrojs/internal-helpers": ["@astrojs/internal-helpers@0.7.6", "", {}, "sha512-GOle7smBWKfMSP8osUIGOlB5kaHdQLV3foCsf+5Q9Wsuu+C6Fs3Ez/ttXmhjZ1HkSgsogcM1RXSjjOVieHq16Q=="],
@@ -230,6 +228,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@oslojs/encoding": ["@oslojs/encoding@1.1.0", "", {}, "sha512-70wQhgYmndg4GCPxPPxPGevRKqTIJ2Nh4OkiMWmDAVYsTQ+Ta7Sq+rPevXyXGdzr30/qZBnyOalCszoMxlyldQ=="],
+
+    "@pavouk/astro-jsx-pages": ["@pavouk/astro-jsx-pages@workspace:packages/astro-jsx-pages"],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-beta.27", "", {}, "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA=="],
 

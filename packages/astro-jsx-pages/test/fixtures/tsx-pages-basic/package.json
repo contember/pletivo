@@ -5,7 +5,7 @@
   "dependencies": {
     "astro": "^5.0.0",
     "@astrojs/react": "^4.2.1",
-    "@anthropic/astro-jsx-pages": "file:../../..",
+    "@pavouk/astro-jsx-pages": "file:../../..",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   }
