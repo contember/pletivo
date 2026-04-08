@@ -150,19 +150,32 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
           path.join(islandsDir, name + ".js"),
         ];
 
+        const clientRuntimePath = path.resolve(import.meta.dir, "runtime/client-runtime.ts");
         for (const candidate of candidates) {
           if (fs.existsSync(candidate)) {
-            const wrapper = `export { mount } from "${candidate}";`;
+            const wrapper =
+              `import { mountIsland } from "${clientRuntimePath}";\n` +
+              `import Component from "${candidate}";\n` +
+              `export function mount(el, props) { mountIsland(Component, el, props); }\n`;
             const tmpDir = path.join(projectRoot, "node_modules/.pavouk");
             const fsP = await import("fs/promises");
             await fsP.mkdir(tmpDir, { recursive: true });
             const tmpFile = path.join(tmpDir, `${name}.ts`);
             await fsP.writeFile(tmpFile, wrapper);
             try {
+              const islandPlugin = {
+                name: "pavouk-island",
+                setup(build: any) {
+                  build.onResolve({ filter: /pavouk\/jsx-runtime$/ }, () => ({ path: clientRuntimePath }));
+                  build.onResolve({ filter: /pavouk\/jsx-dev-runtime$/ }, () => ({ path: clientRuntimePath }));
+                  build.onResolve({ filter: /pavouk\/hooks$/ }, () => ({ path: clientRuntimePath }));
+                },
+              };
               const result = await Bun.build({
                 entrypoints: [tmpFile],
                 format: "esm",
                 minify: false,
+                plugins: [islandPlugin],
               });
               await fsP.unlink(tmpFile);
               if (result.success && result.outputs.length > 0) {

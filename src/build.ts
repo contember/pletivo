@@ -232,8 +232,14 @@ async function bundleIslands(
     }
     if (!sourcePath) continue;
 
+    const clientRuntimePath = path.resolve(import.meta.dir, "runtime/client-runtime.ts");
     const wrapperPath = path.join(tmpDir, name + ".ts");
-    await fs.writeFile(wrapperPath, `export { mount } from "${sourcePath}";\n`);
+    await fs.writeFile(
+      wrapperPath,
+      `import { mountIsland } from "${clientRuntimePath}";\n` +
+      `import Component from "${sourcePath}";\n` +
+      `export function mount(el, props) { mountIsland(Component, el, props); }\n`,
+    );
     entrypoints.push(wrapperPath);
   }
 
@@ -244,12 +250,14 @@ async function bundleIslands(
 
   console.log(`\nBundling ${entrypoints.length} islands...`);
 
+  const clientRuntimePath = path.resolve(import.meta.dir, "runtime/client-runtime.ts");
   const result = await Bun.build({
     entrypoints,
     outdir: islandOutDir,
     format: "esm",
     minify: true,
     naming: "[name].js",
+    plugins: [islandPlugin(clientRuntimePath)],
   });
 
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -264,6 +272,26 @@ async function bundleIslands(
       console.log(`  _islands/${path.basename(output.path)} (${formatSize(output.size)})`);
     }
   }
+}
+
+/** Bun plugin that redirects server JSX/hooks imports to client runtime for island bundles */
+function islandPlugin(clientRuntimePath: string) {
+  return {
+    name: "pavouk-island",
+    setup(build: any) {
+      // Redirect JSX runtime imports to client runtime
+      build.onResolve({ filter: /pavouk\/jsx-runtime$/ }, () => ({
+        path: clientRuntimePath,
+      }));
+      build.onResolve({ filter: /pavouk\/jsx-dev-runtime$/ }, () => ({
+        path: clientRuntimePath,
+      }));
+      // Redirect hooks imports to client runtime
+      build.onResolve({ filter: /pavouk\/hooks$/ }, () => ({
+        path: clientRuntimePath,
+      }));
+    },
+  };
 }
 
 function formatSize(bytes: number): string {

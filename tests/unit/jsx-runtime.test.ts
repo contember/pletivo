@@ -245,6 +245,26 @@ describe("island detection", () => {
   });
 });
 
+describe("event handler props", () => {
+  test("onClick is skipped in SSR", () => {
+    expect(html(jsx("button", { onClick: () => {}, children: "Click" }))).toBe(
+      "<button>Click</button>",
+    );
+  });
+
+  test("onSubmit is skipped in SSR", () => {
+    expect(html(jsx("form", { onSubmit: () => {}, children: "" }))).toBe(
+      "<form></form>",
+    );
+  });
+
+  test("on is NOT treated as event handler (too short)", () => {
+    expect(html(jsx("div", { on: "value", children: "x" }))).toBe(
+      '<div on="value">x</div>',
+    );
+  });
+});
+
 describe("jsxs and jsxDEV aliases", () => {
   test("jsxs is same as jsx", () => {
     expect(jsxs).toBe(jsx);

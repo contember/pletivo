@@ -52,6 +52,8 @@ function renderAttrs(props: Props): string {
     if (key === "client") continue;
     if (value == null || value === false) continue;
     if (key === "dangerouslySetInnerHTML") continue;
+    // Skip event handlers (on*) — they only work on the client
+    if (key.startsWith("on") && key.length > 2 && typeof value === "function") continue;
     if (key === "className") {
       result += ` class="${escapeAttr(String(value))}"`;
       continue;

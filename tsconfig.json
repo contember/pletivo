@@ -7,7 +7,8 @@
     "moduleResolution": "bundler",
     "target": "ESNext",
     "paths": {
-      "pavouk/jsx-runtime": ["./src/runtime/jsx-runtime.ts"]
+      "pavouk/jsx-runtime": ["./src/runtime/jsx-runtime.ts"],
+      "pavouk/hooks": ["./src/runtime/hooks.ts"]
     }
   }
 }
