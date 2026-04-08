@@ -7,9 +7,10 @@
     "moduleResolution": "bundler",
     "target": "ESNext",
     "paths": {
-      "pavouk/jsx-runtime": ["./src/runtime/jsx-runtime.ts"],
-      "pavouk/hooks": ["./src/runtime/hooks.ts"],
-      "preact/hooks": ["./src/runtime/hooks.ts"]
+      "pavouk/jsx-runtime": ["./packages/pavouk/src/runtime/jsx-runtime.ts"],
+      "pavouk/jsx-dev-runtime": ["./packages/pavouk/src/runtime/jsx-runtime.ts"],
+      "pavouk/hooks": ["./packages/pavouk/src/runtime/hooks.ts"],
+      "preact/hooks": ["./packages/pavouk/src/runtime/hooks.ts"]
     }
   }
 }

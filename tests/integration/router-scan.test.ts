@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import path from "path";
-import { scanRoutes } from "../../src/router";
+import { scanRoutes } from "../../packages/pavouk/src/router";
 
 const fixturePages = path.join(import.meta.dir, "../fixture/src/pages");
 

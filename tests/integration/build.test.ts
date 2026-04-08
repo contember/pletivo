@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
 import fs from "fs/promises";
-import { build } from "../../src/build";
-import type { PavoukConfig } from "../../src/config";
+import { build } from "../../packages/pavouk/src/build";
+import type { PavoukConfig } from "../../packages/pavouk/src/config";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
 const distDir = path.join(fixtureRoot, "dist");

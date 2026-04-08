@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseRoute, matchRoute, routeToOutputPath, findRoute } from "../../src/router";
+import { parseRoute, matchRoute, routeToOutputPath, findRoute } from "../../packages/pavouk/src/router";
 
 describe("parseRoute", () => {
   test("static index page", () => {

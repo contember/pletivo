@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
-import { dev } from "../../src/dev";
+import { dev } from "../../packages/pavouk/src/dev";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
 const PORT = 4567 + Math.floor(Math.random() * 1000);
@@ -11,7 +11,7 @@ let serverProcess: ReturnType<typeof Bun.spawn>;
 beforeAll(async () => {
   // Start dev server as a subprocess to avoid blocking
   serverProcess = Bun.spawn(
-    ["bun", "run", path.join(import.meta.dir, "../../src/cli.ts"), "dev", String(PORT)],
+    ["bun", "run", path.join(import.meta.dir, "../../packages/pavouk/src/cli.ts"), "dev", String(PORT)],
     { cwd: fixtureRoot, stdout: "pipe", stderr: "pipe" },
   );
 

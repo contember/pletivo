@@ -4,7 +4,7 @@ import {
   getUsedIslands,
   registerIsland,
   renderIslandWrapper,
-} from "../../src/runtime/island";
+} from "../../packages/pavouk/src/runtime/island";
 
 describe("island registry", () => {
   beforeEach(() => {

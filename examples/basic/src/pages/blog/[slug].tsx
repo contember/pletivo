@@ -1,5 +1,5 @@
-import { getCollection } from "../../../../src/content/collection";
-import type { CollectionEntry } from "../../../../src/content/collection";
+import { getCollection } from "../../../../../packages/pavouk/src/content/collection";
+import type { CollectionEntry } from "../../../../../packages/pavouk/src/content/collection";
 import Layout from "../../components/Layout";
 
 export async function getStaticPaths() {

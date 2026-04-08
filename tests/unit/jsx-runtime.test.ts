@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { jsx, jsxs, jsxDEV, Fragment, type HtmlString } from "../../src/runtime/jsx-runtime";
-import { resetIslandRegistry, getUsedIslands } from "../../src/runtime/island";
+import { jsx, jsxs, jsxDEV, Fragment, type HtmlString } from "../../packages/pavouk/src/runtime/jsx-runtime";
+import { resetIslandRegistry, getUsedIslands } from "../../packages/pavouk/src/runtime/island";
 
 function html(result: HtmlString | Promise<HtmlString>): string {
   if (result instanceof Promise) throw new Error("Unexpected promise");

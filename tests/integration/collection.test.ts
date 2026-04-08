@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import path from "path";
-import { initCollections, getCollection, getEntry } from "../../src/content/collection";
+import { initCollections, getCollection, getEntry } from "../../packages/pavouk/src/content/collection";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
 

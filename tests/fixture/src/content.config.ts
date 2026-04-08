@@ -1,4 +1,4 @@
-import { defineCollection, z } from "../../../src/content/collection";
+import { defineCollection, z } from "../../../packages/pavouk/src/content/collection";
 
 export const collections = {
   blog: defineCollection({
