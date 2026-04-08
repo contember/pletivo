@@ -1,5 +1,7 @@
 import tsxPages, { type TsxPagesOptions } from "@pavouk/astro-jsx-pages";
 import { pavoukCompatPlugin } from "./vite-plugin";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import type { AstroIntegration } from "astro";
 
 export interface PavoukAstroOptions {
@@ -48,6 +50,11 @@ export default function pavoukAstro(options: PavoukAstroOptions = {}): AstroInte
             resolve: {
               alias: {
                 "pavouk/hooks": "preact/hooks",
+                // Redirect `import { getCollection } from "pavouk"` to content shim
+                "pavouk": path.resolve(
+                  path.dirname(fileURLToPath(import.meta.url)),
+                  "content-shim.ts",
+                ),
               },
             },
           },

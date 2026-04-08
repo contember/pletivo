@@ -10,11 +10,15 @@ export interface CollectionConfig {
   transform?: (html: string, data: Record<string, unknown>) => string;
 }
 
+export interface RenderResult {
+  html: string;
+}
+
 export interface CollectionEntry<T = Record<string, unknown>> {
   id: string;
   data: T;
   body: string;
-  html: string;
+  render(): Promise<RenderResult>;
 }
 
 /**
@@ -128,7 +132,7 @@ async function loadCollection(config: CollectionConfig, name: string): Promise<C
       id,
       data: result.data as Record<string, unknown>,
       body: parsed.body,
-      html,
+      render: async () => ({ html }),
     });
   }
 

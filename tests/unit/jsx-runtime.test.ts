@@ -243,6 +243,35 @@ describe("island detection", () => {
     resetIslandRegistry();
     expect(html(jsx(W, { client: "media(max-width: 768px)",  }))).toContain('data-hydrate="media(max-width: 768px)"');
   });
+
+  test("Astro client:load syntax triggers island", () => {
+    function MyIsland(props: { count: number }) {
+      return jsx("button", { children: String(props.count) });
+    }
+    const h = html(jsx(MyIsland, { "client:load": true, count: 3 }));
+    expect(h).toContain("<pavouk-island");
+    expect(h).toContain('data-hydrate="load"');
+    expect(h).toContain("<button>3</button>");
+    expect(h).not.toContain("client:load");
+  });
+
+  test("Astro client:idle syntax", () => {
+    function W() { return jsx("div", { children: "w" }); }
+    const h = html(jsx(W, { "client:idle": true }));
+    expect(h).toContain('data-hydrate="idle"');
+  });
+
+  test("Astro client:visible syntax", () => {
+    function W() { return jsx("div", { children: "w" }); }
+    const h = html(jsx(W, { "client:visible": true }));
+    expect(h).toContain('data-hydrate="visible"');
+  });
+
+  test("Astro client:media syntax with value", () => {
+    function W() { return jsx("div", { children: "w" }); }
+    const h = html(jsx(W, { "client:media": "max-width: 768px" }));
+    expect(h).toContain('data-hydrate="media(max-width: 768px)"');
+  });
 });
 
 describe("event handler props", () => {

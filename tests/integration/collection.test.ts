@@ -20,7 +20,7 @@ describe("content collections", () => {
       expect(post.id).toBeTypeOf("string");
       expect(post.data).toBeTypeOf("object");
       expect(post.body).toBeTypeOf("string");
-      expect(post.html).toBeTypeOf("string");
+      expect(post.render).toBeTypeOf("function");
       expect(post.data.title).toBeTypeOf("string");
       expect(post.data.date).toBeInstanceOf(Date);
     }
@@ -49,10 +49,11 @@ describe("content collections", () => {
     expect(post!.data.draft).toBe(true);
   });
 
-  test("HTML is rendered from markdown body", async () => {
+  test("render() returns HTML from markdown body", async () => {
     const post = await getEntry("blog", "post-one");
-    expect(post!.html).toContain("<h1>First Post</h1>");
-    expect(post!.html).toContain("<strong>first</strong>");
+    const { html } = await post!.render();
+    expect(html).toContain("<h1>First Post</h1>");
+    expect(html).toContain("<strong>first</strong>");
   });
 
   test("getCollection with filter", async () => {

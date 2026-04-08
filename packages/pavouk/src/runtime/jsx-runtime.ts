@@ -49,7 +49,7 @@ function renderAttrs(props: Props): string {
   let result = "";
   for (const [key, value] of Object.entries(props)) {
     if (key === "children" || key === "key" || key === "ref") continue;
-    if (key === "client") continue;
+    if (isClientDirectiveKey(key)) continue;
     if (value == null || value === false) continue;
     if (key === "dangerouslySetInnerHTML") continue;
     // Skip event handlers (on*) — they only work on the client
@@ -84,9 +84,10 @@ export function jsx(
   props: Props,
 ): HtmlString | Promise<HtmlString> {
   if (typeof tag === "function") {
-    // Island detection: if `client` prop is present, render as island
-    if (props.client && typeof props.client === "string") {
-      return renderIsland(tag, props);
+    // Island detection: client="load" or client:load syntax
+    const hydrate = getClientDirective(props);
+    if (hydrate) {
+      return renderIsland(tag, props, hydrate);
     }
 
     const result = tag(props);
@@ -134,21 +135,51 @@ export function Fragment(
   return createHtml(inner);
 }
 
+const CLIENT_DIRECTIVE_KEYS = ["client:load", "client:idle", "client:visible", "client:media", "client:only"] as const;
+
+/**
+ * Detect client hydration directive from props.
+ * Supports both pavouk syntax (client="load") and Astro syntax (client:load).
+ */
+function getClientDirective(props: Props): string | null {
+  // Pavouk syntax: client="load"
+  if (props.client && typeof props.client === "string") {
+    return props.client;
+  }
+  // Astro syntax: client:load, client:idle, etc.
+  for (const key of CLIENT_DIRECTIVE_KEYS) {
+    if (key in props) {
+      const strategy = key.split(":")[1];
+      const value = props[key];
+      if (strategy === "media" && typeof value === "string") {
+        return `media(${value})`;
+      }
+      return strategy;
+    }
+  }
+  return null;
+}
+
+/** Check if a prop key is a client directive (to exclude from component props) */
+function isClientDirectiveKey(key: string): boolean {
+  return key === "client" || key.startsWith("client:");
+}
+
 /**
  * Render a component as an island with hydration marker.
- * Component name is auto-detected from function.name — no need for __islandName.
+ * Component name is auto-detected from function.name.
  */
 function renderIsland(
   tag: (props: Props) => HtmlString | string | Promise<HtmlString | string>,
   props: Props,
+  hydrate: string,
 ): HtmlString {
-  const hydrate = props.client as string;
   const componentName = tag.name || "anonymous";
 
   // Extract component props (without island-specific ones)
   const componentProps: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(props)) {
-    if (key === "client" || key === "children") continue;
+    if (isClientDirectiveKey(key) || key === "children") continue;
     componentProps[key] = value;
   }
 
