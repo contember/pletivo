@@ -1,0 +1,14 @@
+{
+  "name": "pavouk-astro",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic/astro-jsx-pages": "workspace:*"
+  },
+  "peerDependencies": {
+    "astro": "^5.0.0 || ^6.0.0"
+  }
+}
