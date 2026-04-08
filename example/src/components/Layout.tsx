@@ -12,6 +12,8 @@ export default function Layout(props: { title: string; children?: unknown }) {
           <a href="/">Home</a>
           {" | "}
           <a href="/about">About</a>
+          {" | "}
+          <a href="/blog">Blog</a>
         </nav>
         <main>
           {props.children}
