@@ -84,14 +84,18 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
         return null;
       }
 
-      // Inject scripts
+      // Inject dev stylesheet link + HMR / hydration scripts. The stylesheet
+      // link is emitted unconditionally — buildCss's Tailwind pipeline runs
+      // per-request, so even projects without a manual <link> get styles.
+      const styleLink = `<link rel="stylesheet" href="/__styles.css">`;
       const scripts = hmrClientScript + (getUsedIslands().size > 0 ? "\n" + hydrationScript : "");
+      const headInjection = styleLink + "\n" + scripts;
       if (html.includes("</head>")) {
-        html = html.replace("</head>", scripts + "\n</head>");
+        html = html.replace("</head>", headInjection + "\n</head>");
       } else if (html.includes("</body>")) {
-        html = html.replace("</body>", scripts + "\n</body>");
+        html = html.replace("</body>", headInjection + "\n</body>");
       } else {
-        html += scripts;
+        html += headInjection;
       }
 
       if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
