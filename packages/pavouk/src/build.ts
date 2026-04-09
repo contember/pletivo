@@ -5,6 +5,7 @@ import { initCollections } from "./content/collection";
 import { resetIslandRegistry } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
+import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
 import type { PavoukConfig } from "./config";
 
@@ -28,12 +29,10 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   await fs.rm(distDir, { recursive: true, force: true });
   await fs.mkdir(distDir, { recursive: true });
 
-  // Copy public/ into dist/
-  try {
-    await copyDir(publicDir, distDir);
-  } catch {
-    // no public dir
-  }
+  // Copy public/ into dist/, hashing assets on the way.
+  // Returns a manifest of original → hashed paths, used below to rewrite
+  // references inside rendered HTML.
+  const publicManifest = await hashPublicAssets(publicDir, distDir);
 
   // Bundle CSS from src/
   const cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
@@ -98,14 +97,14 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   let totalSize = 0;
   await Promise.all(
     results.map(async (result) => {
-      const size = await writeHtml(result.outPath, result.html, base, cssPath);
+      const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest);
       totalSize += size;
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
     }),
   );
 
   // Build custom 404 page
-  await build404(pagesDir, distDir, base, cssPath);
+  await build404(pagesDir, distDir, base, cssPath, publicManifest);
 
   // Detect islands from rendered HTML
   const islandNames = new Set<string>();
@@ -156,10 +155,16 @@ async function writeHtml(
   html: string,
   base: string,
   cssPath: string | null,
+  publicManifest: Map<string, string>,
 ): Promise<number> {
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
     html = "<!DOCTYPE html>\n" + html;
   }
+
+  // Rewrite references to hashed public assets (e.g. /style.css → /style.abc123.css).
+  // Done before CSS/island injection so the injected tags (which use already-hashed
+  // paths from bundleCss) are not double-rewritten.
+  html = rewriteRefs(html, publicManifest);
 
   if (cssPath && html.includes("</head>")) {
     html = html.replace("</head>", `<link rel="stylesheet" href="${base}${cssPath}">\n</head>`);
@@ -181,7 +186,7 @@ async function writeHtml(
   return bytes;
 }
 
-async function build404(pagesDir: string, distDir: string, base: string, cssPath: string | null) {
+async function build404(pagesDir: string, distDir: string, base: string, cssPath: string | null, publicManifest: Map<string, string>) {
   for (const ext of [".tsx", ".jsx"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
@@ -192,7 +197,7 @@ async function build404(pagesDir: string, distDir: string, base: string, cssPath
         const html = await renderComponent(mod.default, {});
         if (html) {
           const outPath = path.join(distDir, "404.html");
-          await writeHtml(outPath, html, base, cssPath);
+          await writeHtml(outPath, html, base, cssPath, publicManifest);
           console.log(`  404.tsx → 404.html`);
         }
       }
@@ -304,16 +309,3 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function copyDir(src: string, dest: string) {
-  const entries = await fs.readdir(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      await fs.mkdir(destPath, { recursive: true });
-      await copyDir(srcPath, destPath);
-    } else {
-      await fs.copyFile(srcPath, destPath);
-    }
-  }
-}
