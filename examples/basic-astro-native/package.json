@@ -1,0 +1,13 @@
+{
+  "name": "@pavouk-examples/basic-astro-native",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pavouk dev",
+    "build": "pavouk build"
+  },
+  "dependencies": {
+    "pavouk": "workspace:*",
+    "@astrojs/compiler": "^3"
+  }
+}

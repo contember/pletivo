@@ -7,6 +7,7 @@ import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
+import { registerAstroPlugin } from "./astro-plugin";
 import type { PavoukConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 
@@ -34,6 +35,7 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
   const sockets = new Set<ServerWebSocket<unknown>>();
   let moduleVersion = 0;
 
+  await registerAstroPlugin();
   await initCollections(projectRoot);
   let routes = await scanRoutes(pagesDir);
 
@@ -96,7 +98,7 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
   }
 
   async function render404(): Promise<string | null> {
-    for (const ext of [".tsx", ".jsx"]) {
+    for (const ext of [".tsx", ".jsx", ".astro"]) {
       const fullPath = path.join(pagesDir, `404${ext}`);
       if (fs.existsSync(fullPath)) {
         try {

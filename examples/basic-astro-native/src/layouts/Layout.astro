@@ -1,0 +1,20 @@
+---
+export interface Props {
+  title: string;
+}
+const { title } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <header><a href="/">Home</a> · <a href="/about">About</a></header>
+    <main>
+      <slot />
+    </main>
+    <footer>Built with pavouk</footer>
+  </body>
+</html>

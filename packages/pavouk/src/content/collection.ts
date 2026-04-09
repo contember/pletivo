@@ -15,6 +15,33 @@ export interface Loader {
   load(projectRoot: string): Promise<RawEntry[]>;
 }
 
+/**
+ * Reference marker returned by `reference(collectionName)`. Passed through
+ * Zod as a pass-through schema — validation stores the id string, and
+ * `getEntry(ref)` resolves it to the actual entry at runtime.
+ */
+export interface Reference {
+  collection: string;
+  id: string;
+  __pavoukReference: true;
+}
+
+/**
+ * Astro-compatible `reference()`. Returns a Zod schema that accepts a string
+ * id (or an object with `{ id, collection }`) and stores it as a Reference
+ * marker. `getEntry(ref)` resolves the marker to the target entry.
+ */
+export function reference(collectionName: string): z.ZodType<Reference> {
+  return z
+    .union([z.string(), z.object({ id: z.string(), collection: z.string() })])
+    .transform((value): Reference => {
+      if (typeof value === "string") {
+        return { collection: collectionName, id: value, __pavoukReference: true };
+      }
+      return { collection: value.collection, id: value.id, __pavoukReference: true };
+    });
+}
+
 export interface CollectionConfig {
   /** Loader that provides raw entries. Use glob() for file-based collections. */
   loader?: Loader;
@@ -49,6 +76,12 @@ export interface GlobOptions {
 /**
  * File-based loader — scans a directory for content files.
  * Compatible with Astro's glob() loader pattern.
+ *
+ * Supported extensions:
+ *  - `.md`, `.mdx` → markdown parse (MDX falls back to markdown for MVP;
+ *    inline JSX is left as raw text)
+ *  - `.json` → JSON.parse as frontmatter, empty body
+ *  - `.yaml`, `.yml` → YAML parse as frontmatter, empty body
  */
 export function glob(options: GlobOptions): Loader {
   return {
@@ -60,19 +93,166 @@ export function glob(options: GlobOptions): Loader {
       for await (const file of globPattern.scan(dir)) {
         const fullPath = path.join(dir, file);
         const content = await Bun.file(fullPath).text();
-        const parsed = parseMarkdown(content);
-        const id = file.replace(/\.md$/, "").replace(/\//g, "-");
+        const ext = path.extname(file).toLowerCase();
+        const id = file
+          .replace(/\.(md|mdx|json|ya?ml)$/i, "")
+          .replace(/\//g, "-");
 
-        entries.push({
-          id,
-          body: parsed.body,
-          data: { ...parsed.frontmatter, _html: parsed.html },
-        });
+        if (ext === ".json") {
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(content);
+          } catch (e) {
+            console.error(`  JSON parse error in ${file}: ${(e as Error).message}`);
+            continue;
+          }
+          entries.push({ id, body: "", data });
+        } else if (ext === ".yaml" || ext === ".yml") {
+          const data = parseSimpleYaml(content);
+          entries.push({ id, body: "", data });
+        } else {
+          // .md / .mdx
+          const parsed = parseMarkdown(content);
+          entries.push({
+            id,
+            body: parsed.body,
+            data: { ...parsed.frontmatter, _html: parsed.html },
+          });
+        }
       }
 
       return entries;
     },
   };
+}
+
+/**
+ * Minimal YAML subset parser for content frontmatter. Supports scalars,
+ * nested maps, sequences of scalars/maps, and quoted strings. Complex
+ * features (anchors, multiline strings, flow mappings) are not supported —
+ * convert to JSON for those.
+ */
+function parseSimpleYaml(input: string): Record<string, unknown> {
+  interface Line {
+    indent: number;
+    text: string;
+  }
+  const rawLines = input.split(/\r?\n/);
+  const lines: Line[] = [];
+  for (const l of rawLines) {
+    if (/^\s*#/.test(l) || l.trim() === "") continue;
+    const indent = l.match(/^\s*/)![0].length;
+    lines.push({ indent, text: l.slice(indent) });
+  }
+
+  const coerce = (raw: string): unknown => {
+    const s = raw.trim();
+    if (s === "" || s === "null" || s === "~") return null;
+    if (s === "true") return true;
+    if (s === "false") return false;
+    if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+      return s.slice(1, -1);
+    }
+    return s;
+  };
+
+  let i = 0;
+  const parseBlock = (parentIndent: number): unknown => {
+    // Determine if this block is a sequence or a mapping
+    if (i >= lines.length) return {};
+    const first = lines[i];
+    if (first.text.startsWith("- ") || first.text === "-") {
+      // Sequence
+      const arr: unknown[] = [];
+      const blockIndent = first.indent;
+      while (i < lines.length && lines[i].indent === blockIndent && (lines[i].text.startsWith("- ") || lines[i].text === "-")) {
+        const itemText = lines[i].text === "-" ? "" : lines[i].text.slice(2);
+        if (itemText === "") {
+          i++;
+          arr.push(parseBlock(blockIndent));
+          continue;
+        }
+        const kv = itemText.match(/^([\w.-]+):\s*(.*)$/);
+        if (kv) {
+          // Inline map item: `- key: value` (possibly followed by more keys at deeper indent)
+          const obj: Record<string, unknown> = {};
+          if (kv[2] !== "") {
+            obj[kv[1]] = coerce(kv[2]);
+            i++;
+          } else {
+            i++;
+            if (i < lines.length && lines[i].indent > blockIndent) {
+              obj[kv[1]] = parseBlock(lines[i].indent);
+            } else {
+              obj[kv[1]] = null;
+            }
+          }
+          // Collect additional sibling keys at (blockIndent + 2)
+          while (
+            i < lines.length &&
+            lines[i].indent === blockIndent + 2 &&
+            !lines[i].text.startsWith("- ")
+          ) {
+            const more = lines[i].text.match(/^([\w.-]+):\s*(.*)$/);
+            if (!more) break;
+            if (more[2] !== "") {
+              obj[more[1]] = coerce(more[2]);
+              i++;
+            } else {
+              i++;
+              if (i < lines.length && lines[i].indent > blockIndent + 2) {
+                obj[more[1]] = parseBlock(lines[i].indent);
+              } else {
+                obj[more[1]] = null;
+              }
+            }
+          }
+          arr.push(obj);
+        } else {
+          arr.push(coerce(itemText));
+          i++;
+        }
+      }
+      return arr;
+    }
+    // Mapping
+    const obj: Record<string, unknown> = {};
+    const blockIndent = first.indent;
+    while (i < lines.length && lines[i].indent === blockIndent) {
+      const text = lines[i].text;
+      if (text.startsWith("- ")) break;
+      const kv = text.match(/^([\w.-]+):\s*(.*)$/);
+      if (!kv) {
+        i++;
+        continue;
+      }
+      const [, key, value] = kv;
+      if (value === "") {
+        i++;
+        if (i < lines.length && lines[i].indent > blockIndent) {
+          obj[key] = parseBlock(lines[i].indent);
+        } else {
+          obj[key] = null;
+        }
+      } else if (value === "[]") {
+        obj[key] = [];
+        i++;
+      } else if (value === "{}") {
+        obj[key] = {};
+        i++;
+      } else {
+        obj[key] = coerce(value);
+        i++;
+      }
+    }
+    return obj;
+  };
+
+  const result = parseBlock(-1);
+  return (result && typeof result === "object" && !Array.isArray(result))
+    ? (result as Record<string, unknown>)
+    : {};
 }
 
 // ── defineCollection ──
@@ -135,12 +315,39 @@ export async function getCollection<T = Record<string, unknown>>(
   return entries;
 }
 
+/**
+ * Astro-compatible `render(entry)` helper. Returns `{ Content }` where
+ * `Content` is a component that emits the entry's pre-rendered HTML body.
+ *
+ * For MVP: MDX files are loaded as plain markdown, so custom MDX components
+ * (`<Banner>`, `<Gallery>`, …) inside bodies are dropped or escaped. A
+ * future pavouk MDX plugin can replace this.
+ */
+export async function render(
+  entry: CollectionEntry | null | undefined,
+): Promise<{ Content: () => { __html: string }; headings: unknown[]; remarkPluginFrontmatter: Record<string, unknown> }> {
+  const result = entry ? await entry.render() : { html: "" };
+  const Content = () => ({ __html: result.html });
+  return { Content, headings: [], remarkPluginFrontmatter: {} };
+}
+
 export async function getEntry<T = Record<string, unknown>>(
-  name: string,
-  id: string,
+  nameOrRef: string | Reference | { collection: string; id: string } | undefined | null,
+  id?: string,
 ): Promise<CollectionEntry<T> | undefined> {
-  const entries = await getCollection<T>(name);
-  return entries.find((e) => e.id === id);
+  if (nameOrRef == null) return undefined;
+  let collectionName: string;
+  let entryId: string;
+  if (typeof nameOrRef === "string") {
+    if (id === undefined) return undefined;
+    collectionName = nameOrRef;
+    entryId = id;
+  } else {
+    collectionName = nameOrRef.collection;
+    entryId = nameOrRef.id;
+  }
+  const entries = await getCollection<T>(collectionName);
+  return entries.find((e) => e.id === entryId);
 }
 
 // ── Internal ──

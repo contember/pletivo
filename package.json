@@ -2,10 +2,11 @@
   "private": true,
   "workspaces": ["packages/*", "examples/*"],
   "devDependencies": {
+    "@astrojs/compiler": "3.0.1",
+    "@pavouk/astro-jsx-pages": "workspace:*",
     "pavouk": "workspace:*",
     "pavouk-astro": "workspace:*",
-    "@pavouk/astro-jsx-pages": "workspace:*",
-    "zod": "^4",
-    "preact": "^10"
+    "preact": "^10",
+    "zod": "^4"
   }
 }

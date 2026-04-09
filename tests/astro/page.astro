@@ -1,0 +1,13 @@
+---
+import Layout from "./Layout.astro";
+const posts = [
+  { id: 1, title: "First post" },
+  { id: 2, title: "Second post" },
+];
+---
+<Layout title="Blog">
+  <h1>My Blog</h1>
+  <ul>
+    {posts.map(p => <li><a href={`/posts/${p.id}`}>{p.title}</a></li>)}
+  </ul>
+</Layout>

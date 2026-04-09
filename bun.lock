@@ -4,6 +4,7 @@
   "workspaces": {
     "": {
       "devDependencies": {
+        "@astrojs/compiler": "3.0.1",
         "@pavouk/astro-jsx-pages": "workspace:*",
         "pavouk": "workspace:*",
         "pavouk-astro": "workspace:*",
@@ -21,6 +22,13 @@
       "name": "@pavouk-examples/basic-astro",
       "dependencies": {
         "astro": "^5.0.0",
+      },
+    },
+    "examples/basic-astro-native": {
+      "name": "@pavouk-examples/basic-astro-native",
+      "dependencies": {
+        "@astrojs/compiler": "^3",
+        "pavouk": "workspace:*",
       },
     },
     "packages/astro-jsx-pages": {
@@ -60,6 +68,12 @@
         "preact": "^10.29.1",
         "zod": "^4.3.6",
       },
+      "peerDependencies": {
+        "@astrojs/compiler": "^2 || ^3",
+      },
+      "optionalPeers": [
+        "@astrojs/compiler",
+      ],
     },
     "packages/pavouk-astro": {
       "name": "pavouk-astro",
@@ -73,7 +87,7 @@
     },
   },
   "packages": {
-    "@astrojs/compiler": ["@astrojs/compiler@2.13.1", "", {}, "sha512-f3FN83d2G/v32ipNClRKgYv30onQlMZX1vCeZMjPsMMPl1mDpmbl0+N5BYo4S/ofzqJyS5hvwacEo0CCVDn/Qg=="],
+    "@astrojs/compiler": ["@astrojs/compiler@3.0.1", "", {}, "sha512-z97oYbdebO5aoWzuJ/8q5hLK232+17KcLZ7cJ8BCWk6+qNzVxn/gftC0KzMBUTD8WAaBkPpNSQK6PXLnNrZ0CA=="],
 
     "@astrojs/internal-helpers": ["@astrojs/internal-helpers@0.7.6", "", {}, "sha512-GOle7smBWKfMSP8osUIGOlB5kaHdQLV3foCsf+5Q9Wsuu+C6Fs3Ez/ttXmhjZ1HkSgsogcM1RXSjjOVieHq16Q=="],
 
@@ -244,6 +258,8 @@
     "@pavouk-examples/basic": ["@pavouk-examples/basic@workspace:examples/basic"],
 
     "@pavouk-examples/basic-astro": ["@pavouk-examples/basic-astro@workspace:examples/basic-astro"],
+
+    "@pavouk-examples/basic-astro-native": ["@pavouk-examples/basic-astro-native@workspace:examples/basic-astro-native"],
 
     "@pavouk/astro-jsx-pages": ["@pavouk/astro-jsx-pages@workspace:packages/astro-jsx-pages"],
 
@@ -898,6 +914,8 @@
     "ansi-align/string-width": ["string-width@4.2.3", "", { "dependencies": { "emoji-regex": "^8.0.0", "is-fullwidth-code-point": "^3.0.0", "strip-ansi": "^6.0.1" } }, "sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g=="],
 
     "anymatch/picomatch": ["picomatch@2.3.2", "", {}, "sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA=="],
+
+    "astro/@astrojs/compiler": ["@astrojs/compiler@2.13.1", "", {}, "sha512-f3FN83d2G/v32ipNClRKgYv30onQlMZX1vCeZMjPsMMPl1mDpmbl0+N5BYo4S/ofzqJyS5hvwacEo0CCVDn/Qg=="],
 
     "astro/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 

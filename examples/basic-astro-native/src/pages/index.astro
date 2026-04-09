@@ -1,0 +1,12 @@
+---
+import Layout from "../layouts/Layout.astro";
+const items = ["one", "two", "three"];
+---
+<Layout title="Home">
+  <h1>Hello from .astro in pavouk — edited!</h1>
+  <p>This file is a native <code>.astro</code> component compiled by <code>@astrojs/compiler</code> and rendered through pavouk's runtime shim.</p>
+  <ul>
+    {items.map(i => <li>{i}</li>)}
+  </ul>
+  <Fragment set:html={"<p><strong>Raw HTML</strong> via set:html</p>"} />
+</Layout>

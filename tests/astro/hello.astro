@@ -1,0 +1,19 @@
+---
+export interface Props {
+  name?: string;
+}
+const { name = "world" } = Astro.props;
+const items = ["apple", "banana", "cherry"];
+---
+<html lang="en">
+  <head>
+    <title>Hello {name}</title>
+  </head>
+  <body>
+    <h1>Hello, {name}!</h1>
+    <ul>
+      {items.map(i => <li>{i}</li>)}
+    </ul>
+    <Fragment set:html={"<p>raw <em>html</em></p>"} />
+  </body>
+</html>

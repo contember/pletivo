@@ -7,6 +7,7 @@ import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
+import { registerAstroPlugin } from "./astro-plugin";
 import type { PavoukConfig } from "./config";
 
 interface PageResult {
@@ -23,6 +24,7 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   const islandsDir = path.join(projectRoot, config.srcDir, "islands");
   const base = config.base.replace(/\/$/, "");
 
+  await registerAstroPlugin();
   await initCollections(projectRoot);
 
   // Clean dist
@@ -42,7 +44,9 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   console.log(`Found ${routes.length} routes`);
 
   // Render all pages — static pages in parallel, dynamic sequentially
-  const staticRoutes = routes.filter((r) => !r.isDynamic && r.file !== "404.tsx" && r.file !== "404.jsx");
+  const staticRoutes = routes.filter(
+    (r) => !r.isDynamic && r.file !== "404.tsx" && r.file !== "404.jsx" && r.file !== "404.astro",
+  );
   const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
   const results: PageResult[] = [];
@@ -187,7 +191,7 @@ async function writeHtml(
 }
 
 async function build404(pagesDir: string, distDir: string, base: string, cssPath: string | null, publicManifest: Map<string, string>) {
-  for (const ext of [".tsx", ".jsx"]) {
+  for (const ext of [".tsx", ".jsx", ".astro"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
     if (await file.exists()) {
@@ -198,7 +202,7 @@ async function build404(pagesDir: string, distDir: string, base: string, cssPath
         if (html) {
           const outPath = path.join(distDir, "404.html");
           await writeHtml(outPath, html, base, cssPath, publicManifest);
-          console.log(`  404.tsx → 404.html`);
+          console.log(`  404${ext} → 404.html`);
         }
       }
       break;
