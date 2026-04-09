@@ -8,6 +8,7 @@ import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
 import { registerAstroPlugin } from "./astro-plugin";
+import { initAstroHost, dispatchMiddlewares, getHost } from "./astro-host";
 import type { PavoukConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 
@@ -36,6 +37,7 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
   let moduleVersion = 0;
 
   await registerAstroPlugin();
+  const astroHost = await initAstroHost(projectRoot, "dev");
   await initCollections(projectRoot);
   let routes = await scanRoutes(pagesDir);
 
@@ -43,7 +45,11 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  async function renderPage(route: Route, params: Record<string, string>): Promise<string | null> {
+  async function renderPage(
+    route: Route,
+    params: Record<string, string>,
+    pathname: string = "/",
+  ): Promise<string | null> {
     const fullPath = path.join(pagesDir, route.file);
 
     try {
@@ -84,12 +90,20 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
         return null;
       }
 
-      // Inject dev stylesheet link + HMR / hydration scripts. The stylesheet
-      // link is emitted unconditionally — buildCss's Tailwind pipeline runs
-      // per-request, so even projects without a manual <link> get styles.
+      // Inject dev stylesheet link + HMR / hydration scripts + any
+      // integration-injected scripts (`injectScript('page', code)` from
+      // Astro integrations). The stylesheet link is emitted unconditionally —
+      // buildCss's Tailwind pipeline runs per-request, so even projects
+      // without a manual <link> get styles.
       const styleLink = `<link rel="stylesheet" href="/__styles.css">`;
       const scripts = hmrClientScript + (getUsedIslands().size > 0 ? "\n" + hydrationScript : "");
-      const headInjection = styleLink + "\n" + scripts;
+      const integrationScripts = astroHost
+        ? [
+            ...astroHost.injectedHeadScripts.map((s) => `<script>${s}</script>`),
+            ...astroHost.injectedPageScripts.map((s) => `<script type="module">${s}</script>`),
+          ].join("\n")
+        : "";
+      const headInjection = styleLink + "\n" + scripts + (integrationScripts ? "\n" + integrationScripts : "");
       if (html.includes("</head>")) {
         html = html.replace("</head>", headInjection + "\n</head>");
       } else if (html.includes("</body>")) {
@@ -100,6 +114,13 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
 
       if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
         html = "<!DOCTYPE html>\n" + html;
+      }
+
+      // Run registered Vite plugins' transformIndexHtml hooks. Nua CMS
+      // relies on this being available even if it currently calls its own
+      // html-processor from middleware instead.
+      if (astroHost) {
+        html = await astroHost.server.transformIndexHtml(pathname, html);
       }
 
       return html;
@@ -140,10 +161,49 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
     async fetch(req, server) {
       const url = new URL(req.url);
 
-      // WebSocket upgrade for HMR
+      // WebSocket upgrade for HMR — must bypass middleware chain
       if (url.pathname === "/__hmr") {
         if (server.upgrade(req)) return;
         return new Response("WebSocket upgrade failed", { status: 500 });
+      }
+
+      // Route the request through the Astro integration middleware chain.
+      // If a middleware ends the response itself (e.g. CMS API handler),
+      // that Response is returned. Otherwise the chain exhausts and
+      // `pavoukHandler` runs — integration middlewares that wrapped
+      // res.write/res.end (e.g. CMS HTML marker) then see the page HTML
+      // on its way out.
+      if (astroHost) {
+        const response = await dispatchMiddlewares(
+          req,
+          astroHost.server.__middlewares,
+          () => pavoukHandler(req, url),
+        );
+        if (response) return response;
+      }
+
+      return (await pavoukHandler(req, url)) ?? new Response("Not Found", { status: 404 });
+    },
+
+    websocket: {
+      open(ws) { sockets.add(ws); },
+      close(ws) { sockets.delete(ws); },
+      message() {},
+    },
+  });
+
+  async function pavoukHandler(req: Request, url: URL): Promise<Response | null> {
+    {
+      // Serve the morphdom ESM bundle for the HMR client's lazy import
+      if (url.pathname === "/__pavouk/morphdom.js") {
+        try {
+          const morphdomPath = require.resolve("morphdom/dist/morphdom-esm.js");
+          return new Response(Bun.file(morphdomPath), {
+            headers: { "Content-Type": "application/javascript; charset=utf-8" },
+          });
+        } catch {
+          return new Response("morphdom not installed", { status: 500 });
+        }
       }
 
       // Serve bundled CSS from src/ on-the-fly
@@ -220,11 +280,35 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
       const pathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/$/, "");
       const match = findRoute(routes, pathname);
       if (match) {
-        const html = await renderPage(match.route, match.params);
+        const html = await renderPage(match.route, match.params, pathname);
         if (html !== null) {
           return new Response(html, {
             headers: { "Content-Type": "text/html; charset=utf-8" },
           });
+        }
+      }
+
+      // Virtual-URL requests (e.g. `/@nuasite/cms-editor.js`) are served
+      // by asking each registered Astro-integration Vite plugin to
+      // resolveId → load the path. This is how Vite serves plugin-owned
+      // HTTP endpoints in Astro dev.
+      if (astroHost && /^(\/@|\/virtual:)/.test(url.pathname)) {
+        for (const p of astroHost.server.__plugins) {
+          const resolveId = (p as { resolveId?: (id: string) => unknown }).resolveId;
+          const load = (p as { load?: (id: string) => unknown }).load;
+          if (typeof resolveId !== "function" || typeof load !== "function") continue;
+          try {
+            const resolved = await resolveId(url.pathname);
+            if (typeof resolved !== "string") continue;
+            const loaded = await load(resolved);
+            if (loaded == null) continue;
+            const code = typeof loaded === "string" ? loaded : (loaded as { code: string }).code;
+            return new Response(code, {
+              headers: { "Content-Type": "application/javascript; charset=utf-8" },
+            });
+          } catch {
+            // try next plugin
+          }
         }
       }
 
@@ -238,18 +322,12 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
       }
 
       return new Response("Not Found", { status: 404 });
-    },
-
-    websocket: {
-      open(ws) { sockets.add(ws); },
-      close(ws) { sockets.delete(ws); },
-      message() {},
-    },
-  });
+    }
+  }
 
   // Watch for file changes
   const srcDir = path.join(projectRoot, config.srcDir);
-  const watcher = watch(srcDir, { recursive: true }, async (_event, filename) => {
+  const watcher = watch(srcDir, { recursive: true }, async (event, filename) => {
     if (!filename) return;
     // Skip tmp files
     if (filename.includes("_tmp_")) return;
@@ -264,15 +342,31 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
       routes = await scanRoutes(pagesDir);
     }
 
+    // Forward to Astro host watcher — integrations like Nua CMS subscribe
+    // to `change` / `add` / `unlink` events on `server.watcher`.
+    if (astroHost) {
+      const absPath = path.join(srcDir, filename);
+      const viteEvent = event === "rename" ? "change" : "change";
+      astroHost.server.watcher.emit(viteEvent, absPath);
+    }
+
+    // Classify the change so the HMR client can do the cheapest update:
+    //  - .css → hot-swap the stylesheet (no reload, no morph)
+    //  - anything else → fetch new HTML + morphdom patch
+    //  - hard reload is the fallback if the client decides morph isn't safe
+    const ext = path.extname(filename).toLowerCase();
+    const isCss = ext === ".css";
+    const payload = JSON.stringify({ type: isCss ? "css" : "html" });
     for (const ws of sockets) {
-      ws.send("reload");
+      ws.send(payload);
     }
   });
 
   try {
     watch(publicDir, { recursive: true }, () => {
+      const payload = JSON.stringify({ type: "reload" });
       for (const ws of sockets) {
-        ws.send("reload");
+        ws.send(payload);
       }
     });
   } catch {
@@ -281,8 +375,24 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
 
   console.log(`\n  pavouk dev server running at http://localhost:${config.port}\n`);
 
-  process.on("SIGINT", () => {
+  if (astroHost) {
+    await astroHost.runServerStart({
+      address: "127.0.0.1",
+      port: config.port,
+      family: "IPv4",
+    });
+  }
+
+  process.on("SIGINT", async () => {
     watcher.close();
+    if (astroHost) {
+      try {
+        await astroHost.runServerDone();
+        await astroHost.server.close();
+      } catch {
+        // ignore
+      }
+    }
     server.stop();
     process.exit(0);
   });

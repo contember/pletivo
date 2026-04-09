@@ -8,6 +8,7 @@ import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
 import { registerAstroPlugin } from "./astro-plugin";
+import { initAstroHost } from "./astro-host";
 import type { PavoukConfig } from "./config";
 
 interface PageResult {
@@ -25,6 +26,7 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   const base = config.base.replace(/\/$/, "");
 
   await registerAstroPlugin();
+  const astroHost = await initAstroHost(projectRoot, "build");
   await initCollections(projectRoot);
 
   // Clean dist
@@ -126,7 +128,24 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   // Generate sitemap
   await generateSitemap(distDir, base);
 
+  // Run Astro integration `astro:build:done` hooks. Integrations like
+  // Nua CMS's build processor walk dist/ HTML files here to add markers.
+  if (astroHost) {
+    const pageEntries = results.map((r) => ({
+      pathname: toPathname(r.outPath, distDir),
+    }));
+    await astroHost.runBuildDone(pageEntries, distDir);
+  }
+
   console.log(`\nBuilt ${results.length} pages${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
+}
+
+function toPathname(outPath: string, distDir: string): string {
+  const rel = path.relative(distDir, outPath);
+  // dist/index.html → "/", dist/about/index.html → "/about/"
+  if (rel === "index.html") return "/";
+  if (rel.endsWith("/index.html")) return "/" + rel.slice(0, -"index.html".length);
+  return "/" + rel;
 }
 
 /** Extract island component names from rendered HTML */
@@ -172,6 +191,20 @@ async function writeHtml(
 
   if (cssPath && html.includes("</head>")) {
     html = html.replace("</head>", `<link rel="stylesheet" href="${base}${cssPath}">\n</head>`);
+  }
+
+  // Integration-injected scripts (from `injectScript('page', code)` etc.)
+  // If any integration injected head scripts, emit them into every page.
+  const { getHost } = await import("./astro-host");
+  const host = getHost();
+  if (host) {
+    const injected = [
+      ...host.injectedHeadScripts.map((s) => `<script>${s}</script>`),
+      ...host.injectedPageScripts.map((s) => `<script type="module">${s}</script>`),
+    ].join("\n");
+    if (injected && html.includes("</head>")) {
+      html = html.replace("</head>", injected + "\n</head>");
+    }
   }
 
   if (html.includes("<pavouk-island")) {

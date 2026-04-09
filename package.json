@@ -4,6 +4,7 @@
   "devDependencies": {
     "@astrojs/compiler": "3.0.1",
     "@pavouk/astro-jsx-pages": "workspace:*",
+    "morphdom": "^2.7.8",
     "pavouk": "workspace:*",
     "pavouk-astro": "workspace:*",
     "preact": "^10",
