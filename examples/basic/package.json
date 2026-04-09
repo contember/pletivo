@@ -1,0 +1,12 @@
+{
+  "name": "@pavouk-examples/basic",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pavouk dev",
+    "build": "pavouk build"
+  },
+  "dependencies": {
+    "pavouk": "workspace:*"
+  }
+}

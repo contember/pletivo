@@ -11,6 +11,12 @@
         "zod": "^4",
       },
     },
+    "examples/basic": {
+      "name": "@pavouk-examples/basic",
+      "dependencies": {
+        "pavouk": "workspace:*",
+      },
+    },
     "packages/astro-jsx-pages": {
       "name": "@pavouk/astro-jsx-pages",
       "version": "0.0.1",
@@ -228,6 +234,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@oslojs/encoding": ["@oslojs/encoding@1.1.0", "", {}, "sha512-70wQhgYmndg4GCPxPPxPGevRKqTIJ2Nh4OkiMWmDAVYsTQ+Ta7Sq+rPevXyXGdzr30/qZBnyOalCszoMxlyldQ=="],
+
+    "@pavouk-examples/basic": ["@pavouk-examples/basic@workspace:examples/basic"],
 
     "@pavouk/astro-jsx-pages": ["@pavouk/astro-jsx-pages@workspace:packages/astro-jsx-pages"],
 
