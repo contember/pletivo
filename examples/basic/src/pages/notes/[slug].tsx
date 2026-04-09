@@ -4,7 +4,7 @@ import Layout from "../../components/Layout";
 import PostDetail from "../../components/PostDetail";
 
 export async function getStaticPaths() {
-  const posts = await getCollection("blog");
+  const posts = await getCollection("notes");
   return await Promise.all(
     posts.map(async (post) => {
       const { html } = await post.render();
@@ -24,14 +24,14 @@ export async function getStaticPaths() {
   );
 }
 
-export default function BlogPost(props: {
+export default function NotePage(props: {
   post: CollectionEntry;
   html: string;
   related: CollectionEntry[];
 }) {
   return (
     <Layout title={props.post.data.title as string}>
-      <PostDetail post={props.post} html={props.html} related={props.related} base="blog" />
+      <PostDetail post={props.post} html={props.html} related={props.related} base="notes" />
     </Layout>
   );
 }

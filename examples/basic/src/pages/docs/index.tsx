@@ -2,13 +2,13 @@ import { getCollection } from "../../../../../packages/pavouk/src/content/collec
 import Layout from "../../components/Layout";
 import PostList from "../../components/PostList";
 
-export default async function BlogIndex() {
-  const posts = await getCollection("blog", (entry) => !entry.data.draft);
+export default async function DocsIndex() {
+  const posts = await getCollection("docs", (entry) => !entry.data.draft);
   posts.sort((a, b) => (b.data.date as Date).getTime() - (a.data.date as Date).getTime());
 
   return (
-    <Layout title="Blog">
-      <PostList posts={posts} base="blog" title="Blog" />
+    <Layout title="Docs">
+      <PostList posts={posts} base="docs" title="Docs" />
     </Layout>
   );
 }
