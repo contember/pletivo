@@ -1,2 +1,11 @@
 node_modules/
 dist/
+.astro/
+
+# Synthetic benchmark content — regenerated via scripts/benchmark.sh
+examples/basic/src/content/blog/generated/
+examples/basic/src/content/docs/generated/
+examples/basic/src/content/notes/generated/
+examples/basic-astro/src/content/blog/generated/
+examples/basic-astro/src/content/docs/generated/
+examples/basic-astro/src/content/notes/generated/

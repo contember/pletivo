@@ -1,0 +1,19 @@
+---
+import Layout from "../components/Layout.astro";
+
+const features = [
+  "Astro components rendered to static HTML",
+  "Islands architecture for interactivity",
+  "Content collections with Zod validation",
+  "File-based routing with dynamic params",
+  "Dev server with HMR",
+];
+---
+<Layout title="Astro - Home">
+  <h1>Astro Benchmark</h1>
+  <p>Native Astro version of the pavouk benchmark.</p>
+  <h2>Features</h2>
+  <ul>
+    {features.map((f) => <li>{f}</li>)}
+  </ul>
+</Layout>

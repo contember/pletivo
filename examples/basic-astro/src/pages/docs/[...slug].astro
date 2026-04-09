@@ -1,0 +1,35 @@
+---
+import { getCollection, render } from "astro:content";
+import type { CollectionEntry, GetStaticPaths } from "astro";
+import Layout from "../../components/Layout.astro";
+import PostDetail from "../../components/PostDetail.astro";
+
+export const getStaticPaths: GetStaticPaths = async () => {
+  const posts = await getCollection("docs");
+  return posts.map((post) => {
+    const tags = post.data.tags ?? [];
+    const related = posts
+      .filter(
+        (p) =>
+          p.id !== post.id &&
+          (p.data.tags ?? []).some((t) => tags.includes(t)),
+      )
+      .slice(0, 5);
+    return {
+      params: { slug: post.id },
+      props: { post, related },
+    };
+  });
+};
+
+interface Props {
+  post: CollectionEntry<"docs">;
+  related: CollectionEntry<"docs">[];
+}
+
+const { post, related } = Astro.props;
+const { Content } = await render(post);
+---
+<Layout title={post.data.title}>
+  <PostDetail post={post} related={related} base="docs" Content={Content} />
+</Layout>

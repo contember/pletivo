@@ -17,6 +17,12 @@
         "pavouk": "workspace:*",
       },
     },
+    "examples/basic-astro": {
+      "name": "@pavouk-examples/basic-astro",
+      "dependencies": {
+        "astro": "^5.0.0",
+      },
+    },
     "packages/astro-jsx-pages": {
       "name": "@pavouk/astro-jsx-pages",
       "version": "0.0.1",
@@ -236,6 +242,8 @@
     "@oslojs/encoding": ["@oslojs/encoding@1.1.0", "", {}, "sha512-70wQhgYmndg4GCPxPPxPGevRKqTIJ2Nh4OkiMWmDAVYsTQ+Ta7Sq+rPevXyXGdzr30/qZBnyOalCszoMxlyldQ=="],
 
     "@pavouk-examples/basic": ["@pavouk-examples/basic@workspace:examples/basic"],
+
+    "@pavouk-examples/basic-astro": ["@pavouk-examples/basic-astro@workspace:examples/basic-astro"],
 
     "@pavouk/astro-jsx-pages": ["@pavouk/astro-jsx-pages@workspace:packages/astro-jsx-pages"],
 

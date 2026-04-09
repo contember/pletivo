@@ -1,0 +1,42 @@
+---
+import type { CollectionEntry } from "astro:content";
+
+interface Props {
+  post: CollectionEntry<"blog"> | CollectionEntry<"docs"> | CollectionEntry<"notes">;
+  base: string;
+  index: number;
+}
+
+const { post, base, index } = Astro.props;
+const date = post.data.date;
+const tags = post.data.tags ?? [];
+const draft = post.data.draft;
+---
+<li class={`card card-${index % 4}`}>
+  <article>
+    <header>
+      <h3>
+        <a href={`/${base}/${post.id}`}>{post.data.title}</a>
+      </h3>
+      <div class="meta">
+        <time datetime={date.toISOString()}>{date.toLocaleDateString()}</time>
+        {draft && <span class="badge badge-draft">draft</span>}
+        <span class="badge badge-id">#{index}</span>
+      </div>
+    </header>
+    {tags.length > 0 && (
+      <ul class="tags">
+        {tags.map((t) => (
+          <li class="tag">
+            <a href={`/${base}?tag=${encodeURIComponent(t)}`}>#{t}</a>
+          </li>
+        ))}
+      </ul>
+    )}
+    <footer>
+      <a href={`/${base}/${post.id}`} class="read-more">
+        Read more →
+      </a>
+    </footer>
+  </article>
+</li>
