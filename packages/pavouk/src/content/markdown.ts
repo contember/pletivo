@@ -81,9 +81,34 @@ function escapeHtml(s: string): string {
 }
 
 /**
+ * GitHub-style heading slugifier.
+ * Lowercases, strips inline HTML tags, keeps alphanumerics + dashes,
+ * collapses whitespace to single dashes.
+ */
+function slugify(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, "") // strip any HTML produced by inlineMarkdown
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{Letter}\p{Number}\s-]+/gu, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+/**
+ * Produce a unique slug within a single document (GitHub-style: suffix -1, -2…)
+ */
+function uniqueSlug(base: string, seen: Map<string, number>): string {
+  const count = seen.get(base) ?? 0;
+  seen.set(base, count + 1);
+  return count === 0 ? base : `${base}-${count}`;
+}
+
+/**
  * Convert markdown to HTML
  */
-function markdownToHtml(md: string): string {
+function markdownToHtml(md: string, seenSlugs: Map<string, number> = new Map()): string {
   const lines = md.split("\n");
   const output: string[] = [];
   let i = 0;
@@ -114,7 +139,10 @@ function markdownToHtml(md: string): string {
     const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
       const level = headingMatch[1].length;
-      output.push(`<h${level}>${inlineMarkdown(headingMatch[2])}</h${level}>`);
+      const inner = inlineMarkdown(headingMatch[2]);
+      const slug = uniqueSlug(slugify(headingMatch[2]), seenSlugs);
+      const idAttr = slug ? ` id="${slug}"` : "";
+      output.push(`<h${level}${idAttr}>${inner}</h${level}>`);
       i++;
       continue;
     }
@@ -133,7 +161,7 @@ function markdownToHtml(md: string): string {
         quoteLines.push(lines[i].replace(/^>\s?/, ""));
         i++;
       }
-      output.push(`<blockquote>${markdownToHtml(quoteLines.join("\n"))}</blockquote>`);
+      output.push(`<blockquote>${markdownToHtml(quoteLines.join("\n"), seenSlugs)}</blockquote>`);
       continue;
     }
 
