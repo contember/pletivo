@@ -55,12 +55,20 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
 
       let props: Record<string, unknown> = {};
 
-      if (route.isDynamic && typeof mod.getStaticPaths === "function") {
+      if (route.isDynamic) {
+        if (typeof mod.getStaticPaths !== "function") {
+          // Dynamic route without getStaticPaths — cannot resolve, treat as miss
+          return null;
+        }
         const staticPaths: StaticPath[] = await mod.getStaticPaths();
         const match = staticPaths.find((sp) => {
           return Object.entries(params).every(([k, v]) => sp.params[k] === v);
         });
-        if (match?.props) props = match.props;
+        if (!match) {
+          // No matching static path — cascade to 404
+          return null;
+        }
+        props = match.props || {};
       }
 
       resetIslandRegistry();
