@@ -245,8 +245,9 @@ export async function renderComponent(
   const cleanProps: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props || {})) {
     if (k === "class:list") {
-      // Astro class:list → class
-      cleanProps["class"] = normalizeClassList(v);
+      // Astro class:list → class (omit if empty to avoid class="")
+      const cls = normalizeClassList(v);
+      if (cls) cleanProps["class"] = cls;
     } else {
       cleanProps[k] = v;
     }
