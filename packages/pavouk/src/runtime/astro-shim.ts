@@ -52,7 +52,7 @@ export interface AstroGlobal {
 
 interface SlotsAccessor {
   has(name: string): boolean;
-  render(name: string): Promise<string>;
+  render(name: string, args?: unknown[]): Promise<string>;
 }
 
 export interface AstroResult {
@@ -85,10 +85,19 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
           has(name: string) {
             return typeof slots?.[name] === "function";
           },
-          async render(name: string) {
+          async render(name: string, args?: unknown[]) {
             const fn = slots?.[name];
             if (typeof fn !== "function") return "";
-            return await renderValue(fn());
+            const prevArgs = currentSlotArgs;
+            currentSlotArgs = args;
+            try {
+              const html = await renderValue(fn());
+              // Return an HtmlString so the result can be used with
+              // set:html or interpolated without double-escaping.
+              return createHtml(html) as unknown as string;
+            } finally {
+              currentSlotArgs = prevArgs;
+            }
           },
         },
         {
@@ -122,6 +131,11 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
  * - number → stringified
  * - string → HTML-escaped (text content default)
  */
+// Context for Astro.slots.render() with arguments. When set, function
+// values encountered during renderValue() are called with these args
+// (e.g. `{(props) => <div>{props.text}</div>}` in a slot).
+let currentSlotArgs: unknown[] | undefined;
+
 async function renderValue(value: unknown): Promise<string> {
   if (value == null || value === false || value === true) return "";
   if (typeof value === "string") return escapeHtml(value);
@@ -136,7 +150,8 @@ async function renderValue(value: unknown): Promise<string> {
   }
   // Functions (e.g. slot functions passed as values) — call and recurse
   if (typeof value === "function") {
-    return renderValue((value as () => unknown)());
+    const fn = value as (...a: unknown[]) => unknown;
+    return renderValue(currentSlotArgs ? fn(...currentSlotArgs) : fn());
   }
   // Fallback: stringify + escape
   return escapeHtml(String(value));
@@ -427,8 +442,11 @@ export function createTransitionScope(
 // ── unescapeHTML ────────────────────────────────────────────────────
 
 /** Marker that tells `$$render` not to escape the value. */
-export function unescapeHTML(value: unknown): HtmlString {
+export function unescapeHTML(value: unknown): HtmlString | Promise<HtmlString> {
   if (isHtmlString(value)) return value;
+  if (value instanceof Promise) {
+    return value.then((v) => unescapeHTML(v) as HtmlString);
+  }
   return createHtml(String(value ?? ""));
 }
 

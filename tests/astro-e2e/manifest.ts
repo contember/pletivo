@@ -60,31 +60,6 @@ export const integrationEntries: FixtureEntry[] = [
     name: "astro-slots",
     testFile: "astro-slots.test.js",
     fixture: "astro-slots",
-    // Pages using Astro.slots.render() with args crash pavouk's build
-    removeFiles: [
-      "src/pages/slotted-named-functions.astro",
-      "src/pages/slottedapi-render.astro",
-      "src/pages/rendered-multiple-times.astro",
-      "src/components/Render.astro",
-      "src/components/RenderFn.astro",
-      "src/components/RenderArgs.astro",
-      "src/components/RenderMultipleTimes.astro",
-      "src/components/FunctionsToAPI.astro",
-      "src/components/Random.astro",
-    ],
-    testPatches: [
-      // Astro.slots.render() API not supported in pavouk
-      {
-        search: "it('Slots.render() API',",
-        replace: "it.skip('Slots.render() API [unsupported: Astro.slots.render()]',",
-      },
-      {
-        search:
-          "it('Arguments can be passed to named slots with Astro.slots.render()',",
-        replace:
-          "it.skip('Arguments can be passed to named slots [unsupported: Astro.slots.render()]',",
-      },
-    ],
   },
   {
     name: "astro-class-list",
