@@ -37,7 +37,12 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
   let moduleVersion = 0;
 
   await registerAstroPlugin();
-  const astroHost = await initAstroHost(projectRoot, "dev");
+  const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
+    const msg = JSON.stringify(payload);
+    for (const ws of sockets) {
+      ws.send(msg);
+    }
+  });
   await initCollections(projectRoot);
   let routes = await scanRoutes(pagesDir);
 

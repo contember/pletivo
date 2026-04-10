@@ -27,7 +27,9 @@ export interface ServerShim extends ViteDevServerLike {
   __plugins: ViteLikePlugin[];
 }
 
-export function createServerShim(projectRoot: string): ServerShim {
+export type HmrBroadcast = (payload: { type: string; [key: string]: unknown }) => void;
+
+export function createServerShim(projectRoot: string, hmrBroadcast?: HmrBroadcast): ServerShim {
   const middlewares: ConnectMiddleware[] = [];
   const plugins: ViteLikePlugin[] = [];
   const watcher = new EventEmitter() as EventEmitter & {
@@ -97,7 +99,11 @@ export function createServerShim(projectRoot: string): ServerShim {
       },
       client: {
         hot: {
-          send: () => {},
+          send: (payload: unknown) => {
+            if (hmrBroadcast && payload && typeof payload === "object" && (payload as Record<string, unknown>).type === "full-reload") {
+              hmrBroadcast({ type: "reload" });
+            }
+          },
         },
       },
     },

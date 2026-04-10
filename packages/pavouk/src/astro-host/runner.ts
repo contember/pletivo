@@ -32,7 +32,7 @@ import type {
 import { createLogger } from "./logger";
 import { isOverridden } from "./overrides";
 import { loadAstroConfig } from "./config-loader";
-import { createServerShim, type ServerShim } from "./server-shim";
+import { createServerShim, type ServerShim, type HmrBroadcast } from "./server-shim";
 import {
   addVitePlugins,
   ensureBunPlugin,
@@ -74,13 +74,14 @@ export function getHost(): AstroHost | null {
 export async function initAstroHost(
   projectRoot: string,
   command: "dev" | "build",
+  hmrBroadcast?: HmrBroadcast,
 ): Promise<AstroHost | null> {
   if (activeHost) return activeHost;
 
   const config = await loadAstroConfig(projectRoot);
   if (!config) return null;
 
-  const server = createServerShim(projectRoot);
+  const server = createServerShim(projectRoot, hmrBroadcast);
   const injectedPageScripts: string[] = [];
   const injectedHeadScripts: string[] = [];
   const setupLog: string[] = [];
