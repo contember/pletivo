@@ -331,9 +331,17 @@ export function addAttribute(value: unknown, key: string): HtmlString {
 export function spreadAttributes(
   values: Record<string, unknown> | null | undefined,
   _name?: string,
-  _options?: unknown,
+  { class: scopedClassName }: { class?: string } = {},
 ): HtmlString {
   if (!values) return createHtml("");
+  // Merge compiler-provided scope class into the spread values
+  if (scopedClassName) {
+    if (typeof values.class !== "undefined") {
+      values = { ...values, class: `${values.class} ${scopedClassName}` };
+    } else {
+      values = { ...values, class: scopedClassName };
+    }
+  }
   let out = "";
   for (const [k, v] of Object.entries(values)) {
     out += addAttribute(v, k).__html;
