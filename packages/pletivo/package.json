@@ -2,6 +2,14 @@
   "name": "pletivo",
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/contember/pletivo.git",
+    "directory": "packages/pletivo"
+  },
+  "homepage": "https://github.com/contember/pletivo",
+  "bugs": "https://github.com/contember/pletivo/issues",
   "bin": {
     "pletivo": "./src/cli.ts"
   },
