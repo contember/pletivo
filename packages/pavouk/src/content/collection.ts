@@ -1,4 +1,5 @@
 import path from "path";
+import fs from "fs";
 import { Glob } from "bun";
 import { z } from "zod";
 import { parseMarkdown } from "./markdown";
@@ -87,6 +88,7 @@ export function glob(options: GlobOptions): Loader {
   return {
     async load(projectRoot: string): Promise<RawEntry[]> {
       const dir = path.resolve(projectRoot, options.base);
+      if (!fs.existsSync(dir)) return [];
       const globPattern = new Glob(options.pattern ?? "**/*.md");
       const entries: RawEntry[] = [];
 

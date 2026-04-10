@@ -27,7 +27,7 @@ jobs:
         run: bun run --cwd packages/astro-jsx-pages build
 
       - name: Unit & integration tests
-        run: bun test
+        run: bun test tests/unit tests/integration tests/e2e
 
       - name: Setup Astro compatibility tests
         working-directory: tests/astro-e2e

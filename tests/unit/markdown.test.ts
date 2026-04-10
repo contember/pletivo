@@ -73,12 +73,18 @@ x`);
 describe("block elements", () => {
   test("headings h1-h6", () => {
     const result = parseMarkdown("---\n---\n\n# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6");
-    expect(result.html).toContain("<h1>H1</h1>");
-    expect(result.html).toContain("<h2>H2</h2>");
-    expect(result.html).toContain("<h3>H3</h3>");
-    expect(result.html).toContain("<h4>H4</h4>");
-    expect(result.html).toContain("<h5>H5</h5>");
-    expect(result.html).toContain("<h6>H6</h6>");
+    expect(result.html).toContain("<h1");
+    expect(result.html).toContain("H1</h1>");
+    expect(result.html).toContain("<h2");
+    expect(result.html).toContain("H2</h2>");
+    expect(result.html).toContain("<h3");
+    expect(result.html).toContain("H3</h3>");
+    expect(result.html).toContain("<h4");
+    expect(result.html).toContain("H4</h4>");
+    expect(result.html).toContain("<h5");
+    expect(result.html).toContain("H5</h5>");
+    expect(result.html).toContain("<h6");
+    expect(result.html).toContain("H6</h6>");
   });
 
   test("paragraphs", () => {

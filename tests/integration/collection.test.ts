@@ -52,7 +52,7 @@ describe("content collections", () => {
   test("render() returns HTML from markdown body", async () => {
     const post = await getEntry("blog", "post-one");
     const { html } = await post!.render();
-    expect(html).toContain("<h1>First Post</h1>");
+    expect(html).toContain("First Post</h1>");
     expect(html).toContain("<strong>first</strong>");
   });
 

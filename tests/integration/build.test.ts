@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
 import fs from "fs/promises";
+import { readdirSync } from "fs";
 import { build } from "../../packages/pavouk/src/build";
 import type { PavoukConfig } from "../../packages/pavouk/src/config";
 
@@ -88,7 +89,11 @@ describe("build", () => {
   });
 
   test("public files are copied to dist", async () => {
-    const css = await Bun.file(path.join(distDir, "style.css")).text();
+    // Public assets are hashed (style.css → style.abc123.css)
+    const files = readdirSync(distDir);
+    const cssFile = files.find((f) => f.startsWith("style.") && f.endsWith(".css"));
+    expect(cssFile).toBeDefined();
+    const css = await Bun.file(path.join(distDir, cssFile!)).text();
     expect(css).toContain("font-family");
   });
 
