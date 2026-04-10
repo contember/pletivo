@@ -36,6 +36,22 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
+/**
+ * Strip the outermost HTML element from a string, keeping its inner
+ * content. Used to remove the slot="name" carrier element that the
+ * compiler wraps around named slot content.
+ *
+ *   "<div>\n  <p>hi</p>\n</div>" → "\n  <p>hi</p>\n"
+ */
+function stripOuterElement(html: string): string {
+  const trimmed = html.trim();
+  const openEnd = trimmed.indexOf(">");
+  if (openEnd === -1 || trimmed[0] !== "<") return html;
+  const closeStart = trimmed.lastIndexOf("</");
+  if (closeStart === -1) return html;
+  return trimmed.slice(openEnd + 1, closeStart);
+}
+
 // ── Per-render context ──────────────────────────────────────────────
 
 export interface AstroGlobal {
@@ -91,7 +107,14 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
             const prevArgs = currentSlotArgs;
             currentSlotArgs = args;
             try {
-              const html = await renderValue(fn());
+              let html = await renderValue(fn());
+              // For named slots with args, the compiler wraps the slot
+              // content in the element that carried slot="name" (e.g.
+              // <div slot="before">fn</div>). Astro strips that
+              // wrapper so only the function's output remains.
+              if (args && args.length > 0 && name !== "default") {
+                html = stripOuterElement(html);
+              }
               // Return an HtmlString so the result can be used with
               // set:html or interpolated without double-escaping.
               return createHtml(html) as unknown as string;
