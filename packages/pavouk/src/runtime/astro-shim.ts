@@ -78,16 +78,26 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
   return {
     pageContext,
     createAstro(props, slots) {
-      const slotsAccessor: SlotsAccessor = {
-        has(name) {
-          return typeof slots?.[name] === "function";
+      // Proxy so that `'slotName' in Astro.slots` works (compiled code
+      // uses the `in` operator to check for filled slots).
+      const slotsAccessor: SlotsAccessor = new Proxy(
+        {
+          has(name: string) {
+            return typeof slots?.[name] === "function";
+          },
+          async render(name: string) {
+            const fn = slots?.[name];
+            if (typeof fn !== "function") return "";
+            return await renderValue(fn());
+          },
         },
-        async render(name) {
-          const fn = slots?.[name];
-          if (typeof fn !== "function") return "";
-          return await renderValue(fn());
+        {
+          has(_target, prop) {
+            if (prop === "has" || prop === "render") return true;
+            return typeof slots?.[prop as string] === "function";
+          },
         },
-      };
+      );
       return {
         props: props || {},
         slots: slotsAccessor,
@@ -215,6 +225,11 @@ export function createAstro(_site?: string): Record<string, unknown> {
 
 // ── renderComponent ─────────────────────────────────────────────────
 
+const voidElements = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input",
+  "link", "meta", "param", "source", "track", "wbr",
+]);
+
 export async function renderComponent(
   result: AstroResult,
   _displayName: string,
@@ -265,6 +280,22 @@ export async function renderComponent(
     if (isHtmlString(awaited)) return awaited;
     if (typeof awaited === "string") return createHtml(escapeHtml(awaited));
     return createHtml(await renderValue(awaited));
+  }
+
+  // String tag — dynamic HTML element (e.g. Control = 'input')
+  if (typeof Component === "string") {
+    const tag = Component;
+    let attrs = "";
+    for (const [k, v] of Object.entries(cleanProps)) {
+      attrs += addAttribute(v, k).__html;
+    }
+    const childHtml = slots.default
+      ? await renderValue(slots.default())
+      : "";
+    if (voidElements.has(tag) && !childHtml) {
+      return createHtml(`<${tag}${attrs}>`);
+    }
+    return createHtml(`<${tag}${attrs}>${childHtml}</${tag}>`);
   }
 
   // Unknown thing — give up
