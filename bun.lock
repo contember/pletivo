@@ -65,15 +65,10 @@
         "pletivo": "./src/cli.ts",
       },
       "dependencies": {
+        "@astrojs/compiler": "^2 || ^3",
         "preact": "^10.29.1",
         "zod": "^4.3.6",
       },
-      "peerDependencies": {
-        "@astrojs/compiler": "^2 || ^3",
-      },
-      "optionalPeers": [
-        "@astrojs/compiler",
-      ],
     },
   },
   "packages": {
