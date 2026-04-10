@@ -21,6 +21,29 @@ import { transform } from "@astrojs/compiler";
 
 let registered = false;
 
+/**
+ * Scoped CSS collected from `<style>` blocks in `.astro` files.
+ * The Astro compiler returns scoped (`:where(.astro-xxxx)`) CSS in
+ * `result.css[]`. We store it here keyed by file path so that the
+ * CSS pipeline can append it to the bundled stylesheet.
+ *
+ * Call `getScopedCss()` to retrieve the accumulated CSS and
+ * `clearScopedCss()` between builds / dev requests to avoid stale entries.
+ */
+const scopedCssMap = new Map<string, string[]>();
+
+export function getScopedCss(): string {
+  const parts: string[] = [];
+  for (const css of scopedCssMap.values()) {
+    parts.push(...css);
+  }
+  return parts.join("\n");
+}
+
+export function clearScopedCss(): void {
+  scopedCssMap.clear();
+}
+
 export async function registerAstroPlugin(): Promise<void> {
   if (registered) return;
   registered = true;
@@ -63,12 +86,18 @@ export async function registerAstroPlugin(): Promise<void> {
           throw new Error(`Astro compiler errors in ${rel}:\n${errors}`);
         }
 
-        // Strip the virtual style imports that Astro compiler emits for
-        // `<style>` blocks. They look like:
+        // Collect scoped CSS emitted by the Astro compiler for `<style>`
+        // blocks. The compiler returns the scoped rules in `result.css[]`
+        // (e.g. `.foo:where(.astro-xxxx){color:red}`). We stash them so
+        // the CSS pipeline can append them to the bundled stylesheet.
+        if (result.css && result.css.length > 0) {
+          scopedCssMap.set(cleanPath, result.css);
+        }
+
+        // Strip the virtual style imports that the compiler emits:
         //   import '/abs/path/File.astro?astro&type=style&index=0&lang.css';
-        // Bun has no resolver for that query-suffixed specifier, and scoped
-        // CSS is deferred to a future pavouk plugin anyway. For MVP we drop
-        // them entirely; global `<style>` content is ignored.
+        // Bun has no resolver for that query-suffixed specifier. The actual
+        // CSS content is already captured above via `result.css`.
         //
         // Hoisted scripts use a similar virtual path
         // (`?astro&type=script&...`) and show up as `$$renderScript(...)` in

@@ -7,7 +7,7 @@ import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
-import { registerAstroPlugin } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCss, clearScopedCss } from "./astro-plugin";
 import { initAstroHost, buildAstroRoutes, type PavoukRouteWithPaths } from "./astro-host";
 import type { PavoukConfig } from "./config";
 
@@ -39,7 +39,7 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   const publicManifest = await hashPublicAssets(publicDir, distDir);
 
   // Bundle CSS from src/
-  const cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
+  let cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
 
   // Scan routes
   const routes = await scanRoutes(pagesDir);
@@ -141,7 +141,50 @@ export async function build(projectRoot: string, config: PavoukConfig) {
     }
   }
 
-  // Write all pages — parallel
+  // Render custom 404 page (before scoped CSS collection so its styles
+  // are included in the bundle).
+  const result404 = await render404Page(pagesDir);
+  if (result404) {
+    results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html });
+  }
+
+  // Append scoped CSS from <style> blocks in .astro components to the
+  // bundled stylesheet. The Astro compiler emits scoped rules during
+  // import (which happens at render time above), so we collect them
+  // after all pages have been rendered.
+  const scopedCss = getScopedCss();
+  if (scopedCss) {
+    if (cssPath) {
+      // Append to existing bundle
+      const cssFile = path.join(distDir, cssPath);
+      const existing = await fs.readFile(cssFile, "utf-8");
+      const combined = existing + "\n/* astro scoped styles */\n" + scopedCss;
+      // Re-hash since content changed
+      const hasher = new Bun.CryptoHasher("md5");
+      hasher.update(combined);
+      const hash = hasher.digest("hex").slice(0, 8);
+      const newCssFile = `styles.${hash}.css`;
+      const newCssPath = `/assets/${newCssFile}`;
+      await fs.writeFile(path.join(distDir, "assets", newCssFile), combined);
+      if (newCssPath !== cssPath) {
+        await fs.unlink(cssFile);
+      }
+      cssPath = newCssPath;
+    } else {
+      // No CSS bundle yet — create one from scoped styles alone
+      const hasher = new Bun.CryptoHasher("md5");
+      hasher.update(scopedCss);
+      const hash = hasher.digest("hex").slice(0, 8);
+      const assetsDir = path.join(distDir, "assets");
+      await fs.mkdir(assetsDir, { recursive: true });
+      const outFile = `styles.${hash}.css`;
+      await fs.writeFile(path.join(assetsDir, outFile), scopedCss);
+      cssPath = `/assets/${outFile}`;
+    }
+  }
+  clearScopedCss();
+
+  // Write all pages (including 404) — parallel
   let totalSize = 0;
   await Promise.all(
     results.map(async (result) => {
@@ -150,9 +193,6 @@ export async function build(projectRoot: string, config: PavoukConfig) {
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
     }),
   );
-
-  // Build custom 404 page
-  await build404(pagesDir, distDir, base, cssPath, publicManifest);
 
   // Detect islands from rendered HTML
   const islandNames = new Set<string>();
@@ -281,7 +321,7 @@ async function writeHtml(
   return bytes;
 }
 
-async function build404(pagesDir: string, distDir: string, base: string, cssPath: string | null, publicManifest: Map<string, string>) {
+async function render404Page(pagesDir: string): Promise<{ file: string; html: string } | null> {
   for (const ext of [".tsx", ".jsx", ".astro"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
@@ -291,14 +331,13 @@ async function build404(pagesDir: string, distDir: string, base: string, cssPath
         resetIslandRegistry();
         const html = await renderComponent(mod.default, {});
         if (html) {
-          const outPath = path.join(distDir, "404.html");
-          await writeHtml(outPath, html, base, cssPath, publicManifest);
-          console.log(`  404${ext} → 404.html`);
+          return { file: `404${ext}`, html };
         }
       }
       break;
     }
   }
+  return null;
 }
 
 async function bundleIslands(
