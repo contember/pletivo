@@ -18,6 +18,14 @@ if (portIdx !== -1 && process.argv[portIdx + 1]) config.port = parseInt(process.
 if (command === "dev" && /^\d+$/.test(process.argv[3] || "")) {
   config.port = parseInt(process.argv[3], 10);
 }
+const hostArg = process.argv.find((a) => a.startsWith("--host="));
+if (hostArg) config.host = hostArg.split("=")[1];
+const hostIdx = process.argv.indexOf("--host");
+if (hostIdx !== -1 && process.argv[hostIdx + 1] && !process.argv[hostIdx + 1].startsWith("--")) {
+  config.host = process.argv[hostIdx + 1];
+} else if (hostIdx !== -1 && (!process.argv[hostIdx + 1] || process.argv[hostIdx + 1].startsWith("--"))) {
+  config.host = "0.0.0.0";
+}
 
 switch (command) {
   case "build":
@@ -37,10 +45,11 @@ switch (command) {
 
   Usage:
     pletivo build              Build static site
-    pletivo dev [--port=3000]  Start dev server with HMR
+    pletivo dev [--port=3000] [--host]  Start dev server with HMR
 
   Options:
     --port=<number>  Dev server port (default: 3000)
+    --host[=<addr>]  Dev server host (default: localhost, bare --host = 0.0.0.0)
     --help           Show this help
 
   Config:

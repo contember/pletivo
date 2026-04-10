@@ -5,6 +5,8 @@ export interface PletivoConfig {
   outDir: string;
   /** Dev server port (default: 3000) */
   port: number;
+  /** Dev server host (default: "localhost") */
+  host: string;
   /** Base path for deployment under a sub-path (default: "/") */
   base: string;
   /** Source directory (default: "src") */
@@ -16,6 +18,7 @@ export interface PletivoConfig {
 const defaults: PletivoConfig = {
   outDir: "dist",
   port: 3000,
+  host: "localhost",
   base: "/",
   srcDir: "src",
   publicDir: "public",

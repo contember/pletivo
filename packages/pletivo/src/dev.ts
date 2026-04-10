@@ -93,7 +93,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Build Astro-style pageContext with url/site/params so .astro
       // templates that read `Astro.url.pathname` work correctly.
       const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
-      const origin = siteUrl ? siteUrl.origin : `http://localhost:${config.port}`;
+      const devHost = config.host === "0.0.0.0" ? "localhost" : config.host;
+      const origin = siteUrl ? siteUrl.origin : `http://${devHost}:${config.port}`;
       const pageContext = {
         url: new URL(pathname || "/", origin),
         site: siteUrl,
@@ -196,6 +197,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
   const server = Bun.serve({
     port: config.port,
+    hostname: config.host,
     async fetch(req, server) {
       const url = new URL(req.url);
 
@@ -441,11 +443,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     // no public dir
   }
 
-  console.log(`\n  pletivo dev server running at http://localhost:${config.port}\n`);
+  const displayHost = config.host === "0.0.0.0" ? "localhost" : config.host;
+  console.log(`\n  pletivo dev server running at http://${displayHost}:${config.port}\n`);
 
   if (astroHost) {
     await astroHost.runServerStart({
-      address: "127.0.0.1",
+      address: config.host === "0.0.0.0" ? "127.0.0.1" : config.host,
       port: config.port,
       family: "IPv4",
     });
