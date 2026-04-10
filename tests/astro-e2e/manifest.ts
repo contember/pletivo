@@ -73,9 +73,6 @@ export const integrationEntries: FixtureEntry[] = [
     // Remove pages that use features pavouk doesn't support (md, mdx, file:// URLs,
     // ?raw imports, JS route handlers, preact components)
     removeFiles: [
-      "src/pages/chinese-encoding-md.md",
-      'src/pages/special-"characters" -in-file.md',
-      "src/pages/nested-md/index.md",
       "src/pages/fileurl.astro",
       "src/pages/import-queries/_content.astro",
       "src/pages/import-queries/raw.astro",
@@ -83,6 +80,7 @@ export const integrationEntries: FixtureEntry[] = [
       "src/pages/news.astro",
       "src/pages/client.astro",
       "src/pages/nested-astro/index.astro",
+      "src/pages/nested-md/index.md",
       "src/components/Tour.jsx",
       "src/strings.js",
       "my-config.mjs",
@@ -93,10 +91,10 @@ export const integrationEntries: FixtureEntry[] = [
         search: "describe('preview',",
         replace: "describe.skip('preview [astro-specific]',",
       },
-      // markdown .md pages need astro's markdown pipeline (mdx integration)
+      // special chars in .md filename
       {
-        search: "it('renders markdown in utf-8 by default',",
-        replace: "it.skip('renders markdown in utf-8 by default [requires mdx]',",
+        search: "it('supports special chars in filename',",
+        replace: "it.skip('supports special chars in filename [special chars in path]',",
       },
       // .mjs output pages use Astro's getStaticPaths JS route handler
       {

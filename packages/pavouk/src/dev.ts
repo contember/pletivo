@@ -8,6 +8,7 @@ import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
 import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, bumpDevVersion, getDevVersion } from "./astro-plugin";
+import { parseMarkdown } from "./content/markdown";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
 import type { PavoukConfig } from "./config";
 import type { ServerWebSocket } from "bun";
@@ -57,6 +58,14 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
     const fullPath = path.join(pagesDir, route.file);
 
     try {
+      // Markdown pages — render directly without module import
+      if (route.file.endsWith(".md")) {
+        const source = await Bun.file(fullPath).text();
+        const { html: body, frontmatter } = parseMarkdown(source);
+        const title = (frontmatter.title as string) || "";
+        return `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
+      }
+
       const importPath = fullPath + `?v=${getDevVersion()}`;
       const mod = await import(importPath);
       const component = mod.default;

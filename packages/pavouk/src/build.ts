@@ -8,6 +8,7 @@ import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
 import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss } from "./astro-plugin";
+import { parseMarkdown } from "./content/markdown";
 import { initAstroHost, buildAstroRoutes, type PavoukRouteWithPaths } from "./astro-host";
 import type { PavoukConfig } from "./config";
 
@@ -101,6 +102,17 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   const staticResults = await Promise.all(
     staticRoutes.map(async (route): Promise<PageResult | null> => {
       const fullPath = path.join(pagesDir, route.file);
+
+      // Markdown pages — render directly without module import
+      if (route.file.endsWith(".md")) {
+        const source = await Bun.file(fullPath).text();
+        const { html: body, frontmatter } = parseMarkdown(source);
+        const title = (frontmatter.title as string) || "";
+        const outFile = routeToOutputPath(route, {});
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
+        return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html };
+      }
+
       const mod = await import(fullPath);
       if (typeof mod.default !== "function") {
         console.warn(`  Skipping ${route.file}: no default export function`);
