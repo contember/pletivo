@@ -87,6 +87,11 @@ export const integrationEntries: FixtureEntry[] = [
     ],
   },
   {
+    name: "astro-class-list",
+    testFile: "astro-class-list.test.js",
+    fixture: "astro-class-list",
+  },
+  {
     name: "astro-basic",
     testFile: "astro-basic.test.js",
     fixture: "astro-basic",
