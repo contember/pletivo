@@ -37,7 +37,6 @@ Bun workspace monorepo:
 
 - **`packages/pletivo`** — Core SSG engine: CLI, router, JSX runtime (SSR), island hydration, content collections, CSS pipeline (Tailwind v4), dev server with HMR, astro-host shim.
 - **`packages/astro-jsx-pages`** — Babel+Vite plugin enabling TSX pages inside Astro. Built with tsc.
-- **`packages/pletivo-astro`** — Astro integration wrapping `astro-jsx-pages`.
 - **`examples/`** — `basic` (pletivo-native), `basic-astro`, `basic-astro-native`.
 
 ## Critical Invariants

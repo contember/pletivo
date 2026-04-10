@@ -6,7 +6,6 @@
     "@pletivo/astro-jsx-pages": "workspace:*",
     "morphdom": "^2.7.8",
     "pletivo": "workspace:*",
-    "pletivo-astro": "workspace:*",
     "preact": "^10",
     "zod": "^4"
   }

@@ -8,7 +8,6 @@
         "@pletivo/astro-jsx-pages": "workspace:*",
         "morphdom": "^2.7.8",
         "pletivo": "workspace:*",
-        "pletivo-astro": "workspace:*",
         "preact": "^10",
         "zod": "^4",
       },
@@ -75,16 +74,6 @@
       "optionalPeers": [
         "@astrojs/compiler",
       ],
-    },
-    "packages/pletivo-astro": {
-      "name": "pletivo-astro",
-      "version": "0.1.0",
-      "dependencies": {
-        "@pletivo/astro-jsx-pages": "workspace:*",
-      },
-      "peerDependencies": {
-        "astro": "^5.0.0 || ^6.0.0",
-      },
     },
   },
   "packages": {
@@ -725,8 +714,6 @@
     "picomatch": ["picomatch@4.0.4", "", {}, "sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A=="],
 
     "pletivo": ["pletivo@workspace:packages/pletivo"],
-
-    "pletivo-astro": ["pletivo-astro@workspace:packages/pletivo-astro"],
 
     "postcss": ["postcss@8.5.9", "", { "dependencies": { "nanoid": "^3.3.11", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-7a70Nsot+EMX9fFU3064K/kdHWZqGVY+BADLyXc8Dfv+mTLLVl6JzJpPaCZ2kQL9gIJvKXSLMHhqdRRjwQeFtw=="],
 

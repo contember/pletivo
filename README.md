@@ -62,7 +62,6 @@ packages/
   pletivo/             Core SSG engine (CLI, router, JSX runtime, islands,
                       content collections, CSS pipeline, dev server, astro shim)
   astro-jsx-pages/    Babel+Vite plugin enabling TSX pages inside Astro
-  pletivo-astro/       Astro integration wrapping astro-jsx-pages
 
 examples/
   basic/              Pletivo-native example (JSX pages, islands, collections)
