@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build astro-jsx-pages
+        run: bun run --cwd packages/astro-jsx-pages build
+
+      - name: Unit & integration tests
+        run: bun test
+
+      - name: Setup Astro compatibility tests
+        working-directory: tests/astro-e2e
+        run: |
+          bun install
+          bun run setup.ts
+
+      - name: Astro compatibility — integration
+        working-directory: tests/astro-e2e
+        run: node --test integration/*.test.js
+
+      - name: Install Playwright
+        working-directory: tests/astro-e2e
+        run: bunx playwright install chromium
+
+      - name: Astro compatibility — e2e
+        working-directory: tests/astro-e2e
+        run: bunx playwright test
+
+  build-example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build basic example
+        run: bun run --cwd examples/basic build
