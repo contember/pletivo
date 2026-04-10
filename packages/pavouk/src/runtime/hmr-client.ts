@@ -117,6 +117,14 @@ export const hmrClientScript = `
       }
     }
 
+    // If the current page is an error overlay, skip morph — a full reload
+    // is safer because the error page has a minimal DOM with no <head>
+    // scripts, and morphdom can't execute scripts from DOMParser output.
+    if (document.querySelector("[data-pavouk-error]")) {
+      location.reload();
+      return;
+    }
+
     let html;
     try {
       const res = await fetch(location.href, {
@@ -127,6 +135,13 @@ export const hmrClientScript = `
       html = await res.text();
     } catch (err) {
       console.warn("[pavouk] re-fetch failed, reloading", err);
+      location.reload();
+      return;
+    }
+
+    // If the server returned an error page, reload instead of morphing
+    // into a broken state where scripts won't execute.
+    if (html.indexOf("data-pavouk-error") !== -1) {
       location.reload();
       return;
     }
@@ -148,14 +163,16 @@ export const hmrClientScript = `
       morphdom(document.head, fresh.head, {
         onBeforeElUpdated: (fromEl, toEl) => {
           if (shouldPreserveNode(fromEl)) return false;
-          // Preserve stylesheets with identical href so CSS swap isn't
-          // triggered by an unrelated HTML update
+          // Preserve stylesheets whose base href matches — ignore query
+          // params so a CSS hot-swap's cache-bust suffix doesn't cause
+          // morphdom to replace the link on the next HTML morph.
           if (
             fromEl.tagName === "LINK" &&
-            toEl.tagName === "LINK" &&
-            fromEl.getAttribute("href") === toEl.getAttribute("href")
+            toEl.tagName === "LINK"
           ) {
-            return false;
+            const fromHref = (fromEl.getAttribute("href") || "").split("?")[0];
+            const toHref = (toEl.getAttribute("href") || "").split("?")[0];
+            if (fromHref === toHref) return false;
           }
           return !areElementsEqual(fromEl, toEl);
         },
@@ -198,6 +215,13 @@ export const hmrClientScript = `
       bodyObserver.takeRecords();
       headObserver.takeRecords();
       observing = true;
+    }
+
+    // Re-hydrate any islands that were added or replaced by morphdom.
+    // The initial hydration script marks islands with data-hydrated on
+    // mount, so we only pick up new/changed ones here.
+    if (typeof window.__pavoukHydrate === "function") {
+      window.__pavoukHydrate();
     }
   }
 

@@ -145,7 +145,7 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
       return html;
     } catch (e) {
       console.error(`Error rendering ${route.file}:`, e);
-      return `<html><body><pre style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem">${escapeHtmlSimple(String(e instanceof Error ? e.stack || e.message : e))}</pre>${hmrClientScript}</body></html>`;
+      return `<html><body><pre data-pavouk-error style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem">${escapeHtmlSimple(String(e instanceof Error ? e.stack || e.message : e))}</pre>${hmrClientScript}</body></html>`;
     }
   }
 
@@ -403,7 +403,10 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
     // to `change` / `add` / `unlink` events on `server.watcher`.
     if (astroHost) {
       const absPath = path.join(srcDir, filename);
-      const viteEvent = event === "rename" ? "change" : "change";
+      // Node's fs.watch uses "rename" for both creation and deletion.
+      // Check if the file still exists to distinguish add/change vs unlink.
+      const exists = fs.existsSync(absPath);
+      const viteEvent = exists ? "change" : "unlink";
       astroHost.server.watcher.emit(viteEvent, absPath);
     }
 
