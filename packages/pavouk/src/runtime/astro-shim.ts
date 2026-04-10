@@ -391,9 +391,12 @@ export function maybeRenderHead(_result: AstroResult): HtmlString {
   return createHtml("");
 }
 
-export function renderScript(_result: AstroResult, _id: string): HtmlString {
-  // TODO: bundle hoisted scripts and emit <script type="module" src="...">
-  return createHtml("");
+export function renderScript(_result: AstroResult, id: string): HtmlString {
+  // Lazy import to avoid circular dependency at module level
+  const { getHoistedScript } = require("../astro-plugin");
+  const code = getHoistedScript(id);
+  if (!code) return createHtml("");
+  return createHtml(`<script type="module">${code}</script>`);
 }
 
 export function defineStyleVars(_vars: unknown): HtmlString {

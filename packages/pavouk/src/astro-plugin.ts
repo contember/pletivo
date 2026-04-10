@@ -32,6 +32,23 @@ let registered = false;
  */
 const scopedCssMap = new Map<string, string[]>();
 
+/**
+ * Hoisted scripts collected from `<script>` tags (non-inline) in `.astro`
+ * files. The compiler returns them in `result.scripts[]` and emits
+ * `$$renderScript($$result, "file.astro?astro&type=script&index=N&lang.ts")`
+ * calls in the template. We store them keyed by that virtual ID so
+ * `renderScript()` in the shim can emit `<script type="module">` tags.
+ */
+const hoistedScriptMap = new Map<string, string>();
+
+export function getHoistedScript(id: string): string | undefined {
+  return hoistedScriptMap.get(id);
+}
+
+export function clearHoistedScripts(): void {
+  hoistedScriptMap.clear();
+}
+
 export function getScopedCss(): string {
   const parts: string[] = [];
   for (const css of scopedCssMap.values()) {
@@ -129,15 +146,23 @@ export async function registerAstroPlugin(): Promise<void> {
           scopedCssMap.set(cleanPath, result.css);
         }
 
+        // Collect hoisted scripts from `<script>` tags (non-inline).
+        // The compiler returns them in `result.scripts[]` and references
+        // them via `$$renderScript(result, "file?astro&type=script&index=N...")`.
+        if (result.scripts && result.scripts.length > 0) {
+          for (let i = 0; i < result.scripts.length; i++) {
+            const s = result.scripts[i] as { code?: string };
+            if (s.code) {
+              const scriptId = `${rel}?astro&type=script&index=${i}&lang.ts`;
+              hoistedScriptMap.set(scriptId, s.code);
+            }
+          }
+        }
+
         // Strip the virtual style imports that the compiler emits:
         //   import '/abs/path/File.astro?astro&type=style&index=0&lang.css';
         // Bun has no resolver for that query-suffixed specifier. The actual
         // CSS content is already captured above via `result.css`.
-        //
-        // Hoisted scripts use a similar virtual path
-        // (`?astro&type=script&...`) and show up as `$$renderScript(...)` in
-        // the body, not as imports — so we leave them alone and the shim
-        // currently no-ops them.
         const cleanedCode = result.code.replace(
           /^\s*import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?\s*$/gm,
           "",
