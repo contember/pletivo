@@ -7,7 +7,7 @@ import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
-import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, bumpDevVersion, getDevVersion } from "./astro-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
 import type { PavoukConfig } from "./config";
 import type { ServerWebSocket } from "bun";
@@ -34,7 +34,6 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
   const islandsDir = path.join(projectRoot, config.srcDir, "islands");
 
   const sockets = new Set<ServerWebSocket<unknown>>();
-  let moduleVersion = 0;
 
   await registerAstroPlugin();
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
@@ -58,7 +57,7 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
     const fullPath = path.join(pagesDir, route.file);
 
     try {
-      const importPath = fullPath + `?v=${moduleVersion}`;
+      const importPath = fullPath + `?v=${getDevVersion()}`;
       const mod = await import(importPath);
       const component = mod.default;
 
@@ -157,7 +156,7 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
       const fullPath = path.join(pagesDir, `404${ext}`);
       if (fs.existsSync(fullPath)) {
         try {
-          const mod = await import(fullPath + `?v=${moduleVersion}`);
+          const mod = await import(fullPath + `?v=${getDevVersion()}`);
           if (typeof mod.default === "function") {
             resetIslandRegistry();
             let result = mod.default({});
@@ -389,7 +388,7 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
     // Skip tmp files
     if (filename.includes("_tmp_")) return;
     console.log(`  Changed: ${config.srcDir}/${filename}`);
-    moduleVersion++;
+    bumpDevVersion();
 
     if (filename.startsWith("content/") || filename === "content.config.ts") {
       await initCollections(projectRoot);

@@ -22,6 +22,20 @@ import { transform } from "@astrojs/compiler";
 let registered = false;
 
 /**
+ * Dev-mode version counter. The dev server increments this on every file
+ * change. The astro-plugin appends it as a query string to `.astro`
+ * import specifiers in compiled code so that Bun's module cache is busted
+ * for transitive component imports (not just the page itself).
+ */
+let devVersion = 0;
+export function bumpDevVersion(): number {
+  return ++devVersion;
+}
+export function getDevVersion(): number {
+  return devVersion;
+}
+
+/**
  * Scoped CSS collected from `<style>` blocks in `.astro` files.
  * The Astro compiler returns scoped (`:where(.astro-xxxx)`) CSS in
  * `result.css[]`. We store it here keyed by file path so that the
@@ -163,10 +177,21 @@ export async function registerAstroPlugin(): Promise<void> {
         //   import '/abs/path/File.astro?astro&type=style&index=0&lang.css';
         // Bun has no resolver for that query-suffixed specifier. The actual
         // CSS content is already captured above via `result.css`.
-        const cleanedCode = result.code.replace(
+        let cleanedCode = result.code.replace(
           /^\s*import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?\s*$/gm,
           "",
         );
+
+        // In dev mode, append a version query to .astro import specifiers
+        // so that Bun's module cache is busted for transitive component
+        // imports (not just the top-level page). Without this, editing a
+        // child component doesn't cause it to be re-compiled.
+        if (devVersion > 0) {
+          cleanedCode = cleanedCode.replace(
+            /(from\s+['"])([^'"]+\.astro)(['"])/g,
+            `$1$2?v=${devVersion}$3`,
+          );
+        }
 
         return {
           contents: cleanedCode,
