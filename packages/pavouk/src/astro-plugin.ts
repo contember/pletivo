@@ -40,6 +40,41 @@ export function getScopedCss(): string {
   return parts.join("\n");
 }
 
+/**
+ * Return scoped CSS entries that match any of the given astro scope hashes
+ * found in a page's HTML. This allows per-page CSS injection — only the
+ * styles relevant to components actually rendered on that page are included.
+ *
+ * Pass the set of `astro-XXXXX` class names extracted from the page HTML.
+ */
+export function getScopedCssForPage(astroClasses: Set<string>): string {
+  if (astroClasses.size === 0) return "";
+  const parts: string[] = [];
+  for (const cssArr of scopedCssMap.values()) {
+    for (const css of cssArr) {
+      // Include this entry if it contains any of the page's astro scope classes
+      for (const cls of astroClasses) {
+        if (css.includes(cls)) {
+          parts.push(css);
+          break;
+        }
+      }
+    }
+  }
+  return parts.join("\n");
+}
+
+/** Extract all `astro-XXXXX` scope class names from an HTML string. */
+export function extractAstroClasses(html: string): Set<string> {
+  const classes = new Set<string>();
+  const re = /astro-[a-z0-9]+/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    classes.add(m[0]);
+  }
+  return classes;
+}
+
 export function clearScopedCss(): void {
   scopedCssMap.clear();
 }

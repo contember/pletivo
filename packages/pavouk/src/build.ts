@@ -7,7 +7,7 @@ import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
-import { registerAstroPlugin, getScopedCss, clearScopedCss } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss } from "./astro-plugin";
 import { initAstroHost, buildAstroRoutes, type PavoukRouteWithPaths } from "./astro-host";
 import type { PavoukConfig } from "./config";
 
@@ -141,50 +141,16 @@ export async function build(projectRoot: string, config: PavoukConfig) {
     }
   }
 
-  // Render custom 404 page (before scoped CSS collection so its styles
-  // are included in the bundle).
+  // Render custom 404 page
   const result404 = await render404Page(pagesDir);
   if (result404) {
     results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html });
   }
 
-  // Append scoped CSS from <style> blocks in .astro components to the
-  // bundled stylesheet. The Astro compiler emits scoped rules during
-  // import (which happens at render time above), so we collect them
-  // after all pages have been rendered.
-  const scopedCss = getScopedCss();
-  if (scopedCss) {
-    if (cssPath) {
-      // Append to existing bundle
-      const cssFile = path.join(distDir, cssPath);
-      const existing = await fs.readFile(cssFile, "utf-8");
-      const combined = existing + "\n/* astro scoped styles */\n" + scopedCss;
-      // Re-hash since content changed
-      const hasher = new Bun.CryptoHasher("md5");
-      hasher.update(combined);
-      const hash = hasher.digest("hex").slice(0, 8);
-      const newCssFile = `styles.${hash}.css`;
-      const newCssPath = `/assets/${newCssFile}`;
-      await fs.writeFile(path.join(distDir, "assets", newCssFile), combined);
-      if (newCssPath !== cssPath) {
-        await fs.unlink(cssFile);
-      }
-      cssPath = newCssPath;
-    } else {
-      // No CSS bundle yet — create one from scoped styles alone
-      const hasher = new Bun.CryptoHasher("md5");
-      hasher.update(scopedCss);
-      const hash = hasher.digest("hex").slice(0, 8);
-      const assetsDir = path.join(distDir, "assets");
-      await fs.mkdir(assetsDir, { recursive: true });
-      const outFile = `styles.${hash}.css`;
-      await fs.writeFile(path.join(assetsDir, outFile), scopedCss);
-      cssPath = `/assets/${outFile}`;
-    }
-  }
-  clearScopedCss();
-
-  // Write all pages (including 404) — parallel
+  // Write all pages (including 404) — parallel.
+  // Scoped CSS from <style> blocks is injected per-page (not into the
+  // global bundle) to avoid cross-page leaks from unscoped rules like
+  // `:global()` selectors or `body` styles.
   let totalSize = 0;
   await Promise.all(
     results.map(async (result) => {
@@ -193,6 +159,7 @@ export async function build(projectRoot: string, config: PavoukConfig) {
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
     }),
   );
+  clearScopedCss();
 
   // Detect islands from rendered HTML
   const islandNames = new Set<string>();
@@ -289,6 +256,15 @@ async function writeHtml(
 
   if (cssPath && html.includes("</head>")) {
     html = html.replace("</head>", `<link rel="stylesheet" href="${base}${cssPath}">\n</head>`);
+  }
+
+  // Inject per-page scoped CSS from <style> blocks in .astro components.
+  // We match astro scope classes in the HTML to include only relevant entries,
+  // avoiding cross-page leaks from unscoped rules (`:global()`, `body`, etc.).
+  const astroClasses = extractAstroClasses(html);
+  const pageScopedCss = getScopedCssForPage(astroClasses);
+  if (pageScopedCss && html.includes("</head>")) {
+    html = html.replace("</head>", `<style>${pageScopedCss}</style>\n</head>`);
   }
 
   // Integration-injected scripts (from `injectScript('page', code)` etc.)

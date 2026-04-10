@@ -7,7 +7,7 @@ import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
-import { registerAstroPlugin, getScopedCss } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses } from "./astro-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
 import type { PavoukConfig } from "./config";
 import type { ServerWebSocket } from "bun";
@@ -111,15 +111,13 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
       // buildCss's Tailwind pipeline runs per-request, so even projects
       // without a manual <link> get styles.
       //
-      // Scoped CSS from <style> blocks in .astro components is inlined as
-      // a <style> tag rather than served via /__styles.css. This avoids a
-      // race condition: the browser fetches CSS and HTML in parallel, but
-      // scoped styles are only collected when .astro modules are imported
-      // during page render. Inlining guarantees the styles are present on
-      // first load.
+      // Scoped CSS from <style> blocks is inlined per-page: we match
+      // astro scope classes present in this page's HTML to include only
+      // relevant entries, avoiding cross-page leaks from unscoped rules.
       const styleLink = `<link rel="stylesheet" href="/__styles.css">`;
-      const scopedCss = getScopedCss();
-      const scopedStyleTag = scopedCss ? `<style>${scopedCss}</style>` : "";
+      const pageAstroClasses = extractAstroClasses(html);
+      const pageScopedCss = getScopedCssForPage(pageAstroClasses);
+      const scopedStyleTag = pageScopedCss ? `<style>${pageScopedCss}</style>` : "";
       const scripts = hmrClientScript + (getUsedIslands().size > 0 ? "\n" + hydrationScript : "");
       const integrationScripts = astroHost
         ? [
@@ -169,8 +167,9 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
             else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
             else return null;
 
-            const scopedCss404 = getScopedCss();
-            const styleTag404 = scopedCss404 ? `<style>${scopedCss404}</style>` : "";
+            const classes404 = extractAstroClasses(html);
+            const scoped404 = getScopedCssForPage(classes404);
+            const styleTag404 = scoped404 ? `<style>${scoped404}</style>` : "";
             const headInjection404 = `<link rel="stylesheet" href="/__styles.css">\n${styleTag404}\n${hmrClientScript}`;
             if (html.includes("</head>")) {
               html = html.replace("</head>", headInjection404 + "\n</head>");
@@ -237,14 +236,10 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
         }
       }
 
-      // Serve bundled CSS from src/ on-the-fly, including scoped styles
-      // from <style> blocks in .astro components collected during import.
+      // Serve bundled CSS from src/ on-the-fly. Scoped styles from <style>
+      // blocks are injected per-page as inline <style> tags, not here.
       if (url.pathname === "/__styles.css") {
-        let css = await devCss(projectRoot, config.srcDir);
-        const scoped = getScopedCss();
-        if (scoped) {
-          css += "\n/* astro scoped styles */\n" + scoped;
-        }
+        const css = await devCss(projectRoot, config.srcDir);
         return new Response(css, {
           headers: { "Content-Type": "text/css; charset=utf-8" },
         });
