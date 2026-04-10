@@ -3,10 +3,10 @@
   "workspaces": ["packages/*", "examples/*"],
   "devDependencies": {
     "@astrojs/compiler": "3.0.1",
-    "@pavouk/astro-jsx-pages": "workspace:*",
+    "@pletivo/astro-jsx-pages": "workspace:*",
     "morphdom": "^2.7.8",
-    "pavouk": "workspace:*",
-    "pavouk-astro": "workspace:*",
+    "pletivo": "workspace:*",
+    "pletivo-astro": "workspace:*",
     "preact": "^10",
     "zod": "^4"
   }

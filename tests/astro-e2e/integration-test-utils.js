@@ -1,7 +1,7 @@
 /**
  * Drop-in replacement for Astro's test/test-utils.js.
  *
- * Provides a loadFixture() that builds via pavouk CLI instead of Astro,
+ * Provides a loadFixture() that builds via pletivo CLI instead of Astro,
  * then exposes the same read/fetch API so copied Astro test files work
  * with minimal patching.
  */
@@ -13,9 +13,9 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const PAVOUK_CLI = path.resolve(
+const PLETIVO_CLI = path.resolve(
   __dirname,
-  "../../packages/pavouk/src/cli.ts",
+  "../../packages/pletivo/src/cli.ts",
 );
 
 // Resolve bun binary path — node's execFile needs an absolute path
@@ -39,18 +39,18 @@ const BUN = (() => {
 })();
 
 /**
- * Promisified exec that runs bun with the pavouk CLI.
+ * Promisified exec that runs bun with the pletivo CLI.
  * Uses shell: true so that bun is found via PATH even when spawned from node.
  */
-function runPavouk(args, cwd) {
+function runPletivo(args, cwd) {
   return new Promise((resolve, reject) => {
     execFile(
       BUN,
-      ["run", PAVOUK_CLI, ...args],
+      ["run", PLETIVO_CLI, ...args],
       { cwd },
       (err, stdout, stderr) => {
         if (err) {
-          const msg = `pavouk ${args.join(" ")} failed (exit ${err.code}):\n${stderr || stdout}`;
+          const msg = `pletivo ${args.join(" ")} failed (exit ${err.code}):\n${stderr || stdout}`;
           reject(new Error(msg));
         } else {
           resolve({ stdout, stderr });
@@ -82,7 +82,7 @@ async function waitForServer(url, maxAttempts = 60, intervalMs = 250) {
 let nextPort = 6100;
 
 /**
- * Load a pavouk fixture. API-compatible with Astro's loadFixture().
+ * Load a pletivo fixture. API-compatible with Astro's loadFixture().
  *
  * @param {object} inlineConfig
  * @param {string} inlineConfig.root - Path to fixture directory (relative to caller or absolute)
@@ -112,7 +112,7 @@ export async function loadFixture(inlineConfig) {
     async build() {
       // Clean dist first
       fs.rmSync(outDir, { recursive: true, force: true });
-      await runPavouk(["build"], root);
+      await runPletivo(["build"], root);
     },
 
     async readFile(filePath, encoding) {
@@ -133,7 +133,7 @@ export async function loadFixture(inlineConfig) {
       fs.rmSync(outDir, { recursive: true, force: true });
     },
 
-    // Stub — pavouk doesn't have a preview server. Returns a stoppable
+    // Stub — pletivo doesn't have a preview server. Returns a stoppable
     // object so tests that call preview() in before() hooks don't crash.
     async preview() {
       return { stop: async () => {} };
@@ -149,14 +149,14 @@ export async function loadFixture(inlineConfig) {
 
     async startDevServer() {
       const { spawn } = await import("node:child_process");
-      devProc = spawn(BUN, ["run", PAVOUK_CLI, "dev", `--port=${port}`], {
+      devProc = spawn(BUN, ["run", PLETIVO_CLI, "dev", `--port=${port}`], {
         cwd: root,
         stdio: ["pipe", "pipe", "pipe"],
       });
 
       devProc.stderr.on("data", (data) => {
         const msg = data.toString().trim();
-        if (msg) process.stderr.write(`[pavouk:dev] ${msg}\n`);
+        if (msg) process.stderr.write(`[pletivo:dev] ${msg}\n`);
       });
 
       await waitForServer(`http://localhost:${port}`);

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { defineCollection, glob } from "../../packages/pavouk/src/content/collection";
+import { defineCollection, glob } from "../../packages/pletivo/src/content/collection";
 import { z } from "zod";
 
 describe("defineCollection", () => {

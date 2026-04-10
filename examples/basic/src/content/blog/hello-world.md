@@ -6,7 +6,7 @@ tags: [intro, first-post]
 
 # Hello World
 
-This is the **first post** on our blog built with Pavouk.
+This is the **first post** on our blog built with Pletivo.
 
 ## Features
 
@@ -17,4 +17,4 @@ This is the **first post** on our blog built with Pavouk.
 
 Here's some `inline code` and a [link to the homepage](/).
 
-> Pavouk means "spider" in Czech. Like a spider weaving a web, it weaves your pages together.
+> Pletivo means "spider" in Czech. Like a spider weaving a web, it weaves your pages together.

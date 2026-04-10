@@ -1,4 +1,4 @@
-import type { CollectionEntry } from "../../../../packages/pavouk/src/content/collection";
+import type { CollectionEntry } from "../../../../packages/pletivo/src/content/collection";
 import PostCard from "./PostCard";
 
 export default function PostList(props: {

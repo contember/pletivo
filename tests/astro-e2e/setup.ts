@@ -3,7 +3,7 @@
  * Setup script for Astro compatibility tests.
  *
  * Clones the Astro repo (shallow, specific tag), copies selected fixtures
- * and test files, and patches them to run through pavouk instead of Astro.
+ * and test files, and patches them to run through pletivo instead of Astro.
  *
  * Usage:
  *   bun run tests/astro-e2e/setup.ts
@@ -87,7 +87,7 @@ function copyFixture(
   // Rewrite package.json — strip astro workspace deps, keep extras
   const pkgJsonPath = path.join(dstFixture, "package.json");
   const pkg: Record<string, unknown> = {
-    name: `@pavouk-compat/${entry.name}`,
+    name: `@pletivo-compat/${entry.name}`,
     private: true,
   };
   if (entry.extraDeps && Object.keys(entry.extraDeps).length > 0) {

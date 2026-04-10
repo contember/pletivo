@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseMarkdown } from "../../packages/pavouk/src/content/markdown";
+import { parseMarkdown } from "../../packages/pletivo/src/content/markdown";
 
 describe("frontmatter parsing", () => {
   test("extracts key-value pairs", () => {

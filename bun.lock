@@ -5,35 +5,35 @@
     "": {
       "devDependencies": {
         "@astrojs/compiler": "3.0.1",
-        "@pavouk/astro-jsx-pages": "workspace:*",
+        "@pletivo/astro-jsx-pages": "workspace:*",
         "morphdom": "^2.7.8",
-        "pavouk": "workspace:*",
-        "pavouk-astro": "workspace:*",
+        "pletivo": "workspace:*",
+        "pletivo-astro": "workspace:*",
         "preact": "^10",
         "zod": "^4",
       },
     },
     "examples/basic": {
-      "name": "@pavouk-examples/basic",
+      "name": "@pletivo-examples/basic",
       "dependencies": {
-        "pavouk": "workspace:*",
+        "pletivo": "workspace:*",
       },
     },
     "examples/basic-astro": {
-      "name": "@pavouk-examples/basic-astro",
+      "name": "@pletivo-examples/basic-astro",
       "dependencies": {
         "astro": "^5.0.0",
       },
     },
     "examples/basic-astro-native": {
-      "name": "@pavouk-examples/basic-astro-native",
+      "name": "@pletivo-examples/basic-astro-native",
       "dependencies": {
         "@astrojs/compiler": "^3",
-        "pavouk": "workspace:*",
+        "pletivo": "workspace:*",
       },
     },
     "packages/astro-jsx-pages": {
-      "name": "@pavouk/astro-jsx-pages",
+      "name": "@pletivo/astro-jsx-pages",
       "version": "0.0.1",
       "dependencies": {
         "@babel/generator": "^7.26.0",
@@ -59,11 +59,11 @@
         "astro": "^5.0.0 || ^6.0.0",
       },
     },
-    "packages/pavouk": {
-      "name": "pavouk",
+    "packages/pletivo": {
+      "name": "pletivo",
       "version": "0.1.0",
       "bin": {
-        "pavouk": "./src/cli.ts",
+        "pletivo": "./src/cli.ts",
       },
       "dependencies": {
         "preact": "^10.29.1",
@@ -76,11 +76,11 @@
         "@astrojs/compiler",
       ],
     },
-    "packages/pavouk-astro": {
-      "name": "pavouk-astro",
+    "packages/pletivo-astro": {
+      "name": "pletivo-astro",
       "version": "0.1.0",
       "dependencies": {
-        "@pavouk/astro-jsx-pages": "workspace:*",
+        "@pletivo/astro-jsx-pages": "workspace:*",
       },
       "peerDependencies": {
         "astro": "^5.0.0 || ^6.0.0",
@@ -256,13 +256,13 @@
 
     "@oslojs/encoding": ["@oslojs/encoding@1.1.0", "", {}, "sha512-70wQhgYmndg4GCPxPPxPGevRKqTIJ2Nh4OkiMWmDAVYsTQ+Ta7Sq+rPevXyXGdzr30/qZBnyOalCszoMxlyldQ=="],
 
-    "@pavouk-examples/basic": ["@pavouk-examples/basic@workspace:examples/basic"],
+    "@pletivo-examples/basic": ["@pletivo-examples/basic@workspace:examples/basic"],
 
-    "@pavouk-examples/basic-astro": ["@pavouk-examples/basic-astro@workspace:examples/basic-astro"],
+    "@pletivo-examples/basic-astro": ["@pletivo-examples/basic-astro@workspace:examples/basic-astro"],
 
-    "@pavouk-examples/basic-astro-native": ["@pavouk-examples/basic-astro-native@workspace:examples/basic-astro-native"],
+    "@pletivo-examples/basic-astro-native": ["@pletivo-examples/basic-astro-native@workspace:examples/basic-astro-native"],
 
-    "@pavouk/astro-jsx-pages": ["@pavouk/astro-jsx-pages@workspace:packages/astro-jsx-pages"],
+    "@pletivo/astro-jsx-pages": ["@pletivo/astro-jsx-pages@workspace:packages/astro-jsx-pages"],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-beta.27", "", {}, "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA=="],
 
@@ -718,15 +718,15 @@
 
     "parse5-parser-stream": ["parse5-parser-stream@7.1.2", "", { "dependencies": { "parse5": "^7.0.0" } }, "sha512-JyeQc9iwFLn5TbvvqACIF/VXG6abODeB3Fwmv/TGdLk2LfbWkaySGY72at4+Ty7EkPZj854u4CrICqNk2qIbow=="],
 
-    "pavouk": ["pavouk@workspace:packages/pavouk"],
-
-    "pavouk-astro": ["pavouk-astro@workspace:packages/pavouk-astro"],
-
     "piccolore": ["piccolore@0.1.3", "", {}, "sha512-o8bTeDWjE086iwKrROaDf31K0qC/BENdm15/uH9usSC/uZjJOKb2YGiVHfLY4GhwsERiPI1jmwI2XrA7ACOxVw=="],
 
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 
     "picomatch": ["picomatch@4.0.4", "", {}, "sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A=="],
+
+    "pletivo": ["pletivo@workspace:packages/pletivo"],
+
+    "pletivo-astro": ["pletivo-astro@workspace:packages/pletivo-astro"],
 
     "postcss": ["postcss@8.5.9", "", { "dependencies": { "nanoid": "^3.3.11", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-7a70Nsot+EMX9fFU3064K/kdHWZqGVY+BADLyXc8Dfv+mTLLVl6JzJpPaCZ2kQL9gIJvKXSLMHhqdRRjwQeFtw=="],
 

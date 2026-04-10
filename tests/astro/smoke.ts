@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { registerAstroPlugin } from "../../packages/pavouk/src/astro-plugin";
-import { renderAstroPage, isAstroComponent } from "../../packages/pavouk/src/runtime/astro-shim";
+import { registerAstroPlugin } from "../../packages/pletivo/src/astro-plugin";
+import { renderAstroPage, isAstroComponent } from "../../packages/pletivo/src/runtime/astro-shim";
 
 await registerAstroPlugin();
 
@@ -12,13 +12,13 @@ if (!isAstroComponent(mod.default)) {
   process.exit(1);
 }
 
-const html = await renderAstroPage(mod.default, { name: "pavouk" });
+const html = await renderAstroPage(mod.default, { name: "pletivo" });
 console.log(html);
 console.log("\n--- assertions ---");
 
 const expectations = [
-  { desc: "title contains name", pass: html.includes("<title>Hello pavouk</title>") },
-  { desc: "h1 contains greeting", pass: html.includes("<h1>Hello, pavouk!</h1>") },
+  { desc: "title contains name", pass: html.includes("<title>Hello pletivo</title>") },
+  { desc: "h1 contains greeting", pass: html.includes("<h1>Hello, pletivo!</h1>") },
   { desc: "ul has 3 li", pass: (html.match(/<li>/g) || []).length === 3 },
   { desc: "first li is apple", pass: html.includes("<li>apple</li>") },
   { desc: "Fragment set:html renders raw", pass: html.includes("<p>raw <em>html</em></p>") },

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { registerAstroPlugin } from "../../packages/pavouk/src/astro-plugin";
-import { renderAstroPage } from "../../packages/pavouk/src/runtime/astro-shim";
+import { registerAstroPlugin } from "../../packages/pletivo/src/astro-plugin";
+import { renderAstroPage } from "../../packages/pletivo/src/runtime/astro-shim";
 
 await registerAstroPlugin();
 

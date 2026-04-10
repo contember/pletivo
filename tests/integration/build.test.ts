@@ -2,13 +2,13 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
 import fs from "fs/promises";
 import { readdirSync } from "fs";
-import { build } from "../../packages/pavouk/src/build";
-import type { PavoukConfig } from "../../packages/pavouk/src/config";
+import { build } from "../../packages/pletivo/src/build";
+import type { PletivoConfig } from "../../packages/pletivo/src/config";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
 const distDir = path.join(fixtureRoot, "dist");
 
-const config: PavoukConfig = {
+const config: PletivoConfig = {
   outDir: "dist",
   port: 3000,
   base: "/",
@@ -59,7 +59,7 @@ describe("build", () => {
 
   test("island has SSR content", async () => {
     const content = await Bun.file(path.join(distDir, "index.html")).text();
-    expect(content).toContain("<pavouk-island");
+    expect(content).toContain("<pletivo-island");
     expect(content).toContain('data-component="Counter"');
     expect(content).toContain('data-hydrate="load"');
     expect(content).toContain("<button>Count: 5</button>");
@@ -67,7 +67,7 @@ describe("build", () => {
 
   test("hydration script is injected on pages with islands", async () => {
     const content = await Bun.file(path.join(distDir, "index.html")).text();
-    expect(content).toContain("pavouk-island");
+    expect(content).toContain("pletivo-island");
     expect(content).toContain("/_islands/");
   });
 

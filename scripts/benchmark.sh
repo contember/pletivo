@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# End-to-end build benchmark: pavouk vs native Astro on an identical
+# End-to-end build benchmark: pletivo vs native Astro on an identical
 # synthetic content set (1000 blog + 300 docs + 200 notes markdown files).
 #
 # Usage:
 #   scripts/benchmark.sh              # 5 runs per framework (default)
 #   RUNS=10 scripts/benchmark.sh      # 10 runs
 #   SKIP_GEN=1 scripts/benchmark.sh   # reuse existing synthetic content
-#   ONLY=pavouk scripts/benchmark.sh  # just pavouk (or: astro)
+#   ONLY=pletivo scripts/benchmark.sh  # just pletivo (or: astro)
 #
 # Reads nothing; prints a Markdown-ish table at the end.
 
@@ -18,11 +18,11 @@ SKIP_GEN="${SKIP_GEN:-0}"
 ONLY="${ONLY:-both}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PAVOUK_DIR="$REPO_ROOT/examples/basic"
+PLETIVO_DIR="$REPO_ROOT/examples/basic"
 ASTRO_DIR="$REPO_ROOT/examples/basic-astro"
 
-if [[ ! -d "$PAVOUK_DIR" ]]; then
-  echo "error: pavouk example not found at $PAVOUK_DIR" >&2
+if [[ ! -d "$PLETIVO_DIR" ]]; then
+  echo "error: pletivo example not found at $PLETIVO_DIR" >&2
   exit 1
 fi
 if [[ ! -d "$ASTRO_DIR" ]]; then
@@ -33,13 +33,13 @@ fi
 # ── Generate synthetic content ─────────────────────────────────────────
 if [[ "$SKIP_GEN" != "1" ]]; then
   echo "▶ Generating synthetic content..."
-  (cd "$PAVOUK_DIR" && bun scripts/generate-content.ts)
+  (cd "$PLETIVO_DIR" && bun scripts/generate-content.ts)
 
   echo "▶ Syncing content → astro example..."
   for col in blog docs notes; do
     rm -rf "$ASTRO_DIR/src/content/$col/generated"
     mkdir -p "$ASTRO_DIR/src/content/$col"
-    cp -r "$PAVOUK_DIR/src/content/$col/generated" "$ASTRO_DIR/src/content/$col/"
+    cp -r "$PLETIVO_DIR/src/content/$col/generated" "$ASTRO_DIR/src/content/$col/"
   done
 fi
 
@@ -55,27 +55,27 @@ mean() {
 # and does not collide with the build's own stdout/stderr.
 time_build() {
   local dir="$1"
-  local time_file="/tmp/pavouk-bench.time"
+  local time_file="/tmp/pletivo-bench.time"
   (
     cd "$dir"
-    /usr/bin/time -f "%e" -o "$time_file" bun run build > /tmp/pavouk-bench.log 2>&1
+    /usr/bin/time -f "%e" -o "$time_file" bun run build > /tmp/pletivo-bench.log 2>&1
   )
   cat "$time_file"
 }
 
-run_pavouk() {
+run_pletivo() {
   echo ""
-  echo "▶ pavouk: $RUNS clean builds"
+  echo "▶ pletivo: $RUNS clean builds"
   local times=()
   for i in $(seq 1 "$RUNS"); do
-    rm -rf "$PAVOUK_DIR/dist"
+    rm -rf "$PLETIVO_DIR/dist"
     local t
-    t=$(time_build "$PAVOUK_DIR")
+    t=$(time_build "$PLETIVO_DIR")
     times+=("$t")
     printf "  run %d: %ss\n" "$i" "$t"
   done
-  PAVOUK_MEAN=$(printf "%s\n" "${times[@]}" | mean)
-  PAVOUK_RAW="${times[*]}"
+  PLETIVO_MEAN=$(printf "%s\n" "${times[@]}" | mean)
+  PLETIVO_RAW="${times[*]}"
 }
 
 run_astro_cold() {
@@ -102,19 +102,19 @@ run_astro_warm() {
 }
 
 # ── Run ────────────────────────────────────────────────────────────────
-PAVOUK_MEAN="—"; PAVOUK_RAW=""
+PLETIVO_MEAN="—"; PLETIVO_RAW=""
 ASTRO_COLD="—"; ASTRO_WARM_MEAN="—"; ASTRO_WARM_RAW=""
 
 case "$ONLY" in
-  pavouk)
-    run_pavouk
+  pletivo)
+    run_pletivo
     ;;
   astro)
     run_astro_cold
     run_astro_warm
     ;;
   both|*)
-    run_pavouk
+    run_pletivo
     run_astro_cold
     run_astro_warm
     ;;
@@ -126,9 +126,9 @@ echo "═══ Results (wall-clock seconds) ═══"
 printf "%-18s | %-10s | %s\n" "framework" "mean" "runs"
 printf "%-18s-+-%-10s-+-%s\n" "------------------" "----------" "------------------------------"
 if [[ "$ONLY" != "astro" ]]; then
-  printf "%-18s | %-10s | %s\n" "pavouk" "${PAVOUK_MEAN}s" "$PAVOUK_RAW"
+  printf "%-18s | %-10s | %s\n" "pletivo" "${PLETIVO_MEAN}s" "$PLETIVO_RAW"
 fi
-if [[ "$ONLY" != "pavouk" ]]; then
+if [[ "$ONLY" != "pletivo" ]]; then
   printf "%-18s | %-10s | %s\n" "astro (cold, 1x)" "${ASTRO_COLD}s" "-"
   printf "%-18s | %-10s | %s\n" "astro (warm)" "${ASTRO_WARM_MEAN}s" "$ASTRO_WARM_RAW"
 fi

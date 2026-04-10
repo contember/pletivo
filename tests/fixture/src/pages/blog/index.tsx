@@ -1,4 +1,4 @@
-import { getCollection } from "../../../../../packages/pavouk/src/content/collection";
+import { getCollection } from "../../../../../packages/pletivo/src/content/collection";
 import Layout from "../../components/Layout";
 
 export default async function BlogIndex() {

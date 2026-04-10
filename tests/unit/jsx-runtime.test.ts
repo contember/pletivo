@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { jsx, jsxs, jsxDEV, Fragment, type HtmlString } from "../../packages/pavouk/src/runtime/jsx-runtime";
-import { resetIslandRegistry, getUsedIslands } from "../../packages/pavouk/src/runtime/island";
+import { jsx, jsxs, jsxDEV, Fragment, type HtmlString } from "../../packages/pletivo/src/runtime/jsx-runtime";
+import { resetIslandRegistry, getUsedIslands } from "../../packages/pletivo/src/runtime/island";
 
 function html(result: HtmlString | Promise<HtmlString>): string {
   if (result instanceof Promise) throw new Error("Unexpected promise");
@@ -203,7 +203,7 @@ describe("island detection", () => {
     }
     const result = jsx(MyIsland, { client: "load", count: 5,  });
     const h = html(result);
-    expect(h).toContain("<pavouk-island");
+    expect(h).toContain("<pletivo-island");
     expect(h).toContain('data-component="MyIsland"');
     expect(h).toContain('data-hydrate="load"');
     expect(h).toContain("<button>5</button>");
@@ -249,7 +249,7 @@ describe("island detection", () => {
       return jsx("button", { children: String(props.count) });
     }
     const h = html(jsx(MyIsland, { "client:load": true, count: 3 }));
-    expect(h).toContain("<pavouk-island");
+    expect(h).toContain("<pletivo-island");
     expect(h).toContain('data-hydrate="load"');
     expect(h).toContain("<button>3</button>");
     expect(h).not.toContain("client:load");

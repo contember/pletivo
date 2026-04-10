@@ -8,7 +8,7 @@ export interface FixtureEntry {
   testFile: string;
   /** Fixture directory name inside astro's fixtures/ */
   fixture: string;
-  /** Extra npm deps the fixture code imports (beyond what pavouk provides) */
+  /** Extra npm deps the fixture code imports (beyond what pletivo provides) */
   extraDeps?: Record<string, string>;
   /** String replacements applied to the copied test file */
   testPatches?: Array<{ search: string; replace: string }>;
@@ -70,7 +70,7 @@ export const integrationEntries: FixtureEntry[] = [
     name: "astro-basic",
     testFile: "astro-basic.test.js",
     fixture: "astro-basic",
-    // Remove pages that use features pavouk doesn't support (md, mdx, file:// URLs,
+    // Remove pages that use features pletivo doesn't support (md, mdx, file:// URLs,
     // ?raw imports, JS route handlers, preact components)
     removeFiles: [
       "src/pages/fileurl.astro",

@@ -4,7 +4,7 @@ import {
   getUsedIslands,
   registerIsland,
   renderIslandWrapper,
-} from "../../packages/pavouk/src/runtime/island";
+} from "../../packages/pletivo/src/runtime/island";
 
 describe("island registry", () => {
   beforeEach(() => {
@@ -55,11 +55,11 @@ describe("island registry", () => {
 describe("renderIslandWrapper", () => {
   test("renders basic wrapper", () => {
     const html = renderIslandWrapper("Counter", "load", { initial: 0 }, "<button>0</button>");
-    expect(html).toContain("<pavouk-island");
+    expect(html).toContain("<pletivo-island");
     expect(html).toContain('data-component="Counter"');
     expect(html).toContain('data-hydrate="load"');
     expect(html).toContain("<button>0</button>");
-    expect(html).toContain("</pavouk-island>");
+    expect(html).toContain("</pletivo-island>");
   });
 
   test("serializes props as JSON", () => {
@@ -78,8 +78,8 @@ describe("renderIslandWrapper", () => {
 
   test("empty inner HTML", () => {
     const html = renderIslandWrapper("Empty", "visible", {}, "");
-    expect(html).toContain("<pavouk-island");
-    expect(html).toContain("></pavouk-island>");
+    expect(html).toContain("<pletivo-island");
+    expect(html).toContain("></pletivo-island>");
   });
 
   test("media hydration strategy", () => {

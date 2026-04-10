@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
-import { dev } from "../../packages/pavouk/src/dev";
+import { dev } from "../../packages/pletivo/src/dev";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
 const PORT = 4567 + Math.floor(Math.random() * 1000);
@@ -11,7 +11,7 @@ let serverProcess: ReturnType<typeof Bun.spawn>;
 beforeAll(async () => {
   // Start dev server as a subprocess to avoid blocking
   serverProcess = Bun.spawn(
-    ["bun", "run", path.join(import.meta.dir, "../../packages/pavouk/src/cli.ts"), "dev", String(PORT)],
+    ["bun", "run", path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts"), "dev", String(PORT)],
     { cwd: fixtureRoot, stdout: "pipe", stderr: "pipe" },
   );
 
@@ -85,7 +85,7 @@ describe("dev server - islands", () => {
   test("homepage contains island with SSR", async () => {
     const res = await fetch(BASE + "/");
     const html = await res.text();
-    expect(html).toContain("<pavouk-island");
+    expect(html).toContain("<pletivo-island");
     expect(html).toContain('data-component="Counter"');
     expect(html).toContain("<button>Count: 5</button>");
   });
@@ -130,7 +130,7 @@ describe("dev server - hydration script", () => {
   test("pages with islands include hydration script", async () => {
     const res = await fetch(BASE + "/");
     const html = await res.text();
-    expect(html).toContain("pavouk-island");
+    expect(html).toContain("pletivo-island");
     expect(html).toContain("IntersectionObserver");
   });
 

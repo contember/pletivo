@@ -5,7 +5,7 @@ export default function About() {
     <Layout title="About">
       <h1>About</h1>
       <p>
-        Pavouk is a static site generator that uses JSX components
+        Pletivo is a static site generator that uses JSX components
         to render HTML at build time. No client-side JavaScript runtime needed.
       </p>
       <p>Built with Bun.</p>

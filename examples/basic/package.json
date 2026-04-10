@@ -1,12 +1,12 @@
 {
-  "name": "@pavouk-examples/basic",
+  "name": "@pletivo-examples/basic",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pavouk dev",
-    "build": "pavouk build"
+    "dev": "pletivo dev",
+    "build": "pletivo build"
   },
   "dependencies": {
-    "pavouk": "workspace:*"
+    "pletivo": "workspace:*"
   }
 }

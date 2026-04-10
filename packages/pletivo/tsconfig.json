@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "pletivo",
+    "strict": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ESNext",
+    "paths": {
+      "pletivo/jsx-runtime": ["./src/runtime/jsx-runtime.ts"],
+      "pletivo/hooks": ["./src/runtime/hooks.ts"],
+      "preact/hooks": ["./src/runtime/hooks.ts"]
+    }
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "name": "@pavouk/astro-e2e",
+  "name": "@pletivo/astro-e2e",
   "private": true,
   "type": "module",
   "scripts": {

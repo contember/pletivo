@@ -1,0 +1,26 @@
+{
+  "name": "pletivo",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "pletivo": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./jsx-runtime": "./src/runtime/jsx-runtime.ts",
+    "./jsx-dev-runtime": "./src/runtime/jsx-runtime.ts",
+    "./hooks": "./src/runtime/hooks.ts",
+    "./content": "./src/content/index.ts",
+    "./astro-shim": "./src/runtime/astro-shim.ts"
+  },
+  "dependencies": {
+    "preact": "^10.29.1",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "@astrojs/compiler": "^2 || ^3"
+  },
+  "peerDependenciesMeta": {
+    "@astrojs/compiler": { "optional": true }
+  }
+}

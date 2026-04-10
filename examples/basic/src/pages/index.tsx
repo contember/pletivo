@@ -11,8 +11,8 @@ export default function Home() {
   ];
 
   return (
-    <Layout title="Pavouk - Home">
-      <h1>Pavouk</h1>
+    <Layout title="Pletivo - Home">
+      <h1>Pletivo</h1>
       <p>A tiny Astro-like SSG framework powered by Bun.</p>
 
       <h2>Features</h2>

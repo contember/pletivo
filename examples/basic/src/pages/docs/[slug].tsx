@@ -1,5 +1,5 @@
-import { getCollection } from "../../../../../packages/pavouk/src/content/collection";
-import type { CollectionEntry } from "../../../../../packages/pavouk/src/content/collection";
+import { getCollection } from "../../../../../packages/pletivo/src/content/collection";
+import type { CollectionEntry } from "../../../../../packages/pletivo/src/content/collection";
 import Layout from "../../components/Layout";
 import PostDetail from "../../components/PostDetail";
 

@@ -1,13 +1,13 @@
 {
-  "name": "@pavouk-examples/basic-astro-native",
+  "name": "@pletivo-examples/basic-astro-native",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pavouk dev",
-    "build": "pavouk build"
+    "dev": "pletivo dev",
+    "build": "pletivo build"
   },
   "dependencies": {
-    "pavouk": "workspace:*",
+    "pletivo": "workspace:*",
     "@astrojs/compiler": "^3"
   }
 }

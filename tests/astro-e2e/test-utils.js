@@ -6,9 +6,9 @@ import { spawn } from "node:child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const PAVOUK_CLI = path.resolve(
+const PLETIVO_CLI = path.resolve(
   __dirname,
-  "../../packages/pavouk/src/cli.ts",
+  "../../packages/pletivo/src/cli.ts",
 );
 
 // Assign unique ports per test file. Scan tests/ dir at import time.
@@ -43,7 +43,7 @@ async function waitForServer(url, maxAttempts = 60, intervalMs = 250) {
  * Drop-in replacement for Astro's e2e testFactory.
  *
  * Returns a Playwright `test` instance extended with an `astro` fixture
- * that starts pavouk's dev server instead of Astro's.
+ * that starts pletivo's dev server instead of Astro's.
  */
 export function testFactory(testFile, inlineConfig) {
   if (!inlineConfig?.root)
@@ -64,7 +64,7 @@ export function testFactory(testFile, inlineConfig) {
 
   const fixture = {
     async startDevServer() {
-      serverProc = spawn("bun", ["run", PAVOUK_CLI, "dev", `--port=${port}`], {
+      serverProc = spawn("bun", ["run", PLETIVO_CLI, "dev", `--port=${port}`], {
         cwd: fixtureRoot,
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
@@ -73,14 +73,14 @@ export function testFactory(testFile, inlineConfig) {
       // Log stderr for debugging
       serverProc.stderr.on("data", (data) => {
         const msg = data.toString().trim();
-        if (msg) process.stderr.write(`[pavouk:${testFileName}] ${msg}\n`);
+        if (msg) process.stderr.write(`[pletivo:${testFileName}] ${msg}\n`);
       });
 
       // Fail fast if process exits during startup
       const exitPromise = new Promise((_, reject) => {
         serverProc.on("exit", (code) => {
           if (code !== null && code !== 0) {
-            reject(new Error(`pavouk dev exited with code ${code}`));
+            reject(new Error(`pletivo dev exited with code ${code}`));
           }
         });
       });

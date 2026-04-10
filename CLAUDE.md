@@ -1,4 +1,4 @@
-# Pavouk
+# Pletivo
 
 Bun-powered static site generator with JSX/TSX pages, file-based routing, content collections (Zod), and Preact islands. Also runs inside Astro as an integration.
 
@@ -16,13 +16,13 @@ bun test                                 # All tests
 bun test tests/unit/router.test.ts       # Single test file
 bun test tests/unit/                     # Test directory
 
-# Benchmark (pavouk vs native Astro build)
+# Benchmark (pletivo vs native Astro build)
 scripts/benchmark.sh                     # 5 runs (default)
 RUNS=10 scripts/benchmark.sh
-ONLY=pavouk scripts/benchmark.sh
+ONLY=pletivo scripts/benchmark.sh
 ```
 
-`@pavouk/astro-jsx-pages` uses Node (not Bun) and has its own scripts:
+`@pletivo/astro-jsx-pages` uses Node (not Bun) and has its own scripts:
 ```bash
 cd packages/astro-jsx-pages
 bun run build     # tsc → dist/
@@ -35,10 +35,10 @@ No linter or formatter is configured.
 
 Bun workspace monorepo:
 
-- **`packages/pavouk`** — Core SSG engine: CLI, router, JSX runtime (SSR), island hydration, content collections, CSS pipeline (Tailwind v4), dev server with HMR, astro-host shim.
+- **`packages/pletivo`** — Core SSG engine: CLI, router, JSX runtime (SSR), island hydration, content collections, CSS pipeline (Tailwind v4), dev server with HMR, astro-host shim.
 - **`packages/astro-jsx-pages`** — Babel+Vite plugin enabling TSX pages inside Astro. Built with tsc.
-- **`packages/pavouk-astro`** — Astro integration wrapping `astro-jsx-pages`.
-- **`examples/`** — `basic` (pavouk-native), `basic-astro`, `basic-astro-native`.
+- **`packages/pletivo-astro`** — Astro integration wrapping `astro-jsx-pages`.
+- **`examples/`** — `basic` (pletivo-native), `basic-astro`, `basic-astro-native`.
 
 ## Critical Invariants
 

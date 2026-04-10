@@ -1,4 +1,4 @@
-import { defineCollection, glob, z } from "../../../packages/pavouk/src/content/collection";
+import { defineCollection, glob, z } from "../../../packages/pletivo/src/content/collection";
 
 const postSchema = z.object({
   title: z.string(),

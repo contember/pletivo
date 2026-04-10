@@ -18,7 +18,7 @@ const generate = require('@babel/generator').default as typeof import('@babel/ge
 
 const PAGES_PATH_PATTERN = /src\/pages\/.*\.[jt]sx$/;
 const JSX_IMPORT_SOURCE = 'astro';
-const ISLAND_RUNTIME_IMPORT = '@pavouk/astro-jsx-pages/react-island-runtime';
+const ISLAND_RUNTIME_IMPORT = '@pletivo/astro-jsx-pages/react-island-runtime';
 
 // ═══════════════════════════════════════════════════════════
 // TYPES

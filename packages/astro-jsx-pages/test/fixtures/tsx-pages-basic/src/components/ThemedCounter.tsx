@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { createContext, useContext, useState } from 'react';
-import { asIsland } from '@pavouk/astro-jsx-pages/react-island-runtime';
+import { asIsland } from '@pletivo/astro-jsx-pages/react-island-runtime';
 
 // Exportujeme kontexty pro použití v page
 export const ThemeContext = createContext<'light' | 'dark'>('light');
