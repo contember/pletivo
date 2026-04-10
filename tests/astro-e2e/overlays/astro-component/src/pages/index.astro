@@ -1,0 +1,28 @@
+---
+import Hero from '../components/Hero.astro';
+---
+
+<html>
+  <head>
+    <!-- Head Stuff -->
+  </head>
+  <body>
+		<main>
+			<Hero title="Astro Components">
+				Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+			</Hero>
+			<!-- Inline replacement for @e2e/astro-linked-lib (requires Vite /@fs resolution) -->
+			<h1 id="astro-linked-lib">astro-linked-lib</h1>
+			<div id="hoisted-script"></div>
+		</main>
+  </body>
+</html>
+
+<script>
+	console.log('Hello, Astro!');
+</script>
+
+<script is:inline>
+	console.log('Hello, inline Astro!');
+	document.getElementById('hoisted-script').innerHTML = 'Hoisted success';
+</script>

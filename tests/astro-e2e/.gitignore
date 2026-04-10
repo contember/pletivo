@@ -1,0 +1,8 @@
+.cache/
+fixtures/
+tests/
+integration/
+integration-fixtures/
+node_modules/
+test-results/
+playwright-report/

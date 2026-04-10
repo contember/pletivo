@@ -1,0 +1,16 @@
+{
+  "name": "@pavouk/astro-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "bun run setup.ts",
+    "test": "npm run test:e2e && npm run test:integration",
+    "test:e2e": "bunx playwright test",
+    "test:e2e:ui": "bunx playwright test --ui",
+    "test:integration": "node --test integration/*.test.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "cheerio": "^1.0.0"
+  }
+}
