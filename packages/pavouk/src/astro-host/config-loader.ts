@@ -75,6 +75,20 @@ export async function loadAstroConfig(
     ? (userConfig.integrations as AstroIntegration[])
     : [];
 
+  // Astro config defaults that integrations expect to be populated
+  // even when the user didn't set them. Mirrors Astro's own defaults:
+  //   - build.format: "directory" — outputs /about/index.html
+  //   - trailingSlash: "ignore" — no normalization in URLs
+  //   - compressHTML: true, etc.
+  const userBuild = (userConfig.build as Record<string, unknown> | undefined) ?? {};
+  const build = {
+    format: (userBuild.format as "file" | "directory" | "preserve") ?? "directory",
+    client: new URL("client/", outDir),
+    server: new URL("server/", outDir),
+    assets: (userBuild.assets as string | undefined) ?? "_astro",
+    ...userBuild,
+  };
+
   const config: AstroConfig = {
     root: rootUrl,
     srcDir,
@@ -82,10 +96,13 @@ export async function loadAstroConfig(
     outDir,
     site: userConfig.site as string | undefined,
     base: (userConfig.base as string | undefined) ?? "/",
+    trailingSlash: (userConfig.trailingSlash as string | undefined) ?? "ignore",
+    build,
     integrations,
     vite: (userConfig.vite as AstroConfig["vite"]) ?? {},
     redirects:
       (userConfig.redirects as AstroConfig["redirects"]) ?? {},
+    i18n: userConfig.i18n as AstroConfig["i18n"],
   };
 
   // Preserve any extra fields users might put on their config (e.g. nua)

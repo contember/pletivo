@@ -12,9 +12,6 @@ export const NATIVE_OVERRIDES: Record<string, string> = {
   "vite:tailwindcss": "pavouk-native-tailwind",
   "@astrojs/tailwind": "pavouk-native-tailwind",
 
-  // Sitemap: pavouk has its own in sitemap.ts
-  "@astrojs/sitemap": "pavouk-native-sitemap",
-
   // MDX: pavouk currently handles .mdx as markdown fallback; a proper
   // native plugin lives on the roadmap. @astrojs/mdx is tightly coupled
   // to Astro's compiler + content entry pipeline and can't be hosted

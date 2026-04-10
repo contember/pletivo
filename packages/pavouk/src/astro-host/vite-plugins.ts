@@ -148,6 +148,129 @@ export async function runConfigureServer(
   }
 }
 
+/**
+ * Bundle a virtual-URL entry point (absolute file path returned by a
+ * Vite plugin's `resolveId`) using Bun.build with a plugin that chains
+ * the collected Vite `transform` hooks. This lets integrations like
+ * @nuasite/notes serve their overlay source — their Vite plugin both
+ * resolves the virtual id and prepends a JSX pragma via `transform()`
+ * — from pavouk's dev server without any Astro/Vite runtime.
+ *
+ * Scope is intentionally narrow: only files reached during THIS
+ * Bun.build pass see the transform chain, so regular .ts/.astro
+ * imports from pavouk core or user code are unaffected.
+ */
+export async function bundleVirtualEntry(
+  entryPath: string,
+  projectRoot: string,
+): Promise<string | null> {
+  const fs = await import("fs/promises");
+  const path = await import("path");
+
+  const transformPlugin = {
+    name: "pavouk-vite-transform-chain",
+    setup(build: {
+      onResolve: (
+        opts: { filter: RegExp },
+        cb: (args: { path: string; importer: string }) =>
+          { path: string; namespace?: string } | undefined,
+      ) => void;
+      onLoad: (
+        opts: { filter: RegExp; namespace?: string },
+        cb: (args: { path: string }) => Promise<{ contents: string; loader: string } | undefined>,
+      ) => void;
+    }) {
+      // Vite-style `?inline` / `?raw` suffixes — load a file as a
+      // default-exported string. Notes + CMS both inline their
+      // shadow-root CSS via this pattern.
+      build.onResolve({ filter: /\?(inline|raw)$/ }, (args) => {
+        const match = args.path.match(/^(.+)\?(inline|raw)$/);
+        if (!match) return undefined;
+        const bare = match[1];
+        const abs = path.isAbsolute(bare)
+          ? bare
+          : args.importer
+            ? path.resolve(path.dirname(args.importer), bare)
+            : bare;
+        return { path: abs, namespace: "pavouk-inline" };
+      });
+      build.onLoad(
+        { filter: /.*/, namespace: "pavouk-inline" },
+        async (args) => {
+          try {
+            const text = await fs.readFile(args.path, "utf-8");
+            return {
+              contents: `export default ${JSON.stringify(text)};`,
+              loader: "js",
+            };
+          } catch {
+            return { contents: "export default '';", loader: "js" };
+          }
+        },
+      );
+
+      // Apply transforms to any JS/TS/JSX/TSX source file reached during
+      // the bundle walk. We read the file, run each plugin's transform
+      // hook in order, and return the final code. If no transform
+      // modified the code, we still return it (letting Bun bundle it).
+      build.onLoad({ filter: /\.[jt]sx?$/ }, async (args) => {
+        let code: string;
+        try {
+          code = await fs.readFile(args.path, "utf-8");
+        } catch {
+          return undefined;
+        }
+
+        for (const p of collectedPlugins) {
+          if (typeof p.transform !== "function") continue;
+          try {
+            const result = await p.transform(code, args.path);
+            if (result == null) continue;
+            code = typeof result === "string" ? result : result.code;
+          } catch {
+            // plugin error: keep the previous code, continue chain
+          }
+        }
+
+        const ext = path.extname(args.path).toLowerCase();
+        const loader =
+          ext === ".tsx" ? "tsx" :
+          ext === ".jsx" ? "jsx" :
+          ext === ".ts" ? "ts" :
+          "js";
+        return { contents: code, loader };
+      });
+    },
+  };
+
+  try {
+    const result = await Bun.build({
+      entrypoints: [entryPath],
+      format: "esm",
+      minify: false,
+      plugins: [transformPlugin as never],
+      target: "browser",
+      root: projectRoot,
+    });
+    if (!result.success || result.outputs.length === 0) {
+      if (!result.success) {
+        for (const log of result.logs) console.error(`[pavouk-vite-host] ${log}`);
+      }
+      return null;
+    }
+    return await result.outputs[0].text();
+  } catch (e) {
+    const err = e as Error & { errors?: unknown };
+    console.error(
+      `[pavouk-vite-host] bundleVirtualEntry(${entryPath}) failed:`,
+      err.message,
+    );
+    if (err.errors) console.error("  errors:", err.errors);
+    if (err.stack) console.error(err.stack);
+    return null;
+  }
+}
+
 /** Test/reset helper. */
 export function __resetForTests(): void {
   collectedPlugins.length = 0;

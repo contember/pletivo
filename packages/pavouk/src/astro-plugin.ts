@@ -120,6 +120,18 @@ export async function registerAstroPlugin(): Promise<void> {
         loader: "ts",
         contents: `export { z } from ${JSON.stringify(zodPath)}; export * from ${JSON.stringify(zodPath)};`,
       }));
+
+      // `astro:components` — re-export the batch of .astro components
+      // that ship with Astro itself (<Code>, <Debug>, <Font>, <Image>,
+      // <Picture>, <ClientRouter>, …). These are real .astro files in
+      // `astro/components/` and our .astro loader above compiles them
+      // the same as user components. The re-export is resolved lazily
+      // from the project's own `node_modules/astro` so pavouk doesn't
+      // need Astro as a dep.
+      mod("astro:components", () => ({
+        loader: "ts",
+        contents: `export * from "astro/components";`,
+      }));
     },
   });
 }

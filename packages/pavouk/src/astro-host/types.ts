@@ -20,6 +20,7 @@ export interface AstroIntegration {
 export interface AstroHooks {
   "astro:config:setup": (ctx: AstroConfigSetupContext) => void | Promise<void>;
   "astro:config:done": (ctx: AstroConfigDoneContext) => void | Promise<void>;
+  "astro:routes:resolved": (ctx: AstroRoutesResolvedContext) => void | Promise<void>;
   "astro:server:setup": (ctx: AstroServerSetupContext) => void | Promise<void>;
   "astro:server:start": (ctx: AstroServerStartContext) => void | Promise<void>;
   "astro:server:done": (ctx: AstroServerDoneContext) => void | Promise<void>;
@@ -39,9 +40,22 @@ export interface AstroConfig {
   outDir: URL;
   site?: string;
   base: string;
+  trailingSlash: string;
+  build: {
+    format: "file" | "directory" | "preserve";
+    client: URL;
+    server: URL;
+    assets: string;
+    [key: string]: unknown;
+  };
   integrations: AstroIntegration[];
   vite: ViteUserConfig;
   redirects: Record<string, string | { status: number; destination: string }>;
+  i18n?: {
+    defaultLocale: string;
+    locales: Array<string | { path: string; codes: string[] }>;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 
@@ -101,6 +115,59 @@ export interface AstroConfigDoneContext {
   injectTypes(injectedType: { filename: string; content: string }): URL;
 }
 
+/**
+ * Route shape passed to `astro:routes:resolved` and also used to populate
+ * `pages` in `astro:build:done`. Mirrors a minimal subset of Astro's
+ * internal route object — enough that `@astrojs/sitemap`,
+ * `@nuasite/agent-summary`, and similar integrations can read what they
+ * need without pavouk pulling in Astro's internals.
+ */
+export interface AstroRoute {
+  /** "page" for rendered routes, "redirect" for config redirects, "endpoint" reserved */
+  type: "page" | "redirect" | "endpoint";
+  /**
+   * Fully-resolved URL path for this route, without the leading slash
+   * (`""` for the index, `"about"`, `"blog/hello"`). For dynamic pavouk
+   * routes, each entry produced by `getStaticPaths` becomes its own
+   * AstroRoute with the concrete pathname filled in.
+   */
+  pathname: string;
+  /**
+   * Original route pattern — the unexpanded form from the source
+   * filename (`/`, `/about`, `/[category]`, `/kurzy/[slug]`). Used by
+   * integrations that group dynamic children under their parent route.
+   */
+  route: string;
+  /** Source file relative to the pages directory */
+  component: string;
+  /** Params map for dynamic routes, or empty for static routes */
+  params: string[];
+  /** Simple regex that matches the resolved pathname */
+  pattern: RegExp;
+  /**
+   * Astro-compatible URL generator. Most integrations just call this
+   * with the route's own pathname and treat it as an identity function;
+   * we implement it that way.
+   */
+  generate(pathname?: string | Record<string, string>): string;
+  /** Built file URL, populated in `astro:build:done` */
+  distURL?: URL[];
+  /** Redirect destination for `type: 'redirect'` routes */
+  redirect?: { destination: string; status: number } | string;
+  redirectRoute?: { pathname?: string; pattern?: string | RegExp };
+  /** Astro i18n fallback chain — pavouk doesn't do i18n, always empty */
+  fallbackRoutes: AstroRoute[];
+  /** Prerender flag — always true for pavouk (SSG-only) */
+  prerender: boolean;
+  /** Route is a localized fallback — false */
+  isIndex: boolean;
+}
+
+export interface AstroRoutesResolvedContext {
+  routes: AstroRoute[];
+  logger: IntegrationLogger;
+}
+
 export interface AstroServerSetupContext {
   server: ViteDevServerLike;
   logger: IntegrationLogger;
@@ -143,13 +210,7 @@ export interface AstroBuildSsrContext {
 export interface AstroBuildDoneContext {
   dir: URL;
   pages: Array<{ pathname: string }>;
-  routes: Array<{
-    component: string;
-    pathname?: string;
-    route: string;
-    type: "page" | "endpoint";
-    distURL?: URL[];
-  }>;
+  routes: AstroRoute[];
   assets: Map<string, URL[]>;
   logger: IntegrationLogger;
 }

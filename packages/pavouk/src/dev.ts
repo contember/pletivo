@@ -8,7 +8,7 @@ import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
 import { registerAstroPlugin } from "./astro-plugin";
-import { initAstroHost, dispatchMiddlewares, getHost } from "./astro-host";
+import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
 import type { PavoukConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 
@@ -77,8 +77,18 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
         props = match.props || {};
       }
 
+      // Build Astro-style pageContext with url/site/params so .astro
+      // templates that read `Astro.url.pathname` work correctly.
+      const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+      const origin = siteUrl ? siteUrl.origin : `http://localhost:${config.port}`;
+      const pageContext = {
+        url: new URL(pathname || "/", origin),
+        site: siteUrl,
+        params,
+      };
+
       resetIslandRegistry();
-      let result = component(props);
+      let result = component({ ...props, __pageContext: pageContext });
       if (result instanceof Promise) result = await result;
 
       let html: string;
@@ -288,26 +298,52 @@ export async function dev(projectRoot: string, config: PavoukConfig) {
         }
       }
 
-      // Virtual-URL requests (e.g. `/@nuasite/cms-editor.js`) are served
-      // by asking each registered Astro-integration Vite plugin to
-      // resolveId → load the path. This is how Vite serves plugin-owned
-      // HTTP endpoints in Astro dev.
+      // Virtual-URL requests (e.g. `/@nuasite/cms-editor.js`,
+      // `/@nuasite/notes-overlay`) are served by asking each registered
+      // Astro-integration Vite plugin to `resolveId` the path, then
+      // either taking its `load` result (pre-bundled, like CMS) or
+      // bundling the resolved file entry point through Bun.build
+      // (source, like notes overlay). Bundling runs Vite plugins'
+      // `transform` hooks so integrations that prepend JSX pragmas or
+      // do similar source rewrites work drop-in.
       if (astroHost && /^(\/@|\/virtual:)/.test(url.pathname)) {
         for (const p of astroHost.server.__plugins) {
           const resolveId = (p as { resolveId?: (id: string) => unknown }).resolveId;
-          const load = (p as { load?: (id: string) => unknown }).load;
-          if (typeof resolveId !== "function" || typeof load !== "function") continue;
+          if (typeof resolveId !== "function") continue;
+          let resolved: unknown;
           try {
-            const resolved = await resolveId(url.pathname);
-            if (typeof resolved !== "string") continue;
-            const loaded = await load(resolved);
-            if (loaded == null) continue;
-            const code = typeof loaded === "string" ? loaded : (loaded as { code: string }).code;
-            return new Response(code, {
-              headers: { "Content-Type": "application/javascript; charset=utf-8" },
-            });
+            resolved = await resolveId(url.pathname);
           } catch {
-            // try next plugin
+            continue;
+          }
+          if (typeof resolved !== "string") continue;
+
+          // First try plugin-provided load() for pre-bundled content
+          const load = (p as { load?: (id: string) => unknown }).load;
+          if (typeof load === "function") {
+            try {
+              const loaded = await load(resolved);
+              if (loaded != null) {
+                const code = typeof loaded === "string" ? loaded : (loaded as { code: string }).code;
+                return new Response(code, {
+                  headers: { "Content-Type": "application/javascript; charset=utf-8" },
+                });
+              }
+            } catch {
+              // fall through to bundling path
+            }
+          }
+
+          // No (usable) load() hook — resolved id is probably an
+          // absolute file path. Bundle it through Bun.build with the
+          // Vite transform chain applied.
+          if (path.isAbsolute(resolved) && fs.existsSync(resolved)) {
+            const bundled = await bundleVirtualEntry(resolved, projectRoot);
+            if (bundled) {
+              return new Response(bundled, {
+                headers: { "Content-Type": "application/javascript; charset=utf-8" },
+              });
+            }
           }
         }
       }

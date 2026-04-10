@@ -8,7 +8,7 @@ import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
 import { registerAstroPlugin } from "./astro-plugin";
-import { initAstroHost } from "./astro-host";
+import { initAstroHost, buildAstroRoutes, type PavoukRouteWithPaths } from "./astro-host";
 import type { PavoukConfig } from "./config";
 
 interface PageResult {
@@ -51,6 +51,50 @@ export async function build(projectRoot: string, config: PavoukConfig) {
   );
   const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
+  const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+
+  function makePageContext(pathname: string, params: Record<string, string>) {
+    // Astro expects `Astro.url` to be a real URL with pathname + origin.
+    // Use the configured site origin if present, else a localhost stand-in.
+    const origin = siteUrl ? siteUrl.origin : "http://localhost/";
+    const urlPath = "/" + pathname.replace(/^\//, "");
+    return {
+      __pageContext: {
+        url: new URL(urlPath, origin),
+        site: siteUrl,
+        params,
+      },
+    };
+  }
+
+  // Pre-resolve each dynamic route's getStaticPaths once — the result is
+  // reused by both `astro:routes:resolved` (for sitemap et al.) and the
+  // render loop below, avoiding a double-fetch.
+  const dynamicPaths = new Map<string, StaticPath[]>();
+  for (const route of dynamicRoutes) {
+    const fullPath = path.join(pagesDir, route.file);
+    const mod = await import(fullPath);
+    if (typeof mod.default !== "function") continue;
+    if (typeof mod.getStaticPaths !== "function") continue;
+    const sp: StaticPath[] = await mod.getStaticPaths();
+    dynamicPaths.set(route.file, sp);
+  }
+
+  // astro:routes:resolved — fire before rendering so integrations like
+  // @astrojs/sitemap and @nuasite/agent-summary can capture the full
+  // route tree. Redirects declared in astro.config are included as
+  // type: "redirect" entries.
+  if (astroHost) {
+    const pavoukRoutes: PavoukRouteWithPaths[] = routes.map((r) => ({
+      route: r,
+      staticPaths: dynamicPaths.get(r.file),
+    }));
+    const astroRoutes = buildAstroRoutes(pavoukRoutes, astroHost.config);
+    await astroHost.runRoutesResolved(astroRoutes);
+    // Stash for build:done below so we don't rebuild the array
+    (astroHost as unknown as { __cachedRoutes?: unknown }).__cachedRoutes = astroRoutes;
+  }
+
   const results: PageResult[] = [];
 
   // Static pages — parallel
@@ -63,12 +107,13 @@ export async function build(projectRoot: string, config: PavoukConfig) {
         return null;
       }
       resetIslandRegistry();
-      const html = await renderComponent(mod.default, {});
+      const outFile = routeToOutputPath(route, {});
+      const pathname = toPathname(path.join(distDir, outFile), distDir);
+      const html = await renderComponent(mod.default, makePageContext(pathname, {}));
       if (html === null) {
         console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         return null;
       }
-      const outFile = routeToOutputPath(route, {});
       return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html };
     }),
   );
@@ -76,24 +121,21 @@ export async function build(projectRoot: string, config: PavoukConfig) {
 
   // Dynamic pages — sequential (getStaticPaths may share data)
   for (const route of dynamicRoutes) {
-    const fullPath = path.join(pagesDir, route.file);
-    const mod = await import(fullPath);
-    if (typeof mod.default !== "function") {
-      console.warn(`  Skipping ${route.file}: no default export function`);
-      continue;
-    }
-    if (typeof mod.getStaticPaths !== "function") {
+    const staticPaths = dynamicPaths.get(route.file);
+    if (!staticPaths) {
       console.warn(`  Skipping ${route.file}: dynamic route without getStaticPaths()`);
       continue;
     }
-
-    const staticPaths: StaticPath[] = await mod.getStaticPaths();
+    const fullPath = path.join(pagesDir, route.file);
+    const mod = await import(fullPath);
     for (const { params, props: pathProps } of staticPaths) {
       resetIslandRegistry();
-      const html = await renderComponent(mod.default, pathProps || {});
+      const outFile = routeToOutputPath(route, params);
+      const pathname = toPathname(path.join(distDir, outFile), distDir);
+      const ctx = makePageContext(pathname, params);
+      const html = await renderComponent(mod.default, { ...(pathProps || {}), ...ctx });
       if (html === null) continue;
 
-      const outFile = routeToOutputPath(route, params);
       const label = `${route.file} [${Object.values(params).join("/")}]`;
       results.push({ file: route.file, label, outPath: path.join(distDir, outFile), html });
     }
@@ -125,27 +167,43 @@ export async function build(projectRoot: string, config: PavoukConfig) {
     await bundleIslands(islandNames, islandsDir, distDir);
   }
 
-  // Generate sitemap
-  await generateSitemap(distDir, base);
+  // Generate sitemap — skip if the user's Astro config includes a
+  // sitemap integration. Both can technically coexist (different
+  // filenames), but users who opted into the Astro one explicitly
+  // probably don't also want pavouk's simpler fallback.
+  const hasAstroSitemap = astroHost?.hasIntegration("@astrojs/sitemap") ?? false;
+  if (!hasAstroSitemap) {
+    await generateSitemap(distDir, base);
+  }
 
   // Run Astro integration `astro:build:done` hooks. Integrations like
-  // Nua CMS's build processor walk dist/ HTML files here to add markers.
+  // Nua CMS's build processor walk dist/ HTML files here to add markers;
+  // @astrojs/sitemap writes its sitemap XMLs now that it has both the
+  // captured routes and the final pages list.
   if (astroHost) {
     const pageEntries = results.map((r) => ({
       pathname: toPathname(r.outPath, distDir),
     }));
-    await astroHost.runBuildDone(pageEntries, distDir);
+    const cachedRoutes =
+      (astroHost as unknown as { __cachedRoutes?: import("./astro-host").AstroRoute[] }).__cachedRoutes ?? [];
+    await astroHost.runBuildDone(cachedRoutes, pageEntries, distDir);
   }
 
   console.log(`\nBuilt ${results.length} pages${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
 }
 
+/**
+ * Convert a dist/ HTML path into an Astro-style `pathname` for the
+ * `astro:build:done` `pages` array. Astro uses no leading slash:
+ *   dist/index.html            → ""
+ *   dist/about/index.html      → "about/"
+ *   dist/blog/post-1/index.html → "blog/post-1/"
+ */
 function toPathname(outPath: string, distDir: string): string {
   const rel = path.relative(distDir, outPath);
-  // dist/index.html → "/", dist/about/index.html → "/about/"
-  if (rel === "index.html") return "/";
-  if (rel.endsWith("/index.html")) return "/" + rel.slice(0, -"index.html".length);
-  return "/" + rel;
+  if (rel === "index.html") return "";
+  if (rel.endsWith("/index.html")) return rel.slice(0, -"index.html".length);
+  return rel;
 }
 
 /** Extract island component names from rendered HTML */

@@ -25,6 +25,7 @@ import type {
   AstroConfig,
   AstroConfigSetupContext,
   AstroIntegration,
+  AstroRoute,
   InjectScriptStage,
   ViteLikePlugin,
 } from "./types";
@@ -48,7 +49,14 @@ export interface AstroHost {
   injectedHeadScripts: string[];
   /** Ran once on startup (setup + server:setup in dev; setup + config:done in build) */
   ready: Promise<void>;
-  runBuildDone(pages: Array<{ pathname: string }>, distDir: string): Promise<void>;
+  /** Returns true if an integration with the given name is active after overrides */
+  hasIntegration(name: string): boolean;
+  runRoutesResolved(routes: AstroRoute[]): Promise<void>;
+  runBuildDone(
+    routes: AstroRoute[],
+    pages: Array<{ pathname: string }>,
+    distDir: string,
+  ): Promise<void>;
   runServerStart(address: { address: string; port: number; family: string }): Promise<void>;
   runServerDone(): Promise<void>;
 }
@@ -83,6 +91,8 @@ export async function initAstroHost(
     injectedPageScripts,
     injectedHeadScripts,
     ready: Promise.resolve(),
+    hasIntegration: (name) => config.integrations.some((i) => i?.name === name),
+    runRoutesResolved: async () => {},
     runBuildDone: async () => {},
     runServerStart: async () => {},
     runServerDone: async () => {},
@@ -203,8 +213,29 @@ export async function initAstroHost(
     }
   }
 
+  // ── astro:routes:resolved — called once per build / once after initial
+  // dev scan. Integrations like @astrojs/sitemap and @nuasite/agent-summary
+  // capture the routes array here and use it later in astro:build:done.
+  host.runRoutesResolved = async (routes) => {
+    for (const integration of config.integrations) {
+      const hook = integration.hooks?.["astro:routes:resolved"];
+      if (typeof hook !== "function") continue;
+      try {
+        await hook({
+          routes,
+          logger: createLogger(integration.name),
+        });
+      } catch (e) {
+        console.error(
+          `[pavouk-astro-host] ${integration.name}.astro:routes:resolved failed:`,
+          (e as Error).message,
+        );
+      }
+    }
+  };
+
   // ── Build done hook — exposed for build.ts to call ──
-  host.runBuildDone = async (pages, distDir) => {
+  host.runBuildDone = async (routes, pages, distDir) => {
     const dirUrl = pathToFileURL(distDir + path.sep);
     for (const integration of config.integrations) {
       const hook = integration.hooks?.["astro:build:done"];
@@ -213,7 +244,7 @@ export async function initAstroHost(
         await hook({
           dir: dirUrl,
           pages,
-          routes: [],
+          routes,
           assets: new Map(),
           logger: createLogger(integration.name),
         });
