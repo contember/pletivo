@@ -12,11 +12,9 @@ export const NATIVE_OVERRIDES: Record<string, string> = {
   "vite:tailwindcss": "pletivo-native-tailwind",
   "@astrojs/tailwind": "pletivo-native-tailwind",
 
-  // MDX: pletivo currently handles .mdx as markdown fallback; a proper
-  // native plugin lives on the roadmap. @astrojs/mdx is tightly coupled
-  // to Astro's compiler + content entry pipeline and can't be hosted
-  // via our Vite-plugin shim.
-  "@astrojs/mdx": "pletivo-native-mdx-pending",
+  // MDX: pletivo compiles .mdx natively via @mdx-js/mdx with full
+  // component import support. @astrojs/mdx is not needed.
+  "@astrojs/mdx": "pletivo-native-mdx",
 };
 
 /** Returns true if the integration should be skipped and native path used */

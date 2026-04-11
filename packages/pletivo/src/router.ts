@@ -30,7 +30,7 @@ interface RouteSegment {
  * Parse a page file path into a Route
  */
 export function parseRoute(file: string): Route {
-  const name = file.replace(/\.(tsx|jsx|ts|js|astro|md)$/, "");
+  const name = file.replace(/\.(tsx|jsx|ts|js|astro|mdx|md)$/, "");
   const parts = name.split("/").filter(Boolean);
   const segments: RouteSegment[] = [];
   let isDynamic = false;
@@ -116,7 +116,7 @@ export function routeToOutputPath(route: Route, params: RouteParams): string {
  * Scan pages directory and return sorted routes (static first, then by priority)
  */
 export async function scanRoutes(pagesDir: string): Promise<Route[]> {
-  const glob = new Glob("**/*.{tsx,jsx,ts,js,astro,md}");
+  const glob = new Glob("**/*.{tsx,jsx,ts,js,astro,mdx,md}");
   const routes: Route[] = [];
 
   for await (const file of glob.scan(pagesDir)) {

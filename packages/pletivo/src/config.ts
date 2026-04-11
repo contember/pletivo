@@ -1,4 +1,10 @@
 import path from "path";
+import type { PluggableList } from "unified";
+
+export interface MdxConfig {
+  remarkPlugins?: PluggableList;
+  rehypePlugins?: PluggableList;
+}
 
 export interface PletivoConfig {
   /** Output directory for build (default: "dist") */
@@ -13,6 +19,8 @@ export interface PletivoConfig {
   srcDir: string;
   /** Public directory for static assets (default: "public") */
   publicDir: string;
+  /** MDX compilation options (remark/rehype plugins) */
+  mdx?: MdxConfig;
 }
 
 const defaults: PletivoConfig = {

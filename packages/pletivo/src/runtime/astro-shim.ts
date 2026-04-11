@@ -235,7 +235,7 @@ export function createComponent(
       props = propsArg || {};
       slots = slotsArg || {};
     } else {
-      // Called as top-level page: (props)
+      // Called as top-level page or from JSX/MDX context: (props)
       result = makeResult(
         (resultOrProps as Record<string, unknown> | undefined)?.[
           "__pageContext"
@@ -243,9 +243,11 @@ export function createComponent(
       );
       // Strip __pageContext from props
       const raw = (resultOrProps as Record<string, unknown>) || {};
-      const { __pageContext, ...userProps } = raw;
+      const { __pageContext, children, ...userProps } = raw;
       props = userProps;
-      slots = {};
+      // Bridge JSX children to Astro's default slot so that Astro
+      // components work when called from MDX or JSX contexts.
+      slots = children != null ? { default: () => children } : {};
     }
 
     const out = fn(result, props, slots);

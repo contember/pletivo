@@ -9,6 +9,7 @@ import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
 import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss } from "./astro-plugin";
 import { parseMarkdown } from "./content/markdown";
+import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
 import type { PletivoConfig } from "./config";
 
@@ -27,7 +28,9 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   const base = config.base.replace(/\/$/, "");
 
   await registerAstroPlugin();
+  await registerMdxPlugin();
   const astroHost = await initAstroHost(projectRoot, "build");
+  configureMdx(resolveMdxOptions(config, astroHost?.config));
   await initCollections(projectRoot);
 
   // Clean dist

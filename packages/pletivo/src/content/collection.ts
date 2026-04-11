@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs";
 import { Glob } from "bun";
 import { z } from "zod";
-import { parseMarkdown } from "./markdown";
+import { parseMarkdown, parseFrontmatter } from "./markdown";
 
 // ── Types ──
 
@@ -79,8 +79,9 @@ export interface GlobOptions {
  * Compatible with Astro's glob() loader pattern.
  *
  * Supported extensions:
- *  - `.md`, `.mdx` → markdown parse (MDX falls back to markdown for MVP;
- *    inline JSX is left as raw text)
+ *  - `.md` → markdown parse (built-in parser)
+ *  - `.mdx` → frontmatter extracted, body compiled via @mdx-js/mdx with
+ *    full component import support (JSX and .astro components)
  *  - `.json` → JSON.parse as frontmatter, empty body
  *  - `.yaml`, `.yml` → YAML parse as frontmatter, empty body
  */
@@ -89,7 +90,7 @@ export function glob(options: GlobOptions): Loader {
     async load(projectRoot: string): Promise<RawEntry[]> {
       const dir = path.resolve(projectRoot, options.base);
       if (!fs.existsSync(dir)) return [];
-      const globPattern = new Glob(options.pattern ?? "**/*.md");
+      const globPattern = new Glob(options.pattern ?? "**/*.{md,mdx}");
       const entries: RawEntry[] = [];
 
       for await (const file of globPattern.scan(dir)) {
@@ -112,8 +113,16 @@ export function glob(options: GlobOptions): Loader {
         } else if (ext === ".yaml" || ext === ".yml") {
           const data = parseSimpleYaml(content);
           entries.push({ id, body: "", data });
+        } else if (ext === ".mdx") {
+          // .mdx — parse frontmatter for validation, defer rendering to import time
+          const { frontmatter, body } = parseFrontmatter(content);
+          entries.push({
+            id,
+            body,
+            data: { ...frontmatter, _mdxFilePath: fullPath },
+          });
         } else {
-          // .md / .mdx
+          // .md
           const parsed = parseMarkdown(content);
           entries.push({
             id,
@@ -321,9 +330,8 @@ export async function getCollection<T = Record<string, unknown>>(
  * Astro-compatible `render(entry)` helper. Returns `{ Content }` where
  * `Content` is a component that emits the entry's pre-rendered HTML body.
  *
- * For MVP: MDX files are loaded as plain markdown, so custom MDX components
- * (`<Banner>`, `<Gallery>`, …) inside bodies are dropped or escaped. A
- * future pletivo MDX plugin can replace this.
+ * MDX entries are compiled and rendered with full component support — imports
+ * in the MDX body (both JSX and .astro components) are resolved at render time.
  */
 export async function render(
   entry: CollectionEntry | null | undefined,
@@ -363,8 +371,8 @@ async function loadCollection(config: CollectionConfig, name: string): Promise<C
   const entries: CollectionEntry[] = [];
 
   for (const raw of rawEntries) {
-    // Separate internal _html from user data before validation
-    const { _html, ...userData } = raw.data;
+    // Separate internal fields from user data before validation
+    const { _html, _mdxFilePath, ...userData } = raw.data;
 
     const result = config.schema.safeParse(userData);
     if (!result.success) {
@@ -372,6 +380,30 @@ async function loadCollection(config: CollectionConfig, name: string): Promise<C
         ? result.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n")
         : String(result.error);
       console.error(`Validation error in ${name}/${raw.id}:\n${errors}`);
+      continue;
+    }
+
+    if (_mdxFilePath) {
+      // MDX: render by importing the compiled module and calling its default export
+      const mdxPath = _mdxFilePath as string;
+      const validatedData = result.data as Record<string, unknown>;
+      entries.push({
+        id: raw.id,
+        data: validatedData,
+        body: raw.body,
+        render: async () => {
+          const mod = await import(mdxPath + `?v=${configVersion}`);
+          let rendered = mod.default({});
+          if (rendered instanceof Promise) rendered = await rendered;
+          let html = typeof rendered === "object" && rendered !== null && "__html" in rendered
+            ? (rendered as { __html: string }).__html
+            : String(rendered);
+          if (config.transform) {
+            html = config.transform(html, validatedData);
+          }
+          return { html };
+        },
+      });
       continue;
     }
 

@@ -9,6 +9,7 @@ import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
 import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, bumpDevVersion, getDevVersion } from "./astro-plugin";
 import { parseMarkdown } from "./content/markdown";
+import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
 import type { PletivoConfig } from "./config";
 import type { ServerWebSocket } from "bun";
@@ -60,9 +61,11 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   }
 
   await registerAstroPlugin();
+  await registerMdxPlugin();
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });
+  configureMdx(resolveMdxOptions(config, astroHost?.config));
   await initCollections(projectRoot);
   let routes = await scanRoutes(pagesDir);
 
