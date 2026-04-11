@@ -54,6 +54,7 @@ export const hmrClientScript = `
     suspended = false;
     console.log("[pletivo] HMR resuming");
     connect();
+    morphPage();
   }
 
   function disconnect() {
