@@ -22,12 +22,34 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
   const body = match[2];
   const frontmatter: Record<string, unknown> = {};
 
-  // Simple YAML parser for flat key-value pairs and arrays
+  // Simple YAML parser for flat key-value pairs, arrays, and block scalars
   const lines = yamlStr.split("\n");
   let currentKey = "";
   let currentArray: string[] | null = null;
+  let blockScalar: { style: "folded" | "literal"; chomp: "clip" | "strip"; lines: string[] } | null = null;
+
+  function flushBlockScalar() {
+    if (blockScalar && currentKey) {
+      const joinChar = blockScalar.style === "folded" ? " " : "\n";
+      let value = blockScalar.lines.join(joinChar);
+      if (blockScalar.chomp === "clip") value += "\n";
+      frontmatter[currentKey] = value;
+      blockScalar = null;
+    }
+  }
 
   for (const line of lines) {
+    // Inside a block scalar: collect indented continuation lines
+    if (blockScalar) {
+      if (line.match(/^\s+/) && !line.match(/^\S/)) {
+        blockScalar.lines.push(line.trim());
+        continue;
+      } else {
+        flushBlockScalar();
+        // fall through to parse this line normally
+      }
+    }
+
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
 
@@ -53,6 +75,16 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
         continue;
       }
 
+      // Block scalar indicators: >, >-, |, |-
+      if (value === ">" || value === ">-" || value === "|" || value === "|-") {
+        blockScalar = {
+          style: (value as string).startsWith("|") ? "literal" : "folded",
+          chomp: (value as string).endsWith("-") ? "strip" : "clip",
+          lines: [],
+        };
+        continue;
+      }
+
       // Remove quotes
       if (typeof value === "string" && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
         value = value.slice(1, -1);
@@ -72,6 +104,8 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
       frontmatter[currentKey] = value;
     }
   }
+
+  flushBlockScalar();
 
   return { frontmatter, body };
 }

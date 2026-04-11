@@ -63,6 +63,67 @@ x`);
     expect(result.frontmatter.tags).toEqual(["foo", "bar"]);
   });
 
+  test("folded block scalar (>)", () => {
+    const result = parseMarkdown(`---
+excerpt: >
+  First line
+  second line
+  third line.
+---
+
+Content`);
+    expect(result.frontmatter.excerpt).toBe("First line second line third line.\n");
+    expect(result.body.trim()).toBe("Content");
+  });
+
+  test("folded block scalar strip (>-)", () => {
+    const result = parseMarkdown(`---
+excerpt: >-
+  First line
+  second line
+  third line.
+---
+
+Content`);
+    expect(result.frontmatter.excerpt).toBe("First line second line third line.");
+  });
+
+  test("literal block scalar (|)", () => {
+    const result = parseMarkdown(`---
+bio: |
+  Line one
+  Line two
+  Line three
+---
+
+Content`);
+    expect(result.frontmatter.bio).toBe("Line one\nLine two\nLine three\n");
+  });
+
+  test("literal block scalar strip (|-)", () => {
+    const result = parseMarkdown(`---
+bio: |-
+  Line one
+  Line two
+---
+
+Content`);
+    expect(result.frontmatter.bio).toBe("Line one\nLine two");
+  });
+
+  test("block scalar followed by another key", () => {
+    const result = parseMarkdown(`---
+excerpt: >
+  Hello world
+  foo bar.
+title: Test
+---
+
+x`);
+    expect(result.frontmatter.excerpt).toBe("Hello world foo bar.\n");
+    expect(result.frontmatter.title).toBe("Test");
+  });
+
   test("missing frontmatter returns empty object", () => {
     const result = parseMarkdown("Just content");
     expect(result.frontmatter).toEqual({});
