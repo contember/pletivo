@@ -16,7 +16,7 @@
 export const hmrClientScript = `
 <script type="module">
 (function () {
-  const WS_URL = "ws://" + location.host + "/__hmr";
+  const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/__hmr";
   let ws;
   let morphdom = null;
 
