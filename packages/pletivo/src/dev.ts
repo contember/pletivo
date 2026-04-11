@@ -35,13 +35,29 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   const islandsDir = path.join(projectRoot, config.srcDir, "islands");
 
   const sockets = new Set<ServerWebSocket<unknown>>();
+  const sseClients = new Set<ReadableStreamDefaultController>();
+
+  const pollWaiters = new Set<(msg: string) => void>();
+
+  function broadcastHmr(payload: string) {
+    for (const ws of sockets) {
+      ws.send(payload);
+    }
+    for (const ctrl of sseClients) {
+      try {
+        ctrl.enqueue(new TextEncoder().encode(`data: ${payload}\n\n`));
+      } catch {
+        sseClients.delete(ctrl);
+      }
+    }
+    for (const resolve of pollWaiters) {
+      resolve(payload);
+    }
+  }
 
   await registerAstroPlugin();
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
-    const msg = JSON.stringify(payload);
-    for (const ws of sockets) {
-      ws.send(msg);
-    }
+    broadcastHmr(JSON.stringify(payload));
   });
   await initCollections(projectRoot);
   let routes = await scanRoutes(pagesDir);
@@ -203,8 +219,65 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
       // WebSocket upgrade for HMR — must bypass middleware chain
       if (url.pathname === "/__hmr") {
-        if (server.upgrade(req)) return;
+        // Echo back Sec-WebSocket-Protocol so proxies (CF Workers, E2B)
+        // that relay WebSocket connections see a valid sub-protocol negotiation.
+        const protocol = req.headers.get("sec-websocket-protocol");
+        const upgradeOpts = protocol
+          ? { headers: { "sec-websocket-protocol": protocol.split(",")[0].trim() } }
+          : undefined;
+        if (server.upgrade(req, upgradeOpts)) return;
         return new Response("WebSocket upgrade failed", { status: 500 });
+      }
+
+      // HMR ping — lightweight health check so the client can detect
+      // whether the dev server is alive without triggering a full reload.
+      if (url.pathname === "/__hmr_ping") {
+        return new Response("ok", { status: 200 });
+      }
+
+      // SSE fallback for HMR when WebSocket is unavailable (e.g. behind
+      // proxies that don't support WS upgrades).
+      if (url.pathname === "/__hmr_sse") {
+        const stream = new ReadableStream({
+          start(controller) {
+            sseClients.add(controller);
+            // Send initial heartbeat so the connection is confirmed alive
+            controller.enqueue(new TextEncoder().encode(":ok\n\n"));
+          },
+          cancel(controller) {
+            sseClients.delete(controller);
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+          },
+        });
+      }
+
+      // Long-poll fallback — last resort when both WS and SSE fail.
+      // Hangs for up to 30s waiting for the next change, then returns.
+      if (url.pathname === "/__hmr_poll") {
+        const payload = await new Promise<string>((resolve) => {
+          const timeout = setTimeout(() => {
+            cleanup();
+            resolve("");
+          }, 30_000);
+          function onMessage(msg: string) {
+            cleanup();
+            resolve(msg);
+          }
+          function cleanup() {
+            clearTimeout(timeout);
+            pollWaiters.delete(onMessage);
+          }
+          pollWaiters.add(onMessage);
+        });
+        return new Response(payload || "noop", {
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
       // Route the request through the Astro integration middleware chain.
@@ -426,18 +499,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     //  - hard reload is the fallback if the client decides morph isn't safe
     const ext = path.extname(filename).toLowerCase();
     const isCss = ext === ".css";
-    const payload = JSON.stringify({ type: isCss ? "css" : "html" });
-    for (const ws of sockets) {
-      ws.send(payload);
-    }
+    broadcastHmr(JSON.stringify({ type: isCss ? "css" : "html" }));
   });
 
   try {
     watch(publicDir, { recursive: true }, () => {
-      const payload = JSON.stringify({ type: "reload" });
-      for (const ws of sockets) {
-        ws.send(payload);
-      }
+      broadcastHmr(JSON.stringify({ type: "reload" }));
     });
   } catch {
     // no public dir

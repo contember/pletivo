@@ -1,12 +1,15 @@
 /**
  * Dev-only HMR client. Injected into every page served by `pletivo dev`.
  *
- * Protocol (WS messages from server):
+ * Protocol (messages from server, via WS/SSE/poll):
  *   { "type": "css" }                — re-fetch the stylesheet, swap in place
  *   { "type": "html", "url"?: str }  — re-fetch the page HTML, morph the DOM
  *   { "type": "reload" }             — fall back to full reload
  *
  * Legacy plain-text "reload" is still honored so old clients still work.
+ *
+ * Transport priority: WebSocket → SSE → long-polling.
+ * Falls back automatically when a transport fails to connect.
  *
  * The morph pass uses morphdom, loaded lazily on the first html-type
  * update. Islands (`<pletivo-island>` custom elements) are preserved by
@@ -16,9 +19,9 @@
 export const hmrClientScript = `
 <script type="module">
 (function () {
-  const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/__hmr";
-  let ws;
+  const BASE = location.origin;
   let morphdom = null;
+  let transport = null; // "ws" | "sse" | "poll"
 
   // Track top-level runtime-injected elements so morph doesn't strip
   // them. We only watch *direct children* of <body> and <head>
@@ -47,39 +50,125 @@ export const hmrClientScript = `
   const bodyObserver = watchDirectChildren(document.body);
   const headObserver = watchDirectChildren(document.head);
 
-  function connect() {
-    ws = new WebSocket(WS_URL);
-    ws.onmessage = onMessage;
-    ws.onclose = onClose;
-    ws.onerror = () => ws.close();
-  }
+  // ── Transport layer ─────────────────────────────────────────────
 
-  function onClose() {
-    console.log("[pletivo] Connection lost. Reconnecting…");
-    setTimeout(function () {
-      // On reconnect failure, fall back to full reload
-      fetch("/__hmr_ping").then(() => location.reload()).catch(() => {
-        setTimeout(onClose, 1000);
-      });
-    }, 1000);
-  }
-
-  async function onMessage(e) {
+  function handleMessage(raw) {
     let msg;
     try {
-      msg = typeof e.data === "string" && e.data[0] === "{" ? JSON.parse(e.data) : { type: e.data };
+      msg = typeof raw === "string" && raw[0] === "{" ? JSON.parse(raw) : { type: raw };
     } catch {
       msg = { type: "reload" };
     }
 
-    if (msg.type === "css") {
-      return swapCss();
-    }
-    if (msg.type === "html") {
-      return morphPage();
-    }
-    // "reload" or anything else
+    if (msg.type === "css") return swapCss();
+    if (msg.type === "html") return morphPage();
+    if (msg.type === "noop") return; // poll timeout, ignore
     location.reload();
+  }
+
+  // ── WebSocket ───────────────────────────────────────────────────
+
+  function connectWs() {
+    return new Promise(function (resolve) {
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(protocol + "//" + location.host + "/__hmr");
+      const timer = setTimeout(function () {
+        ws.close();
+        resolve(false);
+      }, 5000);
+
+      ws.onopen = function () {
+        clearTimeout(timer);
+        transport = "ws";
+        console.log("[pletivo] HMR connected (WebSocket)");
+        resolve(true);
+      };
+      ws.onmessage = function (e) { handleMessage(e.data); };
+      ws.onclose = function () {
+        clearTimeout(timer);
+        if (transport === "ws") {
+          transport = null;
+          reconnect();
+        } else {
+          resolve(false);
+        }
+      };
+      ws.onerror = function () { ws.close(); };
+    });
+  }
+
+  // ── SSE ─────────────────────────────────────────────────────────
+
+  function connectSse() {
+    return new Promise(function (resolve) {
+      const es = new EventSource(BASE + "/__hmr_sse");
+      const timer = setTimeout(function () {
+        es.close();
+        resolve(false);
+      }, 5000);
+
+      es.onopen = function () {
+        clearTimeout(timer);
+        transport = "sse";
+        console.log("[pletivo] HMR connected (SSE)");
+        resolve(true);
+      };
+      es.onmessage = function (e) { handleMessage(e.data); };
+      es.onerror = function () {
+        clearTimeout(timer);
+        es.close();
+        if (transport === "sse") {
+          transport = null;
+          reconnect();
+        } else {
+          resolve(false);
+        }
+      };
+    });
+  }
+
+  // ── Long-polling ────────────────────────────────────────────────
+
+  function connectPoll() {
+    transport = "poll";
+    console.log("[pletivo] HMR connected (long-poll)");
+    poll();
+    return Promise.resolve(true);
+  }
+
+  function poll() {
+    if (transport !== "poll") return;
+    fetch(BASE + "/__hmr_poll", { cache: "no-store" })
+      .then(function (r) { return r.text(); })
+      .then(function (data) {
+        handleMessage(data);
+        poll();
+      })
+      .catch(function () {
+        transport = null;
+        reconnect();
+      });
+  }
+
+  // ── Connection management ───────────────────────────────────────
+
+  async function connect() {
+    if (await connectWs()) return;
+    if (await connectSse()) return;
+    await connectPoll();
+  }
+
+  function reconnect() {
+    console.log("[pletivo] Connection lost. Reconnecting…");
+    setTimeout(async function () {
+      // Check if server is alive before attempting transport
+      try {
+        await fetch(BASE + "/__hmr_ping", { cache: "no-store" });
+        connect();
+      } catch {
+        reconnect();
+      }
+    }, 1000);
   }
 
   // ── L1: CSS hot swap ────────────────────────────────────────────
