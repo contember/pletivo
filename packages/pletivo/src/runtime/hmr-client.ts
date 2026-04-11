@@ -22,6 +22,61 @@ export const hmrClientScript = `
   const BASE = location.origin;
   let morphdom = null;
   let transport = null; // "ws" | "sse" | "poll"
+  let activeWs = null;
+  let activeSse = null;
+  let suspended = false;
+
+  // ── Idle / visibility suspend ───────────────────────────────────
+  // Disconnect HMR when the tab is hidden or the user is inactive
+  // for a while, so remote environments (e2b etc.) can go to sleep.
+
+  const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of no interaction
+  const HIDDEN_GRACE = 60 * 1000;     // 1 min after tab hidden
+  let idleTimer = null;
+  let hiddenTimer = null;
+
+  function resetIdleTimer() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(suspend, IDLE_TIMEOUT);
+  }
+
+  function suspend() {
+    if (suspended) return;
+    suspended = true;
+    console.log("[pletivo] HMR suspended (idle)");
+    disconnect();
+  }
+
+  function resume() {
+    if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+    resetIdleTimer();
+    if (!suspended) return;
+    suspended = false;
+    console.log("[pletivo] HMR resuming");
+    connect();
+  }
+
+  function disconnect() {
+    const prev = transport;
+    transport = null;
+    if (activeWs) { try { activeWs.close(); } catch {} activeWs = null; }
+    if (activeSse) { try { activeSse.close(); } catch {} activeSse = null; }
+    // poll stops on its own when transport becomes null
+    if (prev) console.log("[pletivo] HMR disconnected");
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      if (hiddenTimer) clearTimeout(hiddenTimer);
+      hiddenTimer = setTimeout(suspend, HIDDEN_GRACE);
+    } else {
+      resume();
+    }
+  });
+
+  for (const evt of ["pointerdown", "keydown", "scroll", "touchstart"]) {
+    document.addEventListener(evt, resume, { passive: true, capture: true });
+  }
 
   // Track top-level runtime-injected elements so morph doesn't strip
   // them. We only watch *direct children* of <body> and <head>
@@ -72,6 +127,7 @@ export const hmrClientScript = `
     return new Promise(function (resolve) {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(protocol + "//" + location.host + "/__hmr");
+      activeWs = ws;
       const timer = setTimeout(function () {
         ws.close();
         resolve(false);
@@ -86,6 +142,7 @@ export const hmrClientScript = `
       ws.onmessage = function (e) { handleMessage(e.data); };
       ws.onclose = function () {
         clearTimeout(timer);
+        if (activeWs === ws) activeWs = null;
         if (transport === "ws") {
           transport = null;
           reconnect();
@@ -102,6 +159,7 @@ export const hmrClientScript = `
   function connectSse() {
     return new Promise(function (resolve) {
       const es = new EventSource(BASE + "/__hmr_sse");
+      activeSse = es;
       const timer = setTimeout(function () {
         es.close();
         resolve(false);
@@ -117,6 +175,7 @@ export const hmrClientScript = `
       es.onerror = function () {
         clearTimeout(timer);
         es.close();
+        if (activeSse === es) activeSse = null;
         if (transport === "sse") {
           transport = null;
           reconnect();
@@ -159,8 +218,10 @@ export const hmrClientScript = `
   }
 
   function reconnect() {
+    if (suspended) return;
     console.log("[pletivo] Connection lost. Reconnecting…");
     setTimeout(async function () {
+      if (suspended) return;
       // Check if server is alive before attempting transport
       try {
         await fetch(BASE + "/__hmr_ping", { cache: "no-store" });
@@ -337,6 +398,7 @@ export const hmrClientScript = `
     return false;
   }
 
+  resetIdleTimer();
   connect();
 })();
 </script>`;
