@@ -39,6 +39,24 @@ Bun workspace monorepo:
 - **`packages/astro-jsx-pages`** — Babel+Vite plugin enabling TSX pages inside Astro. Built with tsc.
 - **`examples/`** — `basic` (pletivo-native), `basic-astro`, `basic-astro-native`.
 
+## Release
+
+Only `pletivo` is published to npm. Release is triggered by pushing a `v*` tag — the CI workflow (`.github/workflows/release.yml`) runs tests and publishes automatically via npm OIDC.
+
+```bash
+# 1. Check existing tags to determine the next version
+git tag -l 'v*' --sort=-v:refname | head -5
+
+# 2. Push all commits to main
+git push origin main
+
+# 3. Create and push the tag (triggers the release workflow)
+git tag v<version> && git push origin v<version>
+
+# 4. Watch the pipeline
+gh run watch $(gh run list --workflow=release.yml --limit=1 --json databaseId -q '.[0].databaseId') --exit-status
+```
+
 ## Critical Invariants
 
 - Island registry tracks islands per render pass — call `resetIslandRegistry()` between page renders or islands leak across pages.
