@@ -12,6 +12,10 @@ import { parseMarkdown } from "./content/markdown";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
 import type { PletivoConfig } from "./config";
 import type { ServerWebSocket } from "bun";
+import { createRequire } from "module";
+
+const require_ = createRequire(import.meta.url);
+const { version: PLETIVO_VERSION } = require_("../package.json");
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -219,13 +223,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
       // WebSocket upgrade for HMR — must bypass middleware chain
       if (url.pathname === "/__hmr") {
-        // Echo back Sec-WebSocket-Protocol so proxies (CF Workers, E2B)
-        // that relay WebSocket connections see a valid sub-protocol negotiation.
-        const protocol = req.headers.get("sec-websocket-protocol");
-        const upgradeOpts = protocol
-          ? { headers: { "sec-websocket-protocol": protocol.split(",")[0].trim() } }
-          : undefined;
-        if (server.upgrade(req, upgradeOpts)) return;
+        if (server.upgrade(req)) return;
         return new Response("WebSocket upgrade failed", { status: 500 });
       }
 
@@ -238,14 +236,26 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // SSE fallback for HMR when WebSocket is unavailable (e.g. behind
       // proxies that don't support WS upgrades).
       if (url.pathname === "/__hmr_sse") {
+        let heartbeat: ReturnType<typeof setInterval>;
         const stream = new ReadableStream({
           start(controller) {
             sseClients.add(controller);
-            // Send initial heartbeat so the connection is confirmed alive
+            console.log(`  HMR sse connected (${sseClients.size} clients)`);
             controller.enqueue(new TextEncoder().encode(":ok\n\n"));
+            // Send comment heartbeat every 5s to prevent proxy idle timeout
+            heartbeat = setInterval(() => {
+              try {
+                controller.enqueue(new TextEncoder().encode(":\n\n"));
+              } catch {
+                clearInterval(heartbeat);
+                sseClients.delete(controller);
+              }
+            }, 5_000);
           },
           cancel(controller) {
+            clearInterval(heartbeat);
             sseClients.delete(controller);
+            console.log(`  HMR sse disconnected (${sseClients.size} clients)`);
           },
         });
         return new Response(stream, {
@@ -299,8 +309,14 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     },
 
     websocket: {
-      open(ws) { sockets.add(ws); },
-      close(ws) { sockets.delete(ws); },
+      open(ws) {
+        sockets.add(ws);
+        console.log(`  HMR ws connected (${sockets.size} clients)`);
+      },
+      close(ws) {
+        sockets.delete(ws);
+        console.log(`  HMR ws disconnected (${sockets.size} clients)`);
+      },
       message() {},
     },
   });
@@ -471,8 +487,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     if (!filename) return;
     // Skip tmp files
     if (filename.includes("_tmp_")) return;
-    console.log(`  Changed: ${config.srcDir}/${filename}`);
     bumpDevVersion();
+    const ext = path.extname(filename).toLowerCase();
+    const isCss = ext === ".css";
+    const hmrType = isCss ? "css" : "html";
+    const clients = sockets.size + sseClients.size + pollWaiters.size;
+    console.log(`  ${config.srcDir}/${filename} changed → ${hmrType} update (${clients} clients)`);
 
     if (filename.startsWith("content/") || filename === "content.config.ts") {
       await initCollections(projectRoot);
@@ -493,13 +513,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       astroHost.server.watcher.emit(viteEvent, absPath);
     }
 
-    // Classify the change so the HMR client can do the cheapest update:
-    //  - .css → hot-swap the stylesheet (no reload, no morph)
-    //  - anything else → fetch new HTML + morphdom patch
-    //  - hard reload is the fallback if the client decides morph isn't safe
-    const ext = path.extname(filename).toLowerCase();
-    const isCss = ext === ".css";
-    broadcastHmr(JSON.stringify({ type: isCss ? "css" : "html" }));
+    broadcastHmr(JSON.stringify({ type: hmrType }));
   });
 
   try {
@@ -511,7 +525,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   }
 
   const displayHost = config.host === "0.0.0.0" ? "localhost" : config.host;
-  console.log(`\n  pletivo dev server running at http://${displayHost}:${config.port}\n`);
+  console.log(`\n  pletivo v${PLETIVO_VERSION} dev server running at http://${displayHost}:${config.port}\n`);
 
   if (astroHost) {
     await astroHost.runServerStart({

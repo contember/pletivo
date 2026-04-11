@@ -3,6 +3,10 @@
 import { build } from "./build";
 import { dev } from "./dev";
 import { loadConfig } from "./config";
+import { createRequire } from "module";
+
+const require_ = createRequire(import.meta.url);
+const { version } = require_("../package.json");
 
 const command = process.argv[2];
 const projectRoot = process.cwd();
@@ -41,7 +45,7 @@ switch (command) {
   case "help":
   default:
     console.log(`
-  pletivo v0.1.0 — static site generator
+  pletivo v${version} — static site generator
 
   Usage:
     pletivo build              Build static site

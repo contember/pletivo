@@ -71,9 +71,7 @@ export const hmrClientScript = `
   function connectWs() {
     return new Promise(function (resolve) {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      // Request vite-hmr sub-protocol so proxies (CF Workers) that inject
-      // Sec-WebSocket-Protocol can echo it back without violating RFC 6455.
-      const ws = new WebSocket(protocol + "//" + location.host + "/__hmr", ["vite-hmr"]);
+      const ws = new WebSocket(protocol + "//" + location.host + "/__hmr");
       const timer = setTimeout(function () {
         ws.close();
         resolve(false);
