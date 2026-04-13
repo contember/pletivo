@@ -11,6 +11,8 @@ import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearSco
 import { parseMarkdown } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
+import { resolveI18nConfig } from "./i18n/config";
+import { detectRouteLocale } from "./i18n/route-expansion";
 import type { PletivoConfig } from "./config";
 
 interface PageResult {
@@ -56,17 +58,32 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
   const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+  const i18n = resolveI18nConfig(astroHost?.config.i18n);
 
-  function makePageContext(pathname: string, params: Record<string, string>) {
+  function makePageContext(
+    pathname: string,
+    params: Record<string, string>,
+    route: Route,
+  ) {
     // Astro expects `Astro.url` to be a real URL with pathname + origin.
     // Use the configured site origin if present, else a localhost stand-in.
     const origin = siteUrl ? siteUrl.origin : "http://localhost/";
     const urlPath = "/" + pathname.replace(/^\//, "");
+    // `preferredLocale` is always undefined in static output — there's
+    // no request to read Accept-Language from. `currentLocale` comes
+    // from the route's source directory (or the default locale for
+    // unprefixed root pages).
+    const currentLocale = i18n
+      ? detectRouteLocale(route, i18n).locale?.code
+      : undefined;
     return {
       __pageContext: {
         url: new URL(urlPath, origin),
         site: siteUrl,
         params,
+        currentLocale,
+        preferredLocale: undefined as string | undefined,
+        preferredLocaleList: [] as string[],
       },
     };
   }
@@ -124,7 +141,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       resetIslandRegistry();
       const outFile = routeToOutputPath(route, {});
       const pathname = toPathname(path.join(distDir, outFile), distDir);
-      const html = await renderComponent(mod.default, makePageContext(pathname, {}));
+      const html = await renderComponent(mod.default, makePageContext(pathname, {}, route));
       if (html === null) {
         console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         return null;
@@ -147,7 +164,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       resetIslandRegistry();
       const outFile = routeToOutputPath(route, params);
       const pathname = toPathname(path.join(distDir, outFile), distDir);
-      const ctx = makePageContext(pathname, params);
+      const ctx = makePageContext(pathname, params, route);
       const html = await renderComponent(mod.default, { ...(pathProps || {}), ...ctx });
       if (html === null) continue;
 

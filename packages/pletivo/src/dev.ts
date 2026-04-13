@@ -11,6 +11,9 @@ import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, bumpDevV
 import { parseMarkdown } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
+import { resolveI18nConfig } from "./i18n/config";
+import { detectRouteLocale } from "./i18n/route-expansion";
+import { parsePreferredLocales } from "./i18n/helpers";
 import type { PletivoConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 import { createRequire } from "module";
@@ -68,6 +71,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   await initCollections(projectRoot);
   let routes = await scanRoutes(pagesDir);
+  // Resolve i18n once per dev-server start; renderPage uses it to set
+  // Astro.currentLocale from the matched route and Astro.preferredLocale
+  // from the incoming request's Accept-Language header. Null when the
+  // user hasn't configured i18n, in which case the locale fields stay
+  // undefined end-to-end.
+  const i18n = resolveI18nConfig(astroHost?.config.i18n);
 
   function escapeHtmlSimple(s: string) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -77,6 +86,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     route: Route,
     params: Record<string, string>,
     pathname: string = "/",
+    request?: Request,
   ): Promise<string | null> {
     const fullPath = path.join(pagesDir, route.file);
 
@@ -118,10 +128,24 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
       const devHost = config.host === "0.0.0.0" ? "localhost" : config.host;
       const origin = siteUrl ? siteUrl.origin : `http://${devHost}:${config.port}`;
+      let currentLocale: string | undefined;
+      let preferredLocale: string | undefined;
+      let preferredLocaleList: string[] = [];
+      if (i18n) {
+        currentLocale = detectRouteLocale(route, i18n).locale?.code;
+        const accept = request?.headers.get("accept-language");
+        const parsed = parsePreferredLocales(i18n, accept);
+        preferredLocale = parsed.preferredLocale;
+        preferredLocaleList = parsed.preferredLocaleList;
+      }
       const pageContext = {
         url: new URL(pathname || "/", origin),
         site: siteUrl,
         params,
+        request,
+        currentLocale,
+        preferredLocale,
+        preferredLocaleList,
       };
 
       resetIslandRegistry();
@@ -413,7 +437,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       const pathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/$/, "");
       const match = findRoute(routes, pathname);
       if (match) {
-        const html = await renderPage(match.route, match.params, pathname);
+        const html = await renderPage(match.route, match.params, pathname, req);
         if (html !== null) {
           return new Response(html, {
             headers: { "Content-Type": "text/html; charset=utf-8" },

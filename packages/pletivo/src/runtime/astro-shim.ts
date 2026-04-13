@@ -63,6 +63,21 @@ export interface AstroGlobal {
   site?: URL;
   generator: string;
   params: Record<string, string>;
+  /**
+   * Canonical code of the locale that owns this page, as resolved from
+   * the URL (or the default locale for non-prefixed routes). Undefined
+   * when i18n is not configured or the route lives outside every
+   * locale scope.
+   */
+  currentLocale?: string;
+  /**
+   * Best-matched configured locale from the request's `Accept-Language`
+   * header. Always `undefined` during a static build — meaningful only
+   * in dev mode where a real request is available.
+   */
+  preferredLocale?: string;
+  /** Ordered list of every configured locale matched against Accept-Language. */
+  preferredLocaleList: string[];
   [key: string]: unknown;
 }
 
@@ -85,6 +100,12 @@ export interface PageContext {
   request?: Request;
   site?: URL;
   params?: Record<string, string>;
+  /** Canonical locale code for `Astro.currentLocale`. */
+  currentLocale?: string;
+  /** Best Accept-Language match for `Astro.preferredLocale`. */
+  preferredLocale?: string;
+  /** All matched Accept-Language locales in priority order. */
+  preferredLocaleList?: string[];
 }
 
 type SlotFn = () => unknown;
@@ -138,6 +159,9 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
         site: pageContext.site,
         params: pageContext.params || {},
         generator: "pletivo",
+        currentLocale: pageContext.currentLocale,
+        preferredLocale: pageContext.preferredLocale,
+        preferredLocaleList: pageContext.preferredLocaleList ?? [],
       };
     },
   };

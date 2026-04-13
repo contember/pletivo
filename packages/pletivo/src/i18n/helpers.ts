@@ -174,3 +174,102 @@ function trimSlashes(s: string): string {
   while (end > start && s.charCodeAt(end - 1) === 47) end--;
   return s.slice(start, end);
 }
+
+// ── Accept-Language handling ────────────────────────────────────────
+
+interface AcceptLanguageEntry {
+  tag: string;
+  quality: number;
+}
+
+/**
+ * Parse an RFC 7231 `Accept-Language` header into ordered (tag, q)
+ * pairs, sorted by quality descending then original order. Malformed
+ * entries are skipped silently — the header is user-controlled and
+ * should never crash a render.
+ */
+function parseAcceptLanguage(header: string): AcceptLanguageEntry[] {
+  const entries: Array<AcceptLanguageEntry & { index: number }> = [];
+  const parts = header.split(",");
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!.trim();
+    if (!part) continue;
+    const [tagRaw, ...params] = part.split(";");
+    const tag = tagRaw!.trim();
+    if (!tag) continue;
+    let quality = 1;
+    for (const p of params) {
+      const [k, v] = p.split("=").map((s) => s.trim());
+      if (k === "q" && v) {
+        const parsed = Number.parseFloat(v);
+        if (Number.isFinite(parsed)) quality = parsed;
+      }
+    }
+    entries.push({ tag, quality, index: i });
+  }
+  entries.sort((a, b) => {
+    if (b.quality !== a.quality) return b.quality - a.quality;
+    return a.index - b.index;
+  });
+  return entries.map(({ tag, quality }) => ({ tag, quality }));
+}
+
+/**
+ * Match a single Accept-Language tag (e.g. `"fr-CA"`) against the
+ * configured locales. Matches are attempted in this order:
+ *   1. Exact code match (`"fr-CA"` → locale with code `"fr-CA"`)
+ *   2. Language prefix match (`"fr-CA"` → locale with code `"fr"`)
+ * Returns the canonical locale code, or `undefined` if nothing matched.
+ */
+function matchLocaleTag(
+  config: ResolvedI18nConfig,
+  tag: string,
+): string | undefined {
+  const normalized = tag.toLowerCase();
+  // Exact match against any code in byCode, case-insensitive
+  for (const [code, locale] of config.byCode) {
+    if (code.toLowerCase() === normalized) return locale.code;
+  }
+  // Language-only prefix match: "fr-CA" → "fr"
+  const dash = normalized.indexOf("-");
+  if (dash > 0) {
+    const lang = normalized.slice(0, dash);
+    for (const [code, locale] of config.byCode) {
+      if (code.toLowerCase() === lang) return locale.code;
+    }
+  }
+  return undefined;
+}
+
+export interface PreferredLocales {
+  preferredLocale: string | undefined;
+  preferredLocaleList: string[];
+}
+
+/**
+ * Resolve `Astro.preferredLocale` / `preferredLocaleList` from an
+ * `Accept-Language` header string. Both fields are undefined / empty
+ * when the header is absent or nothing matches a configured locale.
+ */
+export function parsePreferredLocales(
+  config: ResolvedI18nConfig,
+  acceptLanguage: string | null | undefined,
+): PreferredLocales {
+  if (!acceptLanguage) {
+    return { preferredLocale: undefined, preferredLocaleList: [] };
+  }
+  const entries = parseAcceptLanguage(acceptLanguage);
+  const matched: string[] = [];
+  const seen = new Set<string>();
+  for (const { tag } of entries) {
+    const code = matchLocaleTag(config, tag);
+    if (code && !seen.has(code)) {
+      seen.add(code);
+      matched.push(code);
+    }
+  }
+  return {
+    preferredLocale: matched[0],
+    preferredLocaleList: matched,
+  };
+}
