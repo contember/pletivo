@@ -37,6 +37,11 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   await initCollections(projectRoot);
 
+  if (astroHost) {
+    await astroHost.runBuildStart();
+    await astroHost.runBuildSetup();
+  }
+
   // Clean dist
   await fs.rm(distDir, { recursive: true, force: true });
   await fs.mkdir(distDir, { recursive: true });
@@ -305,6 +310,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   // @astrojs/sitemap writes its sitemap XMLs now that it has both the
   // captured routes and the final pages list.
   if (astroHost) {
+    await astroHost.runBuildGenerated(distDir);
     const pageEntries = dedupedResults.map((r) => ({
       pathname: toPathname(r.outPath, distDir),
     }));

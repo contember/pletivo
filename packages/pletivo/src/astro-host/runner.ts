@@ -12,7 +12,16 @@
  *       the fragments and expose them to dev/build HTML injection
  *  3. Run `astro:config:done`
  *  4. Run `astro:server:setup` with the server shim (dev only)
- *  5. Later, run `astro:build:done` with dir + pages list (build only)
+ *  5. Later, in build mode:
+ *     - `astro:build:start` before any rendering
+ *     - `astro:build:setup` once with target "client" (pletivo is SSG-only,
+ *       there is no separate server target)
+ *     - `astro:routes:resolved` after the route tree is known
+ *     - `astro:build:generated` once all files are written
+ *     - `astro:build:done` with dir + pages list
+ *
+ *  `astro:build:ssr` is intentionally never fired — pletivo has no SSR
+ *  manifest to hand to it.
  *
  * This module is intentionally stateful — there is one host per pletivo
  * process. Dev and build both use the same instance through the
@@ -52,6 +61,9 @@ export interface AstroHost {
   /** Returns true if an integration with the given name is active after overrides */
   hasIntegration(name: string): boolean;
   runRoutesResolved(routes: AstroRoute[]): Promise<void>;
+  runBuildStart(): Promise<void>;
+  runBuildSetup(): Promise<void>;
+  runBuildGenerated(distDir: string): Promise<void>;
   runBuildDone(
     routes: AstroRoute[],
     pages: Array<{ pathname: string }>,
@@ -101,6 +113,9 @@ export async function initAstroHost(
     ready: Promise.resolve(),
     hasIntegration: (name) => config.integrations.some((i) => i?.name === name),
     runRoutesResolved: async () => {},
+    runBuildStart: async () => {},
+    runBuildSetup: async () => {},
+    runBuildGenerated: async () => {},
     runBuildDone: async () => {},
     runServerStart: async () => {},
     runServerDone: async () => {},
@@ -236,6 +251,80 @@ export async function initAstroHost(
       } catch (e) {
         console.error(
           `[pletivo-astro-host] ${integration.name}.astro:routes:resolved failed:`,
+          (e as Error).message,
+        );
+      }
+    }
+  };
+
+  // ── astro:build:start — fired once before rendering begins ──
+  host.runBuildStart = async () => {
+    for (const integration of config.integrations) {
+      const hook = integration.hooks?.["astro:build:start"];
+      if (typeof hook !== "function") continue;
+      try {
+        await hook({ logger: createLogger(integration.name) });
+      } catch (e) {
+        console.error(
+          `[pletivo-astro-host] ${integration.name}.astro:build:start failed:`,
+          (e as Error).message,
+        );
+      }
+    }
+  };
+
+  // ── astro:build:setup — pletivo has no Vite build phase, but we fire
+  // this once with target "client" so integrations that use it to pin
+  // their vite plugins to the build (rather than dev) still get a turn.
+  // `updateConfig` is wired into the same plugin host as config:setup.
+  host.runBuildSetup = async () => {
+    for (const integration of config.integrations) {
+      const hook = integration.hooks?.["astro:build:setup"];
+      if (typeof hook !== "function") continue;
+      try {
+        await hook({
+          target: "client",
+          vite: config.vite ?? {},
+          pages: new Map(),
+          logger: createLogger(integration.name),
+          updateConfig: (patch) => {
+            if (Array.isArray(patch?.plugins)) {
+              const flat: ViteLikePlugin[] = [];
+              const walk = (arr: unknown[]) => {
+                for (const item of arr) {
+                  if (Array.isArray(item)) walk(item);
+                  else if (item && typeof item === "object") flat.push(item as ViteLikePlugin);
+                }
+              };
+              walk(patch.plugins);
+              const added = addVitePlugins(flat);
+              if (added.length > 0) syncServerPlugins(host.server);
+            }
+            config.vite = mergeDeep(config.vite ?? {}, { ...patch, plugins: undefined });
+          },
+        });
+      } catch (e) {
+        console.error(
+          `[pletivo-astro-host] ${integration.name}.astro:build:setup failed:`,
+          (e as Error).message,
+        );
+      }
+    }
+  };
+
+  // ── astro:build:generated — files are on disk, but before build:done.
+  // Integrations that post-process the output directory (rewriting
+  // HTML, adding files beside pages) hook in here.
+  host.runBuildGenerated = async (distDir) => {
+    const dirUrl = pathToFileURL(distDir + path.sep);
+    for (const integration of config.integrations) {
+      const hook = integration.hooks?.["astro:build:generated"];
+      if (typeof hook !== "function") continue;
+      try {
+        await hook({ dir: dirUrl, logger: createLogger(integration.name) });
+      } catch (e) {
+        console.error(
+          `[pletivo-astro-host] ${integration.name}.astro:build:generated failed:`,
           (e as Error).message,
         );
       }
