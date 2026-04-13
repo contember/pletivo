@@ -70,4 +70,27 @@ describe("content collections", () => {
   test("nonexistent collection throws", async () => {
     expect(getCollection("nonexistent")).rejects.toThrow('Collection "nonexistent" not found');
   });
+
+  test("subdirectory-nested entries keep the path prefix in their ID", async () => {
+    // Astro parity + i18n dir-per-locale use case: a file at
+    // `src/content/news/cs/praha-2.md` must produce `id: "cs/praha-2"`,
+    // not `cs-praha-2`. Users rely on the prefix for
+    // `entry.id.startsWith("cs/")` filters in multilingual sites.
+    const news = await getCollection("news");
+    const ids = news.map((e) => e.id).sort();
+    expect(ids).toEqual(["cs/brno-1", "cs/praha-2", "en/prague-2"]);
+  });
+
+  test("getCollection filter by locale prefix works", async () => {
+    const cs = await getCollection("news", (e) => e.id.startsWith("cs/"));
+    expect(cs.length).toBe(2);
+    const csIds = cs.map((e) => e.id).sort();
+    expect(csIds).toEqual(["cs/brno-1", "cs/praha-2"]);
+  });
+
+  test("getEntry resolves a nested ID", async () => {
+    const entry = await getEntry("news", "cs/praha-2");
+    expect(entry).toBeDefined();
+    expect(entry!.data.title).toBe("Praha 2");
+  });
 });

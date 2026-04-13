@@ -97,9 +97,12 @@ export function glob(options: GlobOptions): Loader {
         const fullPath = path.join(dir, file);
         const content = await Bun.file(fullPath).text();
         const ext = path.extname(file).toLowerCase();
-        const id = file
-          .replace(/\.(md|mdx|json|ya?ml)$/i, "")
-          .replace(/\//g, "-");
+        // Astro parity: collection entry IDs preserve the subdirectory
+        // structure under the collection root, so
+        // `news/cs/praha-2.md` → `cs/praha-2`. Users rely on this for
+        // dir-per-locale content (filter by `entry.id.startsWith("cs/")`)
+        // and for nested dynamic routes.
+        const id = file.replace(/\.(md|mdx|json|ya?ml)$/i, "");
 
         if (ext === ".json") {
           let data: Record<string, unknown>;

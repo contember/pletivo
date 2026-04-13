@@ -90,4 +90,33 @@ describe("i18n build", () => {
     const html = await readDist("spanish/about/index.html");
     expect(html).toContain('data-test="current-locale">es');
   });
+
+  test("hreflang <link> tags emit correct absolute URLs for every locale", async () => {
+    // This is the headline use-case from the spec:
+    // "getAbsoluteLocaleUrl pro hreflang v head". A layout iterates
+    // locales and emits one <link rel="alternate"> each. Any regression
+    // here breaks multilingual SEO, so we assert every expected href.
+    const html = await readDist("hreflang-demo/index.html");
+
+    // Default locale (en, prefixDefault=false): no prefix
+    expect(html).toContain(
+      '<link rel="alternate" hreflang="en" href="https://example.com/about">',
+    );
+    // Non-default bare-string locale: prefixed
+    expect(html).toContain(
+      '<link rel="alternate" hreflang="pt" href="https://example.com/pt/about">',
+    );
+    // Aliased locale (es → path "spanish"): prefixed with PATH alias
+    expect(html).toContain(
+      '<link rel="alternate" hreflang="es" href="https://example.com/spanish/about">',
+    );
+  });
+
+  test("hreflang demo page reports currentLocale on <html lang>", async () => {
+    // Sanity check that Astro.currentLocale is threaded through to the
+    // template correctly — hreflang is useless if currentLocale lies.
+    const html = await readDist("hreflang-demo/index.html");
+    // Root page with prefixDefault=false → default locale "en"
+    expect(html).toContain('<html lang="en">');
+  });
 });

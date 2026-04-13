@@ -1,0 +1,25 @@
+---
+import { getAbsoluteLocaleUrl } from "astro:i18n";
+
+// Mirrors the real-world hreflang pattern described in the spec:
+// "getAbsoluteLocaleUrl pro hreflang v head". A layout iterates
+// configured locales and emits one `<link rel="alternate">` per
+// locale pointing at the same canonical path. Users typically strip
+// the current-locale prefix from `Astro.url.pathname` first; here we
+// hardcode a clean path so the test is about helper output, not
+// pathname wrangling.
+const canonicalPath = "about";
+const locales = ["en", "pt", "es"];
+---
+<!DOCTYPE html>
+<html lang={Astro.currentLocale}>
+<head>
+<title>hreflang demo</title>
+{locales.map((locale) => (
+<link rel="alternate" hreflang={locale} href={getAbsoluteLocaleUrl(locale, canonicalPath)} />
+))}
+</head>
+<body>
+<h1>hreflang demo</h1>
+</body>
+</html>

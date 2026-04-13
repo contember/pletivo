@@ -10,4 +10,11 @@ export const collections = {
       tags: z.array(z.string()).optional(),
     }),
   }),
+  news: defineCollection({
+    loader: glob({ base: "src/content/news" }),
+    schema: z.object({
+      title: z.string(),
+      date: z.coerce.date(),
+    }),
+  }),
 };
