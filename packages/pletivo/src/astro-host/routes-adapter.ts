@@ -16,6 +16,8 @@
 
 import path from "path";
 import type { Route, StaticPath } from "../router";
+import { resolveI18nConfig } from "../i18n/config";
+import { detectRouteLocale } from "../i18n/route-expansion";
 import type { AstroConfig, AstroRoute } from "./types";
 
 export interface PletivoRouteWithPaths {
@@ -26,24 +28,34 @@ export interface PletivoRouteWithPaths {
 
 /**
  * Build the AstroRoute[] array from pletivo routes + Astro config redirects.
+ *
+ * When `config.i18n` is set, each source route is tagged with its
+ * resolved locale (detected from the `src/pages/<locale>/...` directory
+ * structure). Non-localized root files are treated as the default
+ * locale under `prefixDefaultLocale: false` and stay untagged under
+ * `prefixDefaultLocale: true` — matching Astro's convention.
  */
 export function buildAstroRoutes(
   routes: PletivoRouteWithPaths[],
   config: AstroConfig,
 ): AstroRoute[] {
   const out: AstroRoute[] = [];
+  const i18n = resolveI18nConfig(config.i18n);
 
   for (const entry of routes) {
     const r = entry.route;
+    const detection = i18n ? detectRouteLocale(r, i18n) : null;
+    const locale = detection?.locale?.code;
+
     if (r.isDynamic) {
       const paths = entry.staticPaths ?? [];
       for (const sp of paths) {
         const pathname = materializePathname(r, sp.params);
-        out.push(makePageRoute(r, pathname, Object.keys(sp.params)));
+        out.push(makePageRoute(r, pathname, Object.keys(sp.params), locale));
       }
     } else {
       const pathname = materializePathname(r, {});
-      out.push(makePageRoute(r, pathname, []));
+      out.push(makePageRoute(r, pathname, [], locale));
     }
   }
 
@@ -96,10 +108,11 @@ function makePageRoute(
   route: Route,
   pathname: string,
   paramNames: string[],
+  locale: string | undefined,
 ): AstroRoute {
   // Minimal regex: exact match of the resolved pathname
   const pattern = new RegExp("^/?" + escapeRegex(pathname) + "/?$");
-  return {
+  const astroRoute: AstroRoute = {
     type: "page",
     pathname,
     route: "/" + route.file.replace(/\.(tsx|jsx|ts|js|astro)$/, "").replace(/\/index$/, ""),
@@ -119,6 +132,8 @@ function makePageRoute(
     prerender: true,
     isIndex: route.file === "index.tsx" || route.file === "index.jsx" || route.file === "index.astro",
   };
+  if (locale) astroRoute.locale = locale;
+  return astroRoute;
 }
 
 function escapeRegex(s: string): string {

@@ -155,12 +155,33 @@ export interface AstroRoute {
   /** Redirect destination for `type: 'redirect'` routes */
   redirect?: { destination: string; status: number } | string;
   redirectRoute?: { pathname?: string; pattern?: string | RegExp };
-  /** Astro i18n fallback chain — pletivo doesn't do i18n, always empty */
+  /**
+   * Astro i18n fallback chain — populated when the route is a localized
+   * fallback (`isI18nFallback: true`) with the source route(s) whose
+   * content should render instead. Empty for ordinary routes.
+   */
   fallbackRoutes: AstroRoute[];
   /** Prerender flag — always true for pletivo (SSG-only) */
   prerender: boolean;
-  /** Route is a localized fallback — false */
+  /** Route is a directory index (`/`, `/blog`, etc.) */
   isIndex: boolean;
+  /**
+   * Resolved Astro locale code for this route (e.g. `"en"`, `"es"`).
+   * Present when the route lives under a locale subdirectory or when
+   * `i18n.defaultLocale` applies to non-prefixed root pages.
+   */
+  locale?: string;
+  /**
+   * True when this route was synthesized by the i18n fallback system
+   * and renders another route's content at a localized URL.
+   */
+  isI18nFallback?: boolean;
+  /**
+   * Source route (`component` path) whose content this fallback should
+   * render. Only set when `isI18nFallback` is true and `fallbackType`
+   * is `"rewrite"`. For `"redirect"`, see `redirect` instead.
+   */
+  fallbackFor?: string;
 }
 
 export interface AstroRoutesResolvedContext {
