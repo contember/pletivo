@@ -4,8 +4,13 @@ export const ASTRO_REF = "astro@5.7.13";
 export interface FixtureEntry {
   /** Short name used in logs and directory names */
   name: string;
-  /** Test file name inside astro's source directory */
-  testFile: string;
+  /**
+   * Test file name inside astro's source directory. Set to `null` for
+   * fixture-only entries (copy the fixture but write our own test
+   * against it — useful when Astro's own test file is tangled with
+   * inline config overrides or SSR adapters we don't support).
+   */
+  testFile: string | null;
   /** Fixture directory name inside astro's fixtures/ */
   fixture: string;
   /** Extra npm deps the fixture code imports (beyond what pletivo provides) */
@@ -56,6 +61,34 @@ export const e2eEntries: FixtureEntry[] = [
 // ---------------------------------------------------------------------------
 
 export const integrationEntries: FixtureEntry[] = [
+  // i18n fixtures — we copy Astro's actual fixture directories but
+  // don't use Astro's own i18n-routing.test.js, because it's heavily
+  // tangled with SSR adapter, inline loadFixture({ i18n: ... })
+  // overrides, and dev-server behavior tests. Instead,
+  // `integration/pletivo-i18n-ssg.test.js` (checked in separately)
+  // asserts SSG-side behavior against the copied fixtures.
+  {
+    name: "i18n-routing",
+    testFile: null,
+    fixture: "i18n-routing",
+    removeFiles: [
+      // Server islands need an SSR adapter — pletivo is SSG-only.
+      "src/pages/server-island.astro",
+      // JS route handlers aren't supported in pletivo.
+      "src/pages/test.json.js",
+    ],
+  },
+  {
+    name: "i18n-routing-prefix-always",
+    testFile: null,
+    fixture: "i18n-routing-prefix-always",
+    removeFiles: ["src/pages/test.json.js"],
+  },
+  {
+    name: "i18n-routing-fallback",
+    testFile: null,
+    fixture: "i18n-routing-fallback",
+  },
   {
     name: "astro-slots",
     testFile: "astro-slots.test.js",

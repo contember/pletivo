@@ -256,6 +256,27 @@ export async function registerAstroPlugin(): Promise<void> {
         loader: "ts",
         contents: `export * from ${JSON.stringify(i18nVirtualPath)};`,
       }));
+
+      // `astro/config` — minimal shim so astro.config.mjs files that
+      // `import { defineConfig } from "astro/config"` can be loaded
+      // without having astro installed as a dependency. `defineConfig`
+      // is an identity helper in Astro (`<T>(cfg: T): T => cfg`), so
+      // our shim matches exactly. Also exports `envField` as a noop
+      // collector since some configs use it at top level.
+      mod("astro/config", () => ({
+        loader: "ts",
+        contents: `
+          export function defineConfig(config) { return config; }
+          export function getViteConfig(config) { return config; }
+          export const envField = new Proxy(
+            function envField() { return {}; },
+            { get() { return (() => ({})); } },
+          );
+          export function sharpImageService() { return {}; }
+          export function squooshImageService() { return {}; }
+          export function passthroughImageService() { return {}; }
+        `,
+      }));
     },
   });
 }

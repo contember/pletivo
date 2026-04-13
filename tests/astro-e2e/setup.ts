@@ -123,6 +123,7 @@ function copyTestFile(
   testUtilsImport: string,
   fixtureRootPrefix: string,
 ) {
+  if (entry.testFile === null) return;
   const srcTest = path.join(srcDir, entry.testFile);
   if (!fs.existsSync(srcTest)) {
     throw new Error(`Test file not found: ${srcTest}`);
@@ -230,9 +231,13 @@ async function main() {
         "../integration-test-utils.js",
         "./integration-fixtures/",
       );
-      console.log(
-        `    → integration-fixtures/${entry.fixture}/ + integration/${entry.testFile}`,
-      );
+      if (entry.testFile === null) {
+        console.log(`    → integration-fixtures/${entry.fixture}/ (fixture-only)`);
+      } else {
+        console.log(
+          `    → integration-fixtures/${entry.fixture}/ + integration/${entry.testFile}`,
+        );
+      }
     }
   }
 

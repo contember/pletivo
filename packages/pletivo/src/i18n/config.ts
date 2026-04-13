@@ -61,6 +61,15 @@ export interface ResolvedI18nRouting {
 
 export interface ResolvedI18nConfig {
   defaultLocale: ResolvedI18nLocale;
+  /**
+   * Raw `defaultLocale` string exactly as written in the user's
+   * config. Some Astro helpers compare locale inputs to this string
+   * directly (e.g. `getRelativeLocaleUrl("es", ...)` with config
+   * `defaultLocale: "spanish"` returns a prefixed URL because the
+   * comparison is between `"es"` and `"spanish"`, not between
+   * canonical codes).
+   */
+  rawDefaultLocale: string;
   locales: ResolvedI18nLocale[];
   byCode: Map<string, ResolvedI18nLocale>;
   byPath: Map<string, ResolvedI18nLocale>;
@@ -126,7 +135,15 @@ export function resolveI18nConfig(
     }
   }
 
-  return { defaultLocale, locales, byCode, byPath, routing, fallback };
+  return {
+    defaultLocale,
+    rawDefaultLocale: raw.defaultLocale,
+    locales,
+    byCode,
+    byPath,
+    routing,
+    fallback,
+  };
 }
 
 function normalizeLocale(

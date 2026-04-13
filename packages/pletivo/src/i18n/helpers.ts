@@ -84,8 +84,13 @@ export function getRelativeLocaleUrl(
     );
   }
 
+  // Astro's semantics: compare the user-passed `locale` string to the
+  // raw `defaultLocale` string from config. `getRelativeLocaleUrl("es")`
+  // with `defaultLocale: "spanish"` returns a prefixed URL because
+  // `"es" !== "spanish"`. Using a canonical-code comparison would hide
+  // the path alias and disagree with Astro's helper output.
   const includePrefix =
-    resolved.code !== config.defaultLocale.code ||
+    locale !== config.rawDefaultLocale ||
     config.routing.prefixDefaultLocale;
 
   const segments: string[] = [];

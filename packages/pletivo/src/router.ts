@@ -102,7 +102,11 @@ export function routeToOutputPath(route: Route, params: RouteParams): string {
     } else if (seg.type === "param") {
       parts.push(params[seg.value]);
     } else if (seg.type === "rest") {
-      parts.push(...params[seg.value].split("/"));
+      // Astro's convention for catch-all routes: `undefined` means
+      // "no extra segments" (the catch-all matched nothing). We
+      // simply omit that segment from the output path.
+      const v = params[seg.value];
+      if (v) parts.push(...v.split("/"));
     }
   }
 

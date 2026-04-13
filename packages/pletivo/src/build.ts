@@ -252,13 +252,25 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html });
   }
 
+  // Deduplicate by output path — later entries win. The main use case
+  // is i18n: when `prefixDefaultLocale: true` + `redirectToDefaultLocale: true`,
+  // a non-localized root file (e.g. `src/pages/index.astro`) collides
+  // with the default-locale redirect that targets the same URL. Astro
+  // serves the redirect in that scenario, so we preserve the latest
+  // write to match — fallback/redirect emissions are pushed last.
+  const dedupedResults = Array.from(
+    results
+      .reduce<Map<string, PageResult>>((map, r) => map.set(r.outPath, r), new Map())
+      .values(),
+  );
+
   // Write all pages (including 404) — parallel.
   // Scoped CSS from <style> blocks is injected per-page (not into the
   // global bundle) to avoid cross-page leaks from unscoped rules like
   // `:global()` selectors or `body` styles.
   let totalSize = 0;
   await Promise.all(
-    results.map(async (result) => {
+    dedupedResults.map(async (result) => {
       const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest);
       totalSize += size;
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
@@ -268,7 +280,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
 
   // Detect islands from rendered HTML
   const islandNames = new Set<string>();
-  for (const result of results) {
+  for (const result of dedupedResults) {
     for (const name of extractIslandNames(result.html)) {
       islandNames.add(name);
     }
@@ -293,7 +305,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   // @astrojs/sitemap writes its sitemap XMLs now that it has both the
   // captured routes and the final pages list.
   if (astroHost) {
-    const pageEntries = results.map((r) => ({
+    const pageEntries = dedupedResults.map((r) => ({
       pathname: toPathname(r.outPath, distDir),
     }));
     const cachedRoutes =
