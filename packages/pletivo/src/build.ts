@@ -14,6 +14,7 @@ import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./a
 import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
+import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
 import type { PletivoConfig } from "./config";
 
 interface PageResult {
@@ -73,6 +74,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     pathname: string,
     params: Record<string, string>,
     route: Route,
+    localeOverride?: string,
   ) {
     // Astro expects `Astro.url` to be a real URL with pathname + origin.
     // Use the configured site origin if present, else a localhost stand-in.
@@ -81,10 +83,12 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     // `preferredLocale` is always undefined in static output — there's
     // no request to read Accept-Language from. `currentLocale` comes
     // from the route's source directory (or the default locale for
-    // unprefixed root pages).
-    const currentLocale = i18n
-      ? detectRouteLocale(route, i18n).locale?.code
-      : undefined;
+    // unprefixed root pages), or from an explicit override when this
+    // render is a localized fallback (rewrite of another locale's
+    // content at the target locale's URL).
+    const currentLocale =
+      localeOverride ??
+      (i18n ? detectRouteLocale(route, i18n).locale?.code : undefined);
     return {
       __pageContext: {
         url: new URL(urlPath, origin),
@@ -182,6 +186,66 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     }
   }
 
+  // Render i18n fallback emissions + default-locale redirects. Each
+  // emission produces either a rewrite (render source component with
+  // target locale override) or a redirect HTML document. Fallback
+  // emissions are additive to the page set — they never replace an
+  // existing rendered route, so we emit them after the main loops.
+  if (i18n) {
+    // Redirects and fallback URLs need to account for Astro's `base`
+    // config (e.g. `/new-site`). Prefer the astro host's base, falling
+    // back to pletivo's own config for non-astro-host projects.
+    const astroBase =
+      (astroHost?.config.base as string | undefined) ?? base ?? "/";
+    const emissions = generateFallbackEmissions({
+      routes,
+      i18n,
+      dynamicPaths,
+      base: astroBase,
+    });
+    for (const emission of emissions) {
+      const outFile = pathnameToOutputPath(emission.targetPathname);
+      const outPath = path.join(distDir, outFile);
+      const label = `[i18n ${emission.mode}] ${emission.targetPathname}`;
+
+      if (emission.mode === "redirect") {
+        const html = redirectHtml(emission.redirectTo ?? "/");
+        results.push({
+          file: emission.sourceRoute.file,
+          label,
+          outPath,
+          html,
+        });
+        continue;
+      }
+
+      // Rewrite mode — render the source component with the target
+      // locale override so `Astro.currentLocale` reports the fallback
+      // target, not the source.
+      const srcFullPath = path.join(pagesDir, emission.sourceRoute.file);
+      const mod = await import(srcFullPath);
+      if (typeof mod.default !== "function") continue;
+      resetIslandRegistry();
+      const ctx = makePageContext(
+        emission.targetPathname,
+        emission.sourceParams,
+        emission.sourceRoute,
+        emission.targetLocale,
+      );
+      const html = await renderComponent(mod.default, {
+        ...(emission.sourceProps || {}),
+        ...ctx,
+      });
+      if (html === null) continue;
+      results.push({
+        file: emission.sourceRoute.file,
+        label,
+        outPath,
+        html,
+      });
+    }
+  }
+
   // Render custom 404 page
   const result404 = await render404Page(pagesDir);
   if (result404) {
@@ -252,6 +316,29 @@ function toPathname(outPath: string, distDir: string): string {
   if (rel === "index.html") return "";
   if (rel.endsWith("/index.html")) return rel.slice(0, -"index.html".length);
   return rel;
+}
+
+/**
+ * Convert an i18n-synthesized URL pathname (e.g. `"it/blog/hello"`)
+ * into the `dist/`-relative file path under pletivo's directory
+ * output format (always `<segments>/index.html`, or just `index.html`
+ * for the empty string).
+ */
+function pathnameToOutputPath(pathname: string): string {
+  const clean = pathname.replace(/^\/+|\/+$/g, "");
+  if (!clean) return "index.html";
+  return path.posix.join(clean, "index.html");
+}
+
+/**
+ * Build the static HTML document for a meta-refresh redirect. Uses
+ * both an HTTP-equiv refresh header (works without JS) and a
+ * canonical link so crawlers see it as a redirect. Matches the
+ * shape Astro emits for its own i18n redirect pages.
+ */
+function redirectHtml(destination: string): string {
+  const safe = destination.replace(/"/g, "&quot;");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${safe}"><link rel="canonical" href="${safe}"></head><body></body></html>`;
 }
 
 /** Extract island component names from rendered HTML */

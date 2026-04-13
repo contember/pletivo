@@ -62,21 +62,28 @@ export interface AstroHost {
 }
 
 let activeHost: AstroHost | null = null;
+let activeHostRoot: string | null = null;
 
 export function getHost(): AstroHost | null {
   return activeHost;
 }
 
 /**
- * Initialize the Astro host for the given project. Idempotent — returns
- * the existing host on subsequent calls.
+ * Initialize the Astro host for the given project. Returns the existing
+ * host when called again for the same `projectRoot` within a single
+ * process; re-initializes for a different root (e.g. test harness
+ * running multiple fixtures in one process).
  */
 export async function initAstroHost(
   projectRoot: string,
   command: "dev" | "build",
   hmrBroadcast?: HmrBroadcast,
 ): Promise<AstroHost | null> {
-  if (activeHost) return activeHost;
+  if (activeHost && activeHostRoot === projectRoot) return activeHost;
+  // Drop any previous host so we don't mix integrations, injected
+  // scripts, or resolved config across projects.
+  activeHost = null;
+  activeHostRoot = null;
 
   const config = await loadAstroConfig(projectRoot);
   if (!config) return null;
@@ -290,6 +297,7 @@ export async function initAstroHost(
   }
 
   activeHost = host;
+  activeHostRoot = projectRoot;
   return host;
 }
 
@@ -393,4 +401,5 @@ function mergeDeep<T extends Record<string, unknown>>(a: T, b: Record<string, un
 /** Test reset */
 export function __resetForTests(): void {
   activeHost = null;
+  activeHostRoot = null;
 }

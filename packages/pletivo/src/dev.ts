@@ -15,6 +15,10 @@ import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { parsePreferredLocales } from "./i18n/helpers";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
+import {
+  resolveFallbackRoute,
+  resolveDefaultLocaleRedirect,
+} from "./i18n/fallback";
 import type { PletivoConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 import { createRequire } from "module";
@@ -97,6 +101,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     params: Record<string, string>,
     pathname: string = "/",
     request?: Request,
+    localeOverride?: string,
   ): Promise<string | null> {
     const fullPath = path.join(pagesDir, route.file);
 
@@ -142,7 +147,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       let preferredLocale: string | undefined;
       let preferredLocaleList: string[] = [];
       if (i18n) {
-        currentLocale = detectRouteLocale(route, i18n).locale?.code;
+        currentLocale =
+          localeOverride ?? detectRouteLocale(route, i18n).locale?.code;
         const accept = request?.headers.get("accept-language");
         const parsed = parsePreferredLocales(i18n, accept);
         preferredLocale = parsed.preferredLocale;
@@ -452,6 +458,55 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           return new Response(html, {
             headers: { "Content-Type": "text/html; charset=utf-8" },
           });
+        }
+      }
+
+      // i18n fallback + default-locale redirect resolution. Kicks in
+      // only when the user configured `i18n` and the regular route
+      // match didn't produce a response. Matches Astro's behavior of
+      // serving fallback content or 302-ing to the default locale.
+      if (i18n) {
+        const astroBase =
+          (astroHost?.config.base as string | undefined) ?? config.base ?? "/";
+
+        const redirectTo = resolveDefaultLocaleRedirect(
+          pathname,
+          routes,
+          i18n,
+          astroBase,
+        );
+        if (redirectTo) {
+          return new Response(null, {
+            status: 302,
+            headers: { Location: redirectTo },
+          });
+        }
+
+        const fallback = resolveFallbackRoute(
+          pathname,
+          routes,
+          i18n,
+          astroBase,
+        );
+        if (fallback) {
+          if (fallback.mode === "redirect") {
+            return new Response(null, {
+              status: 302,
+              headers: { Location: fallback.redirectTo ?? "/" },
+            });
+          }
+          const html = await renderPage(
+            fallback.route,
+            fallback.params,
+            pathname,
+            req,
+            fallback.targetLocale,
+          );
+          if (html !== null) {
+            return new Response(html, {
+              headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+          }
         }
       }
 
