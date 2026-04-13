@@ -14,6 +14,7 @@ import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-
 import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { parsePreferredLocales } from "./i18n/helpers";
+import { setI18nRuntimeState } from "./i18n/virtual-module";
 import type { PletivoConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 import { createRequire } from "module";
@@ -77,6 +78,15 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   // user hasn't configured i18n, in which case the locale fields stay
   // undefined end-to-end.
   const i18n = resolveI18nConfig(astroHost?.config.i18n);
+  // Seed the `astro:i18n` virtual module with the resolved config so
+  // user templates can `import { getRelativeLocaleUrl } from
+  // "astro:i18n"` and get correct URLs. Must happen before any .astro
+  // page is imported.
+  setI18nRuntimeState(
+    i18n,
+    (astroHost?.config.base as string | undefined) ?? "/",
+    astroHost?.config.site as string | undefined,
+  );
 
   function escapeHtmlSimple(s: string) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

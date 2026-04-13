@@ -1,0 +1,28 @@
+---
+import {
+  getRelativeLocaleUrl,
+  getAbsoluteLocaleUrl,
+  getPathByLocale,
+  getLocaleByPath,
+} from "astro:i18n";
+
+const aboutPt = getRelativeLocaleUrl("pt", "about");
+const aboutEs = getRelativeLocaleUrl("es", "about");
+const aboutAbsPt = getAbsoluteLocaleUrl("pt", "about");
+const spainPath = getPathByLocale("es-SP");
+const spanishLocale = getLocaleByPath("spanish");
+const currentLocale = Astro.currentLocale ?? "none";
+---
+<!DOCTYPE html>
+<html>
+<head><title>Home</title></head>
+<body>
+<h1>Home</h1>
+<p data-test="current-locale">currentLocale={currentLocale}</p>
+<p data-test="about-pt">aboutPt={aboutPt}</p>
+<p data-test="about-es">aboutEs={aboutEs}</p>
+<p data-test="about-abs-pt">aboutAbsPt={aboutAbsPt}</p>
+<p data-test="spain-path">spainPath={spainPath}</p>
+<p data-test="spanish-locale">spanishLocale={spanishLocale}</p>
+</body>
+</html>

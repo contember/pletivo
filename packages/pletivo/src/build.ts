@@ -13,6 +13,7 @@ import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
 import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
+import { setI18nRuntimeState } from "./i18n/virtual-module";
 import type { PletivoConfig } from "./config";
 
 interface PageResult {
@@ -59,6 +60,14 @@ export async function build(projectRoot: string, config: PletivoConfig) {
 
   const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
   const i18n = resolveI18nConfig(astroHost?.config.i18n);
+  // Install runtime state for the `astro:i18n` virtual module. Must
+  // run before any .astro page module is imported, so that helpers
+  // invoked at module evaluation time see the resolved config.
+  setI18nRuntimeState(
+    i18n,
+    (astroHost?.config.base as string | undefined) ?? "/",
+    astroHost?.config.site as string | undefined,
+  );
 
   function makePageContext(
     pathname: string,

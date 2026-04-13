@@ -117,6 +117,7 @@ export async function registerAstroPlugin(): Promise<void> {
   const pletivoSrcDir = path.dirname(fileURLToPath(import.meta.url));
   const shimPath = path.resolve(pletivoSrcDir, "runtime/astro-shim.ts");
   const contentPath = path.resolve(pletivoSrcDir, "content/index.ts");
+  const i18nVirtualPath = path.resolve(pletivoSrcDir, "i18n/virtual-module.ts");
   // Zod is a dep of pletivo; resolve from pletivo's package context.
   const zodPath = require.resolve("zod", { paths: [pletivoSrcDir] });
 
@@ -245,6 +246,15 @@ export async function registerAstroPlugin(): Promise<void> {
       mod("astro:components", () => ({
         loader: "ts",
         contents: `export * from "astro/components";`,
+      }));
+
+      // `astro:i18n` — re-export from the pletivo runtime module. The
+      // backing module reads from runtime state that dev/build install
+      // after loading the user's astro.config.*, so all .astro pages
+      // that `import { ... } from "astro:i18n"` share the same view.
+      mod("astro:i18n", () => ({
+        loader: "ts",
+        contents: `export * from ${JSON.stringify(i18nVirtualPath)};`,
       }));
     },
   });
