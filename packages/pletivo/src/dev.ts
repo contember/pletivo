@@ -409,7 +409,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         const cssModules = getCssModulesOutput();
         if (cssModules) css += "\n" + cssModules;
         return new Response(css, {
-          headers: { "Content-Type": "text/css; charset=utf-8" },
+          headers: { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-store" },
         });
       }
 
