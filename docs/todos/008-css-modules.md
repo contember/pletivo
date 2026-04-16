@@ -1,7 +1,7 @@
 # CSS Modules Support
 
 **Priority:** B-tier
-**Status:** Not implemented
+**Status:** Done (commit b6f789d)
 **Area:** CSS / Styling
 
 ## Problem

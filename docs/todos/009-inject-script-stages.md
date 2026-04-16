@@ -1,7 +1,7 @@
 # injectScript — Missing Stages
 
 **Priority:** B-tier
-**Status:** Partially implemented
+**Status:** Done (commit 407851d)
 **Area:** Integrations
 
 ## Problem

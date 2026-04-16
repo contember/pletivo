@@ -1,7 +1,7 @@
 # astro:env Virtual Module
 
 **Priority:** B-tier
-**Status:** Not implemented
+**Status:** Done (commit 407851d)
 **Area:** Virtual Modules / Configuration
 
 ## Problem

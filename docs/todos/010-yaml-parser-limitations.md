@@ -1,7 +1,7 @@
 # YAML Parser Limitations
 
 **Priority:** B-tier
-**Status:** Partial implementation
+**Status:** Done (commit dccab92)
 **Area:** Content Collections
 
 ## Problem

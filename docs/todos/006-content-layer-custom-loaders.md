@@ -1,7 +1,7 @@
 # Content Layer — Custom Loaders
 
 **Priority:** B-tier
-**Status:** Only glob() implemented
+**Status:** Done (commit 8f2622a)
 **Area:** Content Collections
 
 ## Problem
