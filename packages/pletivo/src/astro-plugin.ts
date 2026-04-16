@@ -18,6 +18,7 @@
 import path from "path";
 import { fileURLToPath } from "url";
 import { transform } from "@astrojs/compiler";
+import { readImageDimensions, registerImportedImage } from "./image";
 
 let registered = false;
 
@@ -126,6 +127,7 @@ export async function registerAstroPlugin(): Promise<void> {
   const shimPath = path.resolve(pletivoSrcDir, "runtime/astro-shim.ts");
   const contentPath = path.resolve(pletivoSrcDir, "content/index.ts");
   const i18nVirtualPath = path.resolve(pletivoSrcDir, "i18n/virtual-module.ts");
+  const imagePath = path.resolve(pletivoSrcDir, "image.ts");
   // Zod is a dep of pletivo; resolve from pletivo's package context.
   const zodPath = require.resolve("zod", { paths: [pletivoSrcDir] });
 
@@ -268,6 +270,78 @@ export async function registerAstroPlugin(): Promise<void> {
         loader: "ts",
         contents: `export * from ${JSON.stringify(i18nVirtualPath)};`,
       }));
+
+      // `astro:assets` — image optimization pipeline. Provides
+      // `getImage()` and `imageConfig` that Astro's `<Image>` and
+      // `<Picture>` components import, plus re-exports the components
+      // themselves for convenience.
+      mod("astro:assets", () => ({
+        loader: "ts",
+        contents: `
+          export { getImage, imageConfig } from ${JSON.stringify(imagePath)};
+          export { default as Image } from "astro/components/Image.astro";
+          export { default as Picture } from "astro/components/Picture.astro";
+          export type LocalImageProps = Record<string, unknown>;
+          export type RemoteImageProps = Record<string, unknown>;
+        `,
+      }));
+
+      // `mrmime` — MIME type lookup. Astro's `Picture.astro` imports
+      // this to map image formats to MIME types. Provide a shim so
+      // the package doesn't need to be installed.
+      mod("mrmime", () => ({
+        loader: "js",
+        contents: `
+          const types = {
+            '.avif': 'image/avif',
+            '.gif': 'image/gif',
+            '.heic': 'image/heic',
+            '.heif': 'image/heif',
+            '.jpeg': 'image/jpeg',
+            '.jpg': 'image/jpeg',
+            '.png': 'image/png',
+            '.svg': 'image/svg+xml',
+            '.tiff': 'image/tiff',
+            '.webp': 'image/webp',
+          };
+          export function lookup(path) {
+            if (!path) return undefined;
+            const dot = path.lastIndexOf('.');
+            if (dot === -1) return undefined;
+            return types[path.slice(dot).toLowerCase()];
+          }
+        `,
+      }));
+
+      // ── Image file loader ──
+      // Intercept ESM imports of image files (e.g. `import hero from
+      // './hero.png'`) and return an ImageMetadata object with
+      // dimensions read from the file header.
+      build.onLoad(
+        { filter: /\.(png|jpe?g|webp|avif|gif|tiff|svg)(\?.*)?$/ },
+        async (args) => {
+          const cleanPath = args.path.replace(/\?.*$/, "");
+          const dims = await readImageDimensions(cleanPath);
+          const hasher = new Bun.CryptoHasher("md5");
+          hasher.update(await Bun.file(cleanPath).arrayBuffer());
+          const contentHash = hasher.digest("hex").slice(0, 8);
+          const ext = path.extname(cleanPath);
+          const base = path.basename(cleanPath, ext);
+          const src = `/_astro/${base}.${contentHash}${ext}`;
+          const outputPath = `_astro/${base}.${contentHash}${ext}`;
+          // Register so the file is copied to dist even if getImage()
+          // is never called (e.g. `<img src={photo.src}>`).
+          registerImportedImage(cleanPath, outputPath);
+          return {
+            contents: `
+              const meta = ${JSON.stringify({ src, width: dims.width, height: dims.height, format: dims.format })};
+              Object.defineProperty(meta, 'fsPath', { value: ${JSON.stringify(cleanPath)}, enumerable: false });
+              export default meta;
+            `,
+            loader: "js",
+          };
+        },
+      );
 
       // `astro/config` — minimal shim so astro.config.mjs files that
       // `import { defineConfig } from "astro/config"` can be loaded

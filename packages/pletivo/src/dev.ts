@@ -15,6 +15,7 @@ import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { parsePreferredLocales } from "./i18n/helpers";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
+import { setImageMode } from "./image";
 import {
   resolveFallbackRoute,
   resolveDefaultLocaleRedirect,
@@ -91,6 +92,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     (astroHost?.config.base as string | undefined) ?? "/",
     astroHost?.config.site as string | undefined,
   );
+  setImageMode("dev", "/");
 
   function escapeHtmlSimple(s: string) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -376,6 +378,20 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         } catch {
           return new Response("morphdom not installed", { status: 500 });
         }
+      }
+
+      // Serve image assets in dev mode. `getImage()` returns URLs like
+      // `/@image/hero.png?f=/abs/path/hero.png` that point to the
+      // original unoptimized source file.
+      if (url.pathname.startsWith("/@image/")) {
+        const fsPathParam = url.searchParams.get("f");
+        if (fsPathParam) {
+          const file = Bun.file(fsPathParam);
+          if (await file.exists()) {
+            return new Response(file);
+          }
+        }
+        return new Response("Image not found", { status: 404 });
       }
 
       // Serve bundled CSS from src/ on-the-fly. Scoped styles from <style>

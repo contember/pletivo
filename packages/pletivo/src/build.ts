@@ -15,6 +15,7 @@ import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
+import { setImageMode, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
 import type { PletivoConfig } from "./config";
 
 interface PageResult {
@@ -74,6 +75,8 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     (astroHost?.config.base as string | undefined) ?? "/",
     astroHost?.config.site as string | undefined,
   );
+  setImageMode("build", base);
+  clearTransforms();
 
   function makePageContext(
     pathname: string,
@@ -283,6 +286,15 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   );
   clearScopedCss();
 
+  // Process optimized images registered by <Image> / <Picture> components
+  // and passthrough copies of ESM-imported images.
+  const imageTransforms = getTransforms();
+  let imageCount = 0;
+  if (imageTransforms.size > 0 || getImportedImages().size > 0) {
+    imageCount = await processImages(imageTransforms, distDir);
+    clearTransforms();
+  }
+
   // Detect islands from rendered HTML
   const islandNames = new Set<string>();
   for (const result of dedupedResults) {
@@ -319,7 +331,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     await astroHost.runBuildDone(cachedRoutes, pageEntries, distDir);
   }
 
-  console.log(`\nBuilt ${results.length} pages${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
+  console.log(`\nBuilt ${results.length} pages${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
 }
 
 /**
