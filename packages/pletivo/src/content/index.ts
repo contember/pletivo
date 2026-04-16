@@ -9,10 +9,17 @@ export {
   z,
 } from "./collection";
 export type {
+  AnyLoader,
+  AstroLoader,
   CollectionConfig,
   CollectionEntry,
+  DataStore,
+  DataStoreEntry,
+  FunctionLoader,
   GlobOptions,
   Loader,
+  LoaderContext,
+  MetaStore,
   RawEntry,
   RenderResult,
   Reference,

@@ -2,6 +2,7 @@ import path from "path";
 import fs from "fs";
 import { Glob } from "bun";
 import { z } from "zod";
+import yaml from "js-yaml";
 import { parseMarkdown, parseFrontmatter } from "./markdown";
 
 // ── Types ──
@@ -12,9 +13,70 @@ export interface RawEntry {
   data: Record<string, unknown>;
 }
 
+/** Legacy pletivo loader — returns entries directly. */
 export interface Loader {
   load(projectRoot: string): Promise<RawEntry[]>;
 }
+
+/**
+ * Astro Content Layer loader — pushes entries into a store.
+ * Compatible with CMS integration loaders (Sanity, Contentful, etc.).
+ */
+export interface AstroLoader {
+  name: string;
+  load(context: LoaderContext): Promise<void>;
+  schema?: z.ZodType;
+}
+
+/** Entry shape for DataStore.set() */
+export interface DataStoreEntry {
+  id: string;
+  data: Record<string, unknown>;
+  body?: string;
+  rendered?: { html: string };
+}
+
+export interface DataStore {
+  set(entry: DataStoreEntry): void;
+  get(id: string): DataStoreEntry | undefined;
+  has(id: string): boolean;
+  delete(id: string): boolean;
+  clear(): void;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<DataStoreEntry>;
+  entries(): IterableIterator<[string, DataStoreEntry]>;
+}
+
+export interface MetaStore {
+  get(key: string): unknown;
+  set(key: string, value: unknown): void;
+  has(key: string): boolean;
+  delete(key: string): boolean;
+}
+
+export interface LoaderContext {
+  /** Collection name */
+  collection: string;
+  /** Key-value store to push entries into */
+  store: DataStore;
+  /** Persistent metadata (in-memory for SSG builds) */
+  meta: MetaStore;
+  /** Logger scoped to the loader */
+  logger: { info(msg: string): void; warn(msg: string): void; error(msg: string): void };
+  /** Astro config reference (if available) */
+  config: Record<string, unknown>;
+  /** Validate entry data against the collection's Zod schema */
+  parseData<T = Record<string, unknown>>(props: { id: string; data: T }): Promise<T>;
+}
+
+/**
+ * Function loader — simplest form: returns array of entry objects.
+ * Each object must have `id`; remaining keys become `data`.
+ */
+export type FunctionLoader = () => Promise<Array<Record<string, unknown> & { id: string }>>;
+
+/** Any supported loader type */
+export type AnyLoader = Loader | AstroLoader | FunctionLoader;
 
 /**
  * Reference marker returned by `reference(collectionName)`. Passed through
@@ -44,8 +106,8 @@ export function reference(collectionName: string): z.ZodType<Reference> {
 }
 
 export interface CollectionConfig {
-  /** Loader that provides raw entries. Use glob() for file-based collections. */
-  loader?: Loader;
+  /** Loader that provides raw entries. Accepts glob(), Astro Content Layer loaders, or inline functions. */
+  loader?: AnyLoader;
   /** Shorthand for loader: glob({ base: directory }) */
   directory?: string;
   /** Zod schema for frontmatter validation */
@@ -114,7 +176,16 @@ export function glob(options: GlobOptions): Loader {
           }
           entries.push({ id, body: "", data });
         } else if (ext === ".yaml" || ext === ".yml") {
-          const data = parseSimpleYaml(content);
+          let data: Record<string, unknown>;
+          try {
+            const parsed = yaml.load(content);
+            data = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+              ? parsed as Record<string, unknown>
+              : {};
+          } catch (e) {
+            console.error(`  YAML parse error in ${file}: ${(e as Error).message}`);
+            continue;
+          }
           entries.push({ id, body: "", data });
         } else if (ext === ".mdx") {
           // .mdx — parse frontmatter for validation, defer rendering to import time
@@ -138,135 +209,6 @@ export function glob(options: GlobOptions): Loader {
       return entries;
     },
   };
-}
-
-/**
- * Minimal YAML subset parser for content frontmatter. Supports scalars,
- * nested maps, sequences of scalars/maps, and quoted strings. Complex
- * features (anchors, multiline strings, flow mappings) are not supported —
- * convert to JSON for those.
- */
-function parseSimpleYaml(input: string): Record<string, unknown> {
-  interface Line {
-    indent: number;
-    text: string;
-  }
-  const rawLines = input.split(/\r?\n/);
-  const lines: Line[] = [];
-  for (const l of rawLines) {
-    if (/^\s*#/.test(l) || l.trim() === "") continue;
-    const indent = l.match(/^\s*/)![0].length;
-    lines.push({ indent, text: l.slice(indent) });
-  }
-
-  const coerce = (raw: string): unknown => {
-    const s = raw.trim();
-    if (s === "" || s === "null" || s === "~") return null;
-    if (s === "true") return true;
-    if (s === "false") return false;
-    if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
-    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-      return s.slice(1, -1);
-    }
-    return s;
-  };
-
-  let i = 0;
-  const parseBlock = (parentIndent: number): unknown => {
-    // Determine if this block is a sequence or a mapping
-    if (i >= lines.length) return {};
-    const first = lines[i];
-    if (first.text.startsWith("- ") || first.text === "-") {
-      // Sequence
-      const arr: unknown[] = [];
-      const blockIndent = first.indent;
-      while (i < lines.length && lines[i].indent === blockIndent && (lines[i].text.startsWith("- ") || lines[i].text === "-")) {
-        const itemText = lines[i].text === "-" ? "" : lines[i].text.slice(2);
-        if (itemText === "") {
-          i++;
-          arr.push(parseBlock(blockIndent));
-          continue;
-        }
-        const kv = itemText.match(/^([\w.-]+):\s*(.*)$/);
-        if (kv) {
-          // Inline map item: `- key: value` (possibly followed by more keys at deeper indent)
-          const obj: Record<string, unknown> = {};
-          if (kv[2] !== "") {
-            obj[kv[1]] = coerce(kv[2]);
-            i++;
-          } else {
-            i++;
-            if (i < lines.length && lines[i].indent > blockIndent) {
-              obj[kv[1]] = parseBlock(lines[i].indent);
-            } else {
-              obj[kv[1]] = null;
-            }
-          }
-          // Collect additional sibling keys at (blockIndent + 2)
-          while (
-            i < lines.length &&
-            lines[i].indent === blockIndent + 2 &&
-            !lines[i].text.startsWith("- ")
-          ) {
-            const more = lines[i].text.match(/^([\w.-]+):\s*(.*)$/);
-            if (!more) break;
-            if (more[2] !== "") {
-              obj[more[1]] = coerce(more[2]);
-              i++;
-            } else {
-              i++;
-              if (i < lines.length && lines[i].indent > blockIndent + 2) {
-                obj[more[1]] = parseBlock(lines[i].indent);
-              } else {
-                obj[more[1]] = null;
-              }
-            }
-          }
-          arr.push(obj);
-        } else {
-          arr.push(coerce(itemText));
-          i++;
-        }
-      }
-      return arr;
-    }
-    // Mapping
-    const obj: Record<string, unknown> = {};
-    const blockIndent = first.indent;
-    while (i < lines.length && lines[i].indent === blockIndent) {
-      const text = lines[i].text;
-      if (text.startsWith("- ")) break;
-      const kv = text.match(/^([\w.-]+):\s*(.*)$/);
-      if (!kv) {
-        i++;
-        continue;
-      }
-      const [, key, value] = kv;
-      if (value === "") {
-        i++;
-        if (i < lines.length && lines[i].indent > blockIndent) {
-          obj[key] = parseBlock(lines[i].indent);
-        } else {
-          obj[key] = null;
-        }
-      } else if (value === "[]") {
-        obj[key] = [];
-        i++;
-      } else if (value === "{}") {
-        obj[key] = {};
-        i++;
-      } else {
-        obj[key] = coerce(value);
-        i++;
-      }
-    }
-    return obj;
-  };
-
-  const result = parseBlock(-1);
-  return (result && typeof result === "object" && !Array.isArray(result))
-    ? (result as Record<string, unknown>)
-    : {};
 }
 
 // ── defineCollection ──
@@ -365,12 +307,121 @@ export async function getEntry<T = Record<string, unknown>>(
 
 // ── Internal ──
 
+/**
+ * Detect loader type and load entries accordingly:
+ *  1. Function loader — `() => Promise<Entry[]>`
+ *  2. Astro Content Layer loader — `{ name, load(ctx) }`
+ *  3. Legacy pletivo loader — `{ load(root) }` (glob, etc.)
+ */
 async function loadCollection(config: CollectionConfig, name: string): Promise<CollectionEntry[]> {
   if (!config.loader) {
     throw new Error(`Collection "${name}" has no loader. Use glob() or set directory.`);
   }
 
-  const rawEntries = await config.loader.load(configProjectRoot);
+  let rawEntries: RawEntry[];
+
+  if (typeof config.loader === "function") {
+    // Function loader — returns array of entry objects
+    rawEntries = await loadFromFunctionLoader(config.loader as FunctionLoader);
+  } else if ("name" in config.loader && typeof (config.loader as AstroLoader).name === "string") {
+    // Astro Content Layer loader
+    rawEntries = await loadFromAstroLoader(config.loader as AstroLoader, config, name);
+  } else {
+    // Legacy pletivo loader (glob, etc.)
+    rawEntries = await (config.loader as Loader).load(configProjectRoot);
+  }
+
+  return buildEntries(rawEntries, config, name);
+}
+
+/** Run a function loader and normalize its output to RawEntry[]. */
+async function loadFromFunctionLoader(loader: FunctionLoader): Promise<RawEntry[]> {
+  const results = await loader();
+  return results.map((item) => {
+    const { id, body, ...data } = item;
+    return { id, body: typeof body === "string" ? body : "", data };
+  });
+}
+
+/** Run an Astro Content Layer loader with a full LoaderContext. */
+async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig, name: string): Promise<RawEntry[]> {
+  const storeMap = new Map<string, DataStoreEntry>();
+  const metaMap = new Map<string, unknown>();
+
+  const store: DataStore = {
+    set(entry) { storeMap.set(entry.id, entry); },
+    get(id) { return storeMap.get(id); },
+    has(id) { return storeMap.has(id); },
+    delete(id) { return storeMap.delete(id); },
+    clear() { storeMap.clear(); },
+    keys() { return storeMap.keys(); },
+    values() { return storeMap.values(); },
+    entries() { return storeMap.entries(); },
+  };
+
+  const meta: MetaStore = {
+    get(key) { return metaMap.get(key); },
+    set(key, value) { metaMap.set(key, value); },
+    has(key) { return metaMap.has(key); },
+    delete(key) { return metaMap.delete(key); },
+  };
+
+  const logger = {
+    info(msg: string) { console.log(`[${loader.name}] ${msg}`); },
+    warn(msg: string) { console.warn(`[${loader.name}] ${msg}`); },
+    error(msg: string) { console.error(`[${loader.name}] ${msg}`); },
+  };
+
+  const schema = loader.schema ?? config.schema;
+
+  const context: LoaderContext = {
+    collection: name,
+    store,
+    meta,
+    logger,
+    config: {},
+    async parseData<T>({ id, data }: { id: string; data: T }): Promise<T> {
+      const result = schema.safeParse(data);
+      if (!result.success) {
+        const errors = result.error instanceof z.ZodError
+          ? result.error.issues.map((i: z.ZodIssue) => `${i.path.join(".")}: ${i.message}`).join(", ")
+          : String(result.error);
+        throw new Error(`Validation error in ${name}/${id}: ${errors}`);
+      }
+      return result.data as T;
+    },
+  };
+
+  // Provide Astro config if host is available
+  try {
+    const { getHost } = await import("../astro-host");
+    const host = getHost();
+    if (host) {
+      context.config = host.config as unknown as Record<string, unknown>;
+    }
+  } catch {
+    // No astro host — config stays empty
+  }
+
+  await loader.load(context);
+
+  // Convert store entries to RawEntry[]
+  const rawEntries: RawEntry[] = [];
+  for (const entry of storeMap.values()) {
+    rawEntries.push({
+      id: entry.id,
+      body: entry.body ?? "",
+      data: {
+        ...entry.data,
+        ...(entry.rendered ? { _html: entry.rendered.html } : {}),
+      },
+    });
+  }
+  return rawEntries;
+}
+
+/** Validate raw entries against the schema and build CollectionEntry objects. */
+function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, name: string): CollectionEntry[] {
   const entries: CollectionEntry[] = [];
 
   for (const raw of rawEntries) {
