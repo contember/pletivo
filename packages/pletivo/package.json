@@ -24,7 +24,11 @@
   "dependencies": {
     "@astrojs/compiler": "^2 || ^3",
     "@mdx-js/mdx": "^3.1.0",
+    "js-yaml": "^4.1.1",
     "preact": "^10.29.1",
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
   }
 }

@@ -1,0 +1,10 @@
+title: Anchors Test
+defaults: &defaults
+  adapter: postgres
+  host: localhost
+development:
+  database: myapp_dev
+  <<: *defaults
+production:
+  database: myapp_prod
+  <<: *defaults

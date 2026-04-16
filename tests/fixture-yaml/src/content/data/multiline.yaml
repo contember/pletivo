@@ -1,0 +1,9 @@
+title: Multiline Test
+description: >
+  This is a long
+  description that
+  should be folded.
+literal: |
+  Line one
+  Line two
+  Line three
