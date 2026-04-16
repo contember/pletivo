@@ -420,6 +420,10 @@ export function addAttribute(value: unknown, key: string): HtmlString {
     return createHtml(` class="${escapeAttr(cls)}"`);
   }
   if (value === true) return createHtml(` ${key}`);
+  // HtmlString (e.g. from defineStyleVars) — extract raw content
+  if (isHtmlString(value)) {
+    return createHtml(` ${key}="${escapeAttr(value.__html)}"`);
+  }
   return createHtml(` ${key}="${escapeAttr(String(value))}"`);
 }
 
@@ -471,12 +475,35 @@ export function renderScript(_result: AstroResult, id: string): HtmlString {
   return createHtml(`<script type="module">${code}</script>`);
 }
 
-export function defineStyleVars(_vars: unknown): HtmlString {
-  return createHtml("");
+/**
+ * Compile `define:vars={{ color, size }}` on `<style>` into inline CSS
+ * custom properties. The Astro compiler generates:
+ *   `$$addAttribute($$defineStyleVars([{ color, size }]), "style")`
+ * so the output becomes the value of a `style` attribute.
+ */
+export function defineStyleVars(defs: Record<string, unknown> | Record<string, unknown>[]): HtmlString {
+  let output = "";
+  const arr = Array.isArray(defs) ? defs : [defs];
+  for (const vars of arr) {
+    for (const [key, value] of Object.entries(vars)) {
+      if (value || value === 0) {
+        output += `--${key}: ${value};`;
+      }
+    }
+  }
+  return createHtml(output);
 }
 
-export function defineScriptVars(_vars: unknown): HtmlString {
-  return createHtml("");
+/**
+ * Compile `define:vars={{ foo }}` on inline `<script>` into const
+ * declarations injected at the top of the script body.
+ */
+export function defineScriptVars(vars: Record<string, unknown>): HtmlString {
+  let output = "";
+  for (const [key, value] of Object.entries(vars)) {
+    output += `const ${key} = ${JSON.stringify(value)?.replace(/<\/script>/g, "\\x3C/script>")};\n`;
+  }
+  return createHtml(output);
 }
 
 export function renderTransition(
