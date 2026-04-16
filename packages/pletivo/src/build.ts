@@ -131,7 +131,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       route: r,
       staticPaths: dynamicPaths.get(r.file),
     }));
-    const astroRoutes = buildAstroRoutes(pletivoRoutes, astroHost.config);
+    const astroRoutes = buildAstroRoutes(pletivoRoutes, astroHost.config, astroHost.injectedRoutes);
     await astroHost.runRoutesResolved(astroRoutes);
     // Stash for build:done below so we don't rebuild the array
     (astroHost as unknown as { __cachedRoutes?: unknown }).__cachedRoutes = astroRoutes;
@@ -251,6 +251,57 @@ export async function build(projectRoot: string, config: PletivoConfig) {
         outPath,
         html,
       });
+    }
+  }
+
+  // Render injected routes from integrations (injectRoute during config:setup).
+  // Endpoints export GET() returning a Response; pages export a default component.
+  if (astroHost && astroHost.injectedRoutes.length > 0) {
+    for (const injected of astroHost.injectedRoutes) {
+      try {
+        const entrypoint = await resolveEntrypoint(injected.entrypoint, projectRoot);
+        const mod = await import(entrypoint);
+        const pattern = injected.pattern.replace(/^\//, "");
+        const outPath = path.join(distDir, pattern);
+
+        if (typeof mod.GET === "function") {
+          // Endpoint — call GET() and write the response body
+          const siteUrl = astroHost.config.site ? new URL(astroHost.config.site) : undefined;
+          const origin = siteUrl ? siteUrl.origin : "http://localhost/";
+          const url = new URL("/" + pattern, origin);
+          const response: Response = await mod.GET({
+            site: siteUrl,
+            url,
+            params: {},
+            props: {},
+            request: new Request(url),
+            redirect: (dest: string, status = 302) => new Response(null, { status, headers: { Location: dest } }),
+          });
+          const body = await response.text();
+          await fs.mkdir(path.dirname(outPath), { recursive: true });
+          await fs.writeFile(outPath, body);
+          results.push({
+            file: injected.entrypoint,
+            label: `[injected] ${injected.pattern}`,
+            outPath,
+            html: body,
+          });
+        } else if (typeof mod.default === "function") {
+          // Page component — render as HTML
+          resetIslandRegistry();
+          const html = await renderComponent(mod.default, makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0 }));
+          if (html !== null) {
+            results.push({
+              file: injected.entrypoint,
+              label: `[injected] ${injected.pattern}`,
+              outPath,
+              html,
+            });
+          }
+        }
+      } catch (e) {
+        console.error(`  Failed to render injected route "${injected.pattern}":`, (e as Error).message);
+      }
     }
   }
 
@@ -576,6 +627,28 @@ function islandPlugin() {
       }));
     },
   };
+}
+
+/**
+ * Resolve an injected route entrypoint to an absolute file path.
+ * Handles relative paths (./src/...) and bare specifiers (packages).
+ */
+async function resolveEntrypoint(entrypoint: string, projectRoot: string): Promise<string> {
+  if (entrypoint.startsWith(".") || entrypoint.startsWith("/")) {
+    const abs = path.resolve(projectRoot, entrypoint);
+    // Try with common extensions if not already specified
+    if (path.extname(abs)) return abs;
+    for (const ext of [".ts", ".js", ".tsx", ".jsx", ".astro"]) {
+      const candidate = abs + ext;
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {}
+    }
+    return abs;
+  }
+  // Bare specifier — resolve via Node/Bun module resolution
+  return require.resolve(entrypoint, { paths: [projectRoot] });
 }
 
 function formatSize(bytes: number): string {

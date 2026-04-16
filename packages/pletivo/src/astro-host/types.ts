@@ -90,6 +90,16 @@ export type TransformResult = string | { code: string; map?: unknown };
 
 export type InjectScriptStage = "page" | "page-ssr" | "before-hydration" | "head-inline";
 
+/** Route injected by an integration via `injectRoute()` during config:setup. */
+export interface InjectedRoute {
+  /** URL pattern, e.g. "/sitemap.xml" or "/api/[slug]" */
+  pattern: string;
+  /** File path or package specifier for the route's entrypoint */
+  entrypoint: string;
+  /** Whether the route is prerendered (SSG). Defaults to true. */
+  prerender?: boolean;
+}
+
 export interface AstroConfigSetupContext {
   config: AstroConfig;
   command: "dev" | "build" | "preview";

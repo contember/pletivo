@@ -35,6 +35,7 @@ import type {
   AstroConfigSetupContext,
   AstroIntegration,
   AstroRoute,
+  InjectedRoute,
   InjectScriptStage,
   ViteLikePlugin,
 } from "./types";
@@ -56,6 +57,8 @@ export interface AstroHost {
   injectedPageScripts: string[];
   /** Scripts injected via `injectScript('head-inline', code)` — wrapped into inline <script> */
   injectedHeadScripts: string[];
+  /** Routes injected via `injectRoute()` during config:setup */
+  injectedRoutes: InjectedRoute[];
   /** Ran once on startup (setup + server:setup in dev; setup + config:done in build) */
   ready: Promise<void>;
   /** Returns true if an integration with the given name is active after overrides */
@@ -103,6 +106,7 @@ export async function initAstroHost(
   const server = createServerShim(projectRoot, hmrBroadcast);
   const injectedPageScripts: string[] = [];
   const injectedHeadScripts: string[] = [];
+  const injectedRoutes: InjectedRoute[] = [];
   const setupLog: string[] = [];
 
   const host: AstroHost = {
@@ -110,6 +114,7 @@ export async function initAstroHost(
     server,
     injectedPageScripts,
     injectedHeadScripts,
+    injectedRoutes,
     ready: Promise.resolve(),
     hasIntegration: (name) => config.integrations.some((i) => i?.name === name),
     runRoutesResolved: async () => {},
@@ -152,9 +157,18 @@ export async function initAstroHost(
       addPageExtension() {},
       addContentEntryType() {},
       addDataEntryType() {},
-      injectRoute() {
-        // Pletivo doesn't support dynamic route injection from integrations.
-        // We log once and ignore.
+      injectRoute(route: unknown) {
+        if (!route || typeof route !== "object") return;
+        const r = route as Record<string, unknown>;
+        const pattern = r.pattern as string | undefined;
+        const entrypoint = (r.entrypoint ?? r.entryPoint) as string | undefined;
+        if (!pattern || !entrypoint) return;
+        // SSG-only: reject routes that explicitly opt out of prerendering
+        if (r.prerender === false) {
+          logger.warn(`injectRoute "${pattern}" skipped (prerender: false not supported in SSG mode)`);
+          return;
+        }
+        injectedRoutes.push({ pattern, entrypoint, prerender: true });
       },
       injectScript(stage, content) {
         if (stage === "page") {

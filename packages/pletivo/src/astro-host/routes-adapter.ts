@@ -18,7 +18,7 @@ import path from "path";
 import type { Route, StaticPath } from "../router";
 import { resolveI18nConfig } from "../i18n/config";
 import { detectRouteLocale } from "../i18n/route-expansion";
-import type { AstroConfig, AstroRoute } from "./types";
+import type { AstroConfig, AstroRoute, InjectedRoute } from "./types";
 
 export interface PletivoRouteWithPaths {
   route: Route;
@@ -38,6 +38,7 @@ export interface PletivoRouteWithPaths {
 export function buildAstroRoutes(
   routes: PletivoRouteWithPaths[],
   config: AstroConfig,
+  injectedRoutes?: InjectedRoute[],
 ): AstroRoute[] {
   const out: AstroRoute[] = [];
   const i18n = resolveI18nConfig(config.i18n);
@@ -56,6 +57,25 @@ export function buildAstroRoutes(
     } else {
       const pathname = materializePathname(r, {});
       out.push(makePageRoute(r, pathname, [], locale));
+    }
+  }
+
+  // Injected routes from integrations (injectRoute() during config:setup)
+  if (injectedRoutes) {
+    for (const ir of injectedRoutes) {
+      const pathname = stripLeadingSlash(ir.pattern);
+      out.push({
+        type: "endpoint",
+        pathname,
+        route: ir.pattern,
+        component: ir.entrypoint,
+        params: [],
+        pattern: new RegExp("^/?" + escapeRegex(pathname) + "/?$"),
+        generate: (p) => ensureLeadingSlash(typeof p === "string" ? p : pathname),
+        fallbackRoutes: [],
+        prerender: true,
+        isIndex: false,
+      });
     }
   }
 

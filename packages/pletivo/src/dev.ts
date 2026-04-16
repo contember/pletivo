@@ -526,6 +526,53 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         }
       }
 
+      // Injected routes from integrations (injectRoute during config:setup).
+      // Match against the request pathname and call the endpoint's GET handler
+      // or render its default component.
+      if (astroHost && astroHost.injectedRoutes.length > 0) {
+        const cleanPathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/$/, "");
+        for (const injected of astroHost.injectedRoutes) {
+          const injectedPath = injected.pattern.startsWith("/") ? injected.pattern : "/" + injected.pattern;
+          if (cleanPathname !== injectedPath) continue;
+          try {
+            const entrypoint = resolveInjectedEntrypoint(injected.entrypoint, projectRoot);
+            const importPath = entrypoint + `?v=${getDevVersion()}`;
+            const mod = await import(importPath);
+            if (typeof mod.GET === "function") {
+              const siteUrl = astroHost.config.site ? new URL(astroHost.config.site) : undefined;
+              const devHost = config.host === "0.0.0.0" ? "localhost" : config.host;
+              const origin = siteUrl ? siteUrl.origin : `http://${devHost}:${config.port}`;
+              const endpointUrl = new URL(cleanPathname, origin);
+              const response: Response = await mod.GET({
+                site: siteUrl,
+                url: endpointUrl,
+                params: {},
+                props: {},
+                request: req,
+                redirect: (dest: string, status = 302) => new Response(null, { status, headers: { Location: dest } }),
+              });
+              return response;
+            } else if (typeof mod.default === "function") {
+              const fakeRoute: Route = {
+                file: injected.entrypoint,
+                segments: [],
+                isDynamic: false,
+                priority: 0,
+              };
+              const html = await renderPage(fakeRoute, {}, cleanPathname, req);
+              if (html !== null) {
+                return new Response(html, {
+                  headers: { "Content-Type": "text/html; charset=utf-8" },
+                });
+              }
+            }
+          } catch (e) {
+            console.error(`Error rendering injected route "${injected.pattern}":`, e);
+            return new Response(`Error: ${(e as Error).message}`, { status: 500 });
+          }
+        }
+      }
+
       // Virtual-URL requests (e.g. `/@nuasite/cms-editor.js`,
       // `/@nuasite/notes-overlay`) are served by asking each registered
       // Astro-integration Vite plugin to `resolveId` the path, then
@@ -656,4 +703,15 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     server.stop();
     process.exit(0);
   });
+}
+
+/**
+ * Resolve an injected route entrypoint to an absolute file path.
+ * Handles relative paths (./src/...) and bare specifiers (packages).
+ */
+function resolveInjectedEntrypoint(entrypoint: string, projectRoot: string): string {
+  if (entrypoint.startsWith(".") || entrypoint.startsWith("/")) {
+    return path.resolve(projectRoot, entrypoint);
+  }
+  return require.resolve(entrypoint, { paths: [projectRoot] });
 }
