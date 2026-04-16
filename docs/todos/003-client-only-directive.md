@@ -1,7 +1,7 @@
 # client:only Directive
 
 **Priority:** A-tier
-**Status:** Not implemented
+**Status:** Done (commit 0d7e077)
 **Area:** Islands / Hydration
 
 ## Problem

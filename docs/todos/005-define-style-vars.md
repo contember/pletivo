@@ -1,7 +1,7 @@
 # defineStyleVars
 
 **Priority:** A-tier
-**Status:** No-op stub
+**Status:** Done (commit 44f68aa)
 **Area:** CSS / Rendering
 
 ## Problem

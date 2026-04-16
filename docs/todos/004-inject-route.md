@@ -1,7 +1,7 @@
 # injectRoute() Support
 
 **Priority:** B-tier
-**Status:** No-op
+**Status:** Done (commit 0b50a4c)
 **Area:** Integrations / Routing
 
 ## Problem
