@@ -343,6 +343,19 @@ export async function registerAstroPlugin(): Promise<void> {
         },
       );
 
+      // `astro:env/client` and `astro:env/server` — type-safe env vars.
+      // For SSG, both are resolved at build time from process.env.
+      // The schema in astro.config defines which vars exist; the modules
+      // re-export them so `import { X } from "astro:env/client"` works.
+      mod("astro:env/client", () => ({
+        loader: "ts",
+        contents: generateEnvModule("client"),
+      }));
+      mod("astro:env/server", () => ({
+        loader: "ts",
+        contents: generateEnvModule("server"),
+      }));
+
       // `astro/config` — minimal shim so astro.config.mjs files that
       // `import { defineConfig } from "astro/config"` can be loaded
       // without having astro installed as a dependency. `defineConfig`
@@ -354,10 +367,12 @@ export async function registerAstroPlugin(): Promise<void> {
         contents: `
           export function defineConfig(config) { return config; }
           export function getViteConfig(config) { return config; }
-          export const envField = new Proxy(
-            function envField() { return {}; },
-            { get() { return (() => ({})); } },
-          );
+          export const envField = new Proxy({}, {
+            get(_target, type) {
+              // envField.string({...}), envField.number({...}), envField.boolean({...}), envField.enum({...})
+              return (opts = {}) => ({ ...opts, type: String(type) });
+            },
+          });
           export function sharpImageService() { return {}; }
           export function squooshImageService() { return {}; }
           export function passthroughImageService() { return {}; }
@@ -365,4 +380,45 @@ export async function registerAstroPlugin(): Promise<void> {
       }));
     },
   });
+}
+
+// ── astro:env support ──────────────────────────────────────────────
+
+/** Env schema fields recorded by envField helpers in astro.config. */
+const envSchema: Array<{ name: string; context: string; access: string }> = [];
+
+/** Store env schema from Astro config for virtual module generation. */
+export function setEnvSchema(schema: Record<string, unknown> | undefined): void {
+  envSchema.length = 0;
+  if (!schema || typeof schema !== "object") return;
+  for (const [name, def] of Object.entries(schema)) {
+    if (def && typeof def === "object") {
+      const d = def as Record<string, unknown>;
+      envSchema.push({
+        name,
+        context: (d.context as string) ?? "server",
+        access: (d.access as string) ?? "secret",
+      });
+    }
+  }
+}
+
+/**
+ * Generate a virtual module that exports env vars for the given context.
+ * For SSG all vars are available at build time from process.env.
+ */
+function generateEnvModule(context: "client" | "server"): string {
+  const exports: string[] = [];
+  for (const field of envSchema) {
+    if (field.context === context || context === "server") {
+      exports.push(
+        `export const ${field.name} = process.env[${JSON.stringify(field.name)}] ?? import.meta.env?.[${JSON.stringify(field.name)}] ?? undefined;`,
+      );
+    }
+  }
+  // Even if no schema fields match, export an empty module to avoid import errors
+  if (exports.length === 0) {
+    return "// No env fields defined for this context\nexport {};";
+  }
+  return exports.join("\n");
 }

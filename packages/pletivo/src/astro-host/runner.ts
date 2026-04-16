@@ -57,6 +57,10 @@ export interface AstroHost {
   injectedPageScripts: string[];
   /** Scripts injected via `injectScript('head-inline', code)` — wrapped into inline <script> */
   injectedHeadScripts: string[];
+  /** Scripts injected via `injectScript('before-hydration', code)` — run before island hydration */
+  injectedBeforeHydrationScripts: string[];
+  /** Scripts injected via `injectScript('page-ssr', code)` — executed at build time */
+  injectedPageSsrScripts: string[];
   /** Routes injected via `injectRoute()` during config:setup */
   injectedRoutes: InjectedRoute[];
   /** Ran once on startup (setup + server:setup in dev; setup + config:done in build) */
@@ -103,9 +107,20 @@ export async function initAstroHost(
   const config = await loadAstroConfig(projectRoot);
   if (!config) return null;
 
+  // Seed astro:env virtual module with the env.schema from config
+  try {
+    const { setEnvSchema } = await import("../astro-plugin");
+    const env = (config as Record<string, unknown>).env as Record<string, unknown> | undefined;
+    setEnvSchema(env?.schema as Record<string, unknown> | undefined);
+  } catch {
+    // astro-plugin not yet loaded — env module will be empty
+  }
+
   const server = createServerShim(projectRoot, hmrBroadcast);
   const injectedPageScripts: string[] = [];
   const injectedHeadScripts: string[] = [];
+  const injectedBeforeHydrationScripts: string[] = [];
+  const injectedPageSsrScripts: string[] = [];
   const injectedRoutes: InjectedRoute[] = [];
   const setupLog: string[] = [];
 
@@ -114,6 +129,8 @@ export async function initAstroHost(
     server,
     injectedPageScripts,
     injectedHeadScripts,
+    injectedBeforeHydrationScripts,
+    injectedPageSsrScripts,
     injectedRoutes,
     ready: Promise.resolve(),
     hasIntegration: (name) => config.integrations.some((i) => i?.name === name),
@@ -175,10 +192,10 @@ export async function initAstroHost(
           injectedPageScripts.push(content);
         } else if (stage === "head-inline") {
           injectedHeadScripts.push(content);
-        } else {
-          // `page-ssr` and `before-hydration` stages are runtime-module
-          // injection hooks that pletivo doesn't need; log + ignore.
-          logger.warn(`injectScript stage "${stage}" not supported, ignoring`);
+        } else if (stage === "before-hydration") {
+          injectedBeforeHydrationScripts.push(content);
+        } else if (stage === "page-ssr") {
+          injectedPageSsrScripts.push(content);
         }
       },
     };
