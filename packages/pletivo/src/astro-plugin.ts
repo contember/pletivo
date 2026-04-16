@@ -317,10 +317,22 @@ export async function registerAstroPlugin(): Promise<void> {
       // Intercept ESM imports of image files (e.g. `import hero from
       // './hero.png'`) and return an ImageMetadata object with
       // dimensions read from the file header.
+      // Vite-style `?raw` / `?inline` imports return the file content
+      // as a default-exported string instead of image metadata.
       build.onLoad(
         { filter: /\.(png|jpe?g|webp|avif|gif|tiff|svg)(\?.*)?$/ },
         async (args) => {
           const cleanPath = args.path.replace(/\?.*$/, "");
+
+          // ?raw or ?inline → return file content as string
+          if (/\?(raw|inline)\b/.test(args.path)) {
+            const text = await Bun.file(cleanPath).text();
+            return {
+              contents: `export default ${JSON.stringify(text)};`,
+              loader: "js",
+            };
+          }
+
           const dims = await readImageDimensions(cleanPath);
           const hasher = new Bun.CryptoHasher("md5");
           hasher.update(await Bun.file(cleanPath).arrayBuffer());
