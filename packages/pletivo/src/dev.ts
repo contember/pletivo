@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
 import { watch } from "fs";
-import { scanRoutes, findRoute, type Route, type StaticPath } from "./router";
+import { scanRoutes, findRoute, matchRoute, type Route, type StaticPath } from "./router";
 import { initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
@@ -475,15 +475,19 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         });
       }
 
-      // Route matching
+      // Route matching — try all matching routes so that when a dynamic
+      // route's getStaticPaths doesn't contain the params we cascade to
+      // the next matching route instead of falling through to 404.
       const pathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/$/, "");
-      const match = findRoute(routes, pathname);
-      if (match) {
-        const html = await renderPage(match.route, match.params, pathname, req);
-        if (html !== null) {
-          return new Response(html, {
-            headers: { "Content-Type": "text/html; charset=utf-8" },
-          });
+      for (const route of routes) {
+        const params = matchRoute(route, pathname);
+        if (params !== null) {
+          const html = await renderPage(route, params, pathname, req);
+          if (html !== null) {
+            return new Response(html, {
+              headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+          }
         }
       }
 
