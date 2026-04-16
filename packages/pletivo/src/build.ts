@@ -16,6 +16,7 @@ import { detectRouteLocale } from "./i18n/route-expansion";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
 import { setImageMode, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
+import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import type { PletivoConfig } from "./config";
 
 interface PageResult {
@@ -34,6 +35,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
 
   await registerAstroPlugin();
   await registerMdxPlugin();
+  await registerCssModulesPlugin();
   const astroHost = await initAstroHost(projectRoot, "build");
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   await initCollections(projectRoot);
@@ -41,6 +43,16 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   if (astroHost) {
     await astroHost.runBuildStart();
     await astroHost.runBuildSetup();
+    // Execute page-ssr scripts — these run during SSR/build to set up
+    // global state, polyfills, or registration before page rendering.
+    for (const code of astroHost.injectedPageSsrScripts) {
+      try {
+        const fn = new Function(code);
+        fn();
+      } catch (e) {
+        console.error(`  page-ssr script failed:`, (e as Error).message);
+      }
+    }
   }
 
   // Clean dist
@@ -336,6 +348,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     }),
   );
   clearScopedCss();
+  clearCssModules();
 
   // Process optimized images registered by <Image> / <Picture> components
   // and passthrough copies of ESM-imported images.
@@ -483,6 +496,19 @@ async function writeHtml(
     }
   }
 
+  // CSS Modules — inject generated scoped CSS from .module.css imports
+  const cssModulesOutput = getCssModulesOutput();
+  if (cssModulesOutput) {
+    const moduleStyleTag = `<style>${cssModulesOutput}</style>`;
+    if (html.includes("</head>")) {
+      html = html.replace("</head>", moduleStyleTag + "\n</head>");
+    } else if (html.includes("</body>")) {
+      html = html.replace("</body>", moduleStyleTag + "\n</body>");
+    } else {
+      html = moduleStyleTag + "\n" + html;
+    }
+  }
+
   // Integration-injected scripts (from `injectScript('page', code)` etc.)
   // If any integration injected head scripts, emit them into every page.
   const { getHost } = await import("./astro-host");
@@ -498,12 +524,17 @@ async function writeHtml(
   }
 
   if (html.includes("<pletivo-island")) {
+    // before-hydration scripts run before the hydration runtime
+    const beforeHydration = host?.injectedBeforeHydrationScripts
+      ?.map((s) => `<script type="module">${s}</script>`)
+      .join("\n") ?? "";
+    const hydrationBlock = (beforeHydration ? beforeHydration + "\n" : "") + hydrationScript;
     if (html.includes("</head>")) {
-      html = html.replace("</head>", hydrationScript + "\n</head>");
+      html = html.replace("</head>", hydrationBlock + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", hydrationScript + "\n</body>");
+      html = html.replace("</body>", hydrationBlock + "\n</body>");
     } else {
-      html += hydrationScript;
+      html += hydrationBlock;
     }
   }
 

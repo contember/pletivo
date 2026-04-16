@@ -20,6 +20,7 @@ import {
   resolveFallbackRoute,
   resolveDefaultLocaleRedirect,
 } from "./i18n/fallback";
+import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
 import type { PletivoConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 import { createRequire } from "module";
@@ -71,6 +72,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
   await registerAstroPlugin();
   await registerMdxPlugin();
+  await registerCssModulesPlugin();
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });
@@ -192,7 +194,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       const pageAstroClasses = extractAstroClasses(html);
       const pageScopedCss = getScopedCssForPage(pageAstroClasses);
       const scopedStyleTag = pageScopedCss ? `<style>${pageScopedCss}</style>` : "";
-      const scripts = hmrClientScript + (getUsedIslands().size > 0 ? "\n" + hydrationScript : "");
+      const beforeHydration = astroHost?.injectedBeforeHydrationScripts
+        ?.map((s) => `<script type="module">${s}</script>`)
+        .join("\n") ?? "";
+      const hydrationBlock = getUsedIslands().size > 0
+        ? (beforeHydration ? "\n" + beforeHydration : "") + "\n" + hydrationScript
+        : "";
+      const scripts = hmrClientScript + hydrationBlock;
       const integrationScripts = astroHost
         ? [
             ...astroHost.injectedHeadScripts.map((s) => `<script>${s}</script>`),
@@ -397,7 +405,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Serve bundled CSS from src/ on-the-fly. Scoped styles from <style>
       // blocks are injected per-page as inline <style> tags, not here.
       if (url.pathname === "/__styles.css") {
-        const css = await devCss(projectRoot, config.srcDir);
+        let css = await devCss(projectRoot, config.srcDir);
+        const cssModules = getCssModulesOutput();
+        if (cssModules) css += "\n" + cssModules;
         return new Response(css, {
           headers: { "Content-Type": "text/css; charset=utf-8" },
         });

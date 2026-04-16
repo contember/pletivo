@@ -48,6 +48,8 @@ async function buildCss(projectRoot: string, srcDir: string): Promise<string | n
   const cssFiles: string[] = [];
   const glob = new Glob("**/*.css");
   for await (const file of glob.scan(srcPath)) {
+    // Skip CSS Modules — they're handled by the css-modules plugin
+    if (file.endsWith(".module.css")) continue;
     cssFiles.push(file);
   }
   if (cssFiles.length === 0) return null;
