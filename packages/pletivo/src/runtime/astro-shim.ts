@@ -445,10 +445,17 @@ export function spreadAttributes(
   return createHtml(out);
 }
 
-// ── Head / scripts / transitions (MVP no-ops) ───────────────────────
+// ── Head / scripts / transitions ────────────────────────────────────
 
+/**
+ * Intentional no-op. Scoped CSS is injected post-render by build.ts
+ * and dev.ts via `getScopedCssForPage()`, which matches scope classes
+ * in the rendered HTML to include only relevant entries (per-page CSS
+ * tree-shaking). This can't be done inline during render because the
+ * full set of rendered components isn't known until the template
+ * finishes evaluating.
+ */
 export function renderHead(_result: AstroResult): HtmlString {
-  // TODO: inject scoped style <link>s collected during render
   return createHtml("");
 }
 

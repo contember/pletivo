@@ -1,0 +1,21 @@
+---
+export interface Props {
+  title: string;
+}
+const { title } = Astro.props;
+---
+<div class="card">
+  <h2>{title}</h2>
+  <slot />
+</div>
+
+<style>
+  .card {
+    padding: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+  }
+  .card h2 {
+    color: navy;
+  }
+</style>

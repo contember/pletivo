@@ -38,13 +38,22 @@ export function getDevVersion(): number {
 /**
  * Scoped CSS collected from `<style>` blocks in `.astro` files.
  * The Astro compiler returns scoped (`:where(.astro-xxxx)`) CSS in
- * `result.css[]`. We store it here keyed by file path so that the
- * CSS pipeline can append it to the bundled stylesheet.
+ * `result.css[]` and the component's scope hash in `result.scope`.
+ *
+ * We store both per file path so that `getScopedCssForPage()` can
+ * match by scope class in the HTML — not just by CSS content. This
+ * is essential because some CSS rules (e.g. `body`, `html`, `*`)
+ * are NOT scoped by the compiler even though the component's
+ * elements receive the scope class attribute.
  *
  * Call `getScopedCss()` to retrieve the accumulated CSS and
  * `clearScopedCss()` between builds / dev requests to avoid stale entries.
  */
-const scopedCssMap = new Map<string, string[]>();
+interface ScopedCssEntry {
+  scope: string; // e.g. "jn3ixs4m" → class "astro-jn3ixs4m"
+  css: string[];
+}
+const scopedCssMap = new Map<string, ScopedCssEntry>();
 
 /**
  * Hoisted scripts collected from `<script>` tags (non-inline) in `.astro`
@@ -65,31 +74,30 @@ export function clearHoistedScripts(): void {
 
 export function getScopedCss(): string {
   const parts: string[] = [];
-  for (const css of scopedCssMap.values()) {
-    parts.push(...css);
+  for (const entry of scopedCssMap.values()) {
+    parts.push(...entry.css);
   }
   return parts.join("\n");
 }
 
 /**
- * Return scoped CSS entries that match any of the given astro scope hashes
- * found in a page's HTML. This allows per-page CSS injection — only the
- * styles relevant to components actually rendered on that page are included.
+ * Return scoped CSS entries for components actually rendered on a page.
+ *
+ * Matching is done by scope class: if `astro-{scope}` appears anywhere
+ * in the page HTML (as a class attribute on an element), ALL CSS entries
+ * from that component are included — even rules that the compiler didn't
+ * scope (e.g. `body`, `html`, `*` selectors). This prevents unscoped
+ * rules from being silently dropped.
  *
  * Pass the set of `astro-XXXXX` class names extracted from the page HTML.
  */
 export function getScopedCssForPage(astroClasses: Set<string>): string {
   if (astroClasses.size === 0) return "";
   const parts: string[] = [];
-  for (const cssArr of scopedCssMap.values()) {
-    for (const css of cssArr) {
-      // Include this entry if it contains any of the page's astro scope classes
-      for (const cls of astroClasses) {
-        if (css.includes(cls)) {
-          parts.push(css);
-          break;
-        }
-      }
+  for (const entry of scopedCssMap.values()) {
+    const scopeClass = `astro-${entry.scope}`;
+    if (astroClasses.has(scopeClass)) {
+      parts.push(...entry.css);
     }
   }
   return parts.join("\n");
@@ -155,10 +163,14 @@ export async function registerAstroPlugin(): Promise<void> {
 
         // Collect scoped CSS emitted by the Astro compiler for `<style>`
         // blocks. The compiler returns the scoped rules in `result.css[]`
-        // (e.g. `.foo:where(.astro-xxxx){color:red}`). We stash them so
-        // the CSS pipeline can append them to the bundled stylesheet.
+        // (e.g. `.foo:where(.astro-xxxx){color:red}`) and the component's
+        // scope hash in `result.scope`. We store both so that
+        // `getScopedCssForPage()` can match by scope class in the HTML.
         if (result.css && result.css.length > 0) {
-          scopedCssMap.set(cleanPath, result.css);
+          scopedCssMap.set(cleanPath, {
+            scope: (result as unknown as { scope?: string }).scope ?? "",
+            css: result.css,
+          });
         }
 
         // Collect hoisted scripts from `<script>` tags (non-inline).

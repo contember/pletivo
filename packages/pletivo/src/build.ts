@@ -409,8 +409,15 @@ async function writeHtml(
   // avoiding cross-page leaks from unscoped rules (`:global()`, `body`, etc.).
   const astroClasses = extractAstroClasses(html);
   const pageScopedCss = getScopedCssForPage(astroClasses);
-  if (pageScopedCss && html.includes("</head>")) {
-    html = html.replace("</head>", `<style>${pageScopedCss}</style>\n</head>`);
+  if (pageScopedCss) {
+    const styleTag = `<style>${pageScopedCss}</style>`;
+    if (html.includes("</head>")) {
+      html = html.replace("</head>", styleTag + "\n</head>");
+    } else if (html.includes("</body>")) {
+      html = html.replace("</body>", styleTag + "\n</body>");
+    } else {
+      html = styleTag + "\n" + html;
+    }
   }
 
   // Integration-injected scripts (from `injectScript('page', code)` etc.)
