@@ -81,6 +81,21 @@ describe("build", () => {
     expect(bundle).toContain("mount");
   });
 
+  test("client:only island renders empty wrapper (no SSR)", async () => {
+    const content = await Bun.file(path.join(distDir, "index.html")).text();
+    expect(content).toContain('data-component="BrowserWidget"');
+    expect(content).toContain('data-hydrate="load"');
+    // Should NOT contain any SSR content from BrowserWidget (it accesses `window`)
+    expect(content).not.toContain("widget");
+    // Empty wrapper — data-hydrate="load"> immediately followed by </pletivo-island>
+    expect(content).toMatch(/data-component="BrowserWidget"[^>]*><\/pletivo-island>/);
+  });
+
+  test("client:only island bundle is generated", async () => {
+    const bundle = await Bun.file(path.join(distDir, "_islands/BrowserWidget.js")).text();
+    expect(bundle).toContain("mount");
+  });
+
   test("island bundle does not contain server JSX runtime", async () => {
     const bundle = await Bun.file(path.join(distDir, "_islands/Counter.js")).text();
     // Should not contain the full JSX runtime (void elements list, renderAttrs, etc.)

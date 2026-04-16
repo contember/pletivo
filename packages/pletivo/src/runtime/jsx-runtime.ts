@@ -183,21 +183,25 @@ function renderIsland(
     componentProps[key] = value;
   }
 
-  // SSR: call the component function to get server-rendered HTML
+  // client:only skips SSR entirely — render empty placeholder, hydrate on load
   let innerHtml = "";
-  try {
-    const rendered = tag(componentProps as Props);
-    if (typeof rendered === "string") {
-      innerHtml = escapeHtml(rendered);
-    } else if (rendered && typeof rendered === "object" && "__html" in rendered) {
-      innerHtml = (rendered as HtmlString).__html;
+  if (hydrate !== "only") {
+    // SSR: call the component function to get server-rendered HTML
+    try {
+      const rendered = tag(componentProps as Props);
+      if (typeof rendered === "string") {
+        innerHtml = escapeHtml(rendered);
+      } else if (rendered && typeof rendered === "object" && "__html" in rendered) {
+        innerHtml = (rendered as HtmlString).__html;
+      }
+    } catch {
+      // SSR failed, island will render empty and hydrate on client
     }
-  } catch {
-    // SSR failed, island will render empty and hydrate on client
   }
 
   // Register island for bundling
   registerIsland(componentName, componentName);
 
-  return createHtml(renderIslandWrapper(componentName, hydrate, componentProps, innerHtml));
+  const effectiveHydrate = hydrate === "only" ? "load" : hydrate;
+  return createHtml(renderIslandWrapper(componentName, effectiveHydrate, componentProps, innerHtml));
 }

@@ -272,6 +272,39 @@ describe("island detection", () => {
     const h = html(jsx(W, { "client:media": "max-width: 768px" }));
     expect(h).toContain('data-hydrate="media(max-width: 768px)"');
   });
+
+  test("client:only skips SSR and renders empty wrapper", () => {
+    function BrowserOnly(props: { label: string }) {
+      // This would crash during SSR if called (uses window)
+      throw new Error("should not be called during SSR");
+    }
+    const h = html(jsx(BrowserOnly, { "client:only": "preact", label: "test" }));
+    expect(h).toContain("<pletivo-island");
+    expect(h).toContain('data-component="BrowserOnly"');
+    expect(h).toContain('data-hydrate="load"');
+    expect(h).toContain('"label":"test"');
+    // Wrapper should be empty — no SSR content
+    expect(h).toContain('data-hydrate="load"></pletivo-island>');
+  });
+
+  test("client:only registers island in registry", () => {
+    function MapWidget() {
+      throw new Error("should not be called");
+    }
+    jsx(MapWidget, { "client:only": "preact" });
+    const islands = getUsedIslands();
+    expect(islands.has("MapWidget")).toBe(true);
+  });
+
+  test("pletivo client='only' syntax skips SSR", () => {
+    function Chart(props: { data: number[] }) {
+      throw new Error("should not be called during SSR");
+    }
+    const h = html(jsx(Chart, { client: "only", data: [1, 2, 3] }));
+    expect(h).toContain("<pletivo-island");
+    expect(h).toContain('data-hydrate="load"');
+    expect(h).toContain("></pletivo-island>");
+  });
 });
 
 describe("event handler props", () => {
