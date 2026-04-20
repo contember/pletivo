@@ -319,8 +319,18 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     }
   }
 
-  // Render custom 404 page
-  const result404 = await render404Page(pagesDir);
+  // Render custom 404 page — pass a synthetic page context so .astro
+  // 404 templates that dereference Astro.url (e.g. to highlight the
+  // active nav item in a shared layout) don't blow up.
+  const result404 = await render404Page(
+    pagesDir,
+    makePageContext("/404", {}, {
+      file: "404.astro",
+      segments: [],
+      isDynamic: false,
+      priority: 0,
+    }),
+  );
   if (result404) {
     results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html });
   }
@@ -565,7 +575,10 @@ async function writeHtml(
   return bytes;
 }
 
-async function render404Page(pagesDir: string): Promise<{ file: string; html: string } | null> {
+async function render404Page(
+  pagesDir: string,
+  pageContext: Record<string, unknown>,
+): Promise<{ file: string; html: string } | null> {
   for (const ext of [".tsx", ".jsx", ".astro"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
@@ -573,7 +586,7 @@ async function render404Page(pagesDir: string): Promise<{ file: string; html: st
       const mod = await import(fullPath);
       if (typeof mod.default === "function") {
         resetIslandRegistry();
-        const html = await renderComponent(mod.default, {});
+        const html = await renderComponent(mod.default, pageContext);
         if (html) {
           return { file: `404${ext}`, html };
         }
