@@ -191,9 +191,11 @@ export async function registerAstroPlugin(): Promise<void> {
         // Strip the virtual style imports that the compiler emits:
         //   import '/abs/path/File.astro?astro&type=style&index=0&lang.css';
         // Bun has no resolver for that query-suffixed specifier. The actual
-        // CSS content is already captured above via `result.css`.
+        // CSS content is already captured above via `result.css`. Multiple
+        // <style> blocks produce back-to-back imports on a single line, so
+        // the regex must not require each to be on its own line.
         let cleanedCode = result.code.replace(
-          /^\s*import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?\s*$/gm,
+          /import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?/g,
           "",
         );
 
