@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import { scanRoutes, routeToOutputPath, type Route, type StaticPath } from "./router";
+import { createPaginate } from "./paginate";
 import { initCollections } from "./content/collection";
 import { resetIslandRegistry } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
@@ -130,7 +131,8 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     const mod = await import(fullPath);
     if (typeof mod.default !== "function") continue;
     if (typeof mod.getStaticPaths !== "function") continue;
-    const sp: StaticPath[] = await mod.getStaticPaths();
+    const paginate = createPaginate(route, base || "/");
+    const sp: StaticPath[] = await mod.getStaticPaths({ paginate });
     dynamicPaths.set(route.file, sp);
   }
 

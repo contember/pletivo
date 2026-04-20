@@ -2,6 +2,7 @@ import path from "path";
 import fs from "fs";
 import { watch } from "fs";
 import { scanRoutes, findRoute, matchRoute, type Route, type StaticPath } from "./router";
+import { createPaginate } from "./paginate";
 import { initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
 import { hydrationScript } from "./runtime/hydration";
@@ -139,7 +140,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           // Dynamic route without getStaticPaths — cannot resolve, treat as miss
           return null;
         }
-        const staticPaths: StaticPath[] = await mod.getStaticPaths();
+        const paginate = createPaginate(route, config.base || "/");
+        const staticPaths: StaticPath[] = await mod.getStaticPaths({ paginate });
         const match = staticPaths.find((sp) => {
           return Object.entries(params).every(([k, v]) => sp.params[k] === v);
         });

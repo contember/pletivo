@@ -2,7 +2,9 @@ import path from "path";
 import { Glob } from "bun";
 
 export interface RouteParams {
-  [key: string]: string;
+  /** Value is `undefined` when a trailing rest segment matched zero path parts
+   * (e.g. URL `/tz/` against `tz/[...page]`), matching Astro's semantics. */
+  [key: string]: string | undefined;
 }
 
 export interface StaticPath {
@@ -85,8 +87,19 @@ export function matchRoute(route: Route, pathname: string): RouteParams | null {
     }
   }
 
-  // All URL parts consumed, check all segments consumed
-  if (si !== route.segments.length) return null;
+  // All URL parts consumed, check all segments consumed.
+  // Exception: a trailing rest segment may match zero remaining parts —
+  // e.g. URL `/tz/` against `tz/[...page]` yields `{ page: undefined }`.
+  if (si !== route.segments.length) {
+    if (
+      si === route.segments.length - 1 &&
+      route.segments[si].type === "rest"
+    ) {
+      params[route.segments[si].value] = undefined;
+      return params;
+    }
+    return null;
+  }
 
   return params;
 }
