@@ -21,6 +21,7 @@ import {
   resolveDefaultLocaleRedirect,
 } from "./i18n/fallback";
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
+import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import type { PletivoConfig } from "./config";
 import type { ServerWebSocket } from "bun";
 import { createRequire } from "module";
@@ -73,10 +74,17 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   await registerAstroPlugin();
   await registerMdxPlugin();
   await registerCssModulesPlugin();
+  await registerScssPlugin(projectRoot);
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });
   configureMdx(resolveMdxOptions(config, astroHost?.config));
+  {
+    const vite = astroHost?.config.vite as
+      | { css?: { preprocessorOptions?: { scss?: Record<string, unknown> } } }
+      | undefined;
+    configureScss(vite?.css?.preprocessorOptions?.scss);
+  }
   await initCollections(projectRoot);
   let routes = await scanRoutes(pagesDir);
   // Resolve i18n once per dev-server start; renderPage uses it to set
@@ -659,7 +667,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     bumpDevVersion();
     const ext = path.extname(filename).toLowerCase();
     const isCss = ext === ".css";
-    const hmrType = isCss ? "css" : "html";
+    const isScss = ext === ".scss" || ext === ".sass";
+    // scss changes: clear the cache so stale entries for deleted/renamed
+    // files don't linger (active entries are overwritten on re-import).
+    // Serve as a full reload so the page re-renders and re-imports scss
+    // before the client fetches /__styles.css.
+    if (isScss) clearScss();
+    const hmrType = isCss ? "css" : isScss ? "reload" : "html";
     const clients = sockets.size + sseClients.size + pollWaiters.size;
     console.log(`  ${config.srcDir}/${filename} changed → ${hmrType} update (${clients} clients)`);
 

@@ -197,13 +197,18 @@ export async function registerAstroPlugin(): Promise<void> {
           "",
         );
 
-        // In dev mode, append a version query to .astro import specifiers
-        // so that Bun's module cache is busted for transitive component
+        // In dev mode, append a version query to .astro/.scss/.sass import
+        // specifiers so that Bun's module cache is busted for transitive
         // imports (not just the top-level page). Without this, editing a
-        // child component doesn't cause it to be re-compiled.
+        // child component or a stylesheet doesn't cause it to be re-loaded.
         if (devVersion > 0) {
           cleanedCode = cleanedCode.replace(
             /(from\s+['"])([^'"]+\.astro)(['"])/g,
+            `$1$2?v=${devVersion}$3`,
+          );
+          // Side-effect imports `import '../foo.scss'` (no `from`)
+          cleanedCode = cleanedCode.replace(
+            /(import\s+['"])([^'"]+\.(?:scss|sass))(['"])/g,
             `$1$2?v=${devVersion}$3`,
           );
         }

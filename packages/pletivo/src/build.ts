@@ -17,6 +17,7 @@ import { setI18nRuntimeState } from "./i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
 import { setImageMode, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
+import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import type { PletivoConfig } from "./config";
 
 interface PageResult {
@@ -36,8 +37,10 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   await registerAstroPlugin();
   await registerMdxPlugin();
   await registerCssModulesPlugin();
+  await registerScssPlugin(projectRoot);
   const astroHost = await initAstroHost(projectRoot, "build");
   configureMdx(resolveMdxOptions(config, astroHost?.config));
+  configureScss(readScssOptions(astroHost?.config.vite));
   await initCollections(projectRoot);
 
   if (astroHost) {
@@ -63,9 +66,6 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   // Returns a manifest of original → hashed paths, used below to rewrite
   // references inside rendered HTML.
   const publicManifest = await hashPublicAssets(publicDir, distDir);
-
-  // Bundle CSS from src/
-  let cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
 
   // Scan routes
   const routes = await scanRoutes(pagesDir);
@@ -335,6 +335,12 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       .values(),
   );
 
+  // Bundle CSS from src/ AFTER rendering — side-effect imports of
+  // `.scss` / `.sass` from components populate the scss output map
+  // during page rendering, so the bundle needs to be computed here
+  // to include them.
+  const cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
+
   // Write all pages (including 404) — parallel.
   // Scoped CSS from <style> blocks is injected per-page (not into the
   // global bundle) to avoid cross-page leaks from unscoped rules like
@@ -349,6 +355,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   );
   clearScopedCss();
   clearCssModules();
+  clearScss();
 
   // Process optimized images registered by <Image> / <Picture> components
   // and passthrough copies of ESM-imported images.
@@ -396,6 +403,18 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   }
 
   console.log(`\nBuilt ${results.length} pages${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
+}
+
+/**
+ * Extract scss compiler options from the Astro config's
+ * `vite.css.preprocessorOptions.scss` block (the same path Astro/Vite
+ * users set `silenceDeprecations`, `loadPaths`, etc.).
+ */
+function readScssOptions(vite: unknown): Record<string, unknown> | undefined {
+  const css = (vite as { css?: { preprocessorOptions?: { scss?: unknown } } })?.css;
+  const opts = css?.preprocessorOptions?.scss;
+  if (opts && typeof opts === "object") return opts as Record<string, unknown>;
+  return undefined;
 }
 
 /**

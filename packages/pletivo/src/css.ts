@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import { Glob } from "bun";
+import { getScssOutput } from "./scss";
 
 /**
  * Collect and bundle CSS from src/.
@@ -17,7 +18,12 @@ export async function bundleCss(
   srcDir: string,
   distDir: string,
 ): Promise<string | null> {
-  const combined = await buildCss(projectRoot, srcDir);
+  const base = await buildCss(projectRoot, srcDir);
+  const scss = getScssOutput();
+  const combined =
+    base === null && !scss
+      ? null
+      : [base, scss].filter(Boolean).join("\n\n");
   if (combined === null) return null;
 
   const hasher = new Bun.CryptoHasher("md5");
@@ -40,7 +46,8 @@ export async function bundleCss(
  */
 export async function devCss(projectRoot: string, srcDir: string): Promise<string> {
   const out = await buildCss(projectRoot, srcDir);
-  return out ?? "";
+  const scss = getScssOutput();
+  return [out, scss].filter(Boolean).join("\n\n");
 }
 
 async function buildCss(projectRoot: string, srcDir: string): Promise<string | null> {
