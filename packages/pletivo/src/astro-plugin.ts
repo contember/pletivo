@@ -163,6 +163,17 @@ export async function registerAstroPlugin(): Promise<void> {
           throw new Error(`Astro compiler errors in ${rel}:\n${errors}`);
         }
 
+        // Clear this file's previous contributions before re-populating.
+        // Without this, entries linger across dev recompiles when the
+        // user removes a `<style>` or `<script>` block: the compiler
+        // stops emitting it but our maps still hold the old entry, so
+        // stale CSS/scripts keep landing on pages until restart.
+        scopedCssMap.delete(cleanPath);
+        const scriptPrefix = `${rel}?astro&type=script&index=`;
+        for (const id of hoistedScriptMap.keys()) {
+          if (id.startsWith(scriptPrefix)) hoistedScriptMap.delete(id);
+        }
+
         // Collect scoped CSS emitted by the Astro compiler for `<style>`
         // blocks. The compiler returns the scoped rules in `result.css[]`
         // (e.g. `.foo:where(.astro-xxxx){color:red}`) and the component's
