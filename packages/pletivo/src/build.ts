@@ -4,11 +4,12 @@ import { scanRoutes, routeToOutputPath, type Route, type StaticPath } from "./ro
 import { createPaginate } from "./paginate";
 import { initCollections } from "./content/collection";
 import { resetIslandRegistry } from "./runtime/island";
+import { runWithRenderTracking } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
-import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss, getGlobalCssForPage, clearGlobalCss } from "./astro-plugin";
 import { parseMarkdown } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
@@ -26,6 +27,14 @@ interface PageResult {
   label: string;
   outPath: string;
   html: string;
+  /**
+   * Component module ids (as passed to `$$createComponent`) whose
+   * render function executed during this page's render pass. Used to
+   * emit `<style is:global>` CSS for components present on the page —
+   * the class-presence heuristic doesn't catch components that only
+   * declare global styles and render no scoped DOM.
+   */
+  renderedModules?: Set<string>;
 }
 
 export async function build(projectRoot: string, config: PletivoConfig) {
@@ -176,12 +185,14 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       resetIslandRegistry();
       const outFile = routeToOutputPath(route, {});
       const pathname = toPathname(path.join(distDir, outFile), distDir);
-      const html = await renderComponent(mod.default, makePageContext(pathname, {}, route));
+      const { value: html, renderedModules } = await runWithRenderTracking(() =>
+        renderComponent(mod.default, makePageContext(pathname, {}, route)),
+      );
       if (html === null) {
         console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         return null;
       }
-      return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html };
+      return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html, renderedModules };
     }),
   );
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
@@ -200,11 +211,13 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       const outFile = routeToOutputPath(route, params);
       const pathname = toPathname(path.join(distDir, outFile), distDir);
       const ctx = makePageContext(pathname, params, route);
-      const html = await renderComponent(mod.default, { ...(pathProps || {}), ...ctx });
+      const { value: html, renderedModules } = await runWithRenderTracking(() =>
+        renderComponent(mod.default, { ...(pathProps || {}), ...ctx }),
+      );
       if (html === null) continue;
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
-      results.push({ file: route.file, label, outPath: path.join(distDir, outFile), html });
+      results.push({ file: route.file, label, outPath: path.join(distDir, outFile), html, renderedModules });
     }
   }
 
@@ -254,16 +267,19 @@ export async function build(projectRoot: string, config: PletivoConfig) {
         emission.sourceRoute,
         emission.targetLocale,
       );
-      const html = await renderComponent(mod.default, {
-        ...(emission.sourceProps || {}),
-        ...ctx,
-      });
+      const { value: html, renderedModules } = await runWithRenderTracking(() =>
+        renderComponent(mod.default, {
+          ...(emission.sourceProps || {}),
+          ...ctx,
+        }),
+      );
       if (html === null) continue;
       results.push({
         file: emission.sourceRoute.file,
         label,
         outPath,
         html,
+        renderedModules,
       });
     }
   }
@@ -303,13 +319,16 @@ export async function build(projectRoot: string, config: PletivoConfig) {
         } else if (typeof mod.default === "function") {
           // Page component — render as HTML
           resetIslandRegistry();
-          const html = await renderComponent(mod.default, makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0 }));
+          const { value: html, renderedModules } = await runWithRenderTracking(() =>
+            renderComponent(mod.default, makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0 })),
+          );
           if (html !== null) {
             results.push({
               file: injected.entrypoint,
               label: `[injected] ${injected.pattern}`,
               outPath,
               html,
+              renderedModules,
             });
           }
         }
@@ -332,7 +351,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     }),
   );
   if (result404) {
-    results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html });
+    results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules });
   }
 
   // Deduplicate by output path — later entries win. The main use case
@@ -360,12 +379,13 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   let totalSize = 0;
   await Promise.all(
     dedupedResults.map(async (result) => {
-      const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest);
+      const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest, result.renderedModules);
       totalSize += size;
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
     }),
   );
   clearScopedCss();
+  clearGlobalCss();
   clearCssModules();
   clearScss();
 
@@ -497,6 +517,7 @@ async function writeHtml(
   base: string,
   cssPath: string | null,
   publicManifest: Map<string, string>,
+  renderedModules?: Set<string>,
 ): Promise<number> {
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
     html = "<!DOCTYPE html>\n" + html;
@@ -511,13 +532,19 @@ async function writeHtml(
     html = html.replace("</head>", `<link rel="stylesheet" href="${base}${cssPath}">\n</head>`);
   }
 
-  // Inject per-page scoped CSS from <style> blocks in .astro components.
-  // We match astro scope classes in the HTML to include only relevant entries,
-  // avoiding cross-page leaks from unscoped rules (`:global()`, `body`, etc.).
+  // Inject per-page CSS from <style> blocks in .astro components:
+  //   - scoped blocks: matched by astro scope class in the HTML,
+  //     avoiding cross-page leaks from unscoped rules inside a
+  //     regular <style> (`:global()`, `body`, etc.).
+  //   - `is:global` blocks: gated by whether the component was actually
+  //     rendered on this page (the scope class may be absent from the
+  //     DOM when a component emits only global styles).
   const astroClasses = extractAstroClasses(html);
   const pageScopedCss = getScopedCssForPage(astroClasses);
-  if (pageScopedCss) {
-    const styleTag = `<style>${pageScopedCss}</style>`;
+  const pageGlobalCss = renderedModules ? getGlobalCssForPage(renderedModules) : "";
+  const combinedCss = [pageGlobalCss, pageScopedCss].filter(Boolean).join("\n");
+  if (combinedCss) {
+    const styleTag = `<style>${combinedCss}</style>`;
     if (html.includes("</head>")) {
       html = html.replace("</head>", styleTag + "\n</head>");
     } else if (html.includes("</body>")) {
@@ -578,7 +605,7 @@ async function writeHtml(
 async function render404Page(
   pagesDir: string,
   pageContext: Record<string, unknown>,
-): Promise<{ file: string; html: string } | null> {
+): Promise<{ file: string; html: string; renderedModules: Set<string> } | null> {
   for (const ext of [".tsx", ".jsx", ".astro"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
@@ -586,9 +613,11 @@ async function render404Page(
       const mod = await import(fullPath);
       if (typeof mod.default === "function") {
         resetIslandRegistry();
-        const html = await renderComponent(mod.default, pageContext);
+        const { value: html, renderedModules } = await runWithRenderTracking(() =>
+          renderComponent(mod.default, pageContext),
+        );
         if (html) {
-          return { file: `404${ext}`, html };
+          return { file: `404${ext}`, html, renderedModules };
         }
       }
       break;

@@ -1,0 +1,9 @@
+---
+// No DOM — only contributes a <style is:global> block. Exercises
+// the render-tracker path: without it, the component's global CSS
+// would not land on any page (the scope class never appears in DOM).
+---
+<style is:global>
+  body { background: papayawhip; }
+  .is-global-marker { color: seagreen; }
+</style>

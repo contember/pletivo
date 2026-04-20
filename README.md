@@ -33,7 +33,7 @@ Or add it to `package.json`:
 
 Pletivo compiles `.astro` files using `@astrojs/compiler` and renders them with its own Bun-native runtime. Tested against Astro's own test suite:
 
-- `.astro` pages and components (props, slots, `Astro.slots.render()`, scoped CSS, `class:list`)
+- `.astro` pages and components (props, slots, `Astro.slots.render()`, scoped CSS, `<style is:global>`, `class:list`)
 - Content collections with Zod schemas, `getCollection()`, `getEntry()`, `reference()`
 - `getStaticPaths()` for dynamic routes
 - `.md` pages in `src/pages/`

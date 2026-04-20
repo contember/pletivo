@@ -75,4 +75,36 @@ describe("scoped styles", () => {
     expect(html).toContain("background:salmon");
     expect(html).toContain("padding:2rem");
   });
+
+  test("<style is:global> lands on page that renders a DOM-less component", async () => {
+    const html = await Bun.file(
+      path.join(distDir, "global-only/index.html"),
+    ).text();
+    // GlobalOnly.astro contributes only <style is:global> and renders
+    // no DOM. Before the is:global fix, class-presence gating dropped
+    // this CSS because no astro-XXXX scope class ever reaches the page.
+    expect(html).toContain("papayawhip");
+    expect(html).toContain(".is-global-marker");
+  });
+
+  test("MixedStyles emits both scoped and global rules on a consuming page", async () => {
+    const html = await Bun.file(
+      path.join(distDir, "global-only/index.html"),
+    ).text();
+    // Scoped rule (kept scoped by the compiler)
+    expect(html).toMatch(/\.mixed-scoped:where\(\.astro-[a-z0-9]+\)/);
+    // Global rule (emitted as-is)
+    expect(html).toContain(".mixed-global-marker");
+    // is:global blocks are emitted as-is (whitespace preserved, not minified)
+    expect(html).toMatch(/letter-spacing:\s*0\.05em/);
+  });
+
+  test("global CSS does NOT leak to pages that don't use the component", async () => {
+    const html = await Bun.file(
+      path.join(distDir, "standalone/index.html"),
+    ).text();
+    expect(html).not.toContain("papayawhip");
+    expect(html).not.toContain(".is-global-marker");
+    expect(html).not.toContain(".mixed-global-marker");
+  });
 });

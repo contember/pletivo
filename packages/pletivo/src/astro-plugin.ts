@@ -17,7 +17,9 @@
 
 import path from "path";
 import { fileURLToPath } from "url";
-import { transform } from "@astrojs/compiler";
+import { transform, parse } from "@astrojs/compiler";
+import { is } from "@astrojs/compiler/utils";
+import type { Node } from "@astrojs/compiler/types";
 import { readImageDimensions, registerImportedImage } from "./image";
 
 let registered = false;
@@ -41,20 +43,29 @@ export function getDevVersion(): number {
  * The Astro compiler returns scoped (`:where(.astro-xxxx)`) CSS in
  * `result.css[]` and the component's scope hash in `result.scope`.
  *
- * We store both per file path so that `getScopedCssForPage()` can
- * match by scope class in the HTML — not just by CSS content. This
+ * Keyed by the component's module id (the relative path the Astro
+ * compiler is given as `filename`, which matches the `moduleId` passed
+ * to `$$createComponent`). We store the scope so `getScopedCssForPage()`
+ * can match by scope class in the HTML — not just by CSS content. This
  * is essential because some CSS rules (e.g. `body`, `html`, `*`)
  * are NOT scoped by the compiler even though the component's
  * elements receive the scope class attribute.
- *
- * Call `getScopedCss()` to retrieve the accumulated CSS and
- * `clearScopedCss()` between builds / dev requests to avoid stale entries.
  */
 interface ScopedCssEntry {
   scope: string; // e.g. "jn3ixs4m" → class "astro-jn3ixs4m"
   css: string[];
 }
 const scopedCssMap = new Map<string, ScopedCssEntry>();
+
+/**
+ * Global CSS collected from `<style is:global>` blocks in `.astro` files.
+ * Keyed by the same module id as `scopedCssMap`. Unlike scoped CSS,
+ * global CSS can't be gated by scope-class presence — an `is:global`
+ * block may not emit any scoped DOM at all. Instead, emission is gated
+ * by whether the component was actually rendered on the page, tracked
+ * at render time via the shim's rendered-module registry.
+ */
+const globalCssMap = new Map<string, string[]>();
 
 /**
  * Hoisted scripts collected from `<script>` tags (non-inline) in `.astro`
@@ -119,6 +130,78 @@ export function clearScopedCss(): void {
   scopedCssMap.clear();
 }
 
+/**
+ * Return global CSS for components actually rendered on a page.
+ * `renderedModules` contains the `moduleId` values passed to
+ * `$$createComponent` for each component whose render function ran
+ * during this page's render pass (populated by the shim).
+ */
+export function getGlobalCssForPage(renderedModules: Set<string>): string {
+  if (renderedModules.size === 0) return "";
+  const parts: string[] = [];
+  for (const [modulePath, css] of globalCssMap.entries()) {
+    if (renderedModules.has(modulePath)) {
+      parts.push(...css);
+    }
+  }
+  return parts.join("\n");
+}
+
+export function clearGlobalCss(): void {
+  globalCssMap.clear();
+}
+
+/**
+ * Classify each entry in the compiler's `result.css[]` as scoped or
+ * global by matching it to its originating `<style>` block in the
+ * source. The compiler emits one entry per `<style>` block in source
+ * order, so we walk the source's style tags and read each one's
+ * `is:global` attribute.
+ *
+ * Source-based classification is more robust than inspecting the CSS
+ * text for a `:where(.astro-{scope})` marker: the compiler omits that
+ * marker for selectors it can't scope (e.g. `body`, `html`, `:root`),
+ * which would otherwise misclassify non-global rules as global.
+ */
+export async function classifyCompilerCss(
+  css: string[],
+  source: string,
+): Promise<{ scoped: string[]; global: string[] }> {
+  const { ast } = await parse(source);
+  const scoped: string[] = [];
+  const global: string[] = [];
+  let i = 0;
+
+  const visit = (node: Node): void => {
+    if (is.element(node) && node.name === "style") {
+      // The compiler omits `result.css[]` entries for blocks that compile
+      // to nothing (empty, whitespace-only, or comment-only). Skip those
+      // so our 1:1 pairing with `css[i]` stays aligned.
+      const text = node.children.filter(is.text).map((c) => c.value).join("");
+      if (text.replace(/\/\*[\s\S]*?\*\//g, "").trim().length === 0) return;
+      if (i >= css.length) {
+        throw new Error(
+          `[pletivo-astro] classifyCompilerCss: more non-empty <style> blocks than css entries (${css.length}). ` +
+            `The @astrojs/compiler output contract may have changed.`,
+        );
+      }
+      const isGlobal = node.attributes.some((a) => a.name === "is:global");
+      (isGlobal ? global : scoped).push(css[i++]);
+      return;
+    }
+    if (is.parent(node)) for (const child of node.children) visit(child);
+  };
+  visit(ast);
+
+  if (i !== css.length) {
+    throw new Error(
+      `[pletivo-astro] classifyCompilerCss: ${i} non-empty <style> block(s) but ${css.length} css entries. ` +
+        `The @astrojs/compiler output contract may have changed.`,
+    );
+  }
+  return { scoped, global };
+}
+
 export async function registerAstroPlugin(): Promise<void> {
   if (registered) return;
   registered = true;
@@ -168,22 +251,28 @@ export async function registerAstroPlugin(): Promise<void> {
         // user removes a `<style>` or `<script>` block: the compiler
         // stops emitting it but our maps still hold the old entry, so
         // stale CSS/scripts keep landing on pages until restart.
-        scopedCssMap.delete(cleanPath);
+        scopedCssMap.delete(rel);
+        globalCssMap.delete(rel);
         const scriptPrefix = `${rel}?astro&type=script&index=`;
         for (const id of hoistedScriptMap.keys()) {
           if (id.startsWith(scriptPrefix)) hoistedScriptMap.delete(id);
         }
 
-        // Collect scoped CSS emitted by the Astro compiler for `<style>`
-        // blocks. The compiler returns the scoped rules in `result.css[]`
-        // (e.g. `.foo:where(.astro-xxxx){color:red}`) and the component's
-        // scope hash in `result.scope`. We store both so that
-        // `getScopedCssForPage()` can match by scope class in the HTML.
+        // Collect CSS emitted by the Astro compiler. Each `result.css[]`
+        // entry is the compiled output of one `<style>` block. Scoped
+        // blocks contain `:where(.astro-{scope})` selectors; `is:global`
+        // blocks are emitted as-is (no scope selector). We split them:
+        // scoped entries go to `scopedCssMap` (class-presence gated),
+        // global entries go to `globalCssMap` (render-gated).
         if (result.css && result.css.length > 0) {
-          scopedCssMap.set(cleanPath, {
-            scope: (result as unknown as { scope?: string }).scope ?? "",
-            css: result.css,
-          });
+          const scope = (result as unknown as { scope?: string }).scope ?? "";
+          const { scoped, global } = await classifyCompilerCss(result.css, source);
+          if (scoped.length > 0) {
+            scopedCssMap.set(rel, { scope, css: scoped });
+          }
+          if (global.length > 0) {
+            globalCssMap.set(rel, global);
+          }
         }
 
         // Collect hoisted scripts from `<script>` tags (non-inline).
