@@ -1,0 +1,11 @@
+---
+// Component with both scoped and global styles on the same file.
+// Verifies split: scoped goes via class-presence, global via render.
+---
+<div class="mixed-scoped">Mixed scoped content</div>
+<style>
+  .mixed-scoped { font-weight: bold; }
+</style>
+<style is:global>
+  .mixed-global-marker { letter-spacing: 0.05em; }
+</style>

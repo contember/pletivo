@@ -5,10 +5,11 @@ import { scanRoutes, findRoute, matchRoute, type Route, type StaticPath } from "
 import { createPaginate } from "./paginate";
 import { initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
+import { runWithRenderTracking } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
-import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, bumpDevVersion, getDevVersion } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, bumpDevVersion, getDevVersion, getGlobalCssForPage } from "./astro-plugin";
 import { parseMarkdown } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
@@ -179,14 +180,17 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       };
 
       resetIslandRegistry();
-      let result = component({ ...props, __pageContext: pageContext });
-      if (result instanceof Promise) result = await result;
+      const { value: renderResult, renderedModules } = await runWithRenderTracking(async () => {
+        let r = component({ ...props, __pageContext: pageContext });
+        if (r instanceof Promise) r = await r;
+        return r;
+      });
 
       let html: string;
-      if (typeof result === "string") {
-        html = result;
-      } else if (result && typeof result === "object" && "__html" in result) {
-        html = (result as { __html: string }).__html;
+      if (typeof renderResult === "string") {
+        html = renderResult;
+      } else if (renderResult && typeof renderResult === "object" && "__html" in renderResult) {
+        html = (renderResult as { __html: string }).__html;
       } else {
         return null;
       }
@@ -203,7 +207,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       const styleLink = `<link rel="stylesheet" href="/__styles.css">`;
       const pageAstroClasses = extractAstroClasses(html);
       const pageScopedCss = getScopedCssForPage(pageAstroClasses);
-      const scopedStyleTag = pageScopedCss ? `<style>${pageScopedCss}</style>` : "";
+      const pageGlobalCss = getGlobalCssForPage(renderedModules);
+      const combinedCss = [pageGlobalCss, pageScopedCss].filter(Boolean).join("\n");
+      const scopedStyleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
       const beforeHydration = astroHost?.injectedBeforeHydrationScripts
         ?.map((s) => `<script type="module">${s}</script>`)
         .join("\n") ?? "";
@@ -252,8 +258,11 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           const mod = await import(fullPath + `?v=${getDevVersion()}`);
           if (typeof mod.default === "function") {
             resetIslandRegistry();
-            let result = mod.default({});
-            if (result instanceof Promise) result = await result;
+            const { value: result, renderedModules: rm404 } = await runWithRenderTracking(async () => {
+              let r = mod.default({});
+              if (r instanceof Promise) r = await r;
+              return r;
+            });
             let html: string;
             if (typeof result === "string") html = result;
             else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
@@ -261,7 +270,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
             const classes404 = extractAstroClasses(html);
             const scoped404 = getScopedCssForPage(classes404);
-            const styleTag404 = scoped404 ? `<style>${scoped404}</style>` : "";
+            const global404 = getGlobalCssForPage(rm404);
+            const combined404 = [global404, scoped404].filter(Boolean).join("\n");
+            const styleTag404 = combined404 ? `<style>${combined404}</style>` : "";
             const headInjection404 = `<link rel="stylesheet" href="/__styles.css">\n${styleTag404}\n${hmrClientScript}`;
             if (html.includes("</head>")) {
               html = html.replace("</head>", headInjection404 + "\n</head>");

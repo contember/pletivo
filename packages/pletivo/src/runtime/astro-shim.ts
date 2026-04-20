@@ -232,6 +232,32 @@ export type AstroComponentFactory = {
   moduleId: string;
 };
 
+/**
+ * Per-page registry of component module ids whose render function
+ * ran during the current render pass. Used by build/dev to decide
+ * which components' `<style is:global>` CSS to emit — class-presence
+ * gating can't catch components that declare only global styles and
+ * render no scoped DOM.
+ *
+ * Uses AsyncLocalStorage so concurrent page renders (e.g. `Promise.all`
+ * over routes in the build loop) stay isolated. Wrap each render in
+ * `runWithRenderTracking(fn)`; inside, `createComponent`'s wrapped
+ * invocation adds its `moduleId` to the current store's set.
+ */
+import { AsyncLocalStorage } from "node:async_hooks";
+
+const renderTrackingStorage = new AsyncLocalStorage<{
+  renderedModules: Set<string>;
+}>();
+
+export async function runWithRenderTracking<T>(
+  fn: () => Promise<T>,
+): Promise<{ value: T; renderedModules: Set<string> }> {
+  const renderedModules = new Set<string>();
+  const value = await renderTrackingStorage.run({ renderedModules }, fn);
+  return { value, renderedModules };
+}
+
 export function createComponent(
   fn: (
     result: AstroResult,
@@ -246,6 +272,10 @@ export function createComponent(
     propsArg?: Record<string, unknown>,
     slotsArg?: SlotsRecord,
   ): Promise<HtmlString> => {
+    if (moduleId) {
+      const store = renderTrackingStorage.getStore();
+      if (store) store.renderedModules.add(moduleId);
+    }
     let result: AstroResult;
     let props: Record<string, unknown>;
     let slots: SlotsRecord;
