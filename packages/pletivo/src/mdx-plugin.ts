@@ -17,7 +17,7 @@
 import path from "path";
 import { fileURLToPath } from "url";
 import { compile, type CompileOptions } from "@mdx-js/mdx";
-import { getDevVersion } from "./astro-plugin";
+import { getDevVersion } from "./dev-cache";
 import type { PluggableList } from "unified";
 import type { PletivoConfig } from "./config";
 

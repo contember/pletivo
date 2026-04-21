@@ -21,22 +21,9 @@ import { transform, parse } from "@astrojs/compiler";
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import { readImageDimensions, registerImportedImage } from "./image";
+import { applyDevCacheBust, getDevVersion } from "./dev-cache";
 
 let registered = false;
-
-/**
- * Dev-mode version counter. The dev server increments this on every file
- * change. The astro-plugin appends it as a query string to `.astro`
- * import specifiers in compiled code so that Bun's module cache is busted
- * for transitive component imports (not just the page itself).
- */
-let devVersion = 0;
-export function bumpDevVersion(): number {
-  return ++devVersion;
-}
-export function getDevVersion(): number {
-  return devVersion;
-}
 
 /**
  * Scoped CSS collected from `<style>` blocks in `.astro` files.
@@ -303,17 +290,7 @@ export async function registerAstroPlugin(): Promise<void> {
         // specifiers so that Bun's module cache is busted for transitive
         // imports (not just the top-level page). Without this, editing a
         // child component or a stylesheet doesn't cause it to be re-loaded.
-        if (devVersion > 0) {
-          cleanedCode = cleanedCode.replace(
-            /(from\s+['"])([^'"]+\.astro)(['"])/g,
-            `$1$2?v=${devVersion}$3`,
-          );
-          // Side-effect imports `import '../foo.scss'` (no `from`)
-          cleanedCode = cleanedCode.replace(
-            /(import\s+['"])([^'"]+\.(?:scss|sass))(['"])/g,
-            `$1$2?v=${devVersion}$3`,
-          );
-        }
+        cleanedCode = applyDevCacheBust(cleanedCode, getDevVersion());
 
         return {
           contents: cleanedCode,
