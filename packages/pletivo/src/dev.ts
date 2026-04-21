@@ -24,6 +24,7 @@ import {
   resolveDefaultLocaleRedirect,
 } from "./i18n/fallback";
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
+import { registerDevTsPlugin } from "./dev-ts-plugin";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import type { PletivoConfig } from "./config";
 import type { ServerWebSocket } from "bun";
@@ -74,10 +75,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     }
   }
 
-  await registerAstroPlugin();
-  await registerMdxPlugin();
-  await registerCssModulesPlugin();
-  await registerScssPlugin(projectRoot);
+  await Promise.all([
+    registerAstroPlugin(),
+    registerMdxPlugin(),
+    registerCssModulesPlugin(),
+    registerScssPlugin(projectRoot),
+    registerDevTsPlugin(projectRoot, config.srcDir),
+  ]);
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });

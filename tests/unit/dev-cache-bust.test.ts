@@ -1,14 +1,3 @@
-/**
- * Dev-mode cache-bust rewrite: `applyDevCacheBust` appends `?v=<version>`
- * to `.astro`, `.scss`/`.sass`, and `.json` import specifiers so Bun's
- * ESM cache releases transitive imports after their source files change.
- *
- * The `.json` rule exists for translation dictionaries (and other data
- * files) imported from `.astro` pages — without the cache-bust, Bun keeps
- * the first-parsed JSON in memory and edits to the dictionary never
- * show up in the rendered HTML.
- */
-
 import { describe, expect, test } from "bun:test";
 import { applyDevCacheBust } from "../../packages/pletivo/src/dev-cache";
 
@@ -35,7 +24,7 @@ describe("applyDevCacheBust", () => {
       .toBe(`import "../styles/base.scss?v=7";\nimport "../styles/layout.sass?v=7";`);
   });
 
-  test("cache-busts `.json` imports (the translation-dictionary case)", () => {
+  test("cache-busts `.json` imports", () => {
     const code = [
       `import cs from "../i18n/cs.json";`,
       `import en from '../i18n/en.json';`,
@@ -49,13 +38,71 @@ describe("applyDevCacheBust", () => {
     );
   });
 
-  test("leaves unrelated imports alone", () => {
+  test("cache-busts extensionless relative imports", () => {
+    const code = `import { t } from "../i18n";`;
+    expect(applyDevCacheBust(code, 5))
+      .toBe(`import { t } from "../i18n?v=5";`);
+  });
+
+  test("cache-busts .ts/.tsx/.js/.jsx relative imports", () => {
     const code = [
-      `import { foo } from "./util";`,
+      `import a from "./a.ts";`,
+      `import b from "./b.tsx";`,
+      `import c from "./c.js";`,
+      `import d from "./d.jsx";`,
+    ].join("\n");
+
+    expect(applyDevCacheBust(code, 2)).toBe(
+      [
+        `import a from "./a.ts?v=2";`,
+        `import b from "./b.tsx?v=2";`,
+        `import c from "./c.js?v=2";`,
+        `import d from "./d.jsx?v=2";`,
+      ].join("\n"),
+    );
+  });
+
+  test("leaves bare specifiers alone", () => {
+    const code = [
       `import React from "react";`,
-      `import data from "./data.yaml";`,
+      `import { describe } from "bun:test";`,
+      `import { h } from "pletivo/jsx-runtime";`,
     ].join("\n");
     expect(applyDevCacheBust(code, 4)).toBe(code);
+  });
+
+  test("cache-busts re-exports", () => {
+    const code = `export { t } from "./i18n";\nexport * from "./util";`;
+    expect(applyDevCacheBust(code, 8)).toBe(
+      `export { t } from "./i18n?v=8";\nexport * from "./util?v=8";`,
+    );
+  });
+
+  test("cache-busts dynamic imports with a literal specifier", () => {
+    const code = [
+      `const mod = await import("./lazy.ts");`,
+      `import( '../data/big.json' ).then(use);`,
+    ].join("\n");
+
+    expect(applyDevCacheBust(code, 6)).toBe(
+      [
+        `const mod = await import("./lazy.ts?v=6");`,
+        `import( '../data/big.json?v=6' ).then(use);`,
+      ].join("\n"),
+    );
+  });
+
+  test("leaves dynamic imports with non-literal arguments alone", () => {
+    const code = [
+      "const a = await import(`./${name}.ts`);",
+      `const b = await import(modulePath);`,
+    ].join("\n");
+    expect(applyDevCacheBust(code, 3)).toBe(code);
+  });
+
+  test("does not rewrite specifiers that already carry a query string", () => {
+    const already = `import cs from "../i18n/cs.json?v=2";`;
+    expect(applyDevCacheBust(already, 5)).toBe(already);
   });
 
   test("combines all rewrites in a single pass", () => {
@@ -64,6 +111,7 @@ describe("applyDevCacheBust", () => {
       `import cs from "../i18n/cs.json";`,
       `import "../styles/base.scss";`,
       `import { helper } from "./helper";`,
+      `import React from "react";`,
     ].join("\n");
 
     expect(applyDevCacheBust(code, 9)).toBe(
@@ -71,15 +119,9 @@ describe("applyDevCacheBust", () => {
         `import Header from "../components/Header.astro?v=9";`,
         `import cs from "../i18n/cs.json?v=9";`,
         `import "../styles/base.scss?v=9";`,
-        `import { helper } from "./helper";`,
+        `import { helper } from "./helper?v=9";`,
+        `import React from "react";`,
       ].join("\n"),
     );
-  });
-
-  test("does not rewrite specifiers that already carry a query string", () => {
-    // The plugin runs once per transform, so a specifier that's already
-    // been rewritten on an earlier pass shouldn't grow a second suffix.
-    const already = `import cs from "../i18n/cs.json?v=2";`;
-    expect(applyDevCacheBust(already, 5)).toBe(already);
   });
 });
