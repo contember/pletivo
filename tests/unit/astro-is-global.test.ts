@@ -97,6 +97,43 @@ describe("is:global CSS classification", () => {
     expect(global.length).toBe(0);
   });
 
+  test(":global() inside a scoped <style> block stays in the scoped bucket", async () => {
+    // `:global(.foo)` tells the compiler not to scope a single selector.
+    // The resulting CSS entry contains BOTH scoped rules (with
+    // `:where(.astro-XXX)`) and unscoped ones (the :global() selector).
+    // Classification must follow the `<style>` tag's attributes, not the
+    // presence of a scope marker — so this whole entry goes to `scoped`.
+    const { scoped, global, scope } = await classify(`
+      <h1>x</h1>
+      <p class="external">y</p>
+      <style>
+        h1 { color: red; }
+        :global(.external) { color: blue; }
+      </style>
+    `);
+    expect(scoped.length).toBe(1);
+    expect(global.length).toBe(0);
+    expect(scoped[0]).toContain(`.astro-${scope}`);
+    expect(scoped[0]).toContain(".external");
+  });
+
+  test(":global()-only scoped block ships via scope-class gating", async () => {
+    // A scoped <style> block with only `:global()` rules emits a CSS entry
+    // with no scope markers. It still classifies as `scoped` (no is:global
+    // attr) and the compiler still attaches the scope class to template
+    // elements, so `getScopedCssForPage()` finds it on any page rendering
+    // the component.
+    const { scoped, global } = await classify(`
+      <p class="external">y</p>
+      <style>:global(.external) { color: blue; }</style>
+    `);
+    expect(scoped.length).toBe(1);
+    expect(global.length).toBe(0);
+    expect(scoped[0]).toContain(".external");
+    // sanity: no scope marker ended up in the CSS
+    expect(scoped[0]).not.toMatch(/\.astro-[a-z0-9]+/);
+  });
+
   test("mismatched block-vs-css counts throws", async () => {
     await expect(
       classifyCompilerCss(["a{}", "b{}"], `<style>a{}</style>`),

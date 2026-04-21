@@ -3,8 +3,10 @@
 // Verifies split: scoped goes via class-presence, global via render.
 ---
 <div class="mixed-scoped">Mixed scoped content</div>
+<p class="global-wrapper-target">Has a :global() rule applied from a scoped block</p>
 <style>
   .mixed-scoped { font-weight: bold; }
+  :global(.global-wrapper-target) { text-decoration: underline; }
 </style>
 <style is:global>
   .mixed-global-marker { letter-spacing: 0.05em; }

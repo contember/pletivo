@@ -99,6 +99,20 @@ describe("scoped styles", () => {
     expect(html).toMatch(/letter-spacing:\s*0\.05em/);
   });
 
+  test(":global() selector inside a scoped <style> block emits unscoped rule", async () => {
+    const html = await Bun.file(
+      path.join(distDir, "global-only/index.html"),
+    ).text();
+    // MixedStyles uses `:global(.global-wrapper-target) { text-decoration: underline; }`
+    // inside a regular <style> block. The compiler emits that rule without
+    // a scope marker but in the same css[] entry as the block's scoped
+    // rules — so it rides along whenever the scoped CSS is included.
+    expect(html).toContain(".global-wrapper-target");
+    expect(html).toContain("text-decoration:underline");
+    // Guard: the :global() target must NOT carry a scope marker.
+    expect(html).not.toMatch(/\.global-wrapper-target:where\(\.astro-/);
+  });
+
   test("global CSS does NOT leak to pages that don't use the component", async () => {
     const html = await Bun.file(
       path.join(distDir, "standalone/index.html"),
