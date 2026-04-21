@@ -17,7 +17,7 @@
 import path from "path";
 import { fileURLToPath } from "url";
 import { compile, type CompileOptions } from "@mdx-js/mdx";
-import { applyDevCacheBust, getDevVersion } from "./dev-cache";
+import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 import type { PluggableList } from "unified";
 import type { PletivoConfig } from "./config";
 
@@ -72,7 +72,7 @@ export async function registerMdxPlugin(): Promise<void> {
     name: "pletivo-mdx",
     setup(build) {
       build.onLoad({ filter: /\.mdx(\?.*)?$/ }, async (args) => {
-        const cleanPath = args.path.replace(/\?.*$/, "");
+        const cleanPath = stripQuery(args.path);
         const rel = path.relative(process.cwd(), cleanPath);
         const source = await Bun.file(cleanPath).text();
 

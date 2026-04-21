@@ -12,6 +12,15 @@
  * import the next time a page is rendered.
  */
 
+/**
+ * Strip the `?...` suffix Bun passes through to `onLoad` handlers so
+ * the clean path can be used for filesystem reads. Handles both the
+ * `?v=N` cache-buster this module appends and Vite-style `?raw`/`?inline`.
+ */
+export function stripQuery(specifier: string): string {
+  return specifier.replace(/\?.*$/, "");
+}
+
 let devVersion = 0;
 
 export function bumpDevVersion(): number {

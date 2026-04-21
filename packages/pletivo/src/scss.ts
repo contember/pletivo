@@ -17,6 +17,7 @@
  */
 
 import path from "path";
+import { stripQuery } from "./dev-cache";
 
 let registered = false;
 
@@ -84,7 +85,7 @@ export async function registerScssPlugin(projectRoot: string): Promise<void> {
       build.onLoad(
         { filter: /\.(scss|sass)(\?.*)?$/ },
         async (args) => {
-          const cleanPath = args.path.replace(/\?.*$/, "");
+          const cleanPath = stripQuery(args.path);
           const sass = await loadSass(projectRoot);
           if (!sass) {
             return { contents: "export {};", loader: "js" };

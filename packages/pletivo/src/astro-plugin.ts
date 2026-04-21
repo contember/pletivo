@@ -21,7 +21,7 @@ import { transform, parse } from "@astrojs/compiler";
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import { readImageDimensions, registerImportedImage } from "./image";
-import { applyDevCacheBust, getDevVersion } from "./dev-cache";
+import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 
 let registered = false;
 
@@ -213,8 +213,7 @@ export async function registerAstroPlugin(): Promise<void> {
       // that pletivo's dev server appends to force module re-import.
       build.onLoad({ filter: /\.astro(\?.*)?$/ }, async (args) => {
         if (process.env.PLETIVO_DEBUG) console.log("[pletivo-astro] onLoad:", args.path);
-        // Strip cache-buster query (`?v=N`) before filesystem read
-        const cleanPath = args.path.replace(/\?.*$/, "");
+        const cleanPath = stripQuery(args.path);
         const source = await Bun.file(cleanPath).text();
         const rel = path.relative(process.cwd(), cleanPath);
 
@@ -286,10 +285,11 @@ export async function registerAstroPlugin(): Promise<void> {
           "",
         );
 
-        // In dev mode, append a version query to .astro/.scss/.sass import
-        // specifiers so that Bun's module cache is busted for transitive
-        // imports (not just the top-level page). Without this, editing a
-        // child component or a stylesheet doesn't cause it to be re-loaded.
+        // In dev mode, append a version query to .astro/.scss/.sass/.json
+        // import specifiers so that Bun's module cache is busted for
+        // transitive imports (not just the top-level page). Without this,
+        // editing a child component, stylesheet, or translation dictionary
+        // doesn't cause it to be re-loaded.
         cleanedCode = applyDevCacheBust(cleanedCode, getDevVersion());
 
         return {
@@ -406,7 +406,7 @@ export async function registerAstroPlugin(): Promise<void> {
       build.onLoad(
         { filter: /\.(png|jpe?g|webp|avif|gif|tiff|svg)(\?.*)?$/ },
         async (args) => {
-          const cleanPath = args.path.replace(/\?.*$/, "");
+          const cleanPath = stripQuery(args.path);
 
           // ?raw or ?inline → return file content as string
           if (/\?(raw|inline)\b/.test(args.path)) {
