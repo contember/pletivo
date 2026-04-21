@@ -17,6 +17,47 @@ function escapeAttr(str: string): string {
   return str.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
+/**
+ * CSS properties that accept unitless numeric values (mirrors React's
+ * built-in list). Everything else gets a `px` suffix when a number is
+ * passed to object-form `style={{ ... }}`.
+ */
+const UNITLESS_CSS_PROPS = new Set([
+  "animationIterationCount",
+  "aspectRatio",
+  "borderImageOutset", "borderImageSlice", "borderImageWidth",
+  "boxFlex", "boxFlexGroup", "boxOrdinalGroup",
+  "columnCount", "columns",
+  "flex", "flexGrow", "flexPositive", "flexShrink", "flexNegative", "flexOrder",
+  "gridArea", "gridRow", "gridRowEnd", "gridRowSpan", "gridRowStart",
+  "gridColumn", "gridColumnEnd", "gridColumnSpan", "gridColumnStart",
+  "fontWeight", "lineClamp", "lineHeight",
+  "opacity", "order", "orphans", "scale",
+  "tabSize", "widows", "zIndex", "zoom",
+  "fillOpacity", "floodOpacity", "stopOpacity",
+  "strokeDasharray", "strokeDashoffset", "strokeMiterlimit", "strokeOpacity", "strokeWidth",
+]);
+
+/**
+ * Serialize `style={{ color: "red", fontSize: 12 }}` into a CSS declaration
+ * string. camelCase → kebab-case; numeric values for length-like properties
+ * get a `px` suffix; custom properties (`--foo`) pass through as-is.
+ */
+function serializeStyleObject(style: Record<string, unknown>): string {
+  let out = "";
+  for (const [key, value] of Object.entries(style)) {
+    if (value == null || value === false || value === "") continue;
+    const prop = key.startsWith("--")
+      ? key
+      : key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+    const val = typeof value === "number" && !UNITLESS_CSS_PROPS.has(key)
+      ? `${value}px`
+      : String(value);
+    out += `${prop}:${val};`;
+  }
+  return out;
+}
+
 function renderChildren(children: unknown): string | Promise<string> {
   if (children == null || children === false || children === true) return "";
   if (typeof children === "string") return escapeHtml(children);
@@ -60,6 +101,11 @@ function renderAttrs(props: Props): string {
     }
     if (key === "htmlFor") {
       result += ` for="${escapeAttr(String(value))}"`;
+      continue;
+    }
+    if (key === "style" && value && typeof value === "object") {
+      const css = serializeStyleObject(value as Record<string, unknown>);
+      if (css) result += ` style="${escapeAttr(css)}"`;
       continue;
     }
     if (value === true) {

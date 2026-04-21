@@ -327,6 +327,60 @@ describe("event handler props", () => {
   });
 });
 
+describe("object-form style prop", () => {
+  test("serializes single property", () => {
+    expect(html(jsx("div", { style: { color: "red" }, children: "x" }))).toBe(
+      '<div style="color:red;">x</div>',
+    );
+  });
+
+  test("camelCase → kebab-case", () => {
+    expect(html(jsx("div", { style: { backgroundColor: "blue", fontSize: "1rem" }, children: "x" }))).toBe(
+      '<div style="background-color:blue;font-size:1rem;">x</div>',
+    );
+  });
+
+  test("numeric value gets px suffix for length-like props", () => {
+    expect(html(jsx("div", { style: { width: 100, marginTop: 8 }, children: "x" }))).toBe(
+      '<div style="width:100px;margin-top:8px;">x</div>',
+    );
+  });
+
+  test("unitless numeric props do not get px suffix", () => {
+    expect(html(jsx("div", { style: { opacity: 0.5, zIndex: 10, lineHeight: 1.5, fontWeight: 700 }, children: "x" }))).toBe(
+      '<div style="opacity:0.5;z-index:10;line-height:1.5;font-weight:700;">x</div>',
+    );
+  });
+
+  test("CSS custom properties pass through unchanged", () => {
+    expect(html(jsx("div", { style: { "--brand": "tomato", "--size": 16 }, children: "x" }))).toBe(
+      '<div style="--brand:tomato;--size:16px;">x</div>',
+    );
+  });
+
+  test("null/undefined/false values are dropped", () => {
+    expect(html(jsx("div", { style: { color: "red", display: null, visibility: undefined, margin: false }, children: "x" }))).toBe(
+      '<div style="color:red;">x</div>',
+    );
+  });
+
+  test("empty object produces no style attribute", () => {
+    expect(html(jsx("div", { style: {}, children: "x" }))).toBe("<div>x</div>");
+  });
+
+  test("string style still passes through verbatim", () => {
+    expect(html(jsx("div", { style: "color: red; width: 100px;", children: "x" }))).toBe(
+      '<div style="color: red; width: 100px;">x</div>',
+    );
+  });
+
+  test("escapes quotes/ampersands in serialized values", () => {
+    expect(html(jsx("div", { style: { backgroundImage: 'url("a&b.png")' }, children: "x" }))).toBe(
+      '<div style="background-image:url(&quot;a&amp;b.png&quot;);">x</div>',
+    );
+  });
+});
+
 describe("jsxs and jsxDEV aliases", () => {
   test("jsxs is same as jsx", () => {
     expect(jsxs).toBe(jsx);
