@@ -31,5 +31,7 @@ export function applyDevCacheBust(code: string, version: number): string {
   return code
     .replace(/(from\s+['"])([^'"]+\.astro)(['"])/g, `$1$2?v=${version}$3`)
     // Side-effect imports `import '../foo.scss'` (no `from`)
-    .replace(/(import\s+['"])([^'"]+\.(?:scss|sass))(['"])/g, `$1$2?v=${version}$3`);
+    .replace(/(import\s+['"])([^'"]+\.(?:scss|sass))(['"])/g, `$1$2?v=${version}$3`)
+    // Data-file imports (e.g. `import cs from '../i18n/cs.json'`)
+    .replace(/(from\s+['"])([^'"]+\.json)(['"])/g, `$1$2?v=${version}$3`);
 }
