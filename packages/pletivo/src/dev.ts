@@ -180,7 +180,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       };
 
       resetIslandRegistry();
-      const { value: renderResult, renderedModules } = await runWithRenderTracking(async () => {
+      const { value: renderResult, renderedModules, tsxStyles } = await runWithRenderTracking(async () => {
         let r = component({ ...props, __pageContext: pageContext });
         if (r instanceof Promise) r = await r;
         return r;
@@ -208,7 +208,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       const pageAstroClasses = extractAstroClasses(html);
       const pageScopedCss = getScopedCssForPage(pageAstroClasses);
       const pageGlobalCss = getGlobalCssForPage(renderedModules);
-      const combinedCss = [pageGlobalCss, pageScopedCss].filter(Boolean).join("\n");
+      const pageTsxCss = tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
+      const combinedCss = [pageGlobalCss, pageScopedCss, pageTsxCss].filter(Boolean).join("\n");
       const scopedStyleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
       const beforeHydration = astroHost?.injectedBeforeHydrationScripts
         ?.map((s) => `<script type="module">${s}</script>`)
@@ -258,7 +259,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           const mod = await import(fullPath + `?v=${getDevVersion()}`);
           if (typeof mod.default === "function") {
             resetIslandRegistry();
-            const { value: result, renderedModules: rm404 } = await runWithRenderTracking(async () => {
+            const { value: result, renderedModules: rm404, tsxStyles: tsx404 } = await runWithRenderTracking(async () => {
               let r = mod.default({});
               if (r instanceof Promise) r = await r;
               return r;
@@ -271,7 +272,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
             const classes404 = extractAstroClasses(html);
             const scoped404 = getScopedCssForPage(classes404);
             const global404 = getGlobalCssForPage(rm404);
-            const combined404 = [global404, scoped404].filter(Boolean).join("\n");
+            const tsx404Css = tsx404.length > 0 ? tsx404.join("\n") : "";
+            const combined404 = [global404, scoped404, tsx404Css].filter(Boolean).join("\n");
             const styleTag404 = combined404 ? `<style>${combined404}</style>` : "";
             const headInjection404 = `<link rel="stylesheet" href="/__styles.css">\n${styleTag404}\n${hmrClientScript}`;
             if (html.includes("</head>")) {

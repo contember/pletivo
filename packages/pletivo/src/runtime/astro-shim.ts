@@ -248,14 +248,31 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 const renderTrackingStorage = new AsyncLocalStorage<{
   renderedModules: Set<string>;
+  tsxStyles: string[];
 }>();
 
 export async function runWithRenderTracking<T>(
   fn: () => Promise<T>,
-): Promise<{ value: T; renderedModules: Set<string> }> {
+): Promise<{ value: T; renderedModules: Set<string>; tsxStyles: string[] }> {
   const renderedModules = new Set<string>();
-  const value = await renderTrackingStorage.run({ renderedModules }, fn);
-  return { value, renderedModules };
+  const tsxStyles: string[] = [];
+  const value = await renderTrackingStorage.run(
+    { renderedModules, tsxStyles },
+    fn,
+  );
+  return { value, renderedModules, tsxStyles };
+}
+
+/**
+ * Record a `<style>` block encountered during TSX rendering. The JSX
+ * runtime calls this for literal `<style>` JSX elements so the CSS is
+ * hoisted into `<head>` instead of emitted inline. Collected per render
+ * pass and included in the page's CSS bundle alongside scoped/global
+ * Astro styles.
+ */
+export function pushTsxStyle(css: string): void {
+  const store = renderTrackingStorage.getStore();
+  if (store) store.tsxStyles.push(css);
 }
 
 export function createComponent(

@@ -7,7 +7,7 @@ const fixturePages = path.join(import.meta.dir, "../fixture/src/pages");
 describe("scanRoutes", () => {
   test("finds all page files", async () => {
     const routes = await scanRoutes(fixturePages);
-    expect(routes.length).toBe(5);
+    expect(routes.length).toBe(6);
   });
 
   test("static routes come before dynamic", async () => {

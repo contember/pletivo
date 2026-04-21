@@ -1,4 +1,5 @@
 import { renderIslandWrapper, registerIsland } from "./island";
+import { pushTsxStyle } from "./astro-shim";
 
 const VOID_ELEMENTS = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input",
@@ -117,6 +118,26 @@ function renderAttrs(props: Props): string {
   return result;
 }
 
+/**
+ * Flatten `<style>` JSX children into a raw CSS string. Handles the
+ * common shapes TSX produces: a single template-literal string, an
+ * array of strings, and string/number fragments mixed with
+ * pre-rendered HtmlString (e.g. `{someCss}` expressions). Elements
+ * inside <style> are ignored — CSS text is the only valid payload.
+ */
+function extractStyleChildren(children: unknown): string {
+  if (children == null || children === false || children === true) return "";
+  if (typeof children === "string") return children;
+  if (typeof children === "number") return String(children);
+  if (Array.isArray(children)) {
+    return children.map(extractStyleChildren).join("");
+  }
+  if (typeof children === "object" && "__html" in (children as object)) {
+    return (children as HtmlString).__html;
+  }
+  return "";
+}
+
 export interface HtmlString {
   __html: string;
 }
@@ -148,6 +169,17 @@ export function jsx(
 
     if (typeof result === "string") return createHtml(escapeHtml(result));
     return result;
+  }
+
+  // `<style>` blocks in TSX pages/components are hoisted into <head> as
+  // page-global CSS (parity with Astro `<style is:global>`). Emitting the
+  // tag inline in <body> would still work in browsers but fights with
+  // Astro's head-collected CSS pipeline — this keeps all stylesheets in
+  // one place and lets the build strip/bundle them uniformly.
+  if (tag === "style" && !props.dangerouslySetInnerHTML) {
+    const css = extractStyleChildren(props.children);
+    if (css) pushTsxStyle(css);
+    return createHtml("");
   }
 
   const attrs = renderAttrs(props);

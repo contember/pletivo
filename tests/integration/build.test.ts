@@ -127,6 +127,26 @@ describe("build", () => {
     expect(sitemap).not.toContain("404");
   });
 
+  test("TSX <style> blocks are hoisted into <head>, not emitted inline", async () => {
+    const content = await Bun.file(path.join(distDir, "styled/index.html")).text();
+    // CSS text from both <style> blocks lands in the page
+    expect(content).toContain(".hero { color: tomato; padding: 1rem; }");
+    expect(content).toContain(".footer-from-second-block { border-top: 1px solid salmon; }");
+    // Both blocks must appear inside <head>, not in <body> where they
+    // were authored in the source JSX
+    const headSlice = content.slice(0, content.indexOf("</head>"));
+    expect(headSlice).toContain(".hero { color: tomato;");
+    expect(headSlice).toContain(".footer-from-second-block");
+    // The DOM elements that bear these classes render normally in <body>
+    expect(content).toMatch(/<h1 class="hero">Styled Page<\/h1>/);
+  });
+
+  test("TSX <style> CSS does not leak to pages without the component", async () => {
+    const about = await Bun.file(path.join(distDir, "about/index.html")).text();
+    expect(about).not.toContain(".hero { color: tomato;");
+    expect(about).not.toContain("footer-from-second-block");
+  });
+
   test("all pages have DOCTYPE", async () => {
     const files = [
       "index.html",

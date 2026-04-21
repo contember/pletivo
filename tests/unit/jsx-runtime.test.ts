@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { jsx, jsxs, jsxDEV, Fragment, type HtmlString } from "../../packages/pletivo/src/runtime/jsx-runtime";
 import { resetIslandRegistry, getUsedIslands } from "../../packages/pletivo/src/runtime/island";
+import { runWithRenderTracking } from "../../packages/pletivo/src/runtime/astro-shim";
 
 function html(result: HtmlString | Promise<HtmlString>): string {
   if (result instanceof Promise) throw new Error("Unexpected promise");
@@ -378,6 +379,75 @@ describe("object-form style prop", () => {
     expect(html(jsx("div", { style: { backgroundImage: 'url("a&b.png")' }, children: "x" }))).toBe(
       '<div style="background-image:url(&quot;a&amp;b.png&quot;);">x</div>',
     );
+  });
+});
+
+describe("<style> JSX element hoisting", () => {
+  test("<style> in TSX emits nothing inline and collects CSS via render tracking", async () => {
+    const { value, tsxStyles } = await runWithRenderTracking(async () => {
+      return html(
+        jsx("div", {
+          children: [
+            jsx("style", { children: ".x{color:red}" }),
+            jsx("p", { children: "hi" }),
+          ],
+        }),
+      );
+    });
+    // <style> tag is stripped from the output
+    expect(value).toBe("<div><p>hi</p></div>");
+    // CSS lands in the render store for the build/dev pipeline to inject
+    expect(tsxStyles).toEqual([".x{color:red}"]);
+  });
+
+  test("concatenates multiple <style> blocks in source order", async () => {
+    const { value, tsxStyles } = await runWithRenderTracking(async () => {
+      return html(
+        Fragment({
+          children: [
+            jsx("style", { children: "body{margin:0}" }),
+            jsx("style", { children: ".a{color:blue}" }),
+          ],
+        }),
+      );
+    });
+    expect(value).toBe("");
+    expect(tsxStyles).toEqual(["body{margin:0}", ".a{color:blue}"]);
+  });
+
+  test("accepts array children (e.g. template literal with interpolation)", async () => {
+    const color = "tomato";
+    const { tsxStyles } = await runWithRenderTracking(async () => {
+      return html(
+        jsx("style", { children: [`h1{color:`, color, `}`] }),
+      );
+    });
+    expect(tsxStyles).toEqual(["h1{color:tomato}"]);
+  });
+
+  test("CSS text is NOT HTML-escaped (raw payload)", async () => {
+    // Astro & browsers accept raw CSS in <style> — escaping would break
+    // selectors like `a > b`, content URLs with `&`, etc.
+    const { tsxStyles } = await runWithRenderTracking(async () => {
+      return html(
+        jsx("style", { children: "a > b { content: \"&\"; }" }),
+      );
+    });
+    expect(tsxStyles[0]).toBe("a > b { content: \"&\"; }");
+  });
+
+  test("empty <style> is collected as empty-string sentinel (or skipped)", async () => {
+    const { tsxStyles } = await runWithRenderTracking(async () => {
+      return html(jsx("style", {}));
+    });
+    // Empty blocks shouldn't pollute the collected list
+    expect(tsxStyles).toEqual([]);
+  });
+
+  test("outside a render-tracking scope, <style> is silently dropped", () => {
+    // No AsyncLocalStorage store → nowhere to push. The tag still
+    // produces empty output so it can't leak into the DOM.
+    expect(html(jsx("style", { children: ".x{}" }))).toBe("");
   });
 });
 

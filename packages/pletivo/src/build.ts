@@ -35,6 +35,12 @@ interface PageResult {
    * declare global styles and render no scoped DOM.
    */
   renderedModules?: Set<string>;
+  /**
+   * CSS collected from literal `<style>` JSX elements in TSX pages
+   * and components during this render pass. Hoisted into <head>
+   * alongside Astro scoped/global CSS.
+   */
+  tsxStyles?: string[];
 }
 
 export async function build(projectRoot: string, config: PletivoConfig) {
@@ -185,14 +191,14 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       resetIslandRegistry();
       const outFile = routeToOutputPath(route, {});
       const pathname = toPathname(path.join(distDir, outFile), distDir);
-      const { value: html, renderedModules } = await runWithRenderTracking(() =>
+      const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
         renderComponent(mod.default, makePageContext(pathname, {}, route)),
       );
       if (html === null) {
         console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         return null;
       }
-      return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html, renderedModules };
+      return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html, renderedModules, tsxStyles };
     }),
   );
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
@@ -211,13 +217,13 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       const outFile = routeToOutputPath(route, params);
       const pathname = toPathname(path.join(distDir, outFile), distDir);
       const ctx = makePageContext(pathname, params, route);
-      const { value: html, renderedModules } = await runWithRenderTracking(() =>
+      const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
         renderComponent(mod.default, { ...(pathProps || {}), ...ctx }),
       );
       if (html === null) continue;
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
-      results.push({ file: route.file, label, outPath: path.join(distDir, outFile), html, renderedModules });
+      results.push({ file: route.file, label, outPath: path.join(distDir, outFile), html, renderedModules, tsxStyles });
     }
   }
 
@@ -267,7 +273,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
         emission.sourceRoute,
         emission.targetLocale,
       );
-      const { value: html, renderedModules } = await runWithRenderTracking(() =>
+      const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
         renderComponent(mod.default, {
           ...(emission.sourceProps || {}),
           ...ctx,
@@ -280,6 +286,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
         outPath,
         html,
         renderedModules,
+        tsxStyles,
       });
     }
   }
@@ -319,7 +326,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
         } else if (typeof mod.default === "function") {
           // Page component — render as HTML
           resetIslandRegistry();
-          const { value: html, renderedModules } = await runWithRenderTracking(() =>
+          const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
             renderComponent(mod.default, makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0 })),
           );
           if (html !== null) {
@@ -329,6 +336,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
               outPath,
               html,
               renderedModules,
+              tsxStyles,
             });
           }
         }
@@ -351,7 +359,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     }),
   );
   if (result404) {
-    results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules });
+    results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles });
   }
 
   // Deduplicate by output path — later entries win. The main use case
@@ -379,7 +387,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   let totalSize = 0;
   await Promise.all(
     dedupedResults.map(async (result) => {
-      const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest, result.renderedModules);
+      const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest, result.renderedModules, result.tsxStyles);
       totalSize += size;
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
     }),
@@ -518,6 +526,7 @@ async function writeHtml(
   cssPath: string | null,
   publicManifest: Map<string, string>,
   renderedModules?: Set<string>,
+  tsxStyles?: string[],
 ): Promise<number> {
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
     html = "<!DOCTYPE html>\n" + html;
@@ -542,7 +551,8 @@ async function writeHtml(
   const astroClasses = extractAstroClasses(html);
   const pageScopedCss = getScopedCssForPage(astroClasses);
   const pageGlobalCss = renderedModules ? getGlobalCssForPage(renderedModules) : "";
-  const combinedCss = [pageGlobalCss, pageScopedCss].filter(Boolean).join("\n");
+  const pageTsxCss = tsxStyles && tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
+  const combinedCss = [pageGlobalCss, pageScopedCss, pageTsxCss].filter(Boolean).join("\n");
   if (combinedCss) {
     const styleTag = `<style>${combinedCss}</style>`;
     if (html.includes("</head>")) {
@@ -605,7 +615,7 @@ async function writeHtml(
 async function render404Page(
   pagesDir: string,
   pageContext: Record<string, unknown>,
-): Promise<{ file: string; html: string; renderedModules: Set<string> } | null> {
+): Promise<{ file: string; html: string; renderedModules: Set<string>; tsxStyles: string[] } | null> {
   for (const ext of [".tsx", ".jsx", ".astro"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
@@ -613,11 +623,11 @@ async function render404Page(
       const mod = await import(fullPath);
       if (typeof mod.default === "function") {
         resetIslandRegistry();
-        const { value: html, renderedModules } = await runWithRenderTracking(() =>
+        const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
           renderComponent(mod.default, pageContext),
         );
         if (html) {
-          return { file: `404${ext}`, html, renderedModules };
+          return { file: `404${ext}`, html, renderedModules, tsxStyles };
         }
       }
       break;
