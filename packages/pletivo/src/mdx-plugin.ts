@@ -17,7 +17,7 @@
 import path from "path";
 import { fileURLToPath } from "url";
 import { compile, type CompileOptions } from "@mdx-js/mdx";
-import { getDevVersion } from "./astro-plugin";
+import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 import type { PluggableList } from "unified";
 import type { PletivoConfig } from "./config";
 
@@ -72,7 +72,7 @@ export async function registerMdxPlugin(): Promise<void> {
     name: "pletivo-mdx",
     setup(build) {
       build.onLoad({ filter: /\.mdx(\?.*)?$/ }, async (args) => {
-        const cleanPath = args.path.replace(/\?.*$/, "");
+        const cleanPath = stripQuery(args.path);
         const rel = path.relative(process.cwd(), cleanPath);
         const source = await Bun.file(cleanPath).text();
 
@@ -106,15 +106,10 @@ export async function registerMdxPlugin(): Promise<void> {
           `$1${jsxRuntimePath}$2`,
         );
 
-        // In dev mode, append version query to .astro imports for cache
-        // busting (same as the astro plugin does for its own output).
-        const devVersion = getDevVersion();
-        if (devVersion > 0) {
-          code = code.replace(
-            /(from\s+['"])([^'"]+\.astro)(['"])/g,
-            `$1$2?v=${devVersion}$3`,
-          );
-        }
+        // In dev mode, append version query to .astro and .json imports for
+        // cache busting (same as the astro plugin does for its own output).
+        // JSON needs this too so translation dictionaries reload on edit.
+        code = applyDevCacheBust(code, getDevVersion());
 
         return {
           contents: code,

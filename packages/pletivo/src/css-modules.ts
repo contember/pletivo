@@ -14,6 +14,7 @@
  */
 
 import path from "path";
+import { stripQuery } from "./dev-cache";
 
 let registered = false;
 
@@ -98,7 +99,7 @@ export async function registerCssModulesPlugin(): Promise<void> {
     name: "pletivo-css-modules",
     setup(build) {
       build.onLoad({ filter: /\.module\.css(\?.*)?$/ }, async (args) => {
-        const cleanPath = args.path.replace(/\?.*$/, "");
+        const cleanPath = stripQuery(args.path);
         const css = await Bun.file(cleanPath).text();
         const { mapping, scopedCss } = processCssModule(css, cleanPath);
 
