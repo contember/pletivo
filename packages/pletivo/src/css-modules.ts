@@ -15,6 +15,7 @@
 
 import path from "path";
 import { stripQuery } from "./dev-cache";
+import { escapeRegex } from "./escape-regex";
 
 let registered = false;
 
@@ -85,10 +86,6 @@ function processCssModule(
   }
 
   return { mapping, scopedCss };
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export async function registerCssModulesPlugin(): Promise<void> {

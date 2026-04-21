@@ -18,6 +18,7 @@ import path from "path";
 import type { Route, StaticPath } from "../router";
 import { resolveI18nConfig } from "../i18n/config";
 import { detectRouteLocale } from "../i18n/route-expansion";
+import { escapeRegex } from "../escape-regex";
 import type { AstroConfig, AstroRoute, InjectedRoute } from "./types";
 
 export interface PletivoRouteWithPaths {
@@ -154,10 +155,6 @@ function makePageRoute(
   };
   if (locale) astroRoute.locale = locale;
   return astroRoute;
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function ensureLeadingSlash(s: string): string {
