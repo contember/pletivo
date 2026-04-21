@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
 import { watch } from "fs";
-import { scanRoutes, findRoute, matchRoute, type Route, type StaticPath } from "./router";
+import { scanRoutes, matchRoute, type Route, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
 import { initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
@@ -110,13 +110,17 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  type RenderOutcome =
+    | { ok: true; html: string }
+    | { ok: false; error: unknown };
+
   async function renderPage(
     route: Route,
     params: Record<string, string>,
     pathname: string = "/",
     request?: Request,
     localeOverride?: string,
-  ): Promise<string | null> {
+  ): Promise<RenderOutcome | null> {
     const fullPath = path.join(pagesDir, route.file);
 
     try {
@@ -125,7 +129,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         const source = await Bun.file(fullPath).text();
         const { html: body, frontmatter } = parseMarkdown(source);
         const title = (frontmatter.title as string) || "";
-        return `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
+        return { ok: true, html: `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>` };
       }
 
       const importPath = fullPath + `?v=${getDevVersion()}`;
@@ -244,48 +248,134 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         html = await astroHost.server.transformIndexHtml(pathname, html);
       }
 
-      return html;
+      return { ok: true, html };
     } catch (e) {
       console.error(`Error rendering ${route.file}:`, e);
-      return `<html><body><pre data-pletivo-error style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem">${escapeHtmlSimple(String(e instanceof Error ? e.stack || e.message : e))}</pre>${hmrClientScript}</body></html>`;
+      return { ok: false, error: e };
     }
   }
 
-  async function render404(): Promise<string | null> {
-    for (const ext of [".tsx", ".jsx", ".astro"]) {
-      const fullPath = path.join(pagesDir, `404${ext}`);
-      if (fs.existsSync(fullPath)) {
-        try {
-          const mod = await import(fullPath + `?v=${getDevVersion()}`);
-          if (typeof mod.default === "function") {
-            resetIslandRegistry();
-            const { value: result, renderedModules: rm404, tsxStyles: tsx404 } = await runWithRenderTracking(async () => {
-              let r = mod.default({});
-              if (r instanceof Promise) r = await r;
-              return r;
-            });
-            let html: string;
-            if (typeof result === "string") html = result;
-            else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
-            else return null;
+  function formatDevErrorHtml(e: unknown): string {
+    const msg = String(e instanceof Error ? e.stack || e.message : e);
+    return `<html><body><pre data-pletivo-error style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem">${escapeHtmlSimple(msg)}</pre>${hmrClientScript}</body></html>`;
+  }
 
-            const classes404 = extractAstroClasses(html);
-            const scoped404 = getScopedCssForPage(classes404);
-            const global404 = getGlobalCssForPage(rm404);
-            const tsx404Css = tsx404.length > 0 ? tsx404.join("\n") : "";
-            const combined404 = [global404, scoped404, tsx404Css].filter(Boolean).join("\n");
-            const styleTag404 = combined404 ? `<style>${combined404}</style>` : "";
-            const headInjection404 = `<link rel="stylesheet" href="/__styles.css">\n${styleTag404}\n${hmrClientScript}`;
-            if (html.includes("</head>")) {
-              html = html.replace("</head>", headInjection404 + "\n</head>");
-            } else {
-              html = html + headInjection404;
-            }
-            return html;
-          }
-        } catch {
-          return null;
-        }
+  // Raw-error classification. Filtering only kicks in when either `stale` or
+  // `errorPage` is configured — otherwise every request sees raw errors
+  // (preserving the default behavior when no shielding is set up).
+  const shieldingActive = !!(config.dev?.stale || config.dev?.errorPage);
+  const debugHeaderName = (config.dev?.debugHeader || "x-pletivo-debug").toLowerCase();
+  function seesRawErrors(req: Request): boolean {
+    if (!shieldingActive) return true;
+    return req.headers.get(debugHeaderName) !== null;
+  }
+
+  // Per-pathname snapshot of the last HTML successfully served to a user.
+  // Populated on successful user renders; read when a later render for the
+  // same path throws and stale mode is on.
+  const snapshots = new Map<string, string>();
+
+  const errorPagePath = config.dev?.errorPage
+    ? path.resolve(projectRoot, config.dev.errorPage)
+    : undefined;
+
+  // Render a standalone component file (used for custom 404 + error pages).
+  // Mirrors the CSS/HMR head injection that renderPage does, minus the
+  // route-level integration scripts that don't apply to meta pages.
+  async function renderComponentFile(
+    fullPath: string,
+    props: Record<string, unknown> = {},
+  ): Promise<string | null> {
+    const importPath = fullPath + `?v=${getDevVersion()}`;
+    const mod = await import(importPath);
+    if (typeof mod.default !== "function") return null;
+    resetIslandRegistry();
+    const { value: result, renderedModules, tsxStyles } = await runWithRenderTracking(async () => {
+      let r = mod.default(props);
+      if (r instanceof Promise) r = await r;
+      return r;
+    });
+    let html: string;
+    if (typeof result === "string") html = result;
+    else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
+    else return null;
+
+    const classes = extractAstroClasses(html);
+    const scopedCss = getScopedCssForPage(classes);
+    const globalCss = getGlobalCssForPage(renderedModules);
+    const tsxCss = tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
+    const combinedCss = [globalCss, scopedCss, tsxCss].filter(Boolean).join("\n");
+    const styleLink = `<link rel="stylesheet" href="/__styles.css">`;
+    const styleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
+    const headInjection = `${styleLink}\n${styleTag}\n${hmrClientScript}`;
+    if (html.includes("</head>")) {
+      html = html.replace("</head>", headInjection + "\n</head>");
+    } else if (html.includes("</body>")) {
+      html = html.replace("</body>", headInjection + "\n</body>");
+    } else {
+      html += headInjection;
+    }
+    if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
+      html = "<!DOCTYPE html>\n" + html;
+    }
+    return html;
+  }
+
+  // Route rendering wrapper. Calls renderPage, then:
+  // - success: update snapshot (for shielded requests), return Response
+  // - miss (null): return null so the caller can cascade to the next route
+  // - error: debug requests get raw stack trace; shielded requests get snapshot
+  //   (if stale) → error page (if configured) → raw stack trace as last resort.
+  async function resolveRoute(
+    route: Route,
+    params: Record<string, string>,
+    pathname: string,
+    req: Request,
+    localeOverride?: string,
+  ): Promise<Response | null> {
+    const outcome = await renderPage(route, params, pathname, req, localeOverride);
+    if (outcome === null) return null;
+    const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
+    if (outcome.ok) {
+      if (!seesRawErrors(req)) snapshots.set(pathname, outcome.html);
+      return new Response(outcome.html, { headers: htmlHeaders });
+    }
+    if (seesRawErrors(req)) {
+      return new Response(formatDevErrorHtml(outcome.error), { headers: htmlHeaders });
+    }
+    if (config.dev?.stale) {
+      const snap = snapshots.get(pathname);
+      if (snap) return new Response(snap, { headers: htmlHeaders });
+    }
+    if (errorPagePath && fs.existsSync(errorPagePath)) {
+      try {
+        const html = await renderComponentFile(errorPagePath);
+        if (html) return new Response(html, { headers: htmlHeaders });
+      } catch (ee) {
+        console.error("Error rendering errorPage:", ee);
+      }
+    }
+    return new Response(formatDevErrorHtml(outcome.error), { headers: htmlHeaders });
+  }
+
+  const notFoundPagePath = config.notFoundPage
+    ? path.resolve(projectRoot, config.notFoundPage)
+    : undefined;
+
+  async function render404(): Promise<string | null> {
+    // Explicit config override first; fall back to the pages/404.* convention.
+    const candidates: string[] = [];
+    if (notFoundPagePath) candidates.push(notFoundPagePath);
+    for (const ext of [".tsx", ".jsx", ".astro"]) {
+      candidates.push(path.join(pagesDir, `404${ext}`));
+    }
+    for (const fullPath of candidates) {
+      if (!fs.existsSync(fullPath)) continue;
+      try {
+        const html = await renderComponentFile(fullPath);
+        if (html) return html;
+      } catch (e) {
+        console.error(`Error rendering 404 page ${fullPath}:`, e);
       }
     }
     return null;
@@ -505,12 +595,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       for (const route of routes) {
         const params = matchRoute(route, pathname);
         if (params !== null) {
-          const html = await renderPage(route, params, pathname, req);
-          if (html !== null) {
-            return new Response(html, {
-              headers: { "Content-Type": "text/html; charset=utf-8" },
-            });
-          }
+          const response = await resolveRoute(route, params, pathname, req);
+          if (response !== null) return response;
         }
       }
 
@@ -548,18 +634,14 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
               headers: { Location: fallback.redirectTo ?? "/" },
             });
           }
-          const html = await renderPage(
+          const response = await resolveRoute(
             fallback.route,
             fallback.params,
             pathname,
             req,
             fallback.targetLocale,
           );
-          if (html !== null) {
-            return new Response(html, {
-              headers: { "Content-Type": "text/html; charset=utf-8" },
-            });
-          }
+          if (response !== null) return response;
         }
       }
 
@@ -596,12 +678,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
                 isDynamic: false,
                 priority: 0,
               };
-              const html = await renderPage(fakeRoute, {}, cleanPathname, req);
-              if (html !== null) {
-                return new Response(html, {
-                  headers: { "Content-Type": "text/html; charset=utf-8" },
-                });
-              }
+              const response = await resolveRoute(fakeRoute, {}, cleanPathname, req);
+              if (response !== null) return response;
             }
           } catch (e) {
             console.error(`Error rendering injected route "${injected.pattern}":`, e);
