@@ -4,5 +4,5 @@ export type { CollectionEntry, CollectionConfig, RenderResult, Loader, GlobOptio
 export { defineConfig } from "./config";
 export type { PletivoConfig } from "./config";
 export { useState } from "./runtime/hooks";
-export type { HtmlString } from "./runtime/jsx-runtime";
+export type { HtmlString } from "./runtime/html-string";
 export type { StaticPath, RouteParams } from "./router";

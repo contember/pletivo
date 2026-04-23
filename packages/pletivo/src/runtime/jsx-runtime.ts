@@ -1,5 +1,7 @@
 import { renderIslandWrapper, registerIsland } from "./island";
 import { pushTsxStyle } from "./astro-shim";
+import { HtmlString, createHtml, isHtmlString } from "./html-string";
+export { HtmlString };
 
 const VOID_ELEMENTS = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input",
@@ -79,8 +81,8 @@ function renderChildren(children: unknown): string | Promise<string> {
   }
 
   // Already rendered JSX (raw HTML string from jsx())
-  if (typeof children === "object" && children !== null && "__html" in children) {
-    return (children as HtmlString).__html;
+  if (isHtmlString(children)) {
+    return children.__html;
   }
   return escapeHtml(String(children));
 }
@@ -132,18 +134,10 @@ function extractStyleChildren(children: unknown): string {
   if (Array.isArray(children)) {
     return children.map(extractStyleChildren).join("");
   }
-  if (typeof children === "object" && "__html" in (children as object)) {
-    return (children as HtmlString).__html;
+  if (isHtmlString(children)) {
+    return children.__html;
   }
   return "";
-}
-
-export interface HtmlString {
-  __html: string;
-}
-
-function createHtml(html: string): HtmlString {
-  return { __html: html };
 }
 
 export function jsx(
@@ -269,8 +263,8 @@ function renderIsland(
       const rendered = tag(componentProps as Props);
       if (typeof rendered === "string") {
         innerHtml = escapeHtml(rendered);
-      } else if (rendered && typeof rendered === "object" && "__html" in rendered) {
-        innerHtml = (rendered as HtmlString).__html;
+      } else if (isHtmlString(rendered)) {
+        innerHtml = rendered.__html;
       }
     } catch {
       // SSR failed, island will render empty and hydrate on client
