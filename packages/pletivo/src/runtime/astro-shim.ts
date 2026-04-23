@@ -12,16 +12,32 @@
  * attributes, `unescapeHTML`) are inserted raw.
  */
 
-export interface HtmlString {
-  __html: string;
+/**
+ * Extends `String` so instances coerce to raw HTML (matching Astro's own
+ * `HTMLString`) — user code can call `.test`, `.includes`, `.replace` etc.
+ * on values returned from `Astro.slots.render("…")` and string coercion
+ * (template literals, `String(x)`) yields the HTML instead of `[object
+ * Object]`. `__html` is a getter over `valueOf()` to avoid storing the
+ * same string twice, and stays as the canonical marker used by
+ * interpolation (`isHtmlString`) to avoid double-escaping.
+ */
+export class HtmlString extends String {
+  get __html(): string {
+    return this.valueOf();
+  }
 }
 
+// Structural (not `instanceof`) on purpose: jsx-runtime and content
+// collection loaders construct plain `{ __html }` objects that must also
+// flow through interpolation without being re-escaped.
 function isHtmlString(x: unknown): x is HtmlString {
   return typeof x === "object" && x !== null && "__html" in x;
 }
 
+const EMPTY_HTML = new HtmlString("");
+
 function createHtml(html: string): HtmlString {
-  return { __html: html };
+  return html === "" ? EMPTY_HTML : new HtmlString(html);
 }
 
 function escapeHtml(s: string): string {
