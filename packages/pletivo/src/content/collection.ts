@@ -4,6 +4,12 @@ import { Glob } from "bun";
 import { z } from "zod";
 import yaml from "js-yaml";
 import { parseMarkdown, parseFrontmatter } from "./markdown";
+import {
+  imageUrlFor,
+  makeImageMetadata,
+  probeAndRegisterImage,
+  type ImageMetadata,
+} from "../image";
 
 // ── Types ──
 
@@ -105,13 +111,31 @@ export function reference(collectionName: string): z.ZodType<Reference> {
     });
 }
 
+/**
+ * Schema-context helpers passed to the function form of `schema`. Mirrors
+ * Astro's API: `schema: ({ image }) => z.object({ logo: image() })`.
+ *
+ * The `image()` factory must be obtained from this context (not imported)
+ * because it closes over the entry's source directory so that relative
+ * frontmatter paths resolve against the entry file's location.
+ */
+export interface SchemaContext {
+  image: () => z.ZodType<ImageMetadata, unknown>;
+}
+
+export type SchemaFn = (ctx: SchemaContext) => z.ZodType;
+
 export interface CollectionConfig {
   /** Loader that provides raw entries. Accepts glob(), Astro Content Layer loaders, or inline functions. */
   loader?: AnyLoader;
   /** Shorthand for loader: glob({ base: directory }) */
   directory?: string;
-  /** Zod schema for frontmatter validation */
-  schema: z.ZodType;
+  /**
+   * Zod schema for frontmatter validation. Either a static Zod schema, or a
+   * function form `({ image }) => z.object({...})` that receives schema
+   * helpers — match Astro's content-collection API.
+   */
+  schema: z.ZodType | SchemaFn;
   /** Optional HTML transform applied after markdown rendering */
   transform?: (html: string, data: Record<string, unknown>) => string;
 }
@@ -174,7 +198,7 @@ export function glob(options: GlobOptions): Loader {
             console.error(`  JSON parse error in ${file}: ${(e as Error).message}`);
             continue;
           }
-          entries.push({ id, body: "", data });
+          entries.push({ id, body: "", data: { ...data, _filePath: fullPath } });
         } else if (ext === ".yaml" || ext === ".yml") {
           let data: Record<string, unknown>;
           try {
@@ -186,14 +210,14 @@ export function glob(options: GlobOptions): Loader {
             console.error(`  YAML parse error in ${file}: ${(e as Error).message}`);
             continue;
           }
-          entries.push({ id, body: "", data });
+          entries.push({ id, body: "", data: { ...data, _filePath: fullPath } });
         } else if (ext === ".mdx") {
           // .mdx — parse frontmatter for validation, defer rendering to import time
           const { frontmatter, body } = parseFrontmatter(content);
           entries.push({
             id,
             body,
-            data: { ...frontmatter, _mdxFilePath: fullPath },
+            data: { ...frontmatter, _filePath: fullPath, _mdxFilePath: fullPath },
           });
         } else {
           // .md
@@ -201,7 +225,7 @@ export function glob(options: GlobOptions): Loader {
           entries.push({
             id,
             body: parsed.body,
-            data: { ...parsed.frontmatter, _html: parsed.html },
+            data: { ...parsed.frontmatter, _filePath: fullPath, _html: parsed.html },
           });
         }
       }
@@ -224,13 +248,29 @@ export function defineCollection(config: CollectionConfig): CollectionConfig {
 // ── Runtime state ──
 
 const collectionCache = new Map<string, CollectionEntry[]>();
+/** In-flight loads keyed by collection name — concurrent getCollection() calls share one loadCollection() pass instead of racing. */
+const collectionInflight = new Map<string, Promise<CollectionEntry[]>>();
 let collectionsConfig: Record<string, CollectionConfig> | null = null;
 let configProjectRoot: string = "";
 let configVersion = 0;
 
+/**
+ * Entries that failed schema validation since the last `initCollections()`.
+ * Build.ts reads this after rendering and exits non-zero if non-empty,
+ * so a typo in a frontmatter image path doesn't ship a "successful"
+ * build with silently dropped entries.
+ */
+const validationFailures: Array<{ collection: string; id: string; errors: string }> = [];
+
+export function getValidationFailures(): ReadonlyArray<{ collection: string; id: string; errors: string }> {
+  return validationFailures;
+}
+
 export async function initCollections(projectRoot: string): Promise<void> {
   configProjectRoot = projectRoot;
   collectionCache.clear();
+  collectionInflight.clear();
+  validationFailures.length = 0;
   configVersion++;
 
   const configPath = path.join(projectRoot, "src/content.config.ts");
@@ -259,12 +299,27 @@ export async function getCollection<T = Record<string, unknown>>(
     throw new Error(`Collection "${name}" not found. Define it in src/content.config.ts`);
   }
 
-  if (!collectionCache.has(name)) {
-    const entries = await loadCollection(config, name);
-    collectionCache.set(name, entries);
+  let entries = collectionCache.get(name) as CollectionEntry<T>[] | undefined;
+  if (!entries) {
+    let inflight = collectionInflight.get(name) as
+      | Promise<CollectionEntry<T>[]>
+      | undefined;
+    if (!inflight) {
+      inflight = (async () => {
+        const loaded = await loadCollection(config, name);
+        collectionCache.set(name, loaded);
+        return loaded as CollectionEntry<T>[];
+      })();
+      collectionInflight.set(name, inflight as Promise<CollectionEntry[]>);
+      try {
+        entries = await inflight;
+      } finally {
+        collectionInflight.delete(name);
+      }
+    } else {
+      entries = await inflight;
+    }
   }
-
-  let entries = collectionCache.get(name)! as CollectionEntry<T>[];
   if (filter) {
     entries = entries.filter(filter);
   }
@@ -372,7 +427,13 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
     error(msg: string) { console.error(`[${loader.name}] ${msg}`); },
   };
 
-  const schema = loader.schema ?? config.schema;
+  // The loader's own schema (if provided) takes precedence over the
+  // collection's schema. Either form may be a function — `image()` is
+  // not meaningful for entries without an `_filePath`, so the factory
+  // resolves with `null` here and any image() call surfaces a clear
+  // error.
+  const schemaSpec = (loader.schema ?? config.schema) as z.ZodType | SchemaFn;
+  const resolveForDir = makeSchemaResolver(schemaSpec);
 
   const context: LoaderContext = {
     collection: name,
@@ -381,7 +442,10 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
     logger,
     config: {},
     async parseData<T>({ id, data }: { id: string; data: T }): Promise<T> {
-      const result = schema.safeParse(data);
+      const filePath = (data as Record<string, unknown>)?._filePath;
+      const entryDir = typeof filePath === "string" ? path.dirname(filePath) : null;
+      const schema = resolveForDir(entryDir);
+      const result = await schema.safeParseAsync(data);
       if (!result.success) {
         const errors = result.error instanceof z.ZodError
           ? result.error.issues.map((i: z.ZodIssue) => `${i.path.join(".")}: ${i.message}`).join(", ")
@@ -420,60 +484,169 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
   return rawEntries;
 }
 
-/** Validate raw entries against the schema and build CollectionEntry objects. */
-function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, name: string): CollectionEntry[] {
-  const entries: CollectionEntry[] = [];
+/**
+ * Build an `image()` factory bound to a specific entry directory.
+ *
+ * Accepted path forms:
+ *  - Relative (`./logo.png`, `../assets/foo.png`) — resolved against the
+ *    entry file's directory.
+ *  - Root-absolute (`/uploads/foo.png`) — rejected; use plain `z.string()`
+ *    for public/ assets.
+ *  - Remote URLs (`https://...`) — rejected; use `z.string().url()`.
+ *
+ * `entryDir` is null for entries with no on-disk source file (function
+ * loaders, etc.); image() issues a validation error in that case.
+ */
+function makeImageFactory(
+  entryDir: string | null,
+): () => z.ZodType<ImageMetadata, unknown> {
+  return () =>
+    z.string().transform(async (relPath: string, ctx: z.RefinementCtx) => {
+      const fail = (message: string) => {
+        ctx.addIssue({ code: "custom", message });
+        return z.NEVER;
+      };
 
-  for (const raw of rawEntries) {
-    // Separate internal fields from user data before validation
-    const { _html, _mdxFilePath, ...userData } = raw.data;
+      if (!entryDir) {
+        return fail(
+          "image() schema can only be used with file-backed entries (e.g. glob() loader)",
+        );
+      }
+      if (/^https?:\/\//i.test(relPath)) {
+        return fail(
+          `image() does not support remote URLs (got "${relPath}"). ` +
+            `Use z.string().url() for remote images.`,
+        );
+      }
+      if (relPath.startsWith("/")) {
+        return fail(
+          `image() resolves paths relative to the entry file (got "${relPath}"). ` +
+            `For files in public/, use plain z.string() and reference them by absolute URL.`,
+        );
+      }
 
-    const result = config.schema.safeParse(userData);
-    if (!result.success) {
-      const errors = result.error instanceof z.ZodError
-        ? result.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n")
-        : String(result.error);
-      console.error(`Validation error in ${name}/${raw.id}:\n${errors}`);
-      continue;
-    }
-
-    if (_mdxFilePath) {
-      // MDX: render by importing the compiled module and calling its default export
-      const mdxPath = _mdxFilePath as string;
-      const validatedData = result.data as Record<string, unknown>;
-      entries.push({
-        id: raw.id,
-        data: validatedData,
-        body: raw.body,
-        render: async () => {
-          const mod = await import(mdxPath + `?v=${configVersion}`);
-          let rendered = mod.default({});
-          if (rendered instanceof Promise) rendered = await rendered;
-          let html = typeof rendered === "object" && rendered !== null && "__html" in rendered
-            ? (rendered as { __html: string }).__html
-            : String(rendered);
-          if (config.transform) {
-            html = config.transform(html, validatedData);
-          }
-          return { html };
-        },
-      });
-      continue;
-    }
-
-    let html = (_html as string) ?? "";
-    if (config.transform) {
-      html = config.transform(html, result.data as Record<string, unknown>);
-    }
-
-    entries.push({
-      id: raw.id,
-      data: result.data as Record<string, unknown>,
-      body: raw.body,
-      render: async () => ({ html }),
+      const fsPath = path.resolve(entryDir, relPath);
+      try {
+        const probe = await probeAndRegisterImage(fsPath);
+        return makeImageMetadata({
+          src: imageUrlFor(fsPath, probe.outputPath),
+          width: probe.width,
+          height: probe.height,
+          format: probe.format,
+          fsPath,
+        });
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        if (err.code === "ENOENT") {
+          return fail(`image not found: ${relPath} (resolved to ${fsPath})`);
+        }
+        return fail(`could not read image ${relPath}: ${err.message}`);
+      }
     });
-  }
+}
 
+/**
+ * Build a per-load resolver for a CollectionConfig.schema. Static schemas
+ * pass through unchanged. Function schemas are evaluated once per
+ * entryDir and cached, so a collection of N entries in M directories
+ * produces M Zod schemas instead of N.
+ */
+function makeSchemaResolver(
+  schema: z.ZodType | SchemaFn,
+): (entryDir: string | null) => z.ZodType {
+  if (typeof schema !== "function") {
+    return () => schema;
+  }
+  const cache = new Map<string, z.ZodType>();
+  return (entryDir) => {
+    const key = entryDir ?? "";
+    let resolved = cache.get(key);
+    if (!resolved) {
+      resolved = schema({ image: makeImageFactory(entryDir) });
+      cache.set(key, resolved);
+    }
+    return resolved;
+  };
+}
+
+/**
+ * Validate raw entries against the schema and build CollectionEntry
+ * objects. Validation runs in parallel — image()-bearing schemas read
+ * files asynchronously, so a sequential loop serialises N file probes.
+ * Results are sorted back into source order before being returned so
+ * entry order, error logs, and `validationFailures` stay deterministic.
+ */
+type EntryOutcome =
+  | { kind: "ok"; entry: CollectionEntry }
+  | { kind: "fail"; id: string; errors: string };
+
+async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, name: string): Promise<CollectionEntry[]> {
+  const resolveForDir = makeSchemaResolver(config.schema);
+
+  const outcomes = await Promise.all(
+    rawEntries.map(async (raw): Promise<EntryOutcome> => {
+      const { _html, _mdxFilePath, _filePath, ...userData } = raw.data;
+      const entryDir = typeof _filePath === "string" ? path.dirname(_filePath) : null;
+      const schema = resolveForDir(entryDir);
+      const result = await schema.safeParseAsync(userData);
+
+      if (!result.success) {
+        const errors = result.error instanceof z.ZodError
+          ? result.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n")
+          : String(result.error);
+        return { kind: "fail", id: raw.id, errors };
+      }
+
+      if (_mdxFilePath) {
+        const mdxPath = _mdxFilePath as string;
+        const validatedData = result.data as Record<string, unknown>;
+        return {
+          kind: "ok",
+          entry: {
+            id: raw.id,
+            data: validatedData,
+            body: raw.body,
+            render: async () => {
+              const mod = await import(mdxPath + `?v=${configVersion}`);
+              let rendered = mod.default({});
+              if (rendered instanceof Promise) rendered = await rendered;
+              let html = typeof rendered === "object" && rendered !== null && "__html" in rendered
+                ? (rendered as { __html: string }).__html
+                : String(rendered);
+              if (config.transform) {
+                html = config.transform(html, validatedData);
+              }
+              return { html };
+            },
+          },
+        };
+      }
+
+      let html = (_html as string) ?? "";
+      if (config.transform) {
+        html = config.transform(html, result.data as Record<string, unknown>);
+      }
+      return {
+        kind: "ok",
+        entry: {
+          id: raw.id,
+          data: result.data as Record<string, unknown>,
+          body: raw.body,
+          render: async () => ({ html }),
+        },
+      };
+    }),
+  );
+
+  const entries: CollectionEntry[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.kind === "fail") {
+      console.error(`Validation error in ${name}/${outcome.id}:\n${outcome.errors}`);
+      validationFailures.push({ collection: name, id: outcome.id, errors: outcome.errors });
+    } else {
+      entries.push(outcome.entry);
+    }
+  }
   return entries;
 }
 

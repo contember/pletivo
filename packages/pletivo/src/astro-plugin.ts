@@ -20,7 +20,7 @@ import { fileURLToPath } from "url";
 import { transform, parse } from "@astrojs/compiler";
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
-import { readImageDimensions, registerImportedImage } from "./image";
+import { imageUrlFor, probeAndRegisterImage } from "./image";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 
 let registered = false;
@@ -417,20 +417,12 @@ export async function registerAstroPlugin(): Promise<void> {
             };
           }
 
-          const dims = await readImageDimensions(cleanPath);
-          const hasher = new Bun.CryptoHasher("md5");
-          hasher.update(await Bun.file(cleanPath).arrayBuffer());
-          const contentHash = hasher.digest("hex").slice(0, 8);
-          const ext = path.extname(cleanPath);
-          const base = path.basename(cleanPath, ext);
-          const src = `/_astro/${base}.${contentHash}${ext}`;
-          const outputPath = `_astro/${base}.${contentHash}${ext}`;
-          // Register so the file is copied to dist even if getImage()
-          // is never called (e.g. `<img src={photo.src}>`).
-          registerImportedImage(cleanPath, outputPath);
+          const probe = await probeAndRegisterImage(cleanPath);
+          const src = imageUrlFor(cleanPath, probe.outputPath);
+          const visible = { src, width: probe.width, height: probe.height, format: probe.format };
           return {
             contents: `
-              const meta = ${JSON.stringify({ src, width: dims.width, height: dims.height, format: dims.format })};
+              const meta = ${JSON.stringify(visible)};
               Object.defineProperty(meta, 'fsPath', { value: ${JSON.stringify(cleanPath)}, enumerable: false });
               export default meta;
             `,

@@ -52,6 +52,20 @@ let basePath = "/";
 export function setImageMode(mode: "dev" | "build", base: string): void {
   imageMode = mode;
   basePath = base.replace(/\/$/, "");
+  probeCache.clear();
+  probeInflight.clear();
+}
+
+/**
+ * Build the URL for an image given its on-disk path and the hashed
+ * output path under `_astro/`. In dev mode we point at the dev server's
+ * `/@image/` route (which serves the original file); in build we use
+ * the hashed dist URL that `processImages()` writes.
+ */
+export function imageUrlFor(fsPath: string, outputPath: string): string {
+  return imageMode === "build"
+    ? `${basePath}/${outputPath}`
+    : `/@image/${path.basename(fsPath)}?f=${fsPath}`;
 }
 
 // ── Transform registry ─────────────────────────────────────────────────
@@ -116,8 +130,14 @@ interface ImageDimensions {
 export async function readImageDimensions(
   filePath: string,
 ): Promise<ImageDimensions> {
-  const file = Bun.file(filePath);
-  const buffer = await file.arrayBuffer();
+  const buffer = await Bun.file(filePath).arrayBuffer();
+  return readImageDimensionsFromBuffer(buffer, filePath);
+}
+
+function readImageDimensionsFromBuffer(
+  buffer: ArrayBuffer,
+  filePath: string,
+): ImageDimensions {
   const bytes = new Uint8Array(buffer);
   const view = new DataView(buffer);
 
@@ -229,6 +249,77 @@ export async function readImageDimensions(
   }
 
   throw new Error(`Unsupported image format: ${filePath}`);
+}
+
+// ── Image probing + registration ───────────────────────────────────────
+
+/** Build an ImageMetadata with `fsPath` non-enumerable so it doesn't leak through JSON.stringify. */
+export function makeImageMetadata(parts: {
+  src: string;
+  width: number;
+  height: number;
+  format: string;
+  fsPath: string;
+}): ImageMetadata {
+  const { fsPath, ...visible } = parts;
+  const meta = { ...visible } as ImageMetadata;
+  Object.defineProperty(meta, "fsPath", { value: fsPath, enumerable: false });
+  return meta;
+}
+
+interface ProbeResult {
+  width: number;
+  height: number;
+  format: string;
+  contentHash: string;
+  outputPath: string;
+}
+
+/**
+ * Per-process cache of dimensions + content hash, keyed by absolute path.
+ * Multiple call sites hashing the same image (a logo on every entry, an
+ * ESM-imported asset rendered in many pages) probe it once. Cleared on
+ * `setImageMode()` so each dev/build run starts fresh.
+ *
+ * `probeInflight` deduplicates concurrent calls for the same path — under
+ * `Promise.all` page rendering (build.ts), two pages racing on the same
+ * image both see an empty cache, so without the in-flight map both would
+ * read+hash the file in parallel.
+ */
+const probeCache = new Map<string, ProbeResult>();
+const probeInflight = new Map<string, Promise<ProbeResult>>();
+
+export async function probeAndRegisterImage(fsPath: string): Promise<ProbeResult> {
+  const cached = probeCache.get(fsPath);
+  if (cached) return cached;
+  const inflight = probeInflight.get(fsPath);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    const buffer = await Bun.file(fsPath).arrayBuffer();
+    const dims = readImageDimensionsFromBuffer(buffer, fsPath);
+
+    const hasher = new Bun.CryptoHasher("md5");
+    hasher.update(buffer);
+    const contentHash = hasher.digest("hex").slice(0, 8);
+
+    const ext = path.extname(fsPath);
+    const base = path.basename(fsPath, ext);
+    const outputPath = `_astro/${base}.${contentHash}${ext}`;
+
+    registerImportedImage(fsPath, outputPath);
+
+    const result: ProbeResult = { ...dims, contentHash, outputPath };
+    probeCache.set(fsPath, result);
+    return result;
+  })();
+
+  probeInflight.set(fsPath, promise);
+  try {
+    return await promise;
+  } finally {
+    probeInflight.delete(fsPath);
+  }
 }
 
 // ── getImage() ─────────────────────────────────────────────────────────

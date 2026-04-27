@@ -23,4 +23,7 @@ export type {
   RawEntry,
   RenderResult,
   Reference,
+  SchemaContext,
+  SchemaFn,
 } from "./collection";
+export type { ImageMetadata } from "../image";
