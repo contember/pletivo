@@ -248,6 +248,8 @@ export function defineCollection(config: CollectionConfig): CollectionConfig {
 // ── Runtime state ──
 
 const collectionCache = new Map<string, CollectionEntry[]>();
+/** In-flight loads keyed by collection name — concurrent getCollection() calls share one loadCollection() pass instead of racing. */
+const collectionInflight = new Map<string, Promise<CollectionEntry[]>>();
 let collectionsConfig: Record<string, CollectionConfig> | null = null;
 let configProjectRoot: string = "";
 let configVersion = 0;
@@ -267,6 +269,7 @@ export function getValidationFailures(): ReadonlyArray<{ collection: string; id:
 export async function initCollections(projectRoot: string): Promise<void> {
   configProjectRoot = projectRoot;
   collectionCache.clear();
+  collectionInflight.clear();
   validationFailures.length = 0;
   configVersion++;
 
@@ -296,11 +299,27 @@ export async function getCollection<T = Record<string, unknown>>(
     throw new Error(`Collection "${name}" not found. Define it in src/content.config.ts`);
   }
 
-  if (!collectionCache.has(name)) {
-    const entries = await loadCollection(config, name);
-    collectionCache.set(name, entries);
+  let entries = collectionCache.get(name) as CollectionEntry<T>[] | undefined;
+  if (!entries) {
+    let inflight = collectionInflight.get(name) as
+      | Promise<CollectionEntry<T>[]>
+      | undefined;
+    if (!inflight) {
+      inflight = (async () => {
+        const loaded = await loadCollection(config, name);
+        collectionCache.set(name, loaded);
+        return loaded as CollectionEntry<T>[];
+      })();
+      collectionInflight.set(name, inflight as Promise<CollectionEntry[]>);
+      try {
+        entries = await inflight;
+      } finally {
+        collectionInflight.delete(name);
+      }
+    } else {
+      entries = await inflight;
+    }
   }
-  let entries = collectionCache.get(name)! as CollectionEntry<T>[];
   if (filter) {
     entries = entries.filter(filter);
   }
@@ -414,6 +433,7 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
   // resolves with `null` here and any image() call surfaces a clear
   // error.
   const schemaSpec = (loader.schema ?? config.schema) as z.ZodType | SchemaFn;
+  const resolveForDir = makeSchemaResolver(schemaSpec);
 
   const context: LoaderContext = {
     collection: name,
@@ -424,7 +444,7 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
     async parseData<T>({ id, data }: { id: string; data: T }): Promise<T> {
       const filePath = (data as Record<string, unknown>)?._filePath;
       const entryDir = typeof filePath === "string" ? path.dirname(filePath) : null;
-      const schema = resolveSchema(schemaSpec, entryDir);
+      const schema = resolveForDir(entryDir);
       const result = await schema.safeParseAsync(data);
       if (!result.success) {
         const errors = result.error instanceof z.ZodError
@@ -506,9 +526,6 @@ function makeImageFactory(
       }
 
       const fsPath = path.resolve(entryDir, relPath);
-      if (!fs.existsSync(fsPath)) {
-        return fail(`image not found: ${relPath} (resolved to ${fsPath})`);
-      }
       try {
         const probe = await probeAndRegisterImage(fsPath);
         return makeImageMetadata({
@@ -519,75 +536,117 @@ function makeImageFactory(
           fsPath,
         });
       } catch (e) {
-        return fail(`could not read image ${relPath}: ${(e as Error).message}`);
+        const err = e as NodeJS.ErrnoException;
+        if (err.code === "ENOENT") {
+          return fail(`image not found: ${relPath} (resolved to ${fsPath})`);
+        }
+        return fail(`could not read image ${relPath}: ${err.message}`);
       }
     });
 }
 
 /**
- * Resolve a CollectionConfig.schema (static or function form) to a
- * concrete Zod schema for a given entry directory. The function form
- * gets a fresh `image()` factory bound to that directory.
+ * Build a per-load resolver for a CollectionConfig.schema. Static schemas
+ * pass through unchanged. Function schemas are evaluated once per
+ * entryDir and cached, so a collection of N entries in M directories
+ * produces M Zod schemas instead of N.
  */
-function resolveSchema(
+function makeSchemaResolver(
   schema: z.ZodType | SchemaFn,
-  entryDir: string | null,
-): z.ZodType {
-  if (typeof schema === "function") {
-    return schema({ image: makeImageFactory(entryDir) });
+): (entryDir: string | null) => z.ZodType {
+  if (typeof schema !== "function") {
+    return () => schema;
   }
-  return schema;
+  const cache = new Map<string, z.ZodType>();
+  return (entryDir) => {
+    const key = entryDir ?? "";
+    let resolved = cache.get(key);
+    if (!resolved) {
+      resolved = schema({ image: makeImageFactory(entryDir) });
+      cache.set(key, resolved);
+    }
+    return resolved;
+  };
 }
 
-/** Validate raw entries against the schema and build CollectionEntry objects. */
+/**
+ * Validate raw entries against the schema and build CollectionEntry
+ * objects. Validation runs in parallel — image()-bearing schemas read
+ * files asynchronously, so a sequential loop serialises N file probes.
+ * Results are sorted back into source order before being returned so
+ * entry order, error logs, and `validationFailures` stay deterministic.
+ */
+type EntryOutcome =
+  | { kind: "ok"; entry: CollectionEntry }
+  | { kind: "fail"; id: string; errors: string };
+
 async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, name: string): Promise<CollectionEntry[]> {
-  const entries: CollectionEntry[] = [];
+  const resolveForDir = makeSchemaResolver(config.schema);
 
-  for (const raw of rawEntries) {
-    const { _html, _mdxFilePath, _filePath, ...userData } = raw.data;
-    const entryDir = typeof _filePath === "string" ? path.dirname(_filePath) : null;
-    const schema = resolveSchema(config.schema, entryDir);
-    const result = await schema.safeParseAsync(userData);
-    if (!result.success) {
-      const errors = result.error instanceof z.ZodError
-        ? result.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n")
-        : String(result.error);
-      console.error(`Validation error in ${name}/${raw.id}:\n${errors}`);
-      validationFailures.push({ collection: name, id: raw.id, errors });
-      continue;
-    }
+  const outcomes = await Promise.all(
+    rawEntries.map(async (raw): Promise<EntryOutcome> => {
+      const { _html, _mdxFilePath, _filePath, ...userData } = raw.data;
+      const entryDir = typeof _filePath === "string" ? path.dirname(_filePath) : null;
+      const schema = resolveForDir(entryDir);
+      const result = await schema.safeParseAsync(userData);
 
-    if (_mdxFilePath) {
-      const mdxPath = _mdxFilePath as string;
-      const validatedData = result.data as Record<string, unknown>;
-      entries.push({
-        id: raw.id,
-        data: validatedData,
-        body: raw.body,
-        render: async () => {
-          const mod = await import(mdxPath + `?v=${configVersion}`);
-          let rendered = mod.default({});
-          if (rendered instanceof Promise) rendered = await rendered;
-          let html = typeof rendered === "object" && rendered !== null && "__html" in rendered
-            ? (rendered as { __html: string }).__html
-            : String(rendered);
-          if (config.transform) html = config.transform(html, validatedData);
-          return { html };
+      if (!result.success) {
+        const errors = result.error instanceof z.ZodError
+          ? result.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n")
+          : String(result.error);
+        return { kind: "fail", id: raw.id, errors };
+      }
+
+      if (_mdxFilePath) {
+        const mdxPath = _mdxFilePath as string;
+        const validatedData = result.data as Record<string, unknown>;
+        return {
+          kind: "ok",
+          entry: {
+            id: raw.id,
+            data: validatedData,
+            body: raw.body,
+            render: async () => {
+              const mod = await import(mdxPath + `?v=${configVersion}`);
+              let rendered = mod.default({});
+              if (rendered instanceof Promise) rendered = await rendered;
+              let html = typeof rendered === "object" && rendered !== null && "__html" in rendered
+                ? (rendered as { __html: string }).__html
+                : String(rendered);
+              if (config.transform) {
+                html = config.transform(html, validatedData);
+              }
+              return { html };
+            },
+          },
+        };
+      }
+
+      let html = (_html as string) ?? "";
+      if (config.transform) {
+        html = config.transform(html, result.data as Record<string, unknown>);
+      }
+      return {
+        kind: "ok",
+        entry: {
+          id: raw.id,
+          data: result.data as Record<string, unknown>,
+          body: raw.body,
+          render: async () => ({ html }),
         },
-      });
-      continue;
+      };
+    }),
+  );
+
+  const entries: CollectionEntry[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.kind === "fail") {
+      console.error(`Validation error in ${name}/${outcome.id}:\n${outcome.errors}`);
+      validationFailures.push({ collection: name, id: outcome.id, errors: outcome.errors });
+    } else {
+      entries.push(outcome.entry);
     }
-
-    let html = (_html as string) ?? "";
-    if (config.transform) html = config.transform(html, result.data as Record<string, unknown>);
-    entries.push({
-      id: raw.id,
-      data: result.data as Record<string, unknown>,
-      body: raw.body,
-      render: async () => ({ html }),
-    });
   }
-
   return entries;
 }
 
