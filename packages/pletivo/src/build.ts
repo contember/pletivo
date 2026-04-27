@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs/promises";
 import { scanRoutes, routeToOutputPath, type Route, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
-import { initCollections } from "./content/collection";
+import { initCollections, getValidationFailures } from "./content/collection";
 import { resetIslandRegistry } from "./runtime/island";
 import { runWithRenderTracking } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
@@ -443,6 +443,18 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   }
 
   console.log(`\nBuilt ${results.length} pages${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
+
+  // Refuse to ship a build that silently dropped entries.
+  // Individual errors were already logged at validation time.
+  const failures = getValidationFailures();
+  if (failures.length > 0) {
+    const summary = failures
+      .map((f) => `  - ${f.collection}/${f.id}`)
+      .join("\n");
+    throw new Error(
+      `Build aborted: ${failures.length} content entr${failures.length === 1 ? "y" : "ies"} failed validation:\n${summary}`,
+    );
+  }
 }
 
 /**
