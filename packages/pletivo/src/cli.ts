@@ -31,6 +31,45 @@ if (hostIdx !== -1 && process.argv[hostIdx + 1] && !process.argv[hostIdx + 1].st
   config.host = "0.0.0.0";
 }
 
+function readFlag(names: string[]): string | undefined {
+  for (const name of names) {
+    const eq = process.argv.find((a) => a.startsWith(`${name}=`));
+    if (eq) return eq.slice(name.length + 1);
+    const idx = process.argv.indexOf(name);
+    if (idx !== -1) {
+      const next = process.argv[idx + 1];
+      if (next && !next.startsWith("--")) return next;
+    }
+  }
+  return undefined;
+}
+
+function readBoolFlag(names: string[]): boolean {
+  return names.some((n) => process.argv.includes(n));
+}
+
+// Custom 404 page. CLI > env > config.
+const notFoundCli = readFlag(["--404-page", "--not-found-page"]);
+if (notFoundCli) config.notFoundPage = notFoundCli;
+else if (process.env.PLETIVO_404_PAGE) config.notFoundPage = process.env.PLETIVO_404_PAGE;
+
+// Dev hybrid options. Merge on top of whatever came from the config file.
+const errorPageCli = readFlag(["--error-page"]);
+const staleCli = readBoolFlag(["--stale"]);
+const debugHeaderCli = readFlag(["--debug-header"]);
+if (errorPageCli || staleCli || debugHeaderCli ||
+    process.env.PLETIVO_ERROR_PAGE || process.env.PLETIVO_STALE || process.env.PLETIVO_DEBUG_HEADER) {
+  config.dev = { ...config.dev };
+  if (errorPageCli) config.dev.errorPage = errorPageCli;
+  else if (process.env.PLETIVO_ERROR_PAGE) config.dev.errorPage = process.env.PLETIVO_ERROR_PAGE;
+  if (staleCli) config.dev.stale = true;
+  else if (process.env.PLETIVO_STALE && process.env.PLETIVO_STALE !== "0" && process.env.PLETIVO_STALE !== "") {
+    config.dev.stale = true;
+  }
+  if (debugHeaderCli) config.dev.debugHeader = debugHeaderCli;
+  else if (process.env.PLETIVO_DEBUG_HEADER) config.dev.debugHeader = process.env.PLETIVO_DEBUG_HEADER;
+}
+
 switch (command) {
   case "build":
     await build(projectRoot, config);
@@ -52,9 +91,16 @@ switch (command) {
     pletivo dev [--port=3000] [--host]  Start dev server with HMR
 
   Options:
-    --port=<number>  Dev server port (default: 3000)
-    --host[=<addr>]  Dev server host (default: localhost, bare --host = 0.0.0.0)
-    --help           Show this help
+    --port=<number>          Dev server port (default: 3000)
+    --host[=<addr>]          Dev server host (default: localhost, bare --host = 0.0.0.0)
+    --404-page=<path>        Custom 404 page (overrides pages/404.{tsx,jsx,astro})
+    --error-page=<path>      Page shown when a render fails (replaces raw stack trace)
+    --stale                  Serve last-good snapshot per route on render failure
+    --debug-header=<name>    Requests with this header see raw errors + HMR instead of
+                             the error-page / snapshot fallback (default: x-pletivo-debug)
+    --help                   Show this help
+
+  Env vars: PLETIVO_404_PAGE, PLETIVO_ERROR_PAGE, PLETIVO_STALE=1, PLETIVO_DEBUG_HEADER
 
   Config:
     Create pletivo.config.ts to customize:

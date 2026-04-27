@@ -6,6 +6,19 @@ export interface MdxConfig {
   rehypePlugins?: PluggableList;
 }
 
+export interface DevHybridConfig {
+  /** Page rendered to normal requests when a render fails. Relative to projectRoot. */
+  errorPage?: string;
+  /** Serve last-good snapshot per route to normal requests on render failure. */
+  stale?: boolean;
+  /**
+   * Request header name that flips a request into debug view — raw errors + HMR overlay
+   * instead of the user-facing fallback. Defaults to `x-pletivo-debug` when `errorPage` or
+   * `stale` is enabled. With both off, no filtering happens and every request is in debug view.
+   */
+  debugHeader?: string;
+}
+
 export interface PletivoConfig {
   /** Output directory for build (default: "dist") */
   outDir: string;
@@ -21,6 +34,10 @@ export interface PletivoConfig {
   publicDir: string;
   /** MDX compilation options (remark/rehype plugins) */
   mdx?: MdxConfig;
+  /** Path to custom 404 page (relative to projectRoot). Overrides the `pages/404.*` convention. */
+  notFoundPage?: string;
+  /** Dev-time dual-render config: agents see errors, users see overlay or snapshot. */
+  dev?: DevHybridConfig;
 }
 
 const defaults: PletivoConfig = {
