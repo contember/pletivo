@@ -22,6 +22,7 @@ import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import { imageUrlFor, probeAndRegisterImage } from "./image";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
+import { stripTypes } from "./transpile";
 
 let registered = false;
 
@@ -60,8 +61,21 @@ const globalCssMap = new Map<string, string[]>();
  * `$$renderScript($$result, "file.astro?astro&type=script&index=N&lang.ts")`
  * calls in the template. We store them keyed by that virtual ID so
  * `renderScript()` in the shim can emit `<script type="module">` tags.
+ *
+ * Stored values are already TS-stripped — Astro's `<script>` blocks accept
+ * TypeScript, but we ship them inline to the browser, so types/modifiers
+ * must be removed up front.
  */
 const hoistedScriptMap = new Map<string, string>();
+
+/**
+ * Build the virtual id under which a `<script>` block from `rel` (relative
+ * `.astro` path) at the given index is stored. Mirrors the format the
+ * Astro compiler emits inside `$$renderScript()` calls.
+ */
+export function hoistedScriptId(rel: string, index: number): string {
+  return `${rel}?astro&type=script&index=${index}&lang.ts`;
+}
 
 export function getHoistedScript(id: string): string | undefined {
   return hoistedScriptMap.get(id);
@@ -264,12 +278,12 @@ export async function registerAstroPlugin(): Promise<void> {
         // Collect hoisted scripts from `<script>` tags (non-inline).
         // The compiler returns them in `result.scripts[]` and references
         // them via `$$renderScript(result, "file?astro&type=script&index=N...")`.
+        // Strip TS now so `renderScript()` can emit them inline as-is.
         if (result.scripts && result.scripts.length > 0) {
           for (let i = 0; i < result.scripts.length; i++) {
-            const s = result.scripts[i] as { code?: string };
-            if (s.code) {
-              const scriptId = `${rel}?astro&type=script&index=${i}&lang.ts`;
-              hoistedScriptMap.set(scriptId, s.code);
+            const s = result.scripts[i];
+            if (s.type === "inline") {
+              hoistedScriptMap.set(hoistedScriptId(rel, i), stripTypes(s.code));
             }
           }
         }

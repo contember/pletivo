@@ -1,0 +1,30 @@
+---
+const title = "Scripts Test";
+---
+<html>
+  <head><title>{title}</title></head>
+  <body>
+    <h1>Scripts Test</h1>
+    <button id="hoisted-btn">Click</button>
+  </body>
+</html>
+
+<script>
+  type Item = { src: string; alt: string };
+
+  class HoistedWidget extends HTMLElement {
+    private fieldInteractions = new Set<string>();
+    private items: Item[] = [];
+
+    connectedCallback() {
+      const btn = document.getElementById("hoisted-btn") as HTMLButtonElement | null;
+      if (!btn) return;
+      btn.addEventListener("click", (e: MouseEvent) => {
+        this.fieldInteractions.add(String(e.timeStamp));
+        this.items.push({ src: "x", alt: "y" });
+      });
+    }
+  }
+
+  customElements.define("hoisted-widget", HoistedWidget);
+</script>

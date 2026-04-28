@@ -49,6 +49,7 @@ import {
   runConfigureServer,
   syncServerPlugins,
 } from "./vite-plugins";
+import { stripTypes } from "../transpile";
 
 export interface AstroHost {
   config: AstroConfig;
@@ -188,14 +189,18 @@ export async function initAstroHost(
         injectedRoutes.push({ pattern, entrypoint, prerender: true });
       },
       injectScript(stage, content) {
+        // Integrations may pass TypeScript here (Vite would otherwise
+        // transform it). Strip TS once at injection time so dev/build
+        // can emit the stored strings directly into <script> tags.
+        const transpiled = stripTypes(content);
         if (stage === "page") {
-          injectedPageScripts.push(content);
+          injectedPageScripts.push(transpiled);
         } else if (stage === "head-inline") {
-          injectedHeadScripts.push(content);
+          injectedHeadScripts.push(transpiled);
         } else if (stage === "before-hydration") {
-          injectedBeforeHydrationScripts.push(content);
+          injectedBeforeHydrationScripts.push(transpiled);
         } else if (stage === "page-ssr") {
-          injectedPageSsrScripts.push(content);
+          injectedPageSsrScripts.push(transpiled);
         }
       },
     };
