@@ -18,6 +18,7 @@ import { detectRouteLocale } from "./i18n/route-expansion";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
 import { setImageMode, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
+import { setBase } from "./base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import type { PletivoConfig } from "./config";
@@ -103,7 +104,8 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     (astroHost?.config.base as string | undefined) ?? "/",
     astroHost?.config.site as string | undefined,
   );
-  setImageMode("build", base);
+  setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
+  setImageMode("build");
   clearTransforms();
 
   function makePageContext(
@@ -612,7 +614,7 @@ async function writeHtml(
     const beforeHydration = host?.injectedBeforeHydrationScripts
       ?.map((s) => `<script type="module">${s}</script>`)
       .join("\n") ?? "";
-    const hydrationBlock = (beforeHydration ? beforeHydration + "\n" : "") + hydrationScript;
+    const hydrationBlock = (beforeHydration ? beforeHydration + "\n" : "") + hydrationScript();
     if (html.includes("</head>")) {
       html = html.replace("</head>", hydrationBlock + "\n</head>");
     } else if (html.includes("</body>")) {

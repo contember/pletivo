@@ -13,6 +13,7 @@
  */
 
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
+import { withBase } from "../base";
 import { getHoistedScript, hoistedUrl } from "../astro-plugin";
 export { HtmlString };
 
@@ -510,7 +511,7 @@ export function renderScript(_result: AstroResult, id: string): HtmlString {
   const entry = getHoistedScript(id);
   if (!entry) return createHtml("");
   return createHtml(
-    `<script type="module" src="${hoistedUrl(entry.hash)}"></script>`,
+    `<script type="module" src="${withBase(hoistedUrl(entry.hash))}"></script>`,
   );
 }
 

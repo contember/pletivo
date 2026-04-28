@@ -40,7 +40,7 @@ describe("image() schema", () => {
   });
 
   test("resolves a relative frontmatter path to ImageMetadata in dev", async () => {
-    setImageMode("dev", "/");
+    setImageMode("dev");
     const entries = await getCollection("items");
     expect(entries.length).toBe(1);
     const logo = entries[0].data.logo as {
@@ -60,14 +60,14 @@ describe("image() schema", () => {
   });
 
   test("emits a hashed /_astro/ URL in build mode", async () => {
-    setImageMode("build", "/");
+    setImageMode("build");
     const entries = await getCollection("items");
     const logo = entries[0].data.logo as { src: string };
     expect(logo.src).toMatch(/^\/_astro\/test\.[0-9a-f]{8}\.png$/);
   });
 
   test("validation fails for a missing image path", async () => {
-    setImageMode("dev", "/");
+    setImageMode("dev");
     await writeConfig({
       items: defineCollection({
         loader: async () => [
@@ -89,7 +89,7 @@ describe("image() schema", () => {
   });
 
   test("rejects root-absolute paths with a clear hint about public/", async () => {
-    setImageMode("dev", "/");
+    setImageMode("dev");
     await fs.writeFile(
       path.join(fixtureRoot, "src/content/items/foo.md"),
       `---\nname: Foo\nlogo: /uploads/test.png\nurl: https://example.com\n---\n`,
@@ -109,7 +109,7 @@ describe("image() schema", () => {
   });
 
   test("rejects remote URLs with a hint to use z.string().url()", async () => {
-    setImageMode("dev", "/");
+    setImageMode("dev");
     await fs.writeFile(
       path.join(fixtureRoot, "src/content/items/foo.md"),
       `---\nname: Foo\nlogo: https://cdn.example.com/foo.png\nurl: https://example.com\n---\n`,
@@ -125,7 +125,7 @@ describe("image() schema", () => {
   });
 
   test("memoizes image probe across entries sharing the same file", async () => {
-    setImageMode("dev", "/");
+    setImageMode("dev");
     // Add a second entry that references the same logo
     await fs.writeFile(
       path.join(fixtureRoot, "src/content/items/bar.md"),
@@ -142,7 +142,7 @@ describe("image() schema", () => {
   });
 
   test("static schema (non-function) still works", async () => {
-    setImageMode("dev", "/");
+    setImageMode("dev");
     await writeConfig({
       items: defineCollection({
         loader: glob({ base: "src/content/items" }),

@@ -10,6 +10,7 @@ import {
   clearTransforms,
   getTransforms,
 } from "../../packages/pletivo/src/image";
+import { setBase } from "../../packages/pletivo/src/base";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-image");
 const distDir = path.join(fixtureRoot, "dist");
@@ -35,7 +36,8 @@ describe("image dimension reader", () => {
 
 describe("getImage()", () => {
   beforeAll(() => {
-    setImageMode("build", "/");
+    setBase("/");
+    setImageMode("build");
     clearTransforms();
   });
 
@@ -85,14 +87,14 @@ describe("getImage()", () => {
   });
 
   test("output path includes base", async () => {
-    setImageMode("build", "/my-site");
+    setBase("/my-site");
     clearTransforms();
     const result = await getImage({
       src: { src: "/_astro/photo.abc.jpg", width: 100, height: 100, format: "jpeg", fsPath: "/tmp/photo.jpg" },
       alt: "photo",
     });
     expect(result.src).toStartWith("/my-site/_astro/");
-    setImageMode("build", "/");
+    setBase("/");
   });
 });
 

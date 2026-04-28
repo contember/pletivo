@@ -19,6 +19,7 @@ import { detectRouteLocale } from "./i18n/route-expansion";
 import { parsePreferredLocales } from "./i18n/helpers";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
 import { setImageMode } from "./image";
+import { setBase, withBase, stripBase } from "./base";
 import {
   resolveFallbackRoute,
   resolveDefaultLocaleRedirect,
@@ -109,7 +110,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     (astroHost?.config.base as string | undefined) ?? "/",
     astroHost?.config.site as string | undefined,
   );
-  setImageMode("dev", "/");
+  setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
+  setImageMode("dev");
 
   function escapeHtmlSimple(s: string) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -209,7 +211,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Scoped CSS from <style> blocks is inlined per-page: we match
       // astro scope classes present in this page's HTML to include only
       // relevant entries, avoiding cross-page leaks from unscoped rules.
-      const styleLink = `<link rel="stylesheet" href="/__styles.css">`;
+      const styleLink = `<link rel="stylesheet" href="${withBase("/__styles.css")}">`;
       const pageAstroClasses = extractAstroClasses(html);
       const pageScopedCss = getScopedCssForPage(pageAstroClasses);
       const pageGlobalCss = getGlobalCssForPage(renderedModules);
@@ -220,9 +222,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         ?.map((s) => `<script type="module">${s}</script>`)
         .join("\n") ?? "";
       const hydrationBlock = getUsedIslands().size > 0
-        ? (beforeHydration ? "\n" + beforeHydration : "") + "\n" + hydrationScript
+        ? (beforeHydration ? "\n" + beforeHydration : "") + "\n" + hydrationScript()
         : "";
-      const scripts = hmrClientScript + hydrationBlock;
+      const scripts = hmrClientScript() + hydrationBlock;
       const integrationScripts = astroHost
         ? [
             ...astroHost.injectedHeadScripts.map((s) => `<script>${s}</script>`),
@@ -252,7 +254,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       return html;
     } catch (e) {
       console.error(`Error rendering ${route.file}:`, e);
-      return `<html><body><pre data-pletivo-error style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem">${escapeHtmlSimple(String(e instanceof Error ? e.stack || e.message : e))}</pre>${hmrClientScript}</body></html>`;
+      return `<html><body><pre data-pletivo-error style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem">${escapeHtmlSimple(String(e instanceof Error ? e.stack || e.message : e))}</pre>${hmrClientScript()}</body></html>`;
     }
   }
 
@@ -280,7 +282,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
             const tsx404Css = tsx404.length > 0 ? tsx404.join("\n") : "";
             const combined404 = [global404, scoped404, tsx404Css].filter(Boolean).join("\n");
             const styleTag404 = combined404 ? `<style>${combined404}</style>` : "";
-            const headInjection404 = `<link rel="stylesheet" href="/__styles.css">\n${styleTag404}\n${hmrClientScript}`;
+            const headInjection404 = `<link rel="stylesheet" href="${withBase("/__styles.css")}">\n${styleTag404}\n${hmrClientScript()}`;
             if (html.includes("</head>")) {
               html = html.replace("</head>", headInjection404 + "\n</head>");
             } else {
@@ -301,22 +303,27 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     hostname: config.host,
     async fetch(req, server) {
       const url = new URL(req.url);
+      // Requests not under the configured base are 404'd outright.
+      const pathname = stripBase(url.pathname);
+      if (pathname === null) {
+        return new Response("Not Found", { status: 404 });
+      }
 
       // WebSocket upgrade for HMR — must bypass middleware chain
-      if (url.pathname === "/__hmr") {
+      if (pathname === "/__hmr") {
         if (server.upgrade(req)) return;
         return new Response("WebSocket upgrade failed", { status: 500 });
       }
 
       // HMR ping — lightweight health check so the client can detect
       // whether the dev server is alive without triggering a full reload.
-      if (url.pathname === "/__hmr_ping") {
+      if (pathname === "/__hmr_ping") {
         return new Response("ok", { status: 200 });
       }
 
       // SSE fallback for HMR when WebSocket is unavailable (e.g. behind
       // proxies that don't support WS upgrades).
-      if (url.pathname === "/__hmr_sse") {
+      if (pathname === "/__hmr_sse") {
         let heartbeat: ReturnType<typeof setInterval>;
         const stream = new ReadableStream({
           start(controller) {
@@ -350,7 +357,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
       // Long-poll fallback — last resort when both WS and SSE fail.
       // Hangs for up to 30s waiting for the next change, then returns.
-      if (url.pathname === "/__hmr_poll") {
+      if (pathname === "/__hmr_poll") {
         const payload = await new Promise<string>((resolve) => {
           const timeout = setTimeout(() => {
             cleanup();
@@ -381,12 +388,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         const response = await dispatchMiddlewares(
           req,
           astroHost.server.__middlewares,
-          () => pletivoHandler(req, url),
+          () => pletivoHandler(req, url, pathname),
         );
         if (response) return response;
       }
 
-      return (await pletivoHandler(req, url)) ?? new Response("Not Found", { status: 404 });
+      return (await pletivoHandler(req, url, pathname)) ?? new Response("Not Found", { status: 404 });
     },
 
     websocket: {
@@ -402,10 +409,10 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     },
   });
 
-  async function pletivoHandler(req: Request, url: URL): Promise<Response | null> {
+  async function pletivoHandler(req: Request, url: URL, pathname: string): Promise<Response | null> {
     {
       // Serve the morphdom ESM bundle for the HMR client's lazy import
-      if (url.pathname === "/__pletivo/morphdom.js") {
+      if (pathname === "/__pletivo/morphdom.js") {
         try {
           const morphdomPath = require.resolve("morphdom/dist/morphdom-esm.js");
           return new Response(Bun.file(morphdomPath), {
@@ -419,7 +426,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Serve image assets in dev mode. `getImage()` returns URLs like
       // `/@image/hero.png?f=/abs/path/hero.png` that point to the
       // original unoptimized source file.
-      if (url.pathname.startsWith("/@image/")) {
+      if (pathname.startsWith("/@image/")) {
         const fsPathParam = url.searchParams.get("f");
         if (fsPathParam) {
           const file = Bun.file(fsPathParam);
@@ -432,7 +439,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
       // Serve bundled CSS from src/ on-the-fly. Scoped styles from <style>
       // blocks are injected per-page as inline <style> tags, not here.
-      if (url.pathname === "/__styles.css") {
+      if (pathname === "/__styles.css") {
         let css = await devCss(projectRoot, config.srcDir);
         const cssModules = getCssModulesOutput();
         if (cssModules) css += "\n" + cssModules;
@@ -444,8 +451,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Serve hoisted <script> bundles on-the-fly. The hash uniquely
       // identifies the script body, so a stale URL is never re-requested
       // — we cache the build output indefinitely.
-      if (url.pathname.startsWith(HOISTED_URL_PATH) && url.pathname.endsWith(".js")) {
-        const hash = url.pathname.slice(HOISTED_URL_PATH.length, -".js".length);
+      if (pathname.startsWith(HOISTED_URL_PATH) && pathname.endsWith(".js")) {
+        const hash = pathname.slice(HOISTED_URL_PATH.length, -".js".length);
         const cached = getHoistedBundleCache(hash);
         if (cached) {
           return new Response(cached, {
@@ -474,8 +481,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       }
 
       // Serve island bundles on-the-fly
-      if (url.pathname.startsWith("/_islands/")) {
-        const name = url.pathname.slice("/_islands/".length).replace(/\.js$/, "");
+      if (pathname.startsWith("/_islands/")) {
+        const name = pathname.slice("/_islands/".length).replace(/\.js$/, "");
         const candidates = [
           path.join(islandsDir, name + ".tsx"),
           path.join(islandsDir, name + ".ts"),
@@ -526,10 +533,10 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       }
 
       // Try static files from public/
-      const publicPath = path.join(publicDir, url.pathname);
+      const publicPath = path.join(publicDir, pathname);
       const publicFile = Bun.file(publicPath);
       if (await publicFile.exists()) {
-        const ext = path.extname(url.pathname);
+        const ext = path.extname(pathname);
         return new Response(publicFile, {
           headers: { "Content-Type": MIME_TYPES[ext] || "application/octet-stream" },
         });
@@ -538,11 +545,11 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Route matching — try all matching routes so that when a dynamic
       // route's getStaticPaths doesn't contain the params we cascade to
       // the next matching route instead of falling through to 404.
-      const pathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/$/, "");
+      const routePath = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
       for (const route of routes) {
-        const params = matchRoute(route, pathname);
+        const params = matchRoute(route, routePath);
         if (params !== null) {
-          const html = await renderPage(route, params, pathname, req);
+          const html = await renderPage(route, params, routePath, req);
           if (html !== null) {
             return new Response(html, {
               headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -560,7 +567,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           (astroHost?.config.base as string | undefined) ?? config.base ?? "/";
 
         const redirectTo = resolveDefaultLocaleRedirect(
-          pathname,
+          routePath,
           routes,
           i18n,
           astroBase,
@@ -573,7 +580,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         }
 
         const fallback = resolveFallbackRoute(
-          pathname,
+          routePath,
           routes,
           i18n,
           astroBase,
@@ -588,7 +595,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           const html = await renderPage(
             fallback.route,
             fallback.params,
-            pathname,
+            routePath,
             req,
             fallback.targetLocale,
           );
@@ -604,7 +611,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Match against the request pathname and call the endpoint's GET handler
       // or render its default component.
       if (astroHost && astroHost.injectedRoutes.length > 0) {
-        const cleanPathname = url.pathname === "/" ? "/" : url.pathname.replace(/\/$/, "");
+        const cleanPathname = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
         for (const injected of astroHost.injectedRoutes) {
           const injectedPath = injected.pattern.startsWith("/") ? injected.pattern : "/" + injected.pattern;
           if (cleanPathname !== injectedPath) continue;
@@ -655,13 +662,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // (source, like notes overlay). Bundling runs Vite plugins'
       // `transform` hooks so integrations that prepend JSX pragmas or
       // do similar source rewrites work drop-in.
-      if (astroHost && /^(\/@|\/virtual:)/.test(url.pathname)) {
+      if (astroHost && /^(\/@|\/virtual:)/.test(pathname)) {
         for (const p of astroHost.server.__plugins) {
           const resolveId = (p as { resolveId?: (id: string) => unknown }).resolveId;
           if (typeof resolveId !== "function") continue;
           let resolved: unknown;
           try {
-            resolved = await resolveId(url.pathname);
+            resolved = await resolveId(pathname);
           } catch {
             continue;
           }

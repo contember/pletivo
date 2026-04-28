@@ -1,10 +1,12 @@
 /**
- * Client-side hydration runtime.
- * This is injected as a script into pages that use islands.
- * It finds <pletivo-island> elements and hydrates them according to their strategy.
+ * Client-side hydration runtime, inlined into pages that use islands.
+ * Finds <pletivo-island> elements and hydrates them per their strategy.
+ * Exposed as a function so `__BASE__` resolves at emission time.
  */
 
-export const hydrationScript = `
+import { substituteBase } from "../base";
+
+const HYDRATION_TEMPLATE = `
 <script type="module">
 window.__pletivoHydrate = hydrateIslands;
 hydrateIslands();
@@ -13,7 +15,7 @@ async function hydrateIsland(el) {
   const name = el.dataset.component;
   const props = JSON.parse(el.dataset.props);
   try {
-    const mod = await import("/_islands/" + name + ".js");
+    const mod = await import("__BASE__/_islands/" + name + ".js");
     if (typeof mod.mount === "function") {
       mod.mount(el, props);
       el.dataset.hydrated = "1";
@@ -60,3 +62,8 @@ function hydrateIslands() {
   });
 }
 </script>`;
+
+export function hydrationScript(): string {
+  return substituteBase(HYDRATION_TEMPLATE);
+}
+

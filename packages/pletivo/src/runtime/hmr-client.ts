@@ -16,7 +16,9 @@
  * identity across morph so their hydrated Preact state survives as long
  * as their component + serialized props are unchanged.
  */
-export const hmrClientScript = `
+import { substituteBase } from "../base";
+
+const HMR_TEMPLATE = `
 <script type="module">
 (function () {
   const BASE = location.origin;
@@ -127,7 +129,7 @@ export const hmrClientScript = `
   function connectWs() {
     return new Promise(function (resolve) {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(protocol + "//" + location.host + "/__hmr");
+      const ws = new WebSocket(protocol + "//" + location.host + "__BASE__/__hmr");
       activeWs = ws;
       const timer = setTimeout(function () {
         ws.close();
@@ -159,7 +161,7 @@ export const hmrClientScript = `
 
   function connectSse() {
     return new Promise(function (resolve) {
-      const es = new EventSource(BASE + "/__hmr_sse");
+      const es = new EventSource(BASE + "__BASE__/__hmr_sse");
       activeSse = es;
       const timer = setTimeout(function () {
         es.close();
@@ -198,7 +200,7 @@ export const hmrClientScript = `
 
   function poll() {
     if (transport !== "poll") return;
-    fetch(BASE + "/__hmr_poll", { cache: "no-store" })
+    fetch(BASE + "__BASE__/__hmr_poll", { cache: "no-store" })
       .then(function (r) { return r.text(); })
       .then(function (data) {
         handleMessage(data);
@@ -225,7 +227,7 @@ export const hmrClientScript = `
       if (suspended) return;
       // Check if server is alive before attempting transport
       try {
-        await fetch(BASE + "/__hmr_ping", { cache: "no-store" });
+        await fetch(BASE + "__BASE__/__hmr_ping", { cache: "no-store" });
         connect();
       } catch {
         reconnect();
@@ -259,7 +261,7 @@ export const hmrClientScript = `
   async function morphPage() {
     if (!morphdom) {
       try {
-        const mod = await import("/__pletivo/morphdom.js");
+        const mod = await import("__BASE__/__pletivo/morphdom.js");
         morphdom = mod.default || mod.morphdom;
       } catch (err) {
         console.warn("[pletivo] morphdom load failed, falling back to reload", err);
@@ -403,3 +405,7 @@ export const hmrClientScript = `
   connect();
 })();
 </script>`;
+
+export function hmrClientScript(): string {
+  return substituteBase(HMR_TEMPLATE);
+}

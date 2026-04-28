@@ -10,6 +10,7 @@
 
 import path from "path";
 import fs from "fs/promises";
+import { withBase } from "./base";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -47,11 +48,9 @@ export interface ImageTransformEntry {
 // ── Runtime state ──────────────────────────────────────────────────────
 
 let imageMode: "dev" | "build" = "dev";
-let basePath = "/";
 
-export function setImageMode(mode: "dev" | "build", base: string): void {
+export function setImageMode(mode: "dev" | "build"): void {
   imageMode = mode;
-  basePath = base.replace(/\/$/, "");
   probeCache.clear();
   probeInflight.clear();
 }
@@ -60,12 +59,13 @@ export function setImageMode(mode: "dev" | "build", base: string): void {
  * Build the URL for an image given its on-disk path and the hashed
  * output path under `_astro/`. In dev mode we point at the dev server's
  * `/@image/` route (which serves the original file); in build we use
- * the hashed dist URL that `processImages()` writes.
+ * the hashed dist URL that `processImages()` writes. Both forms are
+ * prefixed with the configured base path.
  */
 export function imageUrlFor(fsPath: string, outputPath: string): string {
   return imageMode === "build"
-    ? `${basePath}/${outputPath}`
-    : `/@image/${path.basename(fsPath)}?f=${fsPath}`;
+    ? withBase(`/${outputPath}`)
+    : withBase(`/@image/${path.basename(fsPath)}?f=${fsPath}`);
 }
 
 // ── Transform registry ─────────────────────────────────────────────────
@@ -400,11 +400,11 @@ export async function getImage(
       format,
       quality,
     });
-    finalSrc = `${basePath}/${outputFile}`;
+    finalSrc = withBase(`/${outputFile}`);
   } else {
     // Dev mode — serve original file
     if (fsPath) {
-      finalSrc = `/@image/${path.basename(fsPath as string)}?f=${fsPath}`;
+      finalSrc = withBase(`/@image/${path.basename(fsPath as string)}?f=${fsPath}`);
     } else {
       finalSrc = srcPath;
     }
