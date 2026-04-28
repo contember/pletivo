@@ -41,11 +41,13 @@ describe("dev mode: hoisted <script> TS-stripping across re-imports", () => {
     );
     await import(fixtureFile + `?v=${bumpDevVersion()}`);
 
-    const code = getHoistedScript(expectedScriptId());
-    expect(code).toBeDefined();
-    expect(code).not.toMatch(/:\s*number/);
-    expect(code).toContain("const value");
-    expect(code).toContain("dataset.value");
+    const entry = getHoistedScript(expectedScriptId());
+    expect(entry).toBeDefined();
+    expect(entry!.code).not.toMatch(/:\s*number/);
+    expect(entry!.code).toContain("const value");
+    expect(entry!.code).toContain("dataset.value");
+    expect(entry!.sourceFile).toBe(fixtureFile);
+    expect(entry!.hash).toMatch(/^[a-f0-9]+$/);
   });
 
   test("re-import after edit replaces stale entry with new TS-stripped content", async () => {
@@ -54,12 +56,12 @@ describe("dev mode: hoisted <script> TS-stripping across re-imports", () => {
     );
     await import(fixtureFile + `?v=${bumpDevVersion()}`);
 
-    const code = getHoistedScript(expectedScriptId());
-    expect(code).toBeDefined();
-    expect(code).not.toMatch(/:\s*string/);
-    expect(code).toContain("edited");
-    expect(code).not.toContain("const value");
-    expect(code).not.toContain("dataset.value");
+    const entry = getHoistedScript(expectedScriptId());
+    expect(entry).toBeDefined();
+    expect(entry!.code).not.toMatch(/:\s*string/);
+    expect(entry!.code).toContain("edited");
+    expect(entry!.code).not.toContain("const value");
+    expect(entry!.code).not.toContain("dataset.value");
   });
 
   test("removing the <script> block clears the entry on re-import", async () => {

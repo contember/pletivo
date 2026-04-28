@@ -18,11 +18,18 @@ const config: PletivoConfig = {
 
 describe("astro <script> blocks (TypeScript stripped)", () => {
   let html: string;
+  let hoistedJs: string;
 
   beforeAll(async () => {
     __resetForTests();
     await build(fixtureRoot, config);
     html = await Bun.file(path.join(distDir, "index.html")).text();
+    // Hoisted <script> blocks now bundle into /_astro/hoisted-<hash>.js
+    // and are referenced from the page via <script src="…">. Locate the
+    // emitted bundle by its hash (extracted from the page) and read it.
+    const m = html.match(/\/_astro\/hoisted-([a-f0-9]+)\.js/);
+    expect(m).not.toBeNull();
+    hoistedJs = await Bun.file(path.join(distDir, "_astro", `hoisted-${m![1]}.js`)).text();
   });
 
   afterAll(async () => {
@@ -31,32 +38,39 @@ describe("astro <script> blocks (TypeScript stripped)", () => {
   });
 
   describe("hoisted <script>", () => {
+    test("page references the bundled script via src=, not inline", () => {
+      expect(html).toMatch(/<script type="module" src="\/_astro\/hoisted-[a-f0-9]+\.js"><\/script>/);
+      expect(html).not.toContain("HoistedWidget");
+      expect(html).not.toContain("fieldInteractions");
+    });
+
     test("strips `private` modifier and type annotations", () => {
-      expect(html).not.toMatch(/\bprivate\s+\w+/);
-      expect(html).not.toMatch(/:\s*Item\[\]/);
+      expect(hoistedJs).not.toMatch(/\bprivate\s+\w+/);
+      expect(hoistedJs).not.toMatch(/:\s*Item\[\]/);
     });
 
     test("strips `type` declarations", () => {
-      expect(html).not.toMatch(/^\s*type\s+Item\s*=/m);
+      expect(hoistedJs).not.toMatch(/^\s*type\s+Item\s*=/m);
     });
 
     test("strips `as` type assertions", () => {
-      expect(html).not.toMatch(/\bas\s+HTMLButtonElement\b/);
+      expect(hoistedJs).not.toMatch(/\bas\s+HTMLButtonElement\b/);
     });
 
     test("strips parameter type annotations", () => {
-      expect(html).not.toMatch(/\(\s*e\s*:\s*MouseEvent\s*\)/);
+      expect(hoistedJs).not.toMatch(/\(\s*e\s*:\s*MouseEvent\s*\)/);
     });
 
     test("strips generic type arguments", () => {
-      expect(html).not.toContain("Set<string>");
+      expect(hoistedJs).not.toContain("Set<string>");
     });
 
     test("preserves runtime identifiers and behavior", () => {
-      expect(html).toContain("fieldInteractions");
-      expect(html).toContain("HoistedWidget");
-      expect(html).toContain("customElements.define");
-      expect(html).toContain("hoisted-widget");
+      // Bun.build minifies, so identifiers may be mangled. Check for the
+      // string literals and API calls that survive minification verbatim.
+      expect(hoistedJs).toContain("customElements.define");
+      expect(hoistedJs).toContain("hoisted-widget");
+      expect(hoistedJs).toContain("hoisted-btn");
     });
   });
 

@@ -18,11 +18,18 @@ const config: PletivoConfig = {
 
 describe("@nuasite/components <Form>", () => {
   let html: string;
+  let hoistedJs: string;
 
   beforeAll(async () => {
     __resetForTests();
     await build(fixtureRoot, config);
     html = await Bun.file(path.join(distDir, "index.html")).text();
+    const m = html.match(/\/_astro\/hoisted-([a-f0-9]+)\.js/);
+    if (m) {
+      hoistedJs = await Bun.file(path.join(distDir, "_astro", `hoisted-${m[1]}.js`)).text();
+    } else {
+      hoistedJs = "";
+    }
   });
 
   afterAll(async () => {
@@ -53,12 +60,12 @@ describe("@nuasite/components <Form>", () => {
   test("hoisted <script> ships TS-stripped — no `private`, no type annotations", () => {
     // The component's inline <script> contains `private fieldInteractions`,
     // `: HTMLFormElement`, `Set<string>`, etc. Bun's transpiler must strip
-    // these before the script is emitted into the browser-facing HTML.
-    expect(html).toContain("customElements.define");
-    expect(html).toContain("astro-form");
-    expect(html).not.toMatch(/\bprivate\s+\w+/);
-    expect(html).not.toMatch(/:\s*HTMLFormElement\b/);
-    expect(html).not.toMatch(/Set<string>/);
-    expect(html).not.toMatch(/:\s*string\[\]/);
+    // these before the script reaches the bundled output.
+    expect(hoistedJs).toContain("customElements.define");
+    expect(hoistedJs).toContain("astro-form");
+    expect(hoistedJs).not.toMatch(/\bprivate\s+\w+/);
+    expect(hoistedJs).not.toMatch(/:\s*HTMLFormElement\b/);
+    expect(hoistedJs).not.toMatch(/Set<string>/);
+    expect(hoistedJs).not.toMatch(/:\s*string\[\]/);
   });
 });

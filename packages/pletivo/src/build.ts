@@ -9,7 +9,7 @@ import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
-import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss, getGlobalCssForPage, clearGlobalCss } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss, getGlobalCssForPage, clearGlobalCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
 import { parseMarkdown } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
@@ -406,18 +406,20 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     clearTransforms();
   }
 
-  // Detect islands from rendered HTML
+  // Scan each rendered page once for both island and hoisted-script
+  // references, then bundle them in parallel.
   const islandNames = new Set<string>();
+  const referencedHashes = new Set<string>();
   for (const result of dedupedResults) {
-    for (const name of extractIslandNames(result.html)) {
-      islandNames.add(name);
-    }
+    for (const name of extractAll(result.html, ISLAND_NAME_RE)) islandNames.add(name);
+    for (const hash of extractAll(result.html, HOISTED_URL_RE)) referencedHashes.add(hash);
   }
 
-  // Bundle islands
-  if (islandNames.size > 0) {
-    await bundleIslands(islandNames, islandsDir, distDir);
-  }
+  await Promise.all([
+    islandNames.size > 0 ? bundleIslands(islandNames, islandsDir, distDir) : null,
+    referencedHashes.size > 0 ? bundleHoistedScripts(referencedHashes, distDir) : null,
+  ]);
+  clearHoistedScripts();
 
   // Generate sitemap — skip if the user's Astro config includes a
   // sitemap integration. Both can technically coexist (different
@@ -506,16 +508,18 @@ function redirectHtml(destination: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${safe}"><link rel="canonical" href="${safe}"></head><body></body></html>`;
 }
 
-/** Extract island component names from rendered HTML */
-function extractIslandNames(html: string): string[] {
-  const names: string[] = [];
-  const regex = /data-component="([^"]+)"/g;
+/** Collect capture group 1 of `regex` across `html`. Caller must reset lastIndex. */
+function extractAll(html: string, regex: RegExp): string[] {
+  const out: string[] = [];
+  regex.lastIndex = 0;
   let match;
   while ((match = regex.exec(html)) !== null) {
-    names.push(match[1]);
+    out.push(match[1]);
   }
-  return names;
+  return out;
 }
+
+const ISLAND_NAME_RE = /data-component="([^"]+)"/g;
 
 async function renderComponent(
   component: (props: Record<string, unknown>) => unknown,
@@ -646,6 +650,49 @@ async function render404Page(
     }
   }
   return null;
+}
+
+async function bundleHoistedScripts(
+  referencedHashes: Set<string>,
+  distDir: string,
+) {
+  const entries = getAllHoistedScripts().filter((e) => referencedHashes.has(e.hash));
+  if (entries.length === 0) return;
+
+  const astroOutDir = path.join(distDir, "_astro");
+  await fs.mkdir(astroOutDir, { recursive: true });
+
+  console.log(
+    `\nBundling ${entries.length} hoisted script${entries.length === 1 ? "" : "s"}...`,
+  );
+
+  const result = await Bun.build({
+    entrypoints: entries.map((e) => hoistedEntrypoint(e.hash)),
+    outdir: astroOutDir,
+    format: "esm",
+    target: "browser",
+    minify: true,
+    plugins: [hoistedScriptBunPlugin()],
+  });
+
+  if (!result.success) {
+    const logs = result.logs.map((l) => String(l)).join("\n");
+    throw new Error(`Hoisted script bundling failed:\n${logs}`);
+  }
+
+  // Bun derives output basenames from the entrypoint specifier
+  // (`pletivo:hoisted:<hash>.js`), so rename to the public URL shape.
+  // BuildArtifact.size is lazy under `outdir` — capture it before the rename.
+  const outputHashRe = /pletivo:hoisted:([a-f0-9]+)\.js$/;
+  for (const output of result.outputs) {
+    const m = path.basename(output.path).match(outputHashRe);
+    if (!m) continue;
+    const hash = m[1];
+    const size = output.size;
+    const finalPath = path.join(astroOutDir, `hoisted-${hash}.js`);
+    await fs.rename(output.path, finalPath);
+    console.log(`  _astro/hoisted-${hash}.js (${formatSize(size)})`);
+  }
 }
 
 async function bundleIslands(

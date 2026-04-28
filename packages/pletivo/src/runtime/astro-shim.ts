@@ -13,6 +13,7 @@
  */
 
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
+import { getHoistedScript, hoistedUrl } from "../astro-plugin";
 export { HtmlString };
 
 function escapeHtml(s: string): string {
@@ -506,11 +507,11 @@ export function maybeRenderHead(_result: AstroResult): HtmlString {
 }
 
 export function renderScript(_result: AstroResult, id: string): HtmlString {
-  // Lazy import to avoid circular dependency at module level
-  const { getHoistedScript } = require("../astro-plugin");
-  const code = getHoistedScript(id);
-  if (!code) return createHtml("");
-  return createHtml(`<script type="module">${code}</script>`);
+  const entry = getHoistedScript(id);
+  if (!entry) return createHtml("");
+  return createHtml(
+    `<script type="module" src="${hoistedUrl(entry.hash)}"></script>`,
+  );
 }
 
 /**

@@ -9,7 +9,7 @@ import { runWithRenderTracking } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
-import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, getGlobalCssForPage } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, getGlobalCssForPage, getHoistedScriptByHash, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "./dev-cache";
 import { parseMarkdown } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
@@ -439,6 +439,38 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         return new Response(css, {
           headers: { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-store" },
         });
+      }
+
+      // Serve hoisted <script> bundles on-the-fly. The hash uniquely
+      // identifies the script body, so a stale URL is never re-requested
+      // — we cache the build output indefinitely.
+      if (url.pathname.startsWith(HOISTED_URL_PATH) && url.pathname.endsWith(".js")) {
+        const hash = url.pathname.slice(HOISTED_URL_PATH.length, -".js".length);
+        const cached = getHoistedBundleCache(hash);
+        if (cached) {
+          return new Response(cached, {
+            headers: { "Content-Type": "application/javascript" },
+          });
+        }
+        if (!getHoistedScriptByHash(hash)) {
+          return new Response("Hoisted script not found", { status: 404 });
+        }
+        const result = await Bun.build({
+          entrypoints: [hoistedEntrypoint(hash)],
+          format: "esm",
+          target: "browser",
+          minify: false,
+          plugins: [hoistedScriptBunPlugin()],
+        });
+        if (result.success && result.outputs.length > 0) {
+          const bytes = new Uint8Array(await result.outputs[0].arrayBuffer());
+          setHoistedBundleCache(hash, bytes);
+          return new Response(bytes, {
+            headers: { "Content-Type": "application/javascript" },
+          });
+        }
+        const logs = result.logs.map((l) => String(l)).join("\n");
+        return new Response(`Hoisted script bundle failed:\n${logs}`, { status: 500 });
       }
 
       // Serve island bundles on-the-fly

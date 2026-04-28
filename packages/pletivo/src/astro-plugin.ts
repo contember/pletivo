@@ -57,16 +57,48 @@ const globalCssMap = new Map<string, string[]>();
 
 /**
  * Hoisted scripts collected from `<script>` tags (non-inline) in `.astro`
- * files. The compiler returns them in `result.scripts[]` and emits
- * `$$renderScript($$result, "file.astro?astro&type=script&index=N&lang.ts")`
- * calls in the template. We store them keyed by that virtual ID so
- * `renderScript()` in the shim can emit `<script type="module">` tags.
- *
- * Stored values are already TS-stripped — Astro's `<script>` blocks accept
- * TypeScript, but we ship them inline to the browser, so types/modifiers
- * must be removed up front.
+ * files. The Astro compiler emits `$$renderScript(result, "<rel>?astro&type=script&index=N&lang.ts")`
+ * calls and we key entries by that virtual id. `sourceFile` is needed
+ * because the body may contain relative imports that must resolve
+ * against the originating directory; `hash` is the public URL slug.
  */
-const hoistedScriptMap = new Map<string, string>();
+export interface HoistedScriptEntry {
+  code: string;
+  sourceFile: string;
+  hash: string;
+}
+const hoistedScriptMap = new Map<string, HoistedScriptEntry>();
+const hoistedScriptByHash = new Map<string, HoistedScriptEntry>();
+/** Bun.build outputs cached by hash, populated by the dev route on first hit. */
+const hoistedBundleCache = new Map<string, Uint8Array>();
+
+/** Specifier used as the Bun.build entrypoint for hoisted scripts. */
+const HOISTED_PREFIX = "pletivo:hoisted:";
+/** Public URL path prefix for hoisted-script bundles. */
+export const HOISTED_URL_PATH = "/_astro/hoisted-";
+/** Capture group is the hex hash. Not anchored — works under any base prefix. */
+export const HOISTED_URL_RE = /\/_astro\/hoisted-([a-f0-9]+)\.js/g;
+
+export function hoistedEntrypoint(hash: string): string {
+  return HOISTED_PREFIX + hash;
+}
+export function hoistedUrl(hash: string): string {
+  return `${HOISTED_URL_PATH}${hash}.js`;
+}
+
+function setHoistedScript(id: string, entry: HoistedScriptEntry): void {
+  hoistedScriptMap.set(id, entry);
+  hoistedScriptByHash.set(entry.hash, entry);
+}
+
+function deleteHoistedScript(id: string): void {
+  const entry = hoistedScriptMap.get(id);
+  if (entry) {
+    hoistedScriptByHash.delete(entry.hash);
+    hoistedBundleCache.delete(entry.hash);
+  }
+  hoistedScriptMap.delete(id);
+}
 
 /**
  * Build the virtual id under which a `<script>` block from `rel` (relative
@@ -77,12 +109,74 @@ export function hoistedScriptId(rel: string, index: number): string {
   return `${rel}?astro&type=script&index=${index}&lang.ts`;
 }
 
-export function getHoistedScript(id: string): string | undefined {
+export function getHoistedScript(id: string): HoistedScriptEntry | undefined {
   return hoistedScriptMap.get(id);
+}
+
+export function getHoistedScriptByHash(hash: string): HoistedScriptEntry | undefined {
+  return hoistedScriptByHash.get(hash);
+}
+
+export function getAllHoistedScripts(): HoistedScriptEntry[] {
+  return Array.from(hoistedScriptMap.values());
 }
 
 export function clearHoistedScripts(): void {
   hoistedScriptMap.clear();
+  hoistedScriptByHash.clear();
+  hoistedBundleCache.clear();
+}
+
+export function getHoistedBundleCache(hash: string): Uint8Array | undefined {
+  return hoistedBundleCache.get(hash);
+}
+
+export function setHoistedBundleCache(hash: string, bytes: Uint8Array): void {
+  hoistedBundleCache.set(hash, bytes);
+}
+
+/**
+ * Bun.build plugin that resolves `pletivo:hoisted:<hash>` entrypoints
+ * to a virtual file inside the originating `.astro` file's directory,
+ * so relative imports in the script body (`import '../scripts/x.js'`)
+ * resolve against the right base. The virtual path never exists on
+ * disk — `onLoad` short-circuits the read. Bun derives the output
+ * basename from the entrypoint specifier (not the resolved path), so
+ * callers must rename `pletivo:hoisted:<hash>.js` outputs themselves.
+ */
+export function hoistedScriptBunPlugin() {
+  const resolveFilter = new RegExp(`^${HOISTED_PREFIX}[a-f0-9]+$`);
+  // 16-hex-char filename (matches our `Bun.hash().padStart(16,"0")` output).
+  const loadFilter = /\/[a-f0-9]{16}\.js$/;
+  return {
+    name: "pletivo-hoisted",
+    setup(build: {
+      onResolve: (
+        opts: { filter: RegExp },
+        cb: (args: { path: string }) => { path: string } | undefined,
+      ) => void;
+      onLoad: (
+        opts: { filter: RegExp },
+        cb: (args: { path: string }) => { contents: string; loader: string } | undefined,
+      ) => void;
+    }) {
+      build.onResolve({ filter: resolveFilter }, (args) => {
+        const hash = args.path.slice(HOISTED_PREFIX.length);
+        const entry = hoistedScriptByHash.get(hash);
+        if (!entry) return undefined;
+        return {
+          path: path.join(path.dirname(entry.sourceFile), `${hash}.js`),
+        };
+      });
+      build.onLoad({ filter: loadFilter }, (args) => {
+        const m = args.path.match(/\/([a-f0-9]{16})\.js$/);
+        if (!m) return undefined;
+        const entry = hoistedScriptByHash.get(m[1]);
+        if (!entry) return undefined;
+        return { contents: entry.code, loader: "js" };
+      });
+    },
+  };
 }
 
 export function getScopedCss(): string {
@@ -255,7 +349,7 @@ export async function registerAstroPlugin(): Promise<void> {
         globalCssMap.delete(rel);
         const scriptPrefix = `${rel}?astro&type=script&index=`;
         for (const id of hoistedScriptMap.keys()) {
-          if (id.startsWith(scriptPrefix)) hoistedScriptMap.delete(id);
+          if (id.startsWith(scriptPrefix)) deleteHoistedScript(id);
         }
 
         // Collect CSS emitted by the Astro compiler. Each `result.css[]`
@@ -275,15 +369,19 @@ export async function registerAstroPlugin(): Promise<void> {
           }
         }
 
-        // Collect hoisted scripts from `<script>` tags (non-inline).
-        // The compiler returns them in `result.scripts[]` and references
-        // them via `$$renderScript(result, "file?astro&type=script&index=N...")`.
-        // Strip TS now so `renderScript()` can emit them inline as-is.
         if (result.scripts && result.scripts.length > 0) {
           for (let i = 0; i < result.scripts.length; i++) {
             const s = result.scripts[i];
             if (s.type === "inline") {
-              hoistedScriptMap.set(hoistedScriptId(rel, i), stripTypes(s.code));
+              const code = stripTypes(s.code);
+              const hash = Bun.hash(`${cleanPath}\0${i}\0${code}`)
+                .toString(16)
+                .padStart(16, "0");
+              setHoistedScript(hoistedScriptId(rel, i), {
+                code,
+                sourceFile: cleanPath,
+                hash,
+              });
             }
           }
         }
