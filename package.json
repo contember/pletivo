@@ -3,6 +3,8 @@
   "workspaces": ["packages/*", "examples/*"],
   "devDependencies": {
     "@astrojs/compiler": "3.0.1",
+    "@nuasite/agent-summary": "^0.36.0",
+    "@nuasite/components": "^0.36.0",
     "@pletivo/astro-jsx-pages": "workspace:*",
     "morphdom": "^2.7.8",
     "pletivo": "workspace:*",
