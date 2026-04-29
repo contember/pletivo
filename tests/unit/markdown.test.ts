@@ -129,6 +129,33 @@ x`);
     expect(result.frontmatter).toEqual({});
     expect(result.body).toBe("Just content");
   });
+
+  test("array of nested objects", () => {
+    const result = parseMarkdown(`---
+attachments:
+  - file: foo.pdf
+    title: Bar
+  - file: baz.pdf
+    title: Qux
+---
+
+x`);
+    expect(result.frontmatter.attachments).toEqual([
+      { file: "foo.pdf", title: "Bar" },
+      { file: "baz.pdf", title: "Qux" },
+    ]);
+  });
+
+  test("nested mapping", () => {
+    const result = parseMarkdown(`---
+author:
+  name: Jane
+  email: jane@example.com
+---
+
+x`);
+    expect(result.frontmatter.author).toEqual({ name: "Jane", email: "jane@example.com" });
+  });
 });
 
 describe("block elements", () => {

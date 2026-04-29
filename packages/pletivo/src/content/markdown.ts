@@ -3,6 +3,8 @@
  * Supports: headings, paragraphs, bold, italic, code, links, images, lists, blockquotes, hr, code blocks.
  */
 
+import yaml from "js-yaml";
+
 export interface ParsedMarkdown {
   frontmatter: Record<string, unknown>;
   body: string;
@@ -10,104 +12,24 @@ export interface ParsedMarkdown {
 }
 
 /**
- * Extract YAML frontmatter from markdown content
+ * Parse a YAML string and narrow it to a plain object — anything else
+ * (string, array, null) becomes `{}`. Uses js-yaml's default schema so
+ * ISO timestamps parse to Date objects, matching Astro's frontmatter
+ * behavior.
  */
+export function parseYamlObject(input: string): Record<string, unknown> {
+  const parsed = yaml.load(input);
+  return (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+    ? parsed as Record<string, unknown>
+    : {};
+}
+
 export function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (!match) {
     return { frontmatter: {}, body: content };
   }
-
-  const yamlStr = match[1];
-  const body = match[2];
-  const frontmatter: Record<string, unknown> = {};
-
-  // Simple YAML parser for flat key-value pairs, arrays, and block scalars
-  const lines = yamlStr.split("\n");
-  let currentKey = "";
-  let currentArray: string[] | null = null;
-  let blockScalar: { style: "folded" | "literal"; chomp: "clip" | "strip"; lines: string[] } | null = null;
-
-  function flushBlockScalar() {
-    if (blockScalar && currentKey) {
-      const joinChar = blockScalar.style === "folded" ? " " : "\n";
-      let value = blockScalar.lines.join(joinChar);
-      if (blockScalar.chomp === "clip") value += "\n";
-      frontmatter[currentKey] = value;
-      blockScalar = null;
-    }
-  }
-
-  for (const line of lines) {
-    // Inside a block scalar: collect indented continuation lines
-    if (blockScalar) {
-      if (line.match(/^\s+/) && !line.match(/^\S/)) {
-        blockScalar.lines.push(line.trim());
-        continue;
-      } else {
-        flushBlockScalar();
-        // fall through to parse this line normally
-      }
-    }
-
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-
-    // Array item
-    if (trimmed.startsWith("- ") && currentKey) {
-      if (!currentArray) {
-        currentArray = [];
-        frontmatter[currentKey] = currentArray;
-      }
-      currentArray.push(trimmed.slice(2).trim().replace(/^["']|["']$/g, ""));
-      continue;
-    }
-
-    // Key-value pair
-    const kvMatch = trimmed.match(/^(\w[\w-]*)\s*:\s*(.*)$/);
-    if (kvMatch) {
-      currentKey = kvMatch[1];
-      currentArray = null;
-      let value: unknown = kvMatch[2].trim();
-
-      if (value === "") {
-        // Could be start of an array
-        continue;
-      }
-
-      // Block scalar indicators: >, >-, |, |-
-      if (value === ">" || value === ">-" || value === "|" || value === "|-") {
-        blockScalar = {
-          style: (value as string).startsWith("|") ? "literal" : "folded",
-          chomp: (value as string).endsWith("-") ? "strip" : "clip",
-          lines: [],
-        };
-        continue;
-      }
-
-      // Remove quotes
-      if (typeof value === "string" && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
-        value = value.slice(1, -1);
-      }
-      // Inline array: [a, b, c]
-      else if (typeof value === "string" && value.startsWith("[") && value.endsWith("]")) {
-        value = value.slice(1, -1).split(",").map(s => s.trim().replace(/^["']|["']$/g, ""));
-      }
-      // Booleans
-      else if (value === "true") value = true;
-      else if (value === "false") value = false;
-      // Numbers
-      else if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value)) {
-        value = Number(value);
-      }
-
-      frontmatter[currentKey] = value;
-    }
-  }
-
-  flushBlockScalar();
-
-  return { frontmatter, body };
+  return { frontmatter: parseYamlObject(match[1]), body: match[2] };
 }
 
 function escapeHtml(s: string): string {
