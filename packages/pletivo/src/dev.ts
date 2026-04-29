@@ -28,7 +28,7 @@ import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
 import { registerDevTsPlugin } from "./dev-ts-plugin";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import type { PletivoConfig } from "./config";
-import type { ServerWebSocket } from "bun";
+import type { Server, ServerWebSocket } from "bun";
 import { createRequire } from "module";
 
 const require_ = createRequire(import.meta.url);
@@ -49,6 +49,109 @@ const MIME_TYPES: Record<string, string> = {
   ".woff": "font/woff",
   ".woff2": "font/woff2",
 };
+
+// Paths whose 2xx responses are dropped from the request log — they fire
+// on every page load or on a heartbeat and would drown out user-visible
+// requests. 4xx/5xx on these is still surfaced (a missing island bundle
+// or a 500 from the styles pipeline is a real signal).
+const LOG_NOISE_PREFIX = /^(\/__hmr|\/__styles\.css|\/__pletivo\/|\/_islands\/|\/@image\/)/;
+
+// Static assets — fired by the browser as side effects of a page load,
+// not user-visible navigations. Keeping them in the log buries the
+// requests you actually care about (page renders, API calls, errors).
+// Failures (4xx/5xx) still log so a missing image or font surfaces.
+const LOG_STATIC_ASSET_EXT = /\.(png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|eot|css|map)(\?|$)/i;
+
+function shouldSkipRequestLog(pathname: string, status: number): boolean {
+  if (status >= 300) return false;
+  if (LOG_NOISE_PREFIX.test(pathname)) return true;
+  if (pathname.startsWith(HOISTED_URL_PATH)) return true;
+  if (LOG_STATIC_ASSET_EXT.test(pathname)) return true;
+  return false;
+}
+
+const IS_TTY = Boolean(process.stdout.isTTY);
+const ANSI_DIM = "2";
+const ANSI_RED = "31";
+const ANSI_YELLOW = "33";
+const ANSI_CYAN = "36";
+
+function colorize(text: string, code: string): string {
+  if (!IS_TTY) return text;
+  return `\x1b[${code}m${text}\x1b[0m`;
+}
+
+/**
+ * Did this request originate from another page on this server (a script,
+ * image, fetch(), etc. fired by an already-loaded document)? Modern
+ * browsers tell us via Sec-Fetch-Dest — anything other than "document"
+ * is a subrequest. For curl or older clients without the header we fall
+ * back to comparing Referer's path, treating same-origin different-path
+ * referers as subrequests too.
+ */
+function isSubrequest(req: Request, origin: string, pathname: string): boolean {
+  const dest = req.headers.get("sec-fetch-dest");
+  if (dest === "document") return false;
+  if (dest) return true;
+  const referer = req.headers.get("referer");
+  if (!referer) return false;
+  try {
+    const u = new URL(referer);
+    return u.origin === origin && u.pathname !== pathname;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Format an HMR transport event (ws/sse client connect or disconnect)
+ * with the same column layout as request lines so the eye can scan a
+ * single column for status. The whole line is dimmed because HMR
+ * plumbing is not a user-visible signal; navigations and errors are.
+ */
+function logHmrEvent(transport: "ws" | "sse", action: "connected" | "disconnected", count: number): void {
+  // HMR events have no duration — leave that column blank so it stays
+  // semantically "ms" everywhere. Client total goes in the description.
+  const blankDuration = " ".repeat(7);
+  const line = `HMR  ${blankDuration}  ${transport.toUpperCase().padEnd(4)} client ${action} (${count} total)`;
+  console.log(`  ${colorize(line, ANSI_DIM)}`);
+}
+
+function logRequest(
+  method: string,
+  pathname: string,
+  status: number,
+  ms: number,
+  subrequest: boolean,
+): void {
+  if (shouldSkipRequestLog(pathname, status)) return;
+
+  const statusStr = String(status).padEnd(3);
+  const durationStr = `${ms} ms`.padStart(7);
+  const methodStr = method.padEnd(4);
+
+  // Successful subrequests dim the whole line so they group visually
+  // under the most recent navigation. Failures (4xx/5xx) keep full
+  // coloring — a missing asset is still a real signal.
+  if (subrequest && status < 300) {
+    console.log(`  ${colorize(`${statusStr}  ${durationStr}  ${methodStr} ${pathname}`, ANSI_DIM)}`);
+    return;
+  }
+
+  const statusColor =
+    status >= 500 ? ANSI_RED :
+    status >= 400 ? ANSI_YELLOW :
+    status >= 300 ? ANSI_CYAN :
+    ANSI_DIM;
+  const durationColor =
+    ms >= 2000 ? ANSI_RED :
+    ms >= 500 ? ANSI_YELLOW :
+    ms < 20 ? ANSI_DIM :
+    null;
+  const statusCol = colorize(statusStr, statusColor);
+  const durationCol = durationColor ? colorize(durationStr, durationColor) : durationStr;
+  console.log(`  ${statusCol}  ${durationCol}  ${methodStr} ${pathname}`);
+}
 
 export async function dev(projectRoot: string, config: PletivoConfig) {
   const pagesDir = path.join(projectRoot, config.srcDir, "pages");
@@ -298,112 +401,128 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     return null;
   }
 
+  async function dispatchRequest(
+    req: Request,
+    server: Server<undefined>,
+    url: URL,
+    pathname: string | null,
+  ): Promise<Response | undefined> {
+    // Requests not under the configured base are 404'd outright.
+    if (pathname === null) {
+      return new Response("Not Found", { status: 404 });
+    }
+
+    // WebSocket upgrade for HMR — must bypass middleware chain
+    if (pathname === "/__hmr") {
+      if (server.upgrade(req)) return undefined;
+      return new Response("WebSocket upgrade failed", { status: 500 });
+    }
+
+    // HMR ping — lightweight health check so the client can detect
+    // whether the dev server is alive without triggering a full reload.
+    if (pathname === "/__hmr_ping") {
+      return new Response("ok", { status: 200 });
+    }
+
+    // SSE fallback for HMR when WebSocket is unavailable (e.g. behind
+    // proxies that don't support WS upgrades).
+    if (pathname === "/__hmr_sse") {
+      let heartbeat: ReturnType<typeof setInterval>;
+      const stream = new ReadableStream({
+        start(controller) {
+          sseClients.add(controller);
+          logHmrEvent("sse", "connected", sseClients.size);
+          controller.enqueue(new TextEncoder().encode(":ok\n\n"));
+          // Send comment heartbeat every 5s to prevent proxy idle timeout
+          heartbeat = setInterval(() => {
+            try {
+              controller.enqueue(new TextEncoder().encode(":\n\n"));
+            } catch {
+              clearInterval(heartbeat);
+              sseClients.delete(controller);
+            }
+          }, 5_000);
+        },
+        cancel(controller) {
+          clearInterval(heartbeat);
+          sseClients.delete(controller);
+          logHmrEvent("sse", "disconnected", sseClients.size);
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
+    }
+
+    // Long-poll fallback — last resort when both WS and SSE fail.
+    // Hangs for up to 30s waiting for the next change, then returns.
+    if (pathname === "/__hmr_poll") {
+      const payload = await new Promise<string>((resolve) => {
+        const timeout = setTimeout(() => {
+          cleanup();
+          resolve("");
+        }, 30_000);
+        function onMessage(msg: string) {
+          cleanup();
+          resolve(msg);
+        }
+        function cleanup() {
+          clearTimeout(timeout);
+          pollWaiters.delete(onMessage);
+        }
+        pollWaiters.add(onMessage);
+      });
+      return new Response(payload || "noop", {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // Route the request through the Astro integration middleware chain.
+    // If a middleware ends the response itself (e.g. CMS API handler),
+    // that Response is returned. Otherwise the chain exhausts and
+    // `pletivoHandler` runs — integration middlewares that wrapped
+    // res.write/res.end (e.g. CMS HTML marker) then see the page HTML
+    // on its way out.
+    if (astroHost) {
+      const response = await dispatchMiddlewares(
+        req,
+        astroHost.server.__middlewares,
+        () => pletivoHandler(req, url, pathname),
+      );
+      if (response) return response;
+    }
+
+    return (await pletivoHandler(req, url, pathname)) ?? new Response("Not Found", { status: 404 });
+  }
+
   const server = Bun.serve({
     port: config.port,
     hostname: config.host,
     async fetch(req, server) {
       const url = new URL(req.url);
-      // Requests not under the configured base are 404'd outright.
       const pathname = stripBase(url.pathname);
-      if (pathname === null) {
-        return new Response("Not Found", { status: 404 });
+      const start = Date.now();
+      const response = await dispatchRequest(req, server, url, pathname);
+      if (response) {
+        const logPath = pathname ?? url.pathname;
+        const sub = isSubrequest(req, url.origin, logPath);
+        logRequest(req.method, logPath, response.status, Date.now() - start, sub);
       }
-
-      // WebSocket upgrade for HMR — must bypass middleware chain
-      if (pathname === "/__hmr") {
-        if (server.upgrade(req)) return;
-        return new Response("WebSocket upgrade failed", { status: 500 });
-      }
-
-      // HMR ping — lightweight health check so the client can detect
-      // whether the dev server is alive without triggering a full reload.
-      if (pathname === "/__hmr_ping") {
-        return new Response("ok", { status: 200 });
-      }
-
-      // SSE fallback for HMR when WebSocket is unavailable (e.g. behind
-      // proxies that don't support WS upgrades).
-      if (pathname === "/__hmr_sse") {
-        let heartbeat: ReturnType<typeof setInterval>;
-        const stream = new ReadableStream({
-          start(controller) {
-            sseClients.add(controller);
-            console.log(`  HMR sse connected (${sseClients.size} clients)`);
-            controller.enqueue(new TextEncoder().encode(":ok\n\n"));
-            // Send comment heartbeat every 5s to prevent proxy idle timeout
-            heartbeat = setInterval(() => {
-              try {
-                controller.enqueue(new TextEncoder().encode(":\n\n"));
-              } catch {
-                clearInterval(heartbeat);
-                sseClients.delete(controller);
-              }
-            }, 5_000);
-          },
-          cancel(controller) {
-            clearInterval(heartbeat);
-            sseClients.delete(controller);
-            console.log(`  HMR sse disconnected (${sseClients.size} clients)`);
-          },
-        });
-        return new Response(stream, {
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-          },
-        });
-      }
-
-      // Long-poll fallback — last resort when both WS and SSE fail.
-      // Hangs for up to 30s waiting for the next change, then returns.
-      if (pathname === "/__hmr_poll") {
-        const payload = await new Promise<string>((resolve) => {
-          const timeout = setTimeout(() => {
-            cleanup();
-            resolve("");
-          }, 30_000);
-          function onMessage(msg: string) {
-            cleanup();
-            resolve(msg);
-          }
-          function cleanup() {
-            clearTimeout(timeout);
-            pollWaiters.delete(onMessage);
-          }
-          pollWaiters.add(onMessage);
-        });
-        return new Response(payload || "noop", {
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
-      // Route the request through the Astro integration middleware chain.
-      // If a middleware ends the response itself (e.g. CMS API handler),
-      // that Response is returned. Otherwise the chain exhausts and
-      // `pletivoHandler` runs — integration middlewares that wrapped
-      // res.write/res.end (e.g. CMS HTML marker) then see the page HTML
-      // on its way out.
-      if (astroHost) {
-        const response = await dispatchMiddlewares(
-          req,
-          astroHost.server.__middlewares,
-          () => pletivoHandler(req, url, pathname),
-        );
-        if (response) return response;
-      }
-
-      return (await pletivoHandler(req, url, pathname)) ?? new Response("Not Found", { status: 404 });
+      return response;
     },
 
     websocket: {
       open(ws) {
         sockets.add(ws);
-        console.log(`  HMR ws connected (${sockets.size} clients)`);
+        logHmrEvent("ws", "connected", sockets.size);
       },
       close(ws) {
         sockets.delete(ws);
-        console.log(`  HMR ws disconnected (${sockets.size} clients)`);
+        logHmrEvent("ws", "disconnected", sockets.size);
       },
       message() {},
     },
