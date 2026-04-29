@@ -1,6 +1,9 @@
 import { describe, test, expect } from "bun:test";
+import path from "path";
 import { defineCollection, glob } from "../../packages/pletivo/src/content/collection";
 import { z } from "zod";
+
+const fixtureRoot = path.join(import.meta.dir, "../fixture");
 
 describe("defineCollection", () => {
   test("returns the same config object", () => {
@@ -54,5 +57,36 @@ describe("defineCollection", () => {
   test("glob() with custom pattern", () => {
     const loader = glob({ base: "content", pattern: "**/*.mdx" });
     expect(loader.load).toBeTypeOf("function");
+  });
+
+  test("glob() default IDs strip extension and preserve subdirs", async () => {
+    const loader = glob({ base: "src/content/news" });
+    const entries = await loader.load(fixtureRoot);
+    const ids = entries.map((e) => e.id).sort();
+    expect(ids).toEqual(["cs/brno-1", "cs/praha-2", "en/prague-2"]);
+  });
+
+  test("glob() generateId overrides the default ID", async () => {
+    const loader = glob({
+      base: "src/content/news",
+      generateId: ({ entry }) => `custom:${entry}`,
+    });
+    const entries = await loader.load(fixtureRoot);
+    const ids = entries.map((e) => e.id).sort();
+    expect(ids).toEqual([
+      "custom:cs/brno-1.md",
+      "custom:cs/praha-2.md",
+      "custom:en/prague-2.md",
+    ]);
+  });
+
+  test("glob() generateId receives parsed frontmatter data", async () => {
+    const loader = glob({
+      base: "src/content/news",
+      generateId: ({ data }) => `t-${(data as { title: string }).title}`,
+    });
+    const entries = await loader.load(fixtureRoot);
+    const ids = entries.map((e) => e.id).sort();
+    expect(ids).toEqual(["t-Brno 1", "t-Prague 2", "t-Praha 2"]);
   });
 });

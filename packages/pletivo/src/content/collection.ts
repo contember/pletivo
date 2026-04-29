@@ -1,9 +1,9 @@
 import path from "path";
 import fs from "fs";
+import { pathToFileURL } from "url";
 import { Glob } from "bun";
 import { z } from "zod";
-import yaml from "js-yaml";
-import { parseMarkdown, parseFrontmatter } from "./markdown";
+import { parseMarkdown, parseFrontmatter, parseYamlObject } from "./markdown";
 import {
   imageUrlFor,
   makeImageMetadata,
@@ -158,6 +158,20 @@ export interface GlobOptions {
   pattern?: string;
   /** Base directory relative to project root */
   base: string;
+  /**
+   * Astro-compatible ID generator. Receives the file's path relative to
+   * `base`, the absolute base URL, and the parsed frontmatter data, and
+   * returns the entry ID. Defaults to stripping the extension while
+   * preserving subdirectory structure (e.g. `cs/praha-2.md` → `cs/praha-2`).
+   *
+   * Common use case: collapse `index` files to their parent directory:
+   *   generateId: ({ entry }) => entry.replace(/\/index\.md$/, "").replace(/\.md$/, "")
+   */
+  generateId?: (params: {
+    entry: string;
+    base: URL;
+    data: Record<string, unknown>;
+  }) => string;
 }
 
 /**
@@ -177,57 +191,54 @@ export function glob(options: GlobOptions): Loader {
       const dir = path.resolve(projectRoot, options.base);
       if (!fs.existsSync(dir)) return [];
       const globPattern = new Glob(options.pattern ?? "**/*.{md,mdx}");
+      const baseUrl = pathToFileURL(dir + path.sep);
       const entries: RawEntry[] = [];
 
       for await (const file of globPattern.scan(dir)) {
         const fullPath = path.join(dir, file);
         const content = await Bun.file(fullPath).text();
         const ext = path.extname(file).toLowerCase();
-        // Astro parity: collection entry IDs preserve the subdirectory
-        // structure under the collection root, so
-        // `news/cs/praha-2.md` → `cs/praha-2`. Users rely on this for
-        // dir-per-locale content (filter by `entry.id.startsWith("cs/")`)
-        // and for nested dynamic routes.
-        const id = file.replace(/\.(md|mdx|json|ya?ml)$/i, "");
+
+        // Per-extension parsing produces (data, body, extras) — extras
+        // hold internal hints (_filePath, _html, _mdxFilePath) that the
+        // schema strips before validation.
+        let data: Record<string, unknown>;
+        let body = "";
+        let extras: Record<string, unknown>;
 
         if (ext === ".json") {
-          let data: Record<string, unknown>;
           try {
             data = JSON.parse(content);
           } catch (e) {
             console.error(`  JSON parse error in ${file}: ${(e as Error).message}`);
             continue;
           }
-          entries.push({ id, body: "", data: { ...data, _filePath: fullPath } });
+          extras = { _filePath: fullPath };
         } else if (ext === ".yaml" || ext === ".yml") {
-          let data: Record<string, unknown>;
           try {
-            const parsed = yaml.load(content);
-            data = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-              ? parsed as Record<string, unknown>
-              : {};
+            data = parseYamlObject(content);
           } catch (e) {
             console.error(`  YAML parse error in ${file}: ${(e as Error).message}`);
             continue;
           }
-          entries.push({ id, body: "", data: { ...data, _filePath: fullPath } });
+          extras = { _filePath: fullPath };
         } else if (ext === ".mdx") {
-          // .mdx — parse frontmatter for validation, defer rendering to import time
-          const { frontmatter, body } = parseFrontmatter(content);
-          entries.push({
-            id,
-            body,
-            data: { ...frontmatter, _filePath: fullPath, _mdxFilePath: fullPath },
-          });
+          const parsed = parseFrontmatter(content);
+          data = parsed.frontmatter;
+          body = parsed.body;
+          extras = { _filePath: fullPath, _mdxFilePath: fullPath };
         } else {
-          // .md
           const parsed = parseMarkdown(content);
-          entries.push({
-            id,
-            body: parsed.body,
-            data: { ...parsed.frontmatter, _filePath: fullPath, _html: parsed.html },
-          });
+          data = parsed.frontmatter;
+          body = parsed.body;
+          extras = { _filePath: fullPath, _html: parsed.html };
         }
+
+        const id = options.generateId
+          ? options.generateId({ entry: file, base: baseUrl, data })
+          : file.replace(/\.(md|mdx|json|ya?ml)$/i, "");
+
+        entries.push({ id, body, data: { ...data, ...extras } });
       }
 
       return entries;
