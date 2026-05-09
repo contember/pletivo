@@ -303,6 +303,7 @@ export async function registerAstroPlugin(): Promise<void> {
 
   const pletivoSrcDir = path.dirname(fileURLToPath(import.meta.url));
   const shimPath = path.resolve(pletivoSrcDir, "runtime/astro-shim.ts");
+  const containerPath = path.resolve(pletivoSrcDir, "runtime/astro-container.ts");
   const contentPath = path.resolve(pletivoSrcDir, "content/index.ts");
   const i18nVirtualPath = path.resolve(pletivoSrcDir, "i18n/virtual-module.ts");
   const imagePath = path.resolve(pletivoSrcDir, "image.ts");
@@ -554,6 +555,15 @@ export async function registerAstroPlugin(): Promise<void> {
       mod("astro:env/server", () => ({
         loader: "ts",
         contents: generateEnvModule("server"),
+      }));
+
+      // `astro/container` — experimental Container API shim. Lets
+      // integrations render `.astro` components directly (typically
+      // from `astro:build:done` hooks for post-build artifacts).
+      // Backed by the renderer in `runtime/astro-container.ts`.
+      mod("astro/container", () => ({
+        loader: "ts",
+        contents: `export { experimental_AstroContainer } from ${JSON.stringify(containerPath)};`,
       }));
 
       // `astro/config` — minimal shim so astro.config.mjs files that
