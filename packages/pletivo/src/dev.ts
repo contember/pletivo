@@ -530,10 +530,16 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
   async function pletivoHandler(req: Request, url: URL, pathname: string): Promise<Response | null> {
     {
-      // Serve the morphdom ESM bundle for the HMR client's lazy import
+      // Serve the morphdom ESM bundle for the HMR client's lazy import.
+      // Resolve from this file's directory rather than the consumer's CWD so the
+      // lookup walks up into pletivo's own node_modules — otherwise consumers
+      // that don't list morphdom themselves get a 500 here and the HMR client
+      // silently falls back to full-page reloads.
       if (pathname === "/__pletivo/morphdom.js") {
         try {
-          const morphdomPath = require.resolve("morphdom/dist/morphdom-esm.js");
+          const morphdomPath = require.resolve("morphdom/dist/morphdom-esm.js", {
+            paths: [import.meta.dirname],
+          });
           return new Response(Bun.file(morphdomPath), {
             headers: { "Content-Type": "application/javascript; charset=utf-8" },
           });
