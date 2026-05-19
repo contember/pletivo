@@ -55,7 +55,7 @@ switch (command) {
     pletivo dev [--port=3000] [--host]    Start dev server with HMR
 
   Options:
-    --clean          Wipe .pletivo/cache before building
+    --clean          Wipe node_modules/.pletivo/cache before building
     --no-cache       Build without using or writing the incremental cache
     --port=<number>  Dev server port (default: 3000)
     --host[=<addr>]  Dev server host (default: localhost, bare --host = 0.0.0.0)

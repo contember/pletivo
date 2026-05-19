@@ -64,7 +64,7 @@ gh run watch $(gh run list --workflow=release.yml --limit=1 --json databaseId -q
 
 ## Incremental build — dep tracking limits
 
-`build` is incremental by default (cache lives in `.pletivo/cache/`). Two layers feed the dep tracker:
+`build` is incremental by default (cache lives in `node_modules/.pletivo/cache/`). Two layers feed the dep tracker:
 
 1. **Static ESM graph** (`incremental/import-graph.ts`) — parses page source with Bun's transpiler + `@astrojs/compiler` for `.astro` + `@mdx-js/mdx` for `.mdx`. Catches any module reachable through a static `import` / `import()`.
 2. **Runtime capture** (`incremental/dep-tracker.ts`) — AsyncLocalStorage-scoped `recordRuntimeDep(path)` calls fired from `getCollection`, `probeAndRegisterImage`, and the `glob()` loader.

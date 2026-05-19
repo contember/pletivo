@@ -43,7 +43,7 @@ async function write(rel: string, content: string): Promise<string> {
 }
 
 async function readCache(): Promise<{ routes: Record<string, { depFingerprints: Record<string, { mtimeMs: number; size: number; hash: string }> }> }> {
-	const raw = await fs.readFile(path.join(projectRoot, ".pletivo", "cache", "cache.json"), "utf8");
+	const raw = await fs.readFile(path.join(projectRoot, "node_modules", ".pletivo", "cache", "cache.json"), "utf8");
 	return JSON.parse(raw);
 }
 
@@ -152,7 +152,7 @@ describe("incremental build", () => {
 	it("--clean wipes the cache and forces a cold rebuild", async () => {
 		await setupSimpleProject();
 		await build(projectRoot, config);
-		expect(await fs.stat(path.join(projectRoot, ".pletivo", "cache", "cache.json"))).toBeDefined();
+		expect(await fs.stat(path.join(projectRoot, "node_modules", ".pletivo", "cache", "cache.json"))).toBeDefined();
 
 		// Plant a sentinel in the cache that a clean rebuild would lose.
 		const cache = await readCache();
@@ -169,7 +169,7 @@ describe("incremental build", () => {
 	it("--no-cache skips writing the cache entirely", async () => {
 		await setupSimpleProject();
 		await build(projectRoot, config, { noCache: true });
-		await expect(fs.stat(path.join(projectRoot, ".pletivo", "cache"))).rejects.toThrow();
+		await expect(fs.stat(path.join(projectRoot, "node_modules", ".pletivo", "cache"))).rejects.toThrow();
 	});
 
 	it("prunes cache entries for routes that no longer exist", async () => {

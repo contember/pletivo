@@ -88,9 +88,9 @@ interface PageResult {
 
 export interface BuildOptions {
   /**
-   * Force a full rebuild — wipe `.pletivo/cache/` and the prior dist
-   * snapshot, then build everything from scratch. Equivalent to
-   * deleting `.pletivo/` before running.
+   * Force a full rebuild — wipe `node_modules/.pletivo/cache/` and the prior
+   * dist snapshot, then build everything from scratch. Equivalent to
+   * deleting `node_modules/.pletivo/cache/` before running.
    */
   clean?: boolean;
   /**

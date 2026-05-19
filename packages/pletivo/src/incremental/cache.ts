@@ -127,7 +127,7 @@ export interface PletivoCache {
 
 /**
  * On-disk cache backing pletivo's incremental build. Persists to
- * `.pletivo/cache/cache.json`. Tracks per-route dep fingerprints,
+ * `node_modules/.pletivo/cache/cache.json`. Tracks per-route dep fingerprints,
  * fragment registrations, getStaticPaths memoization, and bookkeeping
  * for the persistent `dist/` directory.
  *
@@ -371,7 +371,7 @@ async function collectDirListing(dir: string): Promise<string[]> {
 }
 
 export function cacheDir(projectRoot: string): string {
-  return path.join(projectRoot, ".pletivo", "cache");
+  return path.join(projectRoot, "node_modules", ".pletivo", "cache");
 }
 
 /**

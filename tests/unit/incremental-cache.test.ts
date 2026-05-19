@@ -57,12 +57,12 @@ describe("CacheStore", () => {
 		await s1.persist();
 		// Plant a stray file in the cache dir so we can verify forceClean
 		// wipes the whole directory tree.
-		await fs.mkdir(path.join(tmp, ".pletivo", "cache"), { recursive: true });
-		await fs.writeFile(path.join(tmp, ".pletivo", "cache", "ghost"), "x");
+		await fs.mkdir(path.join(tmp, "node_modules", ".pletivo", "cache"), { recursive: true });
+		await fs.writeFile(path.join(tmp, "node_modules", ".pletivo", "cache", "ghost"), "x");
 
 		const cleaned = await CacheStore.forceClean(tmp, "c1");
 		expect(cleaned.routeKeys()).toEqual([]);
-		await expect(fs.stat(path.join(tmp, ".pletivo", "cache", "ghost"))).rejects.toThrow();
+		await expect(fs.stat(path.join(tmp, "node_modules", ".pletivo", "cache", "ghost"))).rejects.toThrow();
 	});
 
 	it("pruneRoutes drops entries whose keys aren't in the keep set", async () => {
