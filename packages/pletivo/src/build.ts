@@ -22,12 +22,31 @@ import { setBase } from "./base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import type { PletivoConfig } from "./config";
+import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent } from "./incremental/cache";
+import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
+import { configureDepTracker, runWithRuntimeDepCapture } from "./incremental/dep-tracker";
+import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
+import { extractEntryFilePaths } from "./incremental/extract-deps";
 
 interface PageResult {
   file: string;
   label: string;
   outPath: string;
+  /**
+   * Rendered HTML when this page was freshly rendered this build.
+   * Empty string for `source === "cached"` pages — they didn't go
+   * through writeHtml (their HTML is already on disk from the
+   * previous build) and downstream passes use `islands` /
+   * `hoistedHashes` directly instead of re-scanning the HTML.
+   */
   html: string;
+  /**
+   * Stable cache key for this rendered output. Populated only for
+   * routes that flow through `runIncrementalRender` (i.e. static and
+   * dynamic page routes). i18n fallback / 404 / injected paths leave
+   * this undefined and are not subject to incremental caching.
+   */
+  routeKey?: string;
   /**
    * Component module ids (as passed to `$$createComponent`) whose
    * render function executed during this page's render pass. Used to
@@ -42,15 +61,66 @@ interface PageResult {
    * alongside Astro scoped/global CSS.
    */
   tsxStyles?: string[];
+  /**
+   * Whether this page's HTML came from cache (already on disk from
+   * the previous build) or was freshly rendered this build. Cached
+   * pages skip writeHtml() — their HTML on disk already contains the
+   * fully-injected `<head>` tags, public-asset rewrites, etc.
+   */
+  source?: RenderSource;
+  /**
+   * Island component names referenced from this page. For cached
+   * pages: pulled from the cache (no HTML read needed). For freshly
+   * rendered pages: scanned from the produced HTML during the render
+   * pipeline.
+   */
+  islands?: string[];
+  /** Hoisted-script hashes referenced from this page. Same lifecycle as `islands`. */
+  hoistedHashes?: string[];
+  /**
+   * Persisted byte size, populated only for cached pages (where the
+   * orchestrator pulls it from the cache entry — no stat needed).
+   * Fresh renders learn their size during writeHtml and record it
+   * back via `recordRenderedSize`.
+   */
+  cachedSize?: number;
 }
 
-export async function build(projectRoot: string, config: PletivoConfig) {
+export interface BuildOptions {
+  /**
+   * Force a full rebuild — wipe `.pletivo/cache/` and the prior dist
+   * snapshot, then build everything from scratch. Equivalent to
+   * deleting `.pletivo/` before running.
+   */
+  clean?: boolean;
+  /**
+   * Disable the incremental cache entirely for this run. Unlike
+   * `clean`, this does NOT wipe an existing cache; it just skips
+   * load/save, so a subsequent `bun pletivo build` can pick up where
+   * it left off.
+   */
+  noCache?: boolean;
+}
+
+export async function build(projectRoot: string, config: PletivoConfig, options: BuildOptions = {}) {
+  const profile = process.env.PLETIVO_PROFILE === "1";
+  const phase = (name: string, t0: number) => {
+    if (profile) console.error(`[PROFILE] ${name}: ${(performance.now() - t0).toFixed(0)}ms`);
+  };
+  const tStart = performance.now();
   const pagesDir = path.join(projectRoot, config.srcDir, "pages");
   const distDir = path.join(projectRoot, config.outDir);
   const publicDir = path.join(projectRoot, config.publicDir);
   const islandsDir = path.join(projectRoot, config.srcDir, "islands");
   const base = config.base.replace(/\/$/, "");
 
+  // ── Incremental setup ──
+  // Configure both layers of the dep tracker to scope resolution to
+  // project sources only. (Static import graph + runtime file reads.)
+  configureImportGraph(projectRoot);
+  configureDepTracker(projectRoot);
+
+  const tPlugins = performance.now();
   await registerAstroPlugin();
   await registerMdxPlugin();
   await registerCssModulesPlugin();
@@ -59,8 +129,25 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureScss(readScssOptions(astroHost?.config.vite));
+  phase("plugins+astroHost", tPlugins);
+  const tColl = performance.now();
   await initCollections(projectRoot);
+  phase("initCollections", tColl);
 
+  // Cache + snapshot restore. `configHash` includes the pletivo config
+  // and (if present) the user's astro config file content + lockfile —
+  // any of those changing busts the entire route cache.
+  const tCacheLoad = performance.now();
+  const configHash = await computeProjectConfigHash(projectRoot, config);
+  const cache: CacheStore | null = options.noCache
+    ? null
+    : options.clean
+      ? await CacheStore.forceClean(projectRoot, configHash)
+      : await CacheStore.load(projectRoot, configHash);
+  const fragments: FragmentsHelper | null = await resolveFragmentsHelper();
+  phase("cache load + fragments resolve", tCacheLoad);
+
+  const tAstroStart = performance.now();
   if (astroHost) {
     await astroHost.runBuildStart();
     await astroHost.runBuildSetup();
@@ -76,17 +163,40 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     }
   }
 
-  // Clean dist
-  await fs.rm(distDir, { recursive: true, force: true });
+  // Persistent dist when incremental is on: we leave whatever the
+  // previous build produced in place, and each route's writeHtml call
+  // (for routes that actually re-render) overwrites the corresponding
+  // file. Cached routes' HTML is already on disk and untouched.
+  // Orphans (outputs of routes that no longer exist) are pruned at
+  // the end of the build.
+  //
+  // With caching off we still wipe — that path matches the historical
+  // pletivo behavior exactly so tooling that diffs dist/ across runs
+  // keeps working.
+  phase("astroHost runBuildStart+Setup", tAstroStart);
+  const tDistWipe = performance.now();
+  if (!cache) {
+    await fs.rm(distDir, { recursive: true, force: true });
+  }
   await fs.mkdir(distDir, { recursive: true });
+  // Snapshot the current dist filesystem once — runIncrementalRender
+  // queries this Set instead of doing per-slug fs.access calls when
+  // deciding whether a cached entry's output file is still on disk.
+  // O(1) set lookups vs O(n) sequential stats.
+  const distFiles = cache ? await collectDistFiles(distDir) : new Set<string>();
+  phase("dist prep", tDistWipe);
 
   // Copy public/ into dist/, hashing assets on the way.
   // Returns a manifest of original → hashed paths, used below to rewrite
   // references inside rendered HTML.
+  const tPublic = performance.now();
   const publicManifest = await hashPublicAssets(publicDir, distDir);
+  phase("hashPublicAssets", tPublic);
 
   // Scan routes
+  const tScan = performance.now();
   const routes = await scanRoutes(pagesDir);
+  phase("scanRoutes", tScan);
   console.log(`Found ${routes.length} routes`);
 
   // Render all pages — static pages in parallel, dynamic sequentially
@@ -150,47 +260,169 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   // Pre-resolve each dynamic route's getStaticPaths once — the result is
   // reused by both `astro:routes:resolved` (for sitemap et al.) and the
   // render loop below, avoiding a double-fetch.
-  const dynamicPaths = new Map<string, StaticPath[]>();
+  //
+  // Strategy:
+  //   1. Use the dynamic-route cache to obtain the param sets (slug
+  //      lists). Always JSON-safe, so this works for every dynamic
+  //      route — including collection-backed ones whose props carry
+  //      non-serializable values like `render()` methods.
+  //   2. Iterate slugs and build the per-slug cache decision (skip
+  //      vs render) WITHOUT props — props aren't needed for the
+  //      skip decision, only for an actual render.
+  //   3. Only call `getStaticPaths()` for routes whose deps drifted
+  //      OR whose slugs include at least one that needs to re-render.
+  //      On a fully-cached warm build no getStaticPaths runs at all.
+  //
+  // `dynamicPathsResolver` is the lazy bridge: render call sites
+  // invoke it to get `props` for a slug, triggering at most one
+  // `getStaticPaths` call per route per build.
+  const tDynPaths = performance.now();
+  const dynamicParamSets = new Map<string, Array<{ params: Record<string, string | undefined> }>>();
+  const dynamicMods = new Map<string, { default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }>();
+  const dynamicStaticPathsCache = new Map<string, Promise<StaticPath[]>>();
+  const dynamicRouteCacheable = new Map<string, () => Promise<void>>();
+
   for (const route of dynamicRoutes) {
     const fullPath = path.join(pagesDir, route.file);
-    const mod = await import(fullPath);
-    if (typeof mod.default !== "function") continue;
-    if (typeof mod.getStaticPaths !== "function") continue;
-    const paginate = createPaginate(route, base || "/");
-    const sp: StaticPath[] = await mod.getStaticPaths({ paginate });
-    dynamicPaths.set(route.file, sp);
+
+    const cachedDyn = cache?.getDynamicRoute(route.file);
+    if (cachedDyn && (await canReuseDeps(cachedDyn.depFingerprints))) {
+      // Fast path: deps unchanged → reuse the cached param sets and
+      // defer getStaticPaths until a slug actually needs to render.
+      dynamicParamSets.set(route.file, cachedDyn.paramSets);
+      continue;
+    }
+
+    // Slow path: deps drifted (or no cache) — run getStaticPaths
+    // now, capture its file reads as deps for next time, and stash
+    // the fresh path list so per-slug renders can read props from
+    // it without re-importing.
+    const { value: sp, runtimeDeps } = await runWithRuntimeDepCapture(async () => {
+      const mod = await import(fullPath);
+      dynamicMods.set(route.file, mod as { default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> });
+      if (typeof mod.default !== "function") return null;
+      if (typeof mod.getStaticPaths !== "function") return null;
+      const paginate = createPaginate(route, base || "/");
+      return (await mod.getStaticPaths({ paginate })) as StaticPath[];
+    });
+    if (!sp) continue;
+    dynamicParamSets.set(route.file, sp.map((p) => ({ params: p.params })));
+    dynamicStaticPathsCache.set(route.file, Promise.resolve(sp));
+
+    if (cache) {
+      const staticDeps = await collectStaticDeps(fullPath);
+      const allDeps = new Set<string>([...staticDeps, ...runtimeDeps]);
+      // Walk transitive imports of any runtime dep that's a source
+      // file (typical case: an .mdx/.astro entry surfaced by
+      // getCollection — its body can `import` arbitrary modules that
+      // contribute to slug HTML). Without this walk, the helper
+      // wouldn't appear in this route's depFingerprints, the
+      // `assumeDepsValid` shortcut would skip the per-slug check,
+      // and an edit to the helper would silently leave slugs stale.
+      const walks = await Promise.all(
+        [...runtimeDeps].map((d) => (isWalkableSourceFile(d) ? collectStaticDeps(d) : null)),
+      );
+      for (const w of walks) {
+        if (w) for (const d of w) allDeps.add(d);
+      }
+      // Persist the cache update lazily — we want the depFingerprints
+      // computed only when we're sure this route succeeds, and the
+      // fingerprint work itself is parallelizable across all routes.
+      dynamicRouteCacheable.set(route.file, async () => {
+        const depFingerprints: Record<string, import("./incremental/cache").DepFingerprint> = {};
+        await Promise.all([...allDeps].map(async (d) => {
+          depFingerprints[d] = await fingerprintFile(d);
+        }));
+        cache.setDynamicRoute(route.file, {
+          paramSets: sp.map((p) => ({ params: p.params })),
+          depFingerprints,
+        });
+      });
+    }
+  }
+
+  // Flush the deferred dynamic-route cache writes in parallel.
+  await Promise.all([...dynamicRouteCacheable.values()].map((fn) => fn()));
+  phase("getStaticPaths (all dynamic routes)", tDynPaths);
+
+  /**
+   * Returns the full StaticPath list for a dynamic route — with
+   * props. If we already ran getStaticPaths this build (cache miss
+   * path), the result was stashed. Otherwise this is the first slug
+   * that needs to actually render → import the module + run
+   * getStaticPaths once and memoize for any later siblings.
+   */
+  function getDynamicStaticPaths(routeFile: string, route: Route): Promise<StaticPath[]> {
+    const cached = dynamicStaticPathsCache.get(routeFile);
+    if (cached) return cached;
+    const fullPath = path.join(pagesDir, routeFile);
+    const fetch = (async () => {
+      let mod = dynamicMods.get(routeFile);
+      if (!mod) {
+        mod = (await import(fullPath)) as typeof mod;
+        dynamicMods.set(routeFile, mod);
+      }
+      if (typeof mod.getStaticPaths !== "function") return [] as StaticPath[];
+      const paginate = createPaginate(route, base || "/");
+      return await mod.getStaticPaths({ paginate });
+    })();
+    dynamicStaticPathsCache.set(routeFile, fetch);
+    return fetch;
   }
 
   // astro:routes:resolved — fire before rendering so integrations like
   // @astrojs/sitemap and @nuasite/agent-summary can capture the full
   // route tree. Redirects declared in astro.config are included as
   // type: "redirect" entries.
+  const tRoutesResolved = performance.now();
   if (astroHost) {
-    const pletivoRoutes: PletivoRouteWithPaths[] = routes.map((r) => ({
-      route: r,
-      staticPaths: dynamicPaths.get(r.file),
-    }));
+    const pletivoRoutes: PletivoRouteWithPaths[] = routes.map((r) => {
+      const paramSet = dynamicParamSets.get(r.file);
+      // Synthesize StaticPath[] for routes:resolved — integrations
+      // (sitemap, agent-summary) only need the params, not props, so
+      // we can hand them the cached param sets straight through.
+      const staticPaths = paramSet ? paramSet.map((p) => ({ params: p.params }) as StaticPath) : undefined;
+      return { route: r, staticPaths };
+    });
     const astroRoutes = buildAstroRoutes(pletivoRoutes, astroHost.config, astroHost.injectedRoutes);
     await astroHost.runRoutesResolved(astroRoutes);
     // Stash for build:done below so we don't rebuild the array
     (astroHost as unknown as { __cachedRoutes?: unknown }).__cachedRoutes = astroRoutes;
   }
+  phase("astro:routes:resolved", tRoutesResolved);
 
   const results: PageResult[] = [];
 
   // Static pages — parallel
+  const tStatic = performance.now();
   const staticResults = await Promise.all(
     staticRoutes.map(async (route): Promise<PageResult | null> => {
       const fullPath = path.join(pagesDir, route.file);
+      const outFile = routeToOutputPath(route, {});
+      const outPath = path.join(distDir, outFile);
+      const routeKey = `${route.file}::__static__`;
 
-      // Markdown pages — render directly without module import
+      // Markdown pages — render directly without module import.
+      // Single-file deps make them cheap; we still gate via the cache
+      // so an unchanged .md doesn't re-emit its HTML file.
       if (route.file.endsWith(".md")) {
-        const source = await Bun.file(fullPath).text();
-        const { html: body, frontmatter } = await parseMarkdown(source);
-        const title = (frontmatter.title as string) || "";
-        const outFile = routeToOutputPath(route, {});
-        const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
-        return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html };
+        const outcome = await runIncrementalRender({
+          routeKey,
+          outFile,
+          pageEntryAbsPath: fullPath,
+          distDir,
+          cache,
+          fragments,
+          distFiles,
+          doRender: async () => {
+            const source = await Bun.file(fullPath).text();
+            const { html: body, frontmatter } = await parseMarkdown(source);
+            const title = (frontmatter.title as string) || "";
+            const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
+            return { html, renderedModules: new Set<string>(), tsxStyles: [] };
+          },
+        });
+        return { file: route.file, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
       }
 
       const mod = await import(fullPath);
@@ -198,44 +430,118 @@ export async function build(projectRoot: string, config: PletivoConfig) {
         console.warn(`  Skipping ${route.file}: no default export function`);
         return null;
       }
-      resetIslandRegistry();
-      const outFile = routeToOutputPath(route, {});
-      const pathname = toPathname(path.join(distDir, outFile), distDir);
-      const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-        renderComponent(mod.default, makePageContext(pathname, {}, route)),
-      );
-      if (html === null) {
+      const pathname = toPathname(outPath, distDir);
+      const outcome = await runIncrementalRender({
+        routeKey,
+        outFile,
+        pageEntryAbsPath: fullPath,
+        distDir,
+        cache,
+        fragments,
+        distFiles,
+        doRender: async () => {
+          resetIslandRegistry();
+          const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
+            renderComponent(mod.default, makePageContext(pathname, {}, route)),
+          );
+          return { html: html ?? "", renderedModules, tsxStyles };
+        },
+      });
+      if (outcome.source === "rendered" && outcome.html === "") {
         console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         return null;
       }
-      return { file: route.file, label: route.file, outPath: path.join(distDir, outFile), html, renderedModules, tsxStyles };
+      return { file: route.file, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
     }),
   );
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
+  phase("static routes", tStatic);
 
-  // Dynamic pages — sequential (getStaticPaths may share data)
+  // Dynamic pages — sequential (per-route getStaticPaths may share
+  // state). Lazy bridges keep the warm-noop path almost free:
+  //   • `getDynamicStaticPaths` only runs getStaticPaths if we end up
+  //     needing props (i.e. at least one slug actually re-renders).
+  //   • `getPropsFor` resolves a slug's props on first request and
+  //     reuses the resolved StaticPath[] across siblings.
+  //   • When the parent dynamic-route cache entry is still valid we
+  //     skip per-slug fingerprint checks — they'd just re-stat files
+  //     already covered by the route's deps. Cuts ~80% of warm-build
+  //     stat calls for content-collection-backed routes.
+  const tDynamic = performance.now();
   for (const route of dynamicRoutes) {
-    const staticPaths = dynamicPaths.get(route.file);
-    if (!staticPaths) {
+    const paramSets = dynamicParamSets.get(route.file);
+    if (!paramSets) {
       console.warn(`  Skipping ${route.file}: dynamic route without getStaticPaths()`);
       continue;
     }
     const fullPath = path.join(pagesDir, route.file);
-    const mod = await import(fullPath);
-    for (const { params, props: pathProps } of staticPaths) {
-      resetIslandRegistry();
+    // If the dynamic-route cache entry survived this build's
+    // canReuseDeps check, every input the slug's render could read is
+    // already known-unchanged. Per-slug canReuse would just re-stat
+    // the same files.
+    const assumeDepsValid =
+      cache !== null && dynamicMods.get(route.file) === undefined && cache.getDynamicRoute(route.file) !== undefined;
+    let modPromise: Promise<{ default?: unknown }> | null = null;
+    const getMod = (): Promise<{ default?: unknown }> => {
+      if (!modPromise) {
+        const prefetched = dynamicMods.get(route.file);
+        modPromise = prefetched
+          ? Promise.resolve(prefetched as { default?: unknown })
+          : (import(fullPath) as Promise<{ default?: unknown }>);
+      }
+      return modPromise;
+    };
+    // Index resolved paths by `paramsToKey(params)` so we can look up
+    // a slug's props on demand without a linear scan each time.
+    let propsIndexPromise: Promise<Map<string, Record<string, unknown> | undefined>> | null = null;
+    const getPropsFor = async (paramsKey: string): Promise<Record<string, unknown> | undefined> => {
+      if (!propsIndexPromise) {
+        propsIndexPromise = getDynamicStaticPaths(route.file, route).then((paths) => {
+          const idx = new Map<string, Record<string, unknown> | undefined>();
+          for (const p of paths) idx.set(paramsToKey(p.params), p.props);
+          return idx;
+        });
+      }
+      return (await propsIndexPromise).get(paramsKey);
+    };
+    for (const { params } of paramSets) {
       const outFile = routeToOutputPath(route, params);
-      const pathname = toPathname(path.join(distDir, outFile), distDir);
+      const outPath = path.join(distDir, outFile);
+      const pathname = toPathname(outPath, distDir);
       const ctx = makePageContext(pathname, params, route);
-      const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-        renderComponent(mod.default, { ...(pathProps || {}), ...ctx }),
-      );
-      if (html === null) continue;
+      const paramsKey = paramsToKey(params);
+      const routeKey = `${route.file}::${paramsKey}`;
+      const outcome = await runIncrementalRender({
+        routeKey,
+        outFile,
+        pageEntryAbsPath: fullPath,
+        distDir,
+        cache,
+        fragments,
+        distFiles,
+        assumeDepsValid,
+        // Lazy thunk — only invoked on the fresh-render path. Forces
+        // getStaticPaths to resolve (just once, memoized across all
+        // slugs of this route) so we can read the slug's pathProps
+        // and extract the content-collection backing files as deps.
+        extraDeps: async () => extractEntryFilePaths(await getPropsFor(paramsKey)),
+        doRender: async () => {
+          resetIslandRegistry();
+          const mod = await getMod();
+          const pathProps = await getPropsFor(paramsKey);
+          const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
+            renderComponent(mod.default as (props: Record<string, unknown>) => unknown, { ...(pathProps || {}), ...ctx }),
+          );
+          return { html: html ?? "", renderedModules, tsxStyles };
+        },
+      });
+      if (outcome.source === "rendered" && outcome.html === "") continue;
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
-      results.push({ file: route.file, label, outPath: path.join(distDir, outFile), html, renderedModules, tsxStyles });
+      results.push({ file: route.file, label, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size });
     }
   }
+  phase("dynamic routes", tDynamic);
 
   // Render i18n fallback emissions + default-locale redirects. Each
   // emission produces either a rewrite (render source component with
@@ -243,6 +549,16 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   // emissions are additive to the page set — they never replace an
   // existing rendered route, so we emit them after the main loops.
   if (i18n) {
+    // i18n fallback emissions need the full StaticPath[] (params + props)
+    // because rewrite-mode renders the source component with the
+    // fallback target locale, which requires re-supplying the original
+    // props. Materialize props for every dynamic route now — this is
+    // the one case where the lazy bridge isn't enough.
+    const dynamicPaths = new Map<string, StaticPath[]>();
+    for (const route of dynamicRoutes) {
+      if (!dynamicParamSets.has(route.file)) continue;
+      dynamicPaths.set(route.file, await getDynamicStaticPaths(route.file, route));
+    }
     // Redirects and fallback URLs need to account for Astro's `base`
     // config (e.g. `/new-site`). Prefer the astro host's base, falling
     // back to pletivo's own config for non-astro-host projects.
@@ -384,24 +700,51 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       .values(),
   );
 
+  phase("renders + dedupe", tStatic);
   // Bundle CSS from src/ AFTER rendering — side-effect imports of
   // `.scss` / `.sass` from components populate the scss output map
   // during page rendering, so the bundle needs to be computed here
   // to include them.
+  const tCss = performance.now();
   const cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
+  phase("bundleCss", tCss);
 
   // Write all pages (including 404) — parallel.
   // Scoped CSS from <style> blocks is injected per-page (not into the
   // global bundle) to avoid cross-page leaks from unscoped rules like
   // `:global()` selectors or `body` styles.
+  //
+  // Cached pages skip writeHtml() entirely — their fully-processed HTML
+  // is already on disk in dist (restored from the prior snapshot at
+  // the top of build()). Re-running writeHtml on them would inject CSS
+  // / hydration scripts a second time. We still account for their
+  // file size in the summary and pass their HTML downstream to the
+  // island/hoisted-script scanners.
   let totalSize = 0;
+  let cachedCount = 0;
+  let renderedCount = 0;
+  const tWrite = performance.now();
   await Promise.all(
     dedupedResults.map(async (result) => {
+      if (result.source === "cached") {
+        const size = result.cachedSize ?? 0;
+        totalSize += size;
+        cachedCount++;
+        console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)}) [cached]`);
+        return;
+      }
       const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest, result.renderedModules, result.tsxStyles);
       totalSize += size;
+      renderedCount++;
+      // Now that we know the final byte count, patch it onto the
+      // route's cache entry so the next warm build can skip the stat.
+      if (cache && result.routeKey) {
+        recordRenderedSize(cache, result.routeKey, size);
+      }
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
     }),
   );
+  phase("writeHtml all pages", tWrite);
   clearScopedCss();
   clearGlobalCss();
   clearCssModules();
@@ -412,23 +755,38 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   const imageTransforms = getTransforms();
   let imageCount = 0;
   if (imageTransforms.size > 0 || getImportedImages().size > 0) {
+    const tImg = performance.now();
     imageCount = await processImages(imageTransforms, distDir);
     clearTransforms();
+    phase("processImages", tImg);
   }
 
-  // Scan each rendered page once for both island and hoisted-script
-  // references, then bundle them in parallel.
+  // Aggregate island + hoisted references across all routes. For
+  // fresh renders we scanned the produced HTML inside the orchestrator
+  // and have the results on PageResult.islands / .hoistedHashes. For
+  // cached routes those lists came directly from the cache entry —
+  // no need to read the HTML back from disk just to re-scan it.
+  // Anything that didn't get the metadata for some reason (e.g. i18n
+  // redirect emissions, 404, injected routes) falls back to scanning
+  // the in-memory HTML.
   const islandNames = new Set<string>();
   const referencedHashes = new Set<string>();
   for (const result of dedupedResults) {
+    if (result.islands || result.hoistedHashes) {
+      for (const name of result.islands ?? []) islandNames.add(name);
+      for (const hash of result.hoistedHashes ?? []) referencedHashes.add(hash);
+      continue;
+    }
     for (const name of extractAll(result.html, ISLAND_NAME_RE)) islandNames.add(name);
     for (const hash of extractAll(result.html, HOISTED_URL_RE)) referencedHashes.add(hash);
   }
 
+  const tBundle = performance.now();
   await Promise.all([
     islandNames.size > 0 ? bundleIslands(islandNames, islandsDir, distDir) : null,
     referencedHashes.size > 0 ? bundleHoistedScripts(referencedHashes, distDir) : null,
   ]);
+  phase("islands+hoisted bundling", tBundle);
   clearHoistedScripts();
 
   // Generate sitemap — skip if the user's Astro config includes a
@@ -445,6 +803,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   // @astrojs/sitemap writes its sitemap XMLs now that it has both the
   // captured routes and the final pages list.
   if (astroHost) {
+    const tDone = performance.now();
     await astroHost.runBuildGenerated(distDir);
     const pageEntries = dedupedResults.map((r) => ({
       pathname: toPathname(r.outPath, distDir),
@@ -452,9 +811,13 @@ export async function build(projectRoot: string, config: PletivoConfig) {
     const cachedRoutes =
       (astroHost as unknown as { __cachedRoutes?: import("./astro-host").AstroRoute[] }).__cachedRoutes ?? [];
     await astroHost.runBuildDone(cachedRoutes, pageEntries, distDir);
+    phase("astro:build:done", tDone);
   }
 
-  console.log(`\nBuilt ${results.length} pages${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
+  const incrementalSummary = cache
+    ? `, ${renderedCount} rendered + ${cachedCount} cached`
+    : "";
+  console.log(`\nBuilt ${results.length} pages${incrementalSummary}${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
 
   // Refuse to ship a build that silently dropped entries.
   // Individual errors were already logged at validation time.
@@ -467,6 +830,186 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       `Build aborted: ${failures.length} content entr${failures.length === 1 ? "y" : "ies"} failed validation:\n${summary}`,
     );
   }
+
+  // Persist the cache + snapshot the just-built dist. Only happens on
+  // successful builds (we're past every throw), so the snapshot always
+  // mirrors a known-good output set.
+  if (cache) {
+    // Prune cache entries for routes that no longer exist. Only the
+    // routes that went through `runIncrementalRender` carry a routeKey;
+    // i18n / 404 / injected ones don't and never had cache entries.
+    const keepKeys = new Set<string>();
+    for (const r of dedupedResults) {
+      if (r.routeKey) keepKeys.add(r.routeKey);
+    }
+    cache.pruneRoutes(keepKeys);
+
+    // Prune dist files that no longer belong to any current route.
+    // Walk every cache entry's `outPath` to build the keep set, then
+    // walk dist/<page-paths> and delete strays. We intentionally don't
+    // touch `_astro/`, `_islands/`, `_fragments/` here — those have
+    // their own ownership models (content-hashed bundles, integration-
+    // owned fragments) and aren't 1:1 with routes.
+    const tPrune = performance.now();
+    const keepOutputs = new Set<string>();
+    for (const r of dedupedResults) {
+      keepOutputs.add(path.relative(distDir, r.outPath));
+    }
+    // For the prune we also need entries written during this build
+    // (fresh renders) — combine the start-of-build inventory with the
+    // freshly-emitted outputs.
+    const seenFiles = new Set(distFiles);
+    for (const r of dedupedResults) seenFiles.add(path.relative(distDir, r.outPath));
+    await pruneOrphanPageFiles(distDir, seenFiles, keepOutputs);
+    phase("prune dist orphans", tPrune);
+
+    const tPersist = performance.now();
+    await cache.persist();
+    phase("cache.json persist", tPersist);
+  }
+  phase("TOTAL build()", tStart);
+}
+
+/**
+ * Walk dist once and collect every file's path relative to `distDir`.
+ * Used for two things:
+ *   1. `runIncrementalRender` consults the set to verify a cached
+ *      route's output is still on disk — O(1) lookup instead of an
+ *      `fs.access` per slug.
+ *   2. The end-of-build prune diffs the same set against the kept
+ *      route outputs to find orphans, so we don't have to walk dist
+ *      twice in one build.
+ */
+async function collectDistFiles(distDir: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  await walkDist(distDir, distDir, async (rel) => {
+    out.add(rel);
+  });
+  return out;
+}
+
+async function pruneOrphanPageFiles(distDir: string, distFiles: Set<string>, keep: Set<string>): Promise<void> {
+  // Scan the inventory we already collected at build start. Anything
+  // not in `keep` is a leftover from a previous build (route deleted,
+  // slug removed, i18n locale dropped) and should be cleaned up.
+  // Skip the reserved astro/pletivo output directories — those have
+  // their own ownership models.
+  await Promise.all([...distFiles].map(async (rel) => {
+    if (!rel.endsWith(".html")) return;
+    if (rel.startsWith("_astro/") || rel.startsWith("_islands/") || rel.startsWith("_fragments/")) return;
+    if (keep.has(rel)) return;
+    try {
+      await fs.unlink(path.join(distDir, rel));
+    } catch {}
+  }));
+}
+
+async function walkDist(root: string, current: string, visit: (rel: string) => Promise<void>): Promise<void> {
+  let entries;
+  try {
+    entries = await fs.readdir(current, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  await Promise.all(entries.map(async (entry) => {
+    const full = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      await walkDist(root, full, visit);
+    } else if (entry.isFile()) {
+      await visit(path.relative(root, full));
+    }
+  }));
+}
+
+function paramsToKey(params: Record<string, string | undefined>): string {
+  const sorted = Object.keys(params).sort();
+  return sorted.map((k) => `${k}=${params[k] ?? ""}`).join("&");
+}
+
+async function canReuseDeps(deps: Record<string, import("./incremental/cache").DepFingerprint>): Promise<boolean> {
+  const entries = Object.entries(deps);
+  const checks = await Promise.all(entries.map(([f, p]) => canReuseFingerprint(f, p)));
+  return checks.every(Boolean);
+}
+
+/**
+ * Compute a single hash that captures every input which, if changed,
+ * should invalidate ALL cached routes (vs. per-route deps). Includes:
+ *   - pletivo config (selected fields)
+ *   - astro/pletivo config file contents (if present)
+ *   - bun.lock
+ *   - tsconfig.json (path aliases, module resolution → can change which
+ *     file a bare specifier resolves to without any source edit)
+ *   - relevant package.json fields (dependencies / peerDependencies /
+ *     optionalDependencies / type / exports / imports). We exclude
+ *     scripts/devDependencies/version — those don't affect rendered
+ *     output, and including them would bust the cache on every npm-i.
+ *   - every .css/.scss/.sass file under srcDir (bundled into the global
+ *     CSS asset whose hashed filename is baked into rendered HTML —
+ *     when the bundle's filename changes, cached pages would otherwise
+ *     ship a <link> to a file that no longer exists).
+ */
+async function computeProjectConfigHash(projectRoot: string, config: PletivoConfig): Promise<string> {
+  const parts: Array<string | Buffer> = [];
+  parts.push(JSON.stringify({ base: config.base, outDir: config.outDir, srcDir: config.srcDir, publicDir: config.publicDir }));
+  for (const file of ["astro.config.mjs", "astro.config.js", "astro.config.ts", "pletivo.config.ts", "pletivo.config.js", "tsconfig.json"]) {
+    const p = path.join(projectRoot, file);
+    const h = await hashFileContent(p);
+    if (h !== "__missing__") parts.push(`${file}=${h}`);
+  }
+  const pkgFields = await hashRelevantPackageFields(path.join(projectRoot, "package.json"));
+  if (pkgFields) parts.push(`package.json=${pkgFields}`);
+  const lock = await hashFileContent(path.join(projectRoot, "bun.lock"));
+  if (lock !== "__missing__") parts.push(`bun.lock=${lock}`);
+  const cssParts = await hashSrcCssFiles(path.join(projectRoot, config.srcDir));
+  for (const p of cssParts) parts.push(p);
+  return await computeConfigHash(parts);
+}
+
+/**
+ * Pick fields from package.json that can change build output, hash them
+ * together, return null on parse failure. Excluding `scripts`,
+ * `devDependencies`, `version`, etc. avoids busting the cache on every
+ * `npm version` bump or test-script tweak.
+ */
+async function hashRelevantPackageFields(pkgPath: string): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(pkgPath, "utf8");
+    const pkg = JSON.parse(raw) as Record<string, unknown>;
+    const subset = {
+      dependencies: pkg.dependencies ?? null,
+      peerDependencies: pkg.peerDependencies ?? null,
+      optionalDependencies: pkg.optionalDependencies ?? null,
+      type: pkg.type ?? null,
+      exports: pkg.exports ?? null,
+      imports: pkg.imports ?? null,
+    };
+    return Bun.hash(JSON.stringify(subset)).toString(16);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hash every CSS-family source file under `srcDir`. Returns a sorted
+ * array of `path=hash` parts so the produced configHash is stable
+ * across runs regardless of FS walk order.
+ */
+async function hashSrcCssFiles(srcDir: string): Promise<string[]> {
+  const { Glob } = await import("bun");
+  const glob = new Glob("**/*.{css,scss,sass}");
+  const files: string[] = [];
+  try {
+    for await (const f of glob.scan(srcDir)) files.push(f);
+  } catch {
+    return [];
+  }
+  files.sort();
+  const parts = await Promise.all(files.map(async (f) => {
+    const h = await hashFileContent(path.join(srcDir, f));
+    return `css:${f}=${h}`;
+  }));
+  return parts;
 }
 
 /**

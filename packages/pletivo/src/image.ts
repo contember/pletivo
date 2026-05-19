@@ -12,6 +12,7 @@ import path from "path";
 import fs from "fs/promises";
 import { createRequire } from "module";
 import { withBase } from "./base";
+import { recordRuntimeDep } from "./incremental/dep-tracker";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -297,6 +298,7 @@ export async function probeAndRegisterImage(fsPath: string): Promise<ProbeResult
   if (inflight) return inflight;
 
   const promise = (async () => {
+    recordRuntimeDep(fsPath);
     const buffer = await Bun.file(fsPath).arrayBuffer();
     const dims = readImageDimensionsFromBuffer(buffer, fsPath);
 

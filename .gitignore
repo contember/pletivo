@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .astro/
+.pletivo/
 
 # Synthetic benchmark content — regenerated via scripts/benchmark.sh
 examples/basic/src/content/blog/generated/

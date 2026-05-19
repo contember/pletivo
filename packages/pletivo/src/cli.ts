@@ -32,9 +32,12 @@ if (hostIdx !== -1 && process.argv[hostIdx + 1] && !process.argv[hostIdx + 1].st
 }
 
 switch (command) {
-  case "build":
-    await build(projectRoot, config);
+  case "build": {
+    const clean = process.argv.includes("--clean");
+    const noCache = process.argv.includes("--no-cache");
+    await build(projectRoot, config, { clean, noCache });
     break;
+  }
 
   case "dev":
     await dev(projectRoot, config);
@@ -48,10 +51,12 @@ switch (command) {
   pletivo v${version} — static site generator
 
   Usage:
-    pletivo build              Build static site
-    pletivo dev [--port=3000] [--host]  Start dev server with HMR
+    pletivo build [--clean] [--no-cache]  Build static site (incremental by default)
+    pletivo dev [--port=3000] [--host]    Start dev server with HMR
 
   Options:
+    --clean          Wipe .pletivo/cache before building
+    --no-cache       Build without using or writing the incremental cache
     --port=<number>  Dev server port (default: 3000)
     --host[=<addr>]  Dev server host (default: localhost, bare --host = 0.0.0.0)
     --help           Show this help
