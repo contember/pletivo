@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   buildRehypePlugins,
+  buildRemarkPlugins,
   captureMdxIntegrationOptions,
   MDX_INTEGRATION_OPTIONS_KEY,
   resolveMdxOptions,
@@ -76,6 +77,38 @@ describe("resolveMdxOptions", () => {
     const resolved = resolveMdxOptions(emptyPletivoConfig, {});
     expect(resolved.remarkPlugins).toBeUndefined();
     expect(resolved.rehypePlugins).toBeUndefined();
+  });
+
+  test("de-duplicates a plugin listed in both markdown and mdx() (runs once)", () => {
+    // A meta-framework often puts the same plugin in both markdown.* and mdx().
+    const astroConfig = {
+      markdown: { remarkPlugins: [remarkA, remarkB] },
+      [MDX_INTEGRATION_OPTIONS_KEY]: { remarkPlugins: [remarkA], rehypePlugins: [] },
+    };
+    const resolved = resolveMdxOptions(emptyPletivoConfig, astroConfig);
+    // remarkA appears in both sources but only once in the result, order kept.
+    expect(resolved.remarkPlugins).toEqual([remarkA, remarkB]);
+  });
+});
+
+// remark-gfm is pletivo's dep, not the root workspace's — recover the reference
+// from the plugin buildRemarkPlugins prepends.
+const pluginHeadR = (entry: unknown) => (Array.isArray(entry) ? entry[0] : entry);
+const remarkGfm = pluginHeadR(buildRemarkPlugins(undefined, true)[0]);
+
+describe("buildRemarkPlugins", () => {
+  test("prepends remark-gfm when gfm is enabled", () => {
+    const user = () => {};
+    const plugins = buildRemarkPlugins([user], true);
+    expect(plugins[0]).toBe(remarkGfm);
+    expect(plugins[1]).toBe(user);
+  });
+
+  test("omits remark-gfm when gfm is disabled", () => {
+    const user = () => {};
+    const plugins = buildRemarkPlugins([user], false);
+    expect(plugins).toEqual([user]);
+    expect(plugins).not.toContain(remarkGfm);
   });
 });
 

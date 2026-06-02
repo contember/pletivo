@@ -18,6 +18,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { compile, nodeTypes, type CompileOptions } from "@mdx-js/mdx";
 import rehypeRaw from "rehype-raw";
+import remarkGfm from "remark-gfm";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 import type { PletivoConfig } from "./config";
 import type { AstroIntegration } from "./astro-host/types";
@@ -36,6 +37,8 @@ export type PluggableList = NonNullable<CompileOptions["remarkPlugins"]>;
 export interface MdxOptions {
   remarkPlugins?: PluggableList;
   rehypePlugins?: PluggableList;
+  /** GitHub Flavored Markdown — on by default, matching Astro/@astrojs/mdx. */
+  gfm?: boolean;
 }
 
 /**
@@ -104,27 +107,31 @@ export function captureMdxIntegrationOptions(
  *     @astrojs/mdx extends the top-level markdown config with its own plugins
  *  3. Pletivo-specific `mdx.remarkPlugins` / `mdx.rehypePlugins`
  *
- * Later sources run later in the unified pipeline.
+ * Later sources run later in the unified pipeline. Plugins are de-duplicated by
+ * function reference (first occurrence wins) so a plugin listed in both
+ * `markdown.*` and `mdx({...})` — common when a meta-framework configures both —
+ * runs once rather than twice.
  */
 export function resolveMdxOptions(
   pletivoConfig: PletivoConfig,
-  astroConfig?: { markdown?: { remarkPlugins?: PluggableList; rehypePlugins?: PluggableList }; [key: string]: unknown } | null,
+  astroConfig?: { markdown?: { remarkPlugins?: PluggableList; rehypePlugins?: PluggableList; gfm?: boolean }; [key: string]: unknown } | null,
 ): MdxOptions {
   const astroMarkdown = astroConfig?.markdown;
   const mdxIntegration = astroConfig?.[MDX_INTEGRATION_OPTIONS_KEY] as
     | { remarkPlugins?: PluggableList; rehypePlugins?: PluggableList }
     | undefined;
-  const remarkPlugins: PluggableList = [
+  const remarkPlugins = dedupePlugins([
     ...(astroMarkdown?.remarkPlugins ?? []),
     ...(mdxIntegration?.remarkPlugins ?? []),
     ...(pletivoConfig.mdx?.remarkPlugins ?? []),
-  ];
-  const rehypePlugins: PluggableList = [
+  ]);
+  const rehypePlugins = dedupePlugins([
     ...(astroMarkdown?.rehypePlugins ?? []),
     ...(mdxIntegration?.rehypePlugins ?? []),
     ...(pletivoConfig.mdx?.rehypePlugins ?? []),
-  ];
+  ]);
   return {
+    gfm: astroMarkdown?.gfm ?? true,
     ...(remarkPlugins.length ? { remarkPlugins } : {}),
     ...(rehypePlugins.length ? { rehypePlugins } : {}),
   };
@@ -133,6 +140,33 @@ export function resolveMdxOptions(
 /** Extract the plugin function from a `Pluggable` (`fn` or `[fn, ...opts]`). */
 function pluginFn(entry: unknown): unknown {
   return Array.isArray(entry) ? entry[0] : entry;
+}
+
+/**
+ * De-duplicate a plugin list by function reference, keeping the first
+ * occurrence (and its options). Prevents a plugin configured in more than one
+ * source — e.g. both `markdown.*` and `mdx({...})` — from running twice.
+ */
+function dedupePlugins(plugins: PluggableList): PluggableList {
+  const seen = new Set<unknown>();
+  const out: PluggableList = [];
+  for (const entry of plugins) {
+    const fn = pluginFn(entry);
+    if (seen.has(fn)) continue;
+    seen.add(fn);
+    out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * Assemble the remark pipeline for MDX, mirroring `@astrojs/mdx`: prepend
+ * `remark-gfm` (unless disabled) so GFM features — tables, strikethrough,
+ * autolinks — work, then the user's remark plugins.
+ */
+export function buildRemarkPlugins(userRemark: PluggableList | undefined, gfm: boolean): PluggableList {
+  const user = userRemark ?? [];
+  return gfm ? [remarkGfm, ...user] : [...user];
 }
 
 /**
@@ -196,11 +230,14 @@ export async function registerMdxPlugin(): Promise<void> {
             jsxImportSource: "pletivo",
             development: false,
           };
-          if (userOptions.remarkPlugins?.length) {
-            compileOptions.remarkPlugins = userOptions.remarkPlugins;
-          }
-          // Mirror @astrojs/mdx: a managed `rehype-raw` (passing MDX nodes
-          // through) always runs, with the user's rehype plugins after it.
+          // Mirror @astrojs/mdx: GFM on by default (remark-gfm prepended),
+          // then the user's remark plugins.
+          compileOptions.remarkPlugins = buildRemarkPlugins(
+            userOptions.remarkPlugins,
+            userOptions.gfm !== false,
+          );
+          // A managed `rehype-raw` (passing MDX nodes through) always runs,
+          // with the user's rehype plugins after it.
           compileOptions.rehypePlugins = buildRehypePlugins(userOptions.rehypePlugins);
           const result = await compile(body, compileOptions);
           code = String(result);
