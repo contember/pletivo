@@ -1,9 +1,14 @@
 import { describe, test, expect } from "bun:test";
 import { parseMarkdown } from "../../packages/pletivo/src/content/markdown";
 
+// `parseMarkdown` runs the unified/remark pipeline (remark-parse → remark-gfm →
+// remark-rehype → heading-id slugs → rehype-stringify) and is async. HTML is
+// rehype-stringify output, so block elements carry remark's whitespace and `<`
+// is escaped as `&#x3C;`.
+
 describe("frontmatter parsing", () => {
-  test("extracts key-value pairs", () => {
-    const result = parseMarkdown(`---
+  test("extracts key-value pairs", async () => {
+    const result = await parseMarkdown(`---
 title: Hello World
 ---
 
@@ -12,8 +17,8 @@ Content`);
     expect(result.body.trim()).toBe("Content");
   });
 
-  test("handles quoted strings", () => {
-    const result = parseMarkdown(`---
+  test("handles quoted strings", async () => {
+    const result = await parseMarkdown(`---
 title: "Hello: World"
 ---
 
@@ -21,8 +26,8 @@ x`);
     expect(result.frontmatter.title).toBe("Hello: World");
   });
 
-  test("parses booleans", () => {
-    const result = parseMarkdown(`---
+  test("parses booleans", async () => {
+    const result = await parseMarkdown(`---
 draft: true
 published: false
 ---
@@ -32,8 +37,8 @@ x`);
     expect(result.frontmatter.published).toBe(false);
   });
 
-  test("parses numbers", () => {
-    const result = parseMarkdown(`---
+  test("parses numbers", async () => {
+    const result = await parseMarkdown(`---
 order: 42
 rating: 3.5
 ---
@@ -43,8 +48,8 @@ x`);
     expect(result.frontmatter.rating).toBe(3.5);
   });
 
-  test("parses inline arrays", () => {
-    const result = parseMarkdown(`---
+  test("parses inline arrays", async () => {
+    const result = await parseMarkdown(`---
 tags: [foo, bar, baz]
 ---
 
@@ -52,8 +57,8 @@ x`);
     expect(result.frontmatter.tags).toEqual(["foo", "bar", "baz"]);
   });
 
-  test("parses multiline arrays", () => {
-    const result = parseMarkdown(`---
+  test("parses multiline arrays", async () => {
+    const result = await parseMarkdown(`---
 tags:
 - foo
 - bar
@@ -63,8 +68,8 @@ x`);
     expect(result.frontmatter.tags).toEqual(["foo", "bar"]);
   });
 
-  test("folded block scalar (>)", () => {
-    const result = parseMarkdown(`---
+  test("folded block scalar (>)", async () => {
+    const result = await parseMarkdown(`---
 excerpt: >
   First line
   second line
@@ -76,8 +81,8 @@ Content`);
     expect(result.body.trim()).toBe("Content");
   });
 
-  test("folded block scalar strip (>-)", () => {
-    const result = parseMarkdown(`---
+  test("folded block scalar strip (>-)", async () => {
+    const result = await parseMarkdown(`---
 excerpt: >-
   First line
   second line
@@ -88,8 +93,8 @@ Content`);
     expect(result.frontmatter.excerpt).toBe("First line second line third line.");
   });
 
-  test("literal block scalar (|)", () => {
-    const result = parseMarkdown(`---
+  test("literal block scalar (|)", async () => {
+    const result = await parseMarkdown(`---
 bio: |
   Line one
   Line two
@@ -100,8 +105,8 @@ Content`);
     expect(result.frontmatter.bio).toBe("Line one\nLine two\nLine three\n");
   });
 
-  test("literal block scalar strip (|-)", () => {
-    const result = parseMarkdown(`---
+  test("literal block scalar strip (|-)", async () => {
+    const result = await parseMarkdown(`---
 bio: |-
   Line one
   Line two
@@ -111,8 +116,8 @@ Content`);
     expect(result.frontmatter.bio).toBe("Line one\nLine two");
   });
 
-  test("block scalar followed by another key", () => {
-    const result = parseMarkdown(`---
+  test("block scalar followed by another key", async () => {
+    const result = await parseMarkdown(`---
 excerpt: >
   Hello world
   foo bar.
@@ -124,14 +129,14 @@ x`);
     expect(result.frontmatter.title).toBe("Test");
   });
 
-  test("missing frontmatter returns empty object", () => {
-    const result = parseMarkdown("Just content");
+  test("missing frontmatter returns empty object", async () => {
+    const result = await parseMarkdown("Just content");
     expect(result.frontmatter).toEqual({});
     expect(result.body).toBe("Just content");
   });
 
-  test("array of nested objects", () => {
-    const result = parseMarkdown(`---
+  test("array of nested objects", async () => {
+    const result = await parseMarkdown(`---
 attachments:
   - file: foo.pdf
     title: Bar
@@ -146,8 +151,8 @@ x`);
     ]);
   });
 
-  test("nested mapping", () => {
-    const result = parseMarkdown(`---
+  test("nested mapping", async () => {
+    const result = await parseMarkdown(`---
 author:
   name: Jane
   email: jane@example.com
@@ -159,50 +164,44 @@ x`);
 });
 
 describe("block elements", () => {
-  test("headings h1-h6", () => {
-    const result = parseMarkdown("---\n---\n\n# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6");
-    expect(result.html).toContain("<h1");
-    expect(result.html).toContain("H1</h1>");
-    expect(result.html).toContain("<h2");
-    expect(result.html).toContain("H2</h2>");
-    expect(result.html).toContain("<h3");
-    expect(result.html).toContain("H3</h3>");
-    expect(result.html).toContain("<h4");
-    expect(result.html).toContain("H4</h4>");
-    expect(result.html).toContain("<h5");
-    expect(result.html).toContain("H5</h5>");
-    expect(result.html).toContain("<h6");
-    expect(result.html).toContain("H6</h6>");
+  test("headings h1-h6 with slug ids", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6");
+    expect(result.html).toContain('<h1 id="h1">H1</h1>');
+    expect(result.html).toContain('<h2 id="h2">H2</h2>');
+    expect(result.html).toContain('<h3 id="h3">H3</h3>');
+    expect(result.html).toContain('<h4 id="h4">H4</h4>');
+    expect(result.html).toContain('<h5 id="h5">H5</h5>');
+    expect(result.html).toContain('<h6 id="h6">H6</h6>');
   });
 
-  test("paragraphs", () => {
-    const result = parseMarkdown("---\n---\n\nFirst paragraph.\n\nSecond paragraph.");
+  test("paragraphs", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\nFirst paragraph.\n\nSecond paragraph.");
     expect(result.html).toContain("<p>First paragraph.</p>");
     expect(result.html).toContain("<p>Second paragraph.</p>");
   });
 
-  test("fenced code block", () => {
-    const result = parseMarkdown("---\n---\n\n```js\nconst x = 1;\n```");
-    expect(result.html).toContain('<pre><code class="language-js">const x = 1;</code></pre>');
+  test("fenced code block", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n```js\nconst x = 1;\n```");
+    expect(result.html).toContain('<pre><code class="language-js">const x = 1;\n</code></pre>');
   });
 
-  test("code block without language", () => {
-    const result = parseMarkdown("---\n---\n\n```\nhello\n```");
-    expect(result.html).toContain("<pre><code>hello</code></pre>");
+  test("code block without language", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n```\nhello\n```");
+    expect(result.html).toContain("<pre><code>hello\n</code></pre>");
   });
 
-  test("code block escapes HTML", () => {
-    const result = parseMarkdown("---\n---\n\n```\n<div>test</div>\n```");
-    expect(result.html).toContain("&lt;div&gt;test&lt;/div&gt;");
+  test("code block escapes HTML", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n```\n<div>test</div>\n```");
+    expect(result.html).toContain("&#x3C;div>test&#x3C;/div>");
   });
 
-  test("blockquote", () => {
-    const result = parseMarkdown("---\n---\n\n> This is a quote.");
-    expect(result.html).toContain("<blockquote><p>This is a quote.</p></blockquote>");
+  test("blockquote", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n> This is a quote.");
+    expect(result.html).toContain("<blockquote>\n<p>This is a quote.</p>\n</blockquote>");
   });
 
-  test("unordered list", () => {
-    const result = parseMarkdown("---\n---\n\n- Item 1\n- Item 2\n- Item 3");
+  test("unordered list", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n- Item 1\n- Item 2\n- Item 3");
     expect(result.html).toContain("<ul>");
     expect(result.html).toContain("<li>Item 1</li>");
     expect(result.html).toContain("<li>Item 2</li>");
@@ -210,87 +209,94 @@ describe("block elements", () => {
     expect(result.html).toContain("</ul>");
   });
 
-  test("ordered list", () => {
-    const result = parseMarkdown("---\n---\n\n1. First\n2. Second");
+  test("ordered list", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n1. First\n2. Second");
     expect(result.html).toContain("<ol>");
     expect(result.html).toContain("<li>First</li>");
     expect(result.html).toContain("<li>Second</li>");
     expect(result.html).toContain("</ol>");
   });
 
-  test("horizontal rule", () => {
-    const result = parseMarkdown("---\n---\n\n---");
+  test("horizontal rule", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\ntext\n\n---\n\nmore");
     expect(result.html).toContain("<hr>");
   });
 
-  test("horizontal rule with asterisks", () => {
-    const result = parseMarkdown("---\n---\n\n***");
-    expect(result.html).toContain("<hr>");
+  test("gfm: strikethrough", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n~~gone~~");
+    expect(result.html).toContain("<del>gone</del>");
+  });
+
+  test("gfm: table", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n| A | B |\n| - | - |\n| 1 | 2 |");
+    expect(result.html).toContain("<table>");
+    expect(result.html).toContain("<th>A</th>");
+    expect(result.html).toContain("<td>1</td>");
   });
 });
 
 describe("inline elements", () => {
-  test("bold with asterisks", () => {
-    const result = parseMarkdown("---\n---\n\nThis is **bold** text.");
+  test("bold with asterisks", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\nThis is **bold** text.");
     expect(result.html).toContain("This is <strong>bold</strong> text.");
   });
 
-  test("bold with underscores", () => {
-    const result = parseMarkdown("---\n---\n\nThis is __bold__ text.");
+  test("bold with underscores", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\nThis is __bold__ text.");
     expect(result.html).toContain("This is <strong>bold</strong> text.");
   });
 
-  test("italic with asterisks", () => {
-    const result = parseMarkdown("---\n---\n\nThis is *italic* text.");
+  test("italic with asterisks", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\nThis is *italic* text.");
     expect(result.html).toContain("This is <em>italic</em> text.");
   });
 
-  test("bold and italic", () => {
-    const result = parseMarkdown("---\n---\n\n***both***");
-    expect(result.html).toContain("<strong><em>both</em></strong>");
+  test("bold and italic", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n***both***");
+    expect(result.html).toContain("<em><strong>both</strong></em>");
   });
 
-  test("inline code", () => {
-    const result = parseMarkdown("---\n---\n\nUse `const x = 1` here.");
+  test("inline code", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\nUse `const x = 1` here.");
     expect(result.html).toContain("Use <code>const x = 1</code> here.");
   });
 
-  test("inline code escapes HTML", () => {
-    const result = parseMarkdown("---\n---\n\nUse `<div>` tag.");
-    expect(result.html).toContain("<code>&lt;div&gt;</code>");
+  test("inline code escapes HTML", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\nUse `<div>` tag.");
+    expect(result.html).toContain("<code>&#x3C;div></code>");
   });
 
-  test("link", () => {
-    const result = parseMarkdown("---\n---\n\nVisit [example](https://example.com).");
+  test("link", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\nVisit [example](https://example.com).");
     expect(result.html).toContain('<a href="https://example.com">example</a>');
   });
 
-  test("image", () => {
-    const result = parseMarkdown("---\n---\n\n![Alt text](/img.png)");
+  test("image", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\n![Alt text](/img.png)");
     expect(result.html).toContain('<img src="/img.png" alt="Alt text">');
   });
 });
 
 describe("edge cases", () => {
-  test("empty input", () => {
-    const result = parseMarkdown("");
+  test("empty input", async () => {
+    const result = await parseMarkdown("");
     expect(result.frontmatter).toEqual({});
     expect(result.html).toBe("");
   });
 
-  test("only frontmatter", () => {
-    const result = parseMarkdown("---\ntitle: Test\n---\n");
+  test("only frontmatter", async () => {
+    const result = await parseMarkdown("---\ntitle: Test\n---\n");
     expect(result.frontmatter.title).toBe("Test");
     expect(result.html).toBe("");
   });
 
-  test("raw HTML in markdown passes through (standard behavior)", () => {
-    const result = parseMarkdown("---\ntitle: test\n---\n\n<div class=\"custom\">hello</div>");
+  test("raw HTML in markdown passes through (allowDangerousHtml)", async () => {
+    const result = await parseMarkdown("---\ntitle: test\n---\n\n<div class=\"custom\">hello</div>");
     expect(result.html).toContain('<div class="custom">hello</div>');
   });
 
-  test("consecutive paragraphs with inline formatting", () => {
-    const result = parseMarkdown("---\n---\n\nHello **world**.\n\nFoo *bar*.");
+  test("consecutive paragraphs with inline formatting", async () => {
+    const result = await parseMarkdown("---\ntitle: t\n---\n\nHello **world**.\n\nFoo *bar*.");
     expect(result.html).toContain("<p>Hello <strong>world</strong>.</p>");
     expect(result.html).toContain("<p>Foo <em>bar</em>.</p>");
   });
@@ -298,33 +304,35 @@ describe("edge cases", () => {
   // Regression: a line starting with `#` that is NOT a heading (no space after
   // the hashes) used to match no block branch while the paragraph collector
   // refused it, so the main loop never advanced and parsing hung forever.
-  test("bare hashtag (no space) renders as paragraph, does not hang", () => {
-    const result = parseMarkdown("#gohardsaturday");
+  test("bare hashtag (no space) renders as paragraph, does not hang", async () => {
+    const result = await parseMarkdown("#gohardsaturday");
     expect(result.html).toBe("<p>#gohardsaturday</p>");
   });
 
-  test("hashtag line between paragraphs does not hang", () => {
-    const result = parseMarkdown("First.\n\n#tag\n\nLast.");
+  test("hashtag line between paragraphs does not hang", async () => {
+    const result = await parseMarkdown("First.\n\n#tag\n\nLast.");
     expect(result.html).toBe("<p>First.</p>\n<p>#tag</p>\n<p>Last.</p>");
   });
 
-  test("hashtag line collected into a surrounding paragraph", () => {
-    const result = parseMarkdown("before\n#tag\nafter");
+  test("hashtag line collected into a surrounding paragraph", async () => {
+    const result = await parseMarkdown("before\n#tag\nafter");
     expect(result.html).toBe("<p>before\n#tag\nafter</p>");
   });
 
-  test("more than six hashes is not a heading and does not hang", () => {
-    const result = parseMarkdown("####### too many");
+  test("more than six hashes is not a heading and does not hang", async () => {
+    const result = await parseMarkdown("####### too many");
     expect(result.html).toBe("<p>####### too many</p>");
   });
 
-  test("hash marker with no content is not a heading and does not hang", () => {
-    const result = parseMarkdown("#\n\n##");
-    expect(result.html).toBe("<p>#</p>\n<p>##</p>");
+  test("bare hash markers are empty headings (CommonMark), with no spurious id", async () => {
+    // The old regex renderer emitted `<p>#</p>`; CommonMark treats a hash with
+    // no content as an empty heading. rehypeHeadingIds adds no id (no text).
+    const result = await parseMarkdown("#\n\n##");
+    expect(result.html).toBe("<h1></h1>\n<h2></h2>");
   });
 
-  test("real heading still interrupts a preceding paragraph", () => {
-    const result = parseMarkdown("some text\n# Heading");
+  test("real heading still interrupts a preceding paragraph", async () => {
+    const result = await parseMarkdown("some text\n# Heading");
     expect(result.html).toBe('<p>some text</p>\n<h1 id="heading">Heading</h1>');
   });
 });

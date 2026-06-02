@@ -1,14 +1,72 @@
 /**
- * Minimal markdown parser - handles common syntax without external deps.
- * Supports: headings, paragraphs, bold, italic, code, links, images, lists, blockquotes, hr, code blocks.
+ * Markdown rendering for `.md` content, built on the unified/remark pipeline
+ * so user-configured remark/rehype plugins actually run (Astro parity):
+ *
+ *   remark-parse → [remark-gfm] → remarkPlugins → remark-rehype
+ *     → heading-id slugs → rehypePlugins → rehype-stringify
+ *
+ * Plugins come from the Astro config's top-level `markdown` options and are
+ * installed once via `configureMarkdown()` (see dev.ts / build.ts) before any
+ * `.md` is rendered. `.mdx` is handled separately by mdx-plugin.ts.
  */
 
 import yaml from "js-yaml";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
+import remarkGfm from "remark-gfm";
+import remarkRehype from "remark-rehype";
+import rehypeStringify from "rehype-stringify";
+import type { CompileOptions } from "@mdx-js/mdx";
+
+// `unified`'s `PluggableList` — derived from the published `CompileOptions`
+// (the bare `unified` specifier isn't directly resolvable here; see config.ts).
+type PluggableList = NonNullable<CompileOptions["remarkPlugins"]>;
 
 export interface ParsedMarkdown {
   frontmatter: Record<string, unknown>;
   body: string;
   html: string;
+}
+
+export interface MarkdownOptions {
+  remarkPlugins?: PluggableList;
+  rehypePlugins?: PluggableList;
+  /** Options forwarded to `remark-rehype` (e.g. `allowDangerousHtml`). */
+  remarkRehype?: Record<string, unknown>;
+  /** GitHub Flavored Markdown — on by default, matching Astro. */
+  gfm?: boolean;
+}
+
+let markdownOptions: MarkdownOptions = {};
+
+/** Install the markdown plugin set used by `parseMarkdown`. */
+export function configureMarkdown(options: MarkdownOptions): void {
+  markdownOptions = options;
+}
+
+/**
+ * Extract the top-level `markdown` plugin config from an Astro config. `.md`
+ * files mirror Astro: they get `markdown.remarkPlugins` / `markdown.rehypePlugins`
+ * (the `mdx()` integration plugins are MDX-only, handled by resolveMdxOptions).
+ */
+export function resolveMarkdownOptions(
+  astroConfig?: {
+    markdown?: {
+      remarkPlugins?: PluggableList;
+      rehypePlugins?: PluggableList;
+      remarkRehype?: Record<string, unknown>;
+      gfm?: boolean;
+    };
+    [key: string]: unknown;
+  } | null,
+): MarkdownOptions {
+  const md = astroConfig?.markdown;
+  return {
+    remarkPlugins: md?.remarkPlugins ?? [],
+    rehypePlugins: md?.rehypePlugins ?? [],
+    remarkRehype: md?.remarkRehype ?? {},
+    gfm: md?.gfm ?? true,
+  };
 }
 
 /**
@@ -32,10 +90,6 @@ export function parseFrontmatter(content: string): { frontmatter: Record<string,
   return { frontmatter: parseYamlObject(match[1]), body: match[2] };
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
 /**
  * GitHub-style heading slugifier.
  * Lowercases, strips inline HTML tags, keeps alphanumerics + dashes,
@@ -43,7 +97,7 @@ function escapeHtml(s: string): string {
  */
 function slugify(text: string): string {
   return text
-    .replace(/<[^>]+>/g, "") // strip any HTML produced by inlineMarkdown
+    .replace(/<[^>]+>/g, "") // strip any embedded HTML
     .toLowerCase()
     .trim()
     .replace(/[^\p{Letter}\p{Number}\s-]+/gu, "")
@@ -52,162 +106,59 @@ function slugify(text: string): string {
     .replace(/^-|-$/g, "");
 }
 
-/**
- * Produce a unique slug within a single document (GitHub-style: suffix -1, -2…)
- */
+/** Produce a unique slug within a single document (GitHub-style: suffix -1, -2…) */
 function uniqueSlug(base: string, seen: Map<string, number>): string {
   const count = seen.get(base) ?? 0;
   seen.set(base, count + 1);
   return count === 0 ? base : `${base}-${count}`;
 }
 
-/**
- * ATX heading: 1-6 `#` followed by whitespace and at least one character of
- * content. Shared between the heading branch and the paragraph collector's
- * stop condition so the two can never disagree — a line that starts with `#`
- * but is NOT a heading (e.g. a bare `#hashtag`) must be treated as paragraph
- * text by both, otherwise the main loop fails to advance and spins forever.
- */
-const HEADING_RE = /^(#{1,6})\s+(.+)$/;
-
-/**
- * Convert markdown to HTML
- */
-function markdownToHtml(md: string, seenSlugs: Map<string, number> = new Map()): string {
-  const lines = md.split("\n");
-  const output: string[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Fenced code block
-    if (line.startsWith("```")) {
-      const lang = line.slice(3).trim();
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith("```")) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      i++; // skip closing ```
-      const code = escapeHtml(codeLines.join("\n"));
-      if (lang) {
-        output.push(`<pre><code class="language-${lang}">${code}</code></pre>`);
-      } else {
-        output.push(`<pre><code>${code}</code></pre>`);
-      }
-      continue;
-    }
-
-    // Heading
-    const headingMatch = line.match(HEADING_RE);
-    if (headingMatch) {
-      const level = headingMatch[1].length;
-      const inner = inlineMarkdown(headingMatch[2]);
-      const slug = uniqueSlug(slugify(headingMatch[2]), seenSlugs);
-      const idAttr = slug ? ` id="${slug}"` : "";
-      output.push(`<h${level}${idAttr}>${inner}</h${level}>`);
-      i++;
-      continue;
-    }
-
-    // Horizontal rule
-    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
-      output.push("<hr>");
-      i++;
-      continue;
-    }
-
-    // Blockquote
-    if (line.startsWith("> ") || line === ">") {
-      const quoteLines: string[] = [];
-      while (i < lines.length && (lines[i].startsWith("> ") || lines[i] === ">")) {
-        quoteLines.push(lines[i].replace(/^>\s?/, ""));
-        i++;
-      }
-      output.push(`<blockquote>${markdownToHtml(quoteLines.join("\n"), seenSlugs)}</blockquote>`);
-      continue;
-    }
-
-    // Unordered list
-    if (/^[-*+]\s+/.test(line)) {
-      output.push("<ul>");
-      while (i < lines.length && /^[-*+]\s+/.test(lines[i])) {
-        output.push(`<li>${inlineMarkdown(lines[i].replace(/^[-*+]\s+/, ""))}</li>`);
-        i++;
-      }
-      output.push("</ul>");
-      continue;
-    }
-
-    // Ordered list
-    if (/^\d+\.\s+/.test(line)) {
-      output.push("<ol>");
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-        output.push(`<li>${inlineMarkdown(lines[i].replace(/^\d+\.\s+/, ""))}</li>`);
-        i++;
-      }
-      output.push("</ol>");
-      continue;
-    }
-
-    // Empty line
-    if (line.trim() === "") {
-      i++;
-      continue;
-    }
-
-    // Paragraph - collect consecutive non-empty lines
-    const paraLines: string[] = [];
-    while (i < lines.length && lines[i].trim() !== "" && !HEADING_RE.test(lines[i]) && !lines[i].startsWith("```") && !lines[i].startsWith("> ") && !/^[-*+]\s+/.test(lines[i]) && !/^\d+\.\s+/.test(lines[i]) && !/^(\*{3,}|-{3,}|_{3,})\s*$/.test(lines[i])) {
-      paraLines.push(lines[i]);
-      i++;
-    }
-    if (paraLines.length > 0) {
-      output.push(`<p>${inlineMarkdown(paraLines.join("\n"))}</p>`);
-    }
-  }
-
-  return output.join("\n");
+/** Concatenate the text content of a hast node subtree. */
+function hastTextContent(node: any): string {
+  if (node.type === "text") return typeof node.value === "string" ? node.value : "";
+  return (node.children ?? []).map(hastTextContent).join("");
 }
 
 /**
- * Process inline markdown (bold, italic, code, links, images)
+ * Rehype plugin: give every heading a GitHub-style `id` (unique per document),
+ * preserving pletivo's prior heading-anchor behavior. Skips headings that
+ * already carry an explicit id.
  */
-function inlineMarkdown(text: string): string {
-  // Code (must be first to prevent inner processing)
-  text = text.replace(/`([^`]+)`/g, (_, code) => `<code>${escapeHtml(code)}</code>`);
-
-  // Images
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">');
-
-  // Links
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-
-  // Bold + italic
-  text = text.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
-  text = text.replace(/___(.+?)___/g, "<strong><em>$1</em></strong>");
-
-  // Bold
-  text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  text = text.replace(/__(.+?)__/g, "<strong>$1</strong>");
-
-  // Italic
-  text = text.replace(/\*(.+?)\*/g, "<em>$1</em>");
-  text = text.replace(/_(.+?)_/g, "<em>$1</em>");
-
-  // Line breaks
-  text = text.replace(/  \n/g, "<br>\n");
-
-  return text;
+function rehypeHeadingIds() {
+  return (tree: any) => {
+    const seen = new Map<string, number>();
+    const visit = (node: any) => {
+      if (node?.type === "element" && /^h[1-6]$/.test(node.tagName)) {
+        // Skip headings with no sluggable text (e.g. a bare `#`) — they'd
+        // otherwise pick up a meaningless uniquified id like `-1`.
+        const base = slugify(hastTextContent(node));
+        if (base) {
+          node.properties = node.properties ?? {};
+          if (node.properties.id == null) node.properties.id = uniqueSlug(base, seen);
+        }
+      }
+      (node?.children ?? []).forEach(visit);
+    };
+    visit(tree);
+  };
 }
 
 /**
- * Parse a markdown file content into frontmatter + HTML
+ * Parse a markdown file's content into frontmatter + rendered HTML, running
+ * the configured remark/rehype plugins. A fresh processor is built per call so
+ * plugin config changes take effect and processors are never reused frozen.
  */
-export function parseMarkdown(content: string): ParsedMarkdown {
+export async function parseMarkdown(content: string): Promise<ParsedMarkdown> {
   const { frontmatter, body } = parseFrontmatter(content);
-  const html = markdownToHtml(body.trim());
-  return { frontmatter, body, html };
+
+  const processor = unified().use(remarkParse);
+  if (markdownOptions.gfm !== false) processor.use(remarkGfm);
+  if (markdownOptions.remarkPlugins?.length) processor.use(markdownOptions.remarkPlugins);
+  processor.use(remarkRehype, { allowDangerousHtml: true, ...markdownOptions.remarkRehype });
+  processor.use(rehypeHeadingIds);
+  if (markdownOptions.rehypePlugins?.length) processor.use(markdownOptions.rehypePlugins);
+  processor.use(rehypeStringify, { allowDangerousHtml: true });
+
+  const file = await processor.process(body.trim());
+  return { frontmatter, body, html: String(file) };
 }
