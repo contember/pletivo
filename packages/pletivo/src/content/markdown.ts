@@ -62,6 +62,15 @@ function uniqueSlug(base: string, seen: Map<string, number>): string {
 }
 
 /**
+ * ATX heading: 1-6 `#` followed by whitespace and at least one character of
+ * content. Shared between the heading branch and the paragraph collector's
+ * stop condition so the two can never disagree — a line that starts with `#`
+ * but is NOT a heading (e.g. a bare `#hashtag`) must be treated as paragraph
+ * text by both, otherwise the main loop fails to advance and spins forever.
+ */
+const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+
+/**
  * Convert markdown to HTML
  */
 function markdownToHtml(md: string, seenSlugs: Map<string, number> = new Map()): string {
@@ -92,7 +101,7 @@ function markdownToHtml(md: string, seenSlugs: Map<string, number> = new Map()):
     }
 
     // Heading
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    const headingMatch = line.match(HEADING_RE);
     if (headingMatch) {
       const level = headingMatch[1].length;
       const inner = inlineMarkdown(headingMatch[2]);
@@ -151,7 +160,7 @@ function markdownToHtml(md: string, seenSlugs: Map<string, number> = new Map()):
 
     // Paragraph - collect consecutive non-empty lines
     const paraLines: string[] = [];
-    while (i < lines.length && lines[i].trim() !== "" && !lines[i].startsWith("#") && !lines[i].startsWith("```") && !lines[i].startsWith("> ") && !/^[-*+]\s+/.test(lines[i]) && !/^\d+\.\s+/.test(lines[i]) && !/^(\*{3,}|-{3,}|_{3,})\s*$/.test(lines[i])) {
+    while (i < lines.length && lines[i].trim() !== "" && !HEADING_RE.test(lines[i]) && !lines[i].startsWith("```") && !lines[i].startsWith("> ") && !/^[-*+]\s+/.test(lines[i]) && !/^\d+\.\s+/.test(lines[i]) && !/^(\*{3,}|-{3,}|_{3,})\s*$/.test(lines[i])) {
       paraLines.push(lines[i]);
       i++;
     }

@@ -294,4 +294,37 @@ describe("edge cases", () => {
     expect(result.html).toContain("<p>Hello <strong>world</strong>.</p>");
     expect(result.html).toContain("<p>Foo <em>bar</em>.</p>");
   });
+
+  // Regression: a line starting with `#` that is NOT a heading (no space after
+  // the hashes) used to match no block branch while the paragraph collector
+  // refused it, so the main loop never advanced and parsing hung forever.
+  test("bare hashtag (no space) renders as paragraph, does not hang", () => {
+    const result = parseMarkdown("#gohardsaturday");
+    expect(result.html).toBe("<p>#gohardsaturday</p>");
+  });
+
+  test("hashtag line between paragraphs does not hang", () => {
+    const result = parseMarkdown("First.\n\n#tag\n\nLast.");
+    expect(result.html).toBe("<p>First.</p>\n<p>#tag</p>\n<p>Last.</p>");
+  });
+
+  test("hashtag line collected into a surrounding paragraph", () => {
+    const result = parseMarkdown("before\n#tag\nafter");
+    expect(result.html).toBe("<p>before\n#tag\nafter</p>");
+  });
+
+  test("more than six hashes is not a heading and does not hang", () => {
+    const result = parseMarkdown("####### too many");
+    expect(result.html).toBe("<p>####### too many</p>");
+  });
+
+  test("hash marker with no content is not a heading and does not hang", () => {
+    const result = parseMarkdown("#\n\n##");
+    expect(result.html).toBe("<p>#</p>\n<p>##</p>");
+  });
+
+  test("real heading still interrupts a preceding paragraph", () => {
+    const result = parseMarkdown("some text\n# Heading");
+    expect(result.html).toBe('<p>some text</p>\n<h1 id="heading">Heading</h1>');
+  });
 });
