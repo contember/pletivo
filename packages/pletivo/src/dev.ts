@@ -216,6 +216,10 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("dev");
+  // Mark the pletivo runtime so libraries can detect they run under pletivo
+  // (e.g. @nuasite Image keeps emitting /cdn-cgi/image URLs because pletivo
+  // serves the transform endpoint, instead of falling back to a raw <img>).
+  (globalThis as Record<string, unknown>).__PLETIVO__ = true;
 
   function escapeHtmlSimple(s: string) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
