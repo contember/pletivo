@@ -11,7 +11,7 @@ import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
 import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, getGlobalCssForPage, getHoistedScriptByHash, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "./dev-cache";
-import { parseMarkdown } from "./content/markdown";
+import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
 import { resolveI18nConfig } from "./i18n/config";
@@ -190,6 +190,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     broadcastHmr(JSON.stringify(payload));
   });
   configureMdx(resolveMdxOptions(config, astroHost?.config));
+  configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   {
     const vite = astroHost?.config.vite as
       | { css?: { preprocessorOptions?: { scss?: Record<string, unknown> } } }
@@ -233,7 +234,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Markdown pages — render directly without module import
       if (route.file.endsWith(".md")) {
         const source = await Bun.file(fullPath).text();
-        const { html: body, frontmatter } = parseMarkdown(source);
+        const { html: body, frontmatter } = await parseMarkdown(source);
         const title = (frontmatter.title as string) || "";
         return `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
       }

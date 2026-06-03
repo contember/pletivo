@@ -42,6 +42,12 @@ import type {
 import { createLogger } from "./logger";
 import { isOverridden } from "./overrides";
 import { loadAstroConfig } from "./config-loader";
+import {
+  captureMdxIntegrationOptions,
+  type CapturedMdxIntegrationOptions,
+  type PluggableList,
+  MDX_INTEGRATION_OPTIONS_KEY,
+} from "../mdx-plugin";
 import { createServerShim, type ServerShim, type HmrBroadcast } from "./server-shim";
 import {
   addVitePlugins,
@@ -147,7 +153,9 @@ export async function initAstroHost(
   await ensureBunPlugin();
 
   // ── Filter overridden integrations from the initial root set ──
-  const rootIntegrations = filterOverrides(config.integrations, setupLog);
+  const rootIntegrations = filterOverrides(config.integrations, setupLog, (captured) =>
+    recordMdxIntegrationOptions(config, captured),
+  );
   config.integrations = rootIntegrations;
 
   // ── Run config:setup on every integration ──
@@ -444,7 +452,9 @@ function applyConfigPatch(
     if (value == null) continue;
 
     if (key === "integrations" && Array.isArray(value)) {
-      const filtered = filterOverrides(value as AstroIntegration[], []);
+      const filtered = filterOverrides(value as AstroIntegration[], [], (captured) =>
+        recordMdxIntegrationOptions(config, captured),
+      );
       for (const integ of filtered) {
         if (config.integrations.includes(integ)) continue;
         if (alreadySetup.has(integ)) continue;
@@ -493,6 +503,7 @@ function applyConfigPatch(
 function filterOverrides(
   integrations: AstroIntegration[],
   log: string[],
+  onMdxOptions?: (captured: CapturedMdxIntegrationOptions) => void,
 ): AstroIntegration[] {
   const out: AstroIntegration[] = [];
   for (const integration of integrations) {
@@ -500,11 +511,51 @@ function filterOverrides(
     const override = isOverridden(integration.name);
     if (override) {
       log.push(`↷ replaced ${integration.name} with ${override} (pletivo native)`);
+      if (integration.name === "@astrojs/mdx") {
+        const captured = captureMdxIntegrationOptions(integration);
+        if (captured) {
+          const { remarkPlugins, rehypePlugins, gfm, unsupportedKeys } = captured;
+          if (remarkPlugins.length || rehypePlugins.length) {
+            log.push(
+              `  ↳ forwarded ${remarkPlugins.length} remark + ${rehypePlugins.length} rehype plugin(s) from @astrojs/mdx options`,
+            );
+          }
+          // Record whenever there's anything to carry — plugins or an explicit
+          // gfm override (which has no plugins of its own).
+          if (remarkPlugins.length || rehypePlugins.length || gfm !== undefined) {
+            onMdxOptions?.(captured);
+          }
+          if (unsupportedKeys.length) {
+            log.push(
+              `  ⚠ @astrojs/mdx option(s) not supported by pletivo's native MDX, ignored: ${unsupportedKeys.join(", ")}`,
+            );
+          }
+        }
+      }
       continue;
     }
     out.push(integration);
   }
   return out;
+}
+
+/**
+ * Merge remark/rehype plugins extracted from a `mdx({...})` call into the
+ * loaded config so `resolveMdxOptions` can forward them to the native MDX
+ * compiler. Accumulates across multiple `@astrojs/mdx` integrations.
+ */
+function recordMdxIntegrationOptions(
+  config: AstroConfig,
+  captured: CapturedMdxIntegrationOptions,
+): void {
+  const existing = config[MDX_INTEGRATION_OPTIONS_KEY] as
+    | { remarkPlugins: PluggableList; rehypePlugins: PluggableList; gfm?: boolean }
+    | undefined;
+  config[MDX_INTEGRATION_OPTIONS_KEY] = {
+    remarkPlugins: [...(existing?.remarkPlugins ?? []), ...captured.remarkPlugins],
+    rehypePlugins: [...(existing?.rehypePlugins ?? []), ...captured.rehypePlugins],
+    gfm: captured.gfm ?? existing?.gfm,
+  };
 }
 
 function mergeDeep<T extends Record<string, unknown>>(a: T, b: Record<string, unknown>): T {

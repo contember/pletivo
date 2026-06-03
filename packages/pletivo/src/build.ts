@@ -10,7 +10,7 @@ import { bundleCss } from "./css";
 import { hashPublicAssets, rewriteRefs } from "./assets";
 import { generateSitemap } from "./sitemap";
 import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss, getGlobalCssForPage, clearGlobalCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
-import { parseMarkdown } from "./content/markdown";
+import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
 import { resolveI18nConfig } from "./i18n/config";
@@ -57,6 +57,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   await registerScssPlugin(projectRoot);
   const astroHost = await initAstroHost(projectRoot, "build");
   configureMdx(resolveMdxOptions(config, astroHost?.config));
+  configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureScss(readScssOptions(astroHost?.config.vite));
   await initCollections(projectRoot);
 
@@ -178,7 +179,7 @@ export async function build(projectRoot: string, config: PletivoConfig) {
       // Markdown pages — render directly without module import
       if (route.file.endsWith(".md")) {
         const source = await Bun.file(fullPath).text();
-        const { html: body, frontmatter } = parseMarkdown(source);
+        const { html: body, frontmatter } = await parseMarkdown(source);
         const title = (frontmatter.title as string) || "";
         const outFile = routeToOutputPath(route, {});
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;

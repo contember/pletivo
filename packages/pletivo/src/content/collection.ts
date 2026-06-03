@@ -148,7 +148,12 @@ export interface CollectionEntry<T = Record<string, unknown>> {
   id: string;
   data: T;
   body: string;
-  render(): Promise<RenderResult>;
+  /**
+   * Render the entry's body to HTML. For MDX entries, `components` maps
+   * MDX element names to components (Astro's `<Content components={...} />`),
+   * e.g. so a bare `<Youtube />` in the body resolves without an import.
+   */
+  render(components?: Record<string, unknown>): Promise<RenderResult>;
 }
 
 // ── Built-in loaders ──
@@ -228,7 +233,7 @@ export function glob(options: GlobOptions): Loader {
           body = parsed.body;
           extras = { _filePath: fullPath, _mdxFilePath: fullPath };
         } else {
-          const parsed = parseMarkdown(content);
+          const parsed = await parseMarkdown(content);
           data = parsed.frontmatter;
           body = parsed.body;
           extras = { _filePath: fullPath, _html: parsed.html };
@@ -339,16 +344,26 @@ export async function getCollection<T = Record<string, unknown>>(
 
 /**
  * Astro-compatible `render(entry)` helper. Returns `{ Content }` where
- * `Content` is a component that emits the entry's pre-rendered HTML body.
+ * `Content` is a component that emits the entry's HTML body.
  *
- * MDX entries are compiled and rendered with full component support — imports
- * in the MDX body (both JSX and .astro components) are resolved at render time.
+ * Rendering is deferred until `Content` is invoked so the `components` prop
+ * from `<Content components={...} />` can be threaded into the (MDX) body —
+ * imports in the body (JSX and .astro components) plus any passed components
+ * are resolved at render time.
  */
 export async function render(
   entry: CollectionEntry | null | undefined,
-): Promise<{ Content: () => { __html: string }; headings: unknown[]; remarkPluginFrontmatter: Record<string, unknown> }> {
-  const result = entry ? await entry.render() : { html: "" };
-  const Content = () => ({ __html: result.html });
+): Promise<{
+  Content: (props?: { components?: Record<string, unknown> }) =>
+    | { __html: string }
+    | Promise<{ __html: string }>;
+  headings: unknown[];
+  remarkPluginFrontmatter: Record<string, unknown>;
+}> {
+  const Content = (props?: { components?: Record<string, unknown> }) => {
+    if (!entry) return { __html: "" };
+    return entry.render(props?.components).then((result) => ({ __html: result.html }));
+  };
   return { Content, headings: [], remarkPluginFrontmatter: {} };
 }
 
@@ -617,9 +632,12 @@ async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, na
             id: raw.id,
             data: validatedData,
             body: raw.body,
-            render: async () => {
+            render: async (components) => {
               const mod = await import(mdxPath + `?v=${configVersion}`);
-              let rendered = mod.default({});
+              // Pass `components` so bare MDX element references (e.g. a
+              // `<Youtube />` with no import) resolve, mirroring Astro's
+              // `<Content components={...} />`.
+              let rendered = mod.default(components ? { components } : {});
               if (rendered instanceof Promise) rendered = await rendered;
               let html = typeof rendered === "object" && rendered !== null && "__html" in rendered
                 ? (rendered as { __html: string }).__html

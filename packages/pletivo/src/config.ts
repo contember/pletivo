@@ -1,5 +1,10 @@
 import path from "path";
-import type { PluggableList } from "unified";
+import type { CompileOptions } from "@mdx-js/mdx";
+
+// `unified`'s `PluggableList` isn't re-exported by @mdx-js/mdx and `unified`
+// itself isn't a direct dependency (only resolvable transitively), so derive
+// the type from the published `CompileOptions` instead of importing it.
+type PluggableList = NonNullable<CompileOptions["remarkPlugins"]>;
 
 export interface MdxConfig {
   remarkPlugins?: PluggableList;
