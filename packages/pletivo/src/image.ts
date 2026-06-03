@@ -391,16 +391,27 @@ export async function getImage(
   let finalSrc: string;
 
   if (imageMode === "build") {
-    // Register for post-render processing
-    registerTransform({
-      sourcePath: (fsPath as string) ?? srcPath,
-      outputPath: outputFile,
-      width,
-      height,
-      format,
-      quality,
-    });
-    finalSrc = withBase(`/${outputFile}`);
+    if (fsPath) {
+      // On-disk source (ESM-imported or probed asset): optimize/copy it
+      // into _astro/ during post-render processing.
+      registerTransform({
+        sourcePath: fsPath as string,
+        outputPath: outputFile,
+        width,
+        height,
+        format,
+        quality,
+      });
+      finalSrc = withBase(`/${outputFile}`);
+    } else {
+      // Bare string src with no on-disk source: a public-root path
+      // (e.g. "/uploads/foo.jpg") or a remote URL. Astro does not run
+      // these through the asset pipeline, so pass the reference through
+      // unchanged. Public files are emitted and hashed separately — the
+      // rendered HTML is rewritten against the public manifest — and
+      // remote URLs are fetched by the browser.
+      finalSrc = srcPath;
+    }
   } else {
     // Dev mode — serve original file
     if (fsPath) {
@@ -476,51 +487,59 @@ export async function processImages(
     const outFile = path.join(distDir, entry.outputPath);
     await fs.mkdir(path.dirname(outFile), { recursive: true });
 
-    if (sharp && entry.format !== "svg") {
-      try {
-        let pipeline = sharp(entry.sourcePath);
+    try {
+      if (sharp && entry.format !== "svg") {
+        try {
+          let pipeline = sharp(entry.sourcePath);
 
-        // Auto-rotate based on EXIF orientation
-        pipeline = pipeline.rotate();
+          // Auto-rotate based on EXIF orientation
+          pipeline = pipeline.rotate();
 
-        // Resize if dimensions specified and different from original
-        if (entry.width || entry.height) {
-          pipeline = pipeline.resize(entry.width, entry.height, {
-            fit: "cover" as const,
-            withoutEnlargement: true,
+          // Resize if dimensions specified and different from original
+          if (entry.width || entry.height) {
+            pipeline = pipeline.resize(entry.width, entry.height, {
+              fit: "cover" as const,
+              withoutEnlargement: true,
+            });
+          }
+
+          // Convert format
+          const fmt = entry.format === "jpg" ? "jpeg" : entry.format;
+          const qualityMap: Record<string, number> = {
+            low: 25,
+            mid: 50,
+            high: 80,
+            max: 100,
+          };
+          const q =
+            typeof entry.quality === "string"
+              ? (qualityMap[entry.quality] ?? 80)
+              : (entry.quality ?? 80);
+
+          pipeline = pipeline.toFormat(fmt as keyof SharpFormatMap, {
+            quality: q,
           });
+
+          const { data } = await pipeline.toBuffer({ resolveWithObject: true });
+          await fs.writeFile(outFile, data);
+        } catch (e) {
+          console.warn(
+            `  Warning: sharp failed for ${entry.sourcePath}: ${e instanceof Error ? e.message : e}`,
+          );
+          await fs.copyFile(entry.sourcePath, outFile);
         }
-
-        // Convert format
-        const fmt = entry.format === "jpg" ? "jpeg" : entry.format;
-        const qualityMap: Record<string, number> = {
-          low: 25,
-          mid: 50,
-          high: 80,
-          max: 100,
-        };
-        const q =
-          typeof entry.quality === "string"
-            ? (qualityMap[entry.quality] ?? 80)
-            : (entry.quality ?? 80);
-
-        pipeline = pipeline.toFormat(fmt as keyof SharpFormatMap, {
-          quality: q,
-        });
-
-        const { data } = await pipeline.toBuffer({ resolveWithObject: true });
-        await fs.writeFile(outFile, data);
-      } catch (e) {
-        console.warn(
-          `  Warning: sharp failed for ${entry.sourcePath}: ${e instanceof Error ? e.message : e}`,
-        );
+      } else {
+        // No sharp or SVG — copy as-is
         await fs.copyFile(entry.sourcePath, outFile);
       }
-    } else {
-      // No sharp or SVG — copy as-is
-      await fs.copyFile(entry.sourcePath, outFile);
+      count++;
+    } catch (e) {
+      // Source missing/unreadable (e.g. a stray reference) — warn and
+      // skip rather than aborting the whole build.
+      console.warn(
+        `  Warning: skipped image ${entry.sourcePath}: ${e instanceof Error ? e.message : e}`,
+      );
     }
-    count++;
   }
 
   return count;

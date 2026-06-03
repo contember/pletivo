@@ -9,6 +9,7 @@ import {
   setImageMode,
   clearTransforms,
   getTransforms,
+  processImages,
 } from "../../packages/pletivo/src/image";
 import { setBase } from "../../packages/pletivo/src/base";
 
@@ -95,6 +96,61 @@ describe("getImage()", () => {
     });
     expect(result.src).toStartWith("/my-site/_astro/");
     setBase("/");
+  });
+
+  test("passes through a public-root string src without registering a transform", async () => {
+    clearTransforms();
+    const result = await getImage({
+      src: "/uploads/hero.jpg",
+      width: 1200,
+      height: 800,
+      format: "webp",
+      alt: "hero",
+    });
+    // Public assets are emitted + hashed separately (the rendered HTML is
+    // rewritten against the public manifest). getImage must NOT route them
+    // through the _astro/ pipeline — the sourcePath would be a
+    // non-existent FS path and crash processImages().
+    expect(result.src).toBe("/uploads/hero.jpg");
+    expect(getTransforms().size).toBe(0);
+  });
+
+  test("passes through a remote URL string src without registering a transform", async () => {
+    clearTransforms();
+    const result = await getImage({
+      src: "https://cdn.example.com/photo.jpg",
+      width: 640,
+      height: 480,
+      alt: "remote",
+    });
+    expect(result.src).toBe("https://cdn.example.com/photo.jpg");
+    expect(getTransforms().size).toBe(0);
+  });
+});
+
+describe("processImages() resilience", () => {
+  test("skips entries whose source file is missing instead of throwing", async () => {
+    clearTransforms();
+    const tmpDist = path.join(import.meta.dir, "../.tmp-procimg-resilience");
+    await fs.rm(tmpDist, { recursive: true, force: true });
+    const registered = new Map([
+      [
+        "_astro/missing.webp",
+        {
+          sourcePath: "/no/such/file-does-not-exist.jpg",
+          outputPath: "_astro/missing.webp",
+          format: "webp",
+        },
+      ],
+    ]);
+    let count = -1;
+    try {
+      count = await processImages(registered, tmpDist);
+    } finally {
+      await fs.rm(tmpDist, { recursive: true, force: true });
+    }
+    // Missing source is warned + skipped, not counted, and does not throw.
+    expect(count).toBe(0);
   });
 });
 
