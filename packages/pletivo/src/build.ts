@@ -17,7 +17,7 @@ import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
-import { setImageMode, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
+import { setImageMode, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
 import { setBase } from "./base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
@@ -107,6 +107,9 @@ export async function build(projectRoot: string, config: PletivoConfig) {
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("build");
+  // Resolve the optional `sharp` dep from the consumer project, not from
+  // pletivo's own (possibly symlinked) location.
+  setSharpResolveBase(projectRoot);
   // Mark the pletivo runtime so libraries can detect they run under pletivo
   // (e.g. @nuasite Image keeps emitting /cdn-cgi/image URLs because pletivo
   // serves the transform endpoint, instead of falling back to a raw <img>).

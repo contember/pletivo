@@ -104,6 +104,39 @@ describe("dev server - islands", () => {
   });
 });
 
+describe("dev server - cdn-cgi image resizing", () => {
+  test("serves a transformed/passthrough image for a valid source", async () => {
+    const res = await fetch(
+      BASE + "/cdn-cgi/image/width=100,format=png/test.png",
+    );
+    expect(res.status).toBe(200);
+    // With sharp the PNG is re-encoded; without it the original is served.
+    // Either way it stays a PNG and has a body.
+    expect(res.headers.get("content-type")).toBe("image/png");
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(0);
+  });
+
+  test("404s a missing source", async () => {
+    const res = await fetch(
+      BASE + "/cdn-cgi/image/width=100/uploads/does-not-exist.jpg",
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("403s a path-traversal source", async () => {
+    const res = await fetch(
+      BASE + "/cdn-cgi/image/width=100/..%2f..%2f..%2fetc%2fpasswd",
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("400s a request missing the source segment", async () => {
+    const res = await fetch(BASE + "/cdn-cgi/image/width=100");
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("dev server - HMR", () => {
   test("pages include HMR client script", async () => {
     const res = await fetch(BASE + "/");

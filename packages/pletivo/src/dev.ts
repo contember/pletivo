@@ -18,7 +18,17 @@ import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { parsePreferredLocales } from "./i18n/helpers";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
-import { setImageMode } from "./image";
+import {
+  setImageMode,
+  parseCdnCgiImageUrl,
+  resolveCfTargetFormat,
+  transformCfImage,
+  imageContentType,
+  formatFromPath,
+  formatFromContentType,
+  sharpAvailable,
+  setSharpResolveBase,
+} from "./image";
 import { setBase, withBase, stripBase } from "./base";
 import {
   resolveFallbackRoute,
@@ -216,6 +226,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("dev");
+  // Resolve the optional `sharp` dep from the consumer project, not from
+  // pletivo's own (possibly symlinked) location.
+  setSharpResolveBase(projectRoot);
   // Mark the pletivo runtime so libraries can detect they run under pletivo
   // (e.g. @nuasite Image keeps emitting /cdn-cgi/image URLs because pletivo
   // serves the transform endpoint, instead of falling back to a raw <img>).
@@ -412,6 +425,15 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     url: URL,
     pathname: string | null,
   ): Promise<Response | undefined> {
+    // Cloudflare-style on-the-fly image resizing. In production these
+    // `/cdn-cgi/image/<options>/<source>` URLs are served by Cloudflare's
+    // edge; in dev we reimplement the common subset with sharp so the same
+    // markup renders locally. Matched on the raw pathname — `/cdn-cgi/`
+    // lives at the origin root, independent of the configured `base`.
+    if (url.pathname.startsWith("/cdn-cgi/image/")) {
+      return serveCdnCgiImage(req, url);
+    }
+
     // Requests not under the configured base are 404'd outright.
     if (pathname === null) {
       return new Response("Not Found", { status: 404 });
@@ -532,6 +554,115 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       message() {},
     },
   });
+
+  // In-memory cache of resized images, keyed by `<pathname>|<targetFormat>`.
+  // Avoids re-encoding the same transform on every page load (e.g. a logo
+  // repeated across pages). Local sources are invalidated by mtime; remote
+  // sources are cached for the server's lifetime. Bounded to stay modest.
+  const cdnImageCache = new Map<
+    string,
+    { data: Uint8Array; contentType: string; mtimeMs: number }
+  >();
+  const CDN_IMAGE_CACHE_MAX = 256;
+  let warnedNoCdnSharp = false;
+
+  async function serveCdnCgiImage(req: Request, url: URL): Promise<Response> {
+    const parsed = parseCdnCgiImageUrl(url.pathname);
+    if (!parsed) return new Response("Bad image request", { status: 400 });
+    const { options, source } = parsed;
+
+    const isRemote = /^https?:\/\//.test(source);
+    let sourceFormat: string;
+    let mtimeMs = 0;
+    let localPath: string | null = null;
+
+    if (isRemote) {
+      sourceFormat = formatFromPath(source);
+    } else {
+      // Same-zone path → served from public/. Guard against traversal
+      // outside the public root.
+      const rel = source.replace(/^\/+/, "");
+      const resolved = path.resolve(publicDir, rel);
+      const resolvedPublic = path.resolve(publicDir);
+      if (
+        resolved !== resolvedPublic &&
+        !resolved.startsWith(resolvedPublic + path.sep)
+      ) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      let stat: ReturnType<typeof fs.statSync> | null = null;
+      try {
+        stat = fs.statSync(resolved);
+      } catch {
+        stat = null;
+      }
+      if (!stat || !stat.isFile()) {
+        return new Response("Image source not found", { status: 404 });
+      }
+      localPath = resolved;
+      mtimeMs = stat.mtimeMs;
+      sourceFormat = formatFromPath(source);
+    }
+
+    const accept = req.headers.get("accept") ?? undefined;
+    const targetFormat = resolveCfTargetFormat(options.format, sourceFormat, accept);
+
+    const cacheKey = `${url.pathname}|${targetFormat}`;
+    const cached = cdnImageCache.get(cacheKey);
+    if (cached && cached.mtimeMs === mtimeMs) {
+      return new Response(cached.data, {
+        headers: { "Content-Type": cached.contentType, "Cache-Control": "no-cache" },
+      });
+    }
+
+    // Load the source bytes (only on cache miss).
+    let bytes: Uint8Array;
+    let remoteFormat = sourceFormat;
+    if (isRemote) {
+      const upstream = await fetch(source).catch(() => null);
+      if (!upstream || !upstream.ok) {
+        return new Response("Image source not found", { status: 404 });
+      }
+      bytes = new Uint8Array(await upstream.arrayBuffer());
+      remoteFormat =
+        formatFromContentType(upstream.headers.get("content-type")) ?? sourceFormat;
+    } else {
+      bytes = new Uint8Array(await Bun.file(localPath!).arrayBuffer());
+    }
+
+    let data = bytes;
+    let contentType = imageContentType(remoteFormat);
+    try {
+      const out = await transformCfImage(bytes, remoteFormat, options, accept);
+      if (out) {
+        data = out.data;
+        contentType = out.contentType;
+      } else if (remoteFormat !== "svg" && !sharpAvailable() && !warnedNoCdnSharp) {
+        // out === null → sharp unavailable or SVG. For a non-SVG source
+        // it means sharp is missing; warn once so the original bytes
+        // being served as-is (no resize) isn't a silent mystery.
+        warnedNoCdnSharp = true;
+        console.warn(
+          "  /cdn-cgi/image requested but sharp isn't installed — serving originals without resizing.",
+        );
+        console.warn("  Install sharp for dev image resizing: bun add sharp");
+      }
+      // out === null → sharp unavailable or SVG: serve the original bytes.
+    } catch (e) {
+      // A bad transform shouldn't 500 the page — fall back to the original.
+      console.error(`cdn-cgi image transform failed for ${source}:`, e);
+    }
+
+    cdnImageCache.set(cacheKey, { data, contentType, mtimeMs });
+    if (cdnImageCache.size > CDN_IMAGE_CACHE_MAX) {
+      const oldest = cdnImageCache.keys().next().value;
+      if (oldest !== undefined) cdnImageCache.delete(oldest);
+    }
+
+    return new Response(data, {
+      headers: { "Content-Type": contentType, "Cache-Control": "no-cache" },
+    });
+  }
 
   async function pletivoHandler(req: Request, url: URL, pathname: string): Promise<Response | null> {
     {

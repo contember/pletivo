@@ -10,6 +10,7 @@
 
 import path from "path";
 import fs from "fs/promises";
+import { createRequire } from "module";
 import { withBase } from "./base";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -452,7 +453,340 @@ export async function getImage(
   };
 }
 
+// ── Cloudflare-style image resizing (dev only) ──────────────────────────
+//
+// Cloudflare serves on-the-fly image transforms from URLs shaped like
+//   /cdn-cgi/image/<options>/<source>
+// where <source> is a same-zone path (served from public/ in dev) or an
+// absolute URL, and <options> is a comma-separated list of key=value
+// pairs (width, height, quality, format, fit, …). In production these are
+// handled by Cloudflare's edge; the dev server reimplements the common
+// subset with sharp so the same markup renders locally.
+
+export interface CfImageOptions {
+  width?: number;
+  height?: number;
+  quality?: number;
+  format?: string;
+  fit?: string;
+  gravity?: string;
+  dpr?: number;
+  background?: string;
+  rotate?: number;
+  blur?: number;
+  sharpen?: number;
+  brightness?: number;
+}
+
+const CDN_CGI_IMAGE_PREFIX = "/cdn-cgi/image/";
+
+/**
+ * Parse a `/cdn-cgi/image/<options>/<source>` pathname into its options
+ * and source reference. Returns null when the path isn't a cdn-cgi image
+ * URL or is missing the source segment. The source is either an absolute
+ * http(s) URL or a same-zone path (leading slash optional).
+ */
+export function parseCdnCgiImageUrl(
+  pathname: string,
+): { options: CfImageOptions; source: string } | null {
+  if (!pathname.startsWith(CDN_CGI_IMAGE_PREFIX)) return null;
+  const rest = pathname.slice(CDN_CGI_IMAGE_PREFIX.length);
+  const slash = rest.indexOf("/");
+  if (slash <= 0) return null;
+  const optionsStr = rest.slice(0, slash);
+  let source = rest.slice(slash + 1);
+  if (!source) return null;
+  // An absolute source URL survives in the path as `https:/host/…` once
+  // the URL parser collapses the authority's double slash — restore it.
+  source = source.replace(/^(https?:)\/(?!\/)/, "$1//");
+  if (!/^https?:\/\//.test(source)) source = decodeURIComponent(source);
+  return { options: parseCfImageOptions(optionsStr), source };
+}
+
+const NAMED_QUALITY: Record<string, number> = {
+  low: 35,
+  "medium-low": 55,
+  "medium-high": 75,
+  high: 90,
+};
+
+export function parseCfImageOptions(optionsStr: string): CfImageOptions {
+  const opts: CfImageOptions = {};
+  for (const part of optionsStr.split(",")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (!key || !value) continue;
+    switch (key) {
+      case "width":
+      case "w":
+        opts.width = parsePositiveInt(value);
+        break;
+      case "height":
+      case "h":
+        opts.height = parsePositiveInt(value);
+        break;
+      case "quality":
+      case "q":
+        opts.quality =
+          value in NAMED_QUALITY
+            ? NAMED_QUALITY[value]
+            : clampInt(value, 1, 100);
+        break;
+      case "format":
+        opts.format = value.toLowerCase();
+        break;
+      case "fit":
+        opts.fit = value.toLowerCase();
+        break;
+      case "gravity":
+      case "g":
+        opts.gravity = value.toLowerCase();
+        break;
+      case "dpr":
+        opts.dpr = Number(value) || undefined;
+        break;
+      case "background":
+      case "bg":
+        opts.background = decodeURIComponent(value);
+        break;
+      case "rotate":
+        opts.rotate = Number(value) || undefined;
+        break;
+      case "blur":
+        opts.blur = Number(value) || undefined;
+        break;
+      case "sharpen":
+        opts.sharpen = Number(value) || undefined;
+        break;
+      case "brightness":
+        opts.brightness = Number(value) || undefined;
+        break;
+      // Unsupported CF options (anim, metadata, trim, contrast, gamma,
+      // onerror, …) are ignored — the transform still runs with the rest.
+    }
+  }
+  return opts;
+}
+
+function parsePositiveInt(value: string): number | undefined {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function clampInt(value: string, min: number, max: number): number | undefined {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : undefined;
+}
+
+const IMAGE_CONTENT_TYPES: Record<string, string> = {
+  webp: "image/webp",
+  avif: "image/avif",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  svg: "image/svg+xml",
+};
+
+export function imageContentType(format: string): string {
+  return IMAGE_CONTENT_TYPES[format] ?? "application/octet-stream";
+}
+
+/** Best-effort image format from a path/URL extension (jpg→jpeg). */
+export function formatFromPath(p: string): string {
+  const ext = p.split(/[?#]/)[0].split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "jpg" || ext === "jpeg") return "jpeg";
+  if (["png", "gif", "webp", "avif", "svg"].includes(ext)) return ext;
+  return "jpeg"; // sensible default for extension-less / unknown sources
+}
+
+/** Image format from a Content-Type header, or null if not an image type. */
+export function formatFromContentType(ct: string | null): string | null {
+  if (!ct) return null;
+  switch (ct.split(";")[0].trim().toLowerCase()) {
+    case "image/jpeg":
+      return "jpeg";
+    case "image/png":
+      return "png";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    case "image/avif":
+      return "avif";
+    case "image/svg+xml":
+      return "svg";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Resolve the output format for a transform. `format=auto` (or unset)
+ * mirrors Cloudflare's content negotiation: prefer webp when the client
+ * accepts it, otherwise keep the source format. We deliberately prefer
+ * webp over avif even when avif is accepted — avif encoding is too slow
+ * for a dev server's per-request path.
+ */
+export function resolveCfTargetFormat(
+  requested: string | undefined,
+  sourceFormat: string,
+  accept: string | undefined,
+): string {
+  if (!requested || requested === "auto") {
+    if (accept?.includes("image/webp")) return "webp";
+    return sourceFormat;
+  }
+  return requested;
+}
+
+// Map Cloudflare's `fit` to sharp's. CF's default is `scale-down`, which
+// fits within the box but never enlarges past the source.
+function mapCfFit(fit: string): string {
+  switch (fit) {
+    case "cover":
+    case "crop":
+      return "cover";
+    case "pad":
+      return "contain";
+    case "contain":
+    case "scale-down":
+    default:
+      return "inside";
+  }
+}
+
+function mapCfGravity(gravity: string | undefined): string | undefined {
+  switch (gravity) {
+    case "auto":
+      return "attention";
+    case "left":
+    case "right":
+    case "top":
+    case "bottom":
+      return gravity;
+    case "center":
+    case "centre":
+      return "centre";
+    default:
+      return undefined; // coordinates / unknown → sharp default (centre)
+  }
+}
+
+/**
+ * Apply parsed cdn-cgi options to an image buffer using sharp. Returns
+ * null when sharp isn't installed or the source is an SVG (served
+ * untouched) — callers should fall back to the original bytes.
+ */
+export async function transformCfImage(
+  input: ArrayBuffer | Uint8Array,
+  sourceFormat: string,
+  options: CfImageOptions,
+  accept?: string,
+): Promise<{ data: Uint8Array; format: string; contentType: string } | null> {
+  if (sourceFormat === "svg") return null;
+  const sharp = loadSharp();
+  if (!sharp) return null;
+
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  let pipeline = sharp(bytes).rotate(); // honor EXIF orientation first
+
+  if (options.rotate && options.rotate % 360 !== 0) {
+    pipeline = pipeline.rotate(options.rotate);
+  }
+
+  const dpr = options.dpr && options.dpr > 0 ? Math.min(options.dpr, 3) : 1;
+  const width = options.width ? Math.round(options.width * dpr) : undefined;
+  const height = options.height ? Math.round(options.height * dpr) : undefined;
+  if (width || height) {
+    const fit = options.fit ?? "scale-down";
+    pipeline = pipeline.resize(width, height, {
+      fit: mapCfFit(fit),
+      position: mapCfGravity(options.gravity),
+      background: options.background,
+      withoutEnlargement: fit === "scale-down",
+    });
+  }
+
+  if (options.blur) {
+    pipeline = pipeline.blur(Math.min(Math.max(options.blur, 0.3), 1000));
+  }
+  if (options.sharpen) {
+    pipeline = pipeline.sharpen({ sigma: Math.min(options.sharpen, 10) });
+  }
+  if (options.brightness) {
+    pipeline = pipeline.modulate({ brightness: options.brightness });
+  }
+
+  const targetFormat = resolveCfTargetFormat(options.format, sourceFormat, accept);
+  const fmt = targetFormat === "jpg" ? "jpeg" : targetFormat;
+  pipeline = pipeline.toFormat(
+    fmt as keyof SharpFormatMap,
+    options.quality != null ? { quality: options.quality } : undefined,
+  );
+
+  const data = await pipeline.toBuffer();
+  return {
+    data: new Uint8Array(data),
+    format: targetFormat,
+    contentType: imageContentType(targetFormat),
+  };
+}
+
 // ── Post-render image processing ───────────────────────────────────────
+
+type SharpFactory = (
+  input: string | Buffer | Uint8Array | ArrayBuffer,
+) => SharpPipeline;
+
+let sharpFactory: SharpFactory | null | undefined;
+let sharpResolveBase: string | undefined;
+
+/**
+ * Tell the image module which directory to resolve the optional `sharp`
+ * dependency from — the consumer's project root. This matters because
+ * pletivo is frequently symlinked / `bun link`ed into a project, in which
+ * case a bare `require("sharp")` resolves against pletivo's *own* real
+ * path (where sharp isn't installed) rather than the project's
+ * node_modules. dev()/build() call this with their projectRoot.
+ */
+export function setSharpResolveBase(dir: string): void {
+  if (dir !== sharpResolveBase) {
+    sharpResolveBase = dir;
+    sharpFactory = undefined; // force re-resolution against the new base
+  }
+}
+
+/** Lazily require `sharp`, caching the result (and the failure). */
+function loadSharp(): SharpFactory | null {
+  if (sharpFactory !== undefined) return sharpFactory;
+  // Prefer resolving from the consumer project (handles the symlinked
+  // pletivo case), then fall back to a bare require against this module.
+  const bases = [sharpResolveBase, process.cwd()].filter(Boolean) as string[];
+  for (const base of bases) {
+    try {
+      const req = createRequire(path.join(base, "__pletivo_resolve__.js"));
+      sharpFactory = req("sharp") as SharpFactory;
+      return sharpFactory;
+    } catch {
+      // try the next base
+    }
+  }
+  try {
+    sharpFactory = require("sharp") as SharpFactory;
+  } catch {
+    sharpFactory = null;
+  }
+  return sharpFactory;
+}
+
+/** Whether `sharp` is importable — lets the dev server warn when a
+ * cdn-cgi transform was requested but can't actually run. */
+export function sharpAvailable(): boolean {
+  return loadSharp() !== null;
+}
 
 export async function processImages(
   registered: Map<string, ImageTransformEntry>,
@@ -472,10 +806,8 @@ export async function processImages(
 
   if (registered.size === 0) return 0;
 
-  let sharp: ((input: string) => SharpPipeline) | null = null;
-  try {
-    sharp = require("sharp");
-  } catch {
+  const sharp = loadSharp();
+  if (!sharp) {
     console.warn(
       "  sharp not installed — images will be copied without optimization.",
     );
@@ -547,14 +879,28 @@ export async function processImages(
 
 // Sharp types (minimal, to avoid importing @types/sharp)
 interface SharpPipeline {
-  rotate(): SharpPipeline;
+  rotate(angle?: number): SharpPipeline;
   resize(
     w?: number,
     h?: number,
-    opts?: { fit?: string; withoutEnlargement?: boolean },
+    opts?: {
+      fit?: string;
+      position?: string;
+      background?: string;
+      withoutEnlargement?: boolean;
+    },
   ): SharpPipeline;
+  blur(sigma?: number): SharpPipeline;
+  sharpen(opts?: { sigma?: number }): SharpPipeline;
+  modulate(opts: {
+    brightness?: number;
+    saturation?: number;
+    hue?: number;
+    lightness?: number;
+  }): SharpPipeline;
   toFormat(fmt: string, opts?: { quality?: number }): SharpPipeline;
-  toBuffer(opts?: {
+  toBuffer(): Promise<Buffer>;
+  toBuffer(opts: {
     resolveWithObject: true;
   }): Promise<{ data: Buffer; info: unknown }>;
 }
