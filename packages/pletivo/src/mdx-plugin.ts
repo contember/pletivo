@@ -49,6 +49,8 @@ export interface MdxOptions {
 export interface CapturedMdxIntegrationOptions {
   remarkPlugins: PluggableList;
   rehypePlugins: PluggableList;
+  /** `mdx({ gfm })` override, if the user set one (else undefined). */
+  gfm?: boolean;
   unsupportedKeys: string[];
 }
 
@@ -56,7 +58,7 @@ export interface CapturedMdxIntegrationOptions {
 export const MDX_INTEGRATION_OPTIONS_KEY = "__pletivoMdxIntegrationOptions";
 
 /** `mdx({...})` options that map onto pletivo's native compiler. */
-const HONORED_MDX_OPTION_KEYS = new Set(["remarkPlugins", "rehypePlugins"]);
+const HONORED_MDX_OPTION_KEYS = new Set(["remarkPlugins", "rehypePlugins", "gfm"]);
 
 // Matches any file inside an installed @astrojs/mdx package. The trailing
 // separator means it won't match siblings like `@astrojs/mdx-*`.
@@ -79,11 +81,11 @@ export function configureMdx(options: MdxOptions): void {
 }
 
 /**
- * Read the remark/rehype plugins a user passed to `mdx({...})` in their astro
- * config off the (stubbed) integration object. Returns null when the
- * integration carries no recognizable options. Any keys pletivo's native MDX
- * compiler can't honor (e.g. `gfm`, `optimize`, `recmaPlugins`) are reported
- * in `unsupportedKeys` so the caller can warn about them.
+ * Read the remark/rehype plugins (and `gfm` flag) a user passed to `mdx({...})`
+ * in their astro config off the (stubbed) integration object. Returns null when
+ * the integration carries no recognizable options. Any keys pletivo's native
+ * MDX compiler can't honor (e.g. `optimize`, `recmaPlugins`, `syntaxHighlight`)
+ * are reported in `unsupportedKeys` so the caller can warn about them.
  */
 export function captureMdxIntegrationOptions(
   integration: AstroIntegration,
@@ -93,10 +95,11 @@ export function captureMdxIntegrationOptions(
   const record = opts as Record<string, unknown>;
   const remarkPlugins = Array.isArray(record.remarkPlugins) ? (record.remarkPlugins as PluggableList) : [];
   const rehypePlugins = Array.isArray(record.rehypePlugins) ? (record.rehypePlugins as PluggableList) : [];
+  const gfm = typeof record.gfm === "boolean" ? record.gfm : undefined;
   const unsupportedKeys = Object.keys(record).filter(
     (k) => !HONORED_MDX_OPTION_KEYS.has(k) && record[k] != null,
   );
-  return { remarkPlugins, rehypePlugins, unsupportedKeys };
+  return { remarkPlugins, rehypePlugins, gfm, unsupportedKeys };
 }
 
 /**
@@ -118,7 +121,7 @@ export function resolveMdxOptions(
 ): MdxOptions {
   const astroMarkdown = astroConfig?.markdown;
   const mdxIntegration = astroConfig?.[MDX_INTEGRATION_OPTIONS_KEY] as
-    | { remarkPlugins?: PluggableList; rehypePlugins?: PluggableList }
+    | { remarkPlugins?: PluggableList; rehypePlugins?: PluggableList; gfm?: boolean }
     | undefined;
   const remarkPlugins = dedupePlugins([
     ...(astroMarkdown?.remarkPlugins ?? []),
@@ -131,7 +134,9 @@ export function resolveMdxOptions(
     ...(pletivoConfig.mdx?.rehypePlugins ?? []),
   ]);
   return {
-    gfm: astroMarkdown?.gfm ?? true,
+    // Precedence mirrors @astrojs/mdx: an explicit `mdx({ gfm })` wins over
+    // top-level `markdown.gfm`, which defaults to on.
+    gfm: mdxIntegration?.gfm ?? astroMarkdown?.gfm ?? true,
     ...(remarkPlugins.length ? { remarkPlugins } : {}),
     ...(rehypePlugins.length ? { rehypePlugins } : {}),
   };
@@ -159,14 +164,23 @@ function dedupePlugins(plugins: PluggableList): PluggableList {
   return out;
 }
 
+/** True for `remark-gfm` in any form (reference or function name). */
+function isRemarkGfm(entry: unknown): boolean {
+  const fn = pluginFn(entry);
+  return fn === remarkGfm || (typeof fn === "function" && fn.name === "remarkGfm");
+}
+
 /**
  * Assemble the remark pipeline for MDX, mirroring `@astrojs/mdx`: prepend
  * `remark-gfm` (unless disabled) so GFM features — tables, strikethrough,
- * autolinks — work, then the user's remark plugins.
+ * autolinks — work, then the user's remark plugins. If the user already
+ * configured their own `remark-gfm`, theirs is kept (with its options) and we
+ * don't add a second copy.
  */
 export function buildRemarkPlugins(userRemark: PluggableList | undefined, gfm: boolean): PluggableList {
   const user = userRemark ?? [];
-  return gfm ? [remarkGfm, ...user] : [...user];
+  if (gfm && !user.some(isRemarkGfm)) return [remarkGfm, ...user];
+  return [...user];
 }
 
 /**

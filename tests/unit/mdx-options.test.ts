@@ -36,7 +36,9 @@ describe("captureMdxIntegrationOptions", () => {
     } as any;
     const captured = captureMdxIntegrationOptions(integration);
     expect(captured?.remarkPlugins).toEqual([remarkA]);
-    expect(captured?.unsupportedKeys).toEqual(["gfm", "optimize"]);
+    // `gfm` is honored now, so it's not reported as unsupported.
+    expect(captured?.gfm).toBe(false);
+    expect(captured?.unsupportedKeys).toEqual(["optimize"]);
   });
 
   test("ignores nullish unsupported options", () => {
@@ -89,6 +91,17 @@ describe("resolveMdxOptions", () => {
     // remarkA appears in both sources but only once in the result, order kept.
     expect(resolved.remarkPlugins).toEqual([remarkA, remarkB]);
   });
+
+  test("gfm defaults on, follows markdown.gfm, and mdx() overrides it", () => {
+    expect(resolveMdxOptions(emptyPletivoConfig, {}).gfm).toBe(true);
+    expect(resolveMdxOptions(emptyPletivoConfig, { markdown: { gfm: false } }).gfm).toBe(false);
+    // mdx({ gfm }) wins over markdown.gfm (mirrors @astrojs/mdx).
+    const cfg = {
+      markdown: { gfm: false },
+      [MDX_INTEGRATION_OPTIONS_KEY]: { remarkPlugins: [], rehypePlugins: [], gfm: true },
+    };
+    expect(resolveMdxOptions(emptyPletivoConfig, cfg).gfm).toBe(true);
+  });
 });
 
 // remark-gfm is pletivo's dep, not the root workspace's — recover the reference
@@ -109,6 +122,15 @@ describe("buildRemarkPlugins", () => {
     const plugins = buildRemarkPlugins([user], false);
     expect(plugins).toEqual([user]);
     expect(plugins).not.toContain(remarkGfm);
+  });
+
+  test("does not add a second remark-gfm when the user already configured one", () => {
+    // User passes their own remark-gfm (with options) — keep theirs, no double.
+    const userGfm: [unknown, Record<string, unknown>] = [remarkGfm, { singleTilde: false }];
+    const plugins = buildRemarkPlugins([userGfm as any], true);
+    expect(plugins.filter((p) => pluginHeadR(p) === remarkGfm)).toHaveLength(1);
+    // The surviving copy is the user's (its options are preserved).
+    expect((plugins[0] as [unknown, Record<string, unknown>])[1]).toEqual({ singleTilde: false });
   });
 });
 

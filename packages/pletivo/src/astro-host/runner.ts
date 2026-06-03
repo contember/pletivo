@@ -514,11 +514,15 @@ function filterOverrides(
       if (integration.name === "@astrojs/mdx") {
         const captured = captureMdxIntegrationOptions(integration);
         if (captured) {
-          const { remarkPlugins, rehypePlugins, unsupportedKeys } = captured;
+          const { remarkPlugins, rehypePlugins, gfm, unsupportedKeys } = captured;
           if (remarkPlugins.length || rehypePlugins.length) {
             log.push(
               `  ↳ forwarded ${remarkPlugins.length} remark + ${rehypePlugins.length} rehype plugin(s) from @astrojs/mdx options`,
             );
+          }
+          // Record whenever there's anything to carry — plugins or an explicit
+          // gfm override (which has no plugins of its own).
+          if (remarkPlugins.length || rehypePlugins.length || gfm !== undefined) {
             onMdxOptions?.(captured);
           }
           if (unsupportedKeys.length) {
@@ -545,11 +549,12 @@ function recordMdxIntegrationOptions(
   captured: CapturedMdxIntegrationOptions,
 ): void {
   const existing = config[MDX_INTEGRATION_OPTIONS_KEY] as
-    | { remarkPlugins: PluggableList; rehypePlugins: PluggableList }
+    | { remarkPlugins: PluggableList; rehypePlugins: PluggableList; gfm?: boolean }
     | undefined;
   config[MDX_INTEGRATION_OPTIONS_KEY] = {
     remarkPlugins: [...(existing?.remarkPlugins ?? []), ...captured.remarkPlugins],
     rehypePlugins: [...(existing?.rehypePlugins ?? []), ...captured.rehypePlugins],
+    gfm: captured.gfm ?? existing?.gfm,
   };
 }
 
