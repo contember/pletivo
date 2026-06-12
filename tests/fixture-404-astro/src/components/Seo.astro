@@ -1,0 +1,7 @@
+---
+// Mirrors the real-world Seo.astro that crashed the dev server: a component
+// pulled into the 404 page that reads `Astro.url.pathname`. Before render404
+// passed a pageContext, `Astro.url` was undefined here and this threw.
+const pathname = Astro.url.pathname;
+---
+<meta name="x-rendered-pathname" content={pathname} />

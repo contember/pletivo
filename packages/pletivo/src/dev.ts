@@ -379,7 +379,23 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     }
   }
 
-  async function render404(): Promise<string | null> {
+  async function render404(req?: Request, reqUrl?: URL): Promise<string | null> {
+    // Build the same Astro-style pageContext the normal render path does, so a
+    // custom 404 page (and any component it pulls in, e.g. Seo reading
+    // `Astro.url.pathname`) renders against a real `Astro.url`/`Astro.request`
+    // instead of `undefined`.
+    const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+    const devHost = config.host === "0.0.0.0" ? "localhost" : config.host;
+    const origin = siteUrl ? siteUrl.origin : `http://${devHost}:${config.port}`;
+    const pageContext = {
+      url: reqUrl ?? new URL("/", origin),
+      site: siteUrl,
+      params: {},
+      request: req,
+      currentLocale: undefined,
+      preferredLocale: undefined,
+      preferredLocaleList: [] as string[],
+    };
     for (const ext of [".tsx", ".jsx", ".astro"]) {
       const fullPath = path.join(pagesDir, `404${ext}`);
       if (fs.existsSync(fullPath)) {
@@ -388,7 +404,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           if (typeof mod.default === "function") {
             resetIslandRegistry();
             const { value: result, renderedModules: rm404, tsxStyles: tsx404 } = await runWithRenderTracking(async () => {
-              let r = mod.default({});
+              let r = mod.default({ __pageContext: pageContext });
               if (r instanceof Promise) r = await r;
               return r;
             });
@@ -966,7 +982,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       }
 
       // Custom 404 page
-      const custom404 = await render404();
+      const custom404 = await render404(req, url);
       if (custom404) {
         return new Response(custom404, {
           status: 404,
@@ -1037,6 +1053,15 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       family: "IPv4",
     });
   }
+
+  // A dev server should survive a single bad render. If an async error escapes a
+  // request (e.g. a component rendered via a promise the request handler can't
+  // await — a `404.astro` reading `Astro.url` is the classic case), the default
+  // runtime behaviour can terminate the process, which then needs a manual
+  // restart. Log it loudly and keep serving instead.
+  process.on("unhandledRejection", (reason) => {
+    console.error("[pletivo] unhandled rejection (dev server kept alive):", reason);
+  });
 
   process.on("SIGINT", async () => {
     watcher.close();
