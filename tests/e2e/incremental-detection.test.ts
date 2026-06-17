@@ -45,7 +45,8 @@ async function write(rel: string, content: string): Promise<void> {
 }
 
 function runBuild(args: string[] = []): { stdout: string; stderr: string; status: number } {
-	const result = spawnSync("bun", ["run", cliPath, "build", ...args], {
+	// Incremental is opt-in; these tests exercise the cache flow, so pass it always.
+	const result = spawnSync("bun", ["run", cliPath, "build", "--incremental", ...args], {
 		cwd: projectRoot,
 		encoding: "utf8",
 		env: { ...process.env, NODE_ENV: "production" },

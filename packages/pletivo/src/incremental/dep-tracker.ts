@@ -23,8 +23,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
  *   1. read the data through a tracked API (e.g. wrap it in a content
  *      collection's `loader`, which is captured),
  *   2. import it via ESM `import` (covered by the static graph), or
- *   3. accept the staleness and use `--no-cache` / `--clean` when the
- *      external data changes.
+ *   3. accept the staleness and run a full build — plain `pletivo build`
+ *      (incremental is opt-in) or `--clean` — when the external data
+ *      changes.
  */
 
 let projectRoot: string | null = null;

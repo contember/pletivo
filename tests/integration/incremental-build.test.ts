@@ -74,7 +74,7 @@ async function setupSimpleProject(): Promise<void> {
 describe("incremental build", () => {
 	it("populates the cache on first build", async () => {
 		await setupSimpleProject();
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 
 		const cache = await readCache();
 		const keys = Object.keys(cache.routes).sort();
@@ -89,7 +89,7 @@ describe("incremental build", () => {
 
 	it("includes the shared Layout in each page's dep set", async () => {
 		await setupSimpleProject();
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 		const cache = await readCache();
 		const layoutPath = path.join(projectRoot, "src/components/Layout.ts");
 		for (const key of Object.keys(cache.routes)) {
@@ -99,7 +99,7 @@ describe("incremental build", () => {
 
 	it("skips re-render on a no-op rebuild (everything cached)", async () => {
 		await setupSimpleProject();
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 		const distFirst = await fs.readFile(path.join(projectRoot, "dist", "index.html"), "utf8");
 
 		// Stamp the on-disk HTML. The second build is incremental so
@@ -112,7 +112,7 @@ describe("incremental build", () => {
 			distFirst + "<!-- SENTINEL -->",
 		);
 
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 		const distSecond = await fs.readFile(path.join(projectRoot, "dist", "index.html"), "utf8");
 		expect(distSecond).toContain("<!-- SENTINEL -->");
 	});
@@ -126,7 +126,7 @@ describe("incremental build", () => {
 		// verify the dep-hash mismatch is detected and the cache
 		// drops the stale entry on the next build.
 		await setupSimpleProject();
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 		const before = await readCache();
 		const indexEntry = before.routes["index.ts::__static__"];
 		const layoutPath = path.join(projectRoot, "src/components/Layout.ts");
@@ -141,7 +141,7 @@ describe("incremental build", () => {
 			}
 		`);
 
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 		const after = await readCache();
 		const updatedLayoutHash = after.routes["index.ts::__static__"].depFingerprints[layoutPath];
 		// Cache must reflect the new content; otherwise canReuse would
@@ -151,7 +151,7 @@ describe("incremental build", () => {
 
 	it("--clean wipes the cache and forces a cold rebuild", async () => {
 		await setupSimpleProject();
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 		expect(await fs.stat(path.join(projectRoot, "node_modules", ".pletivo", "cache", "cache.json"))).toBeDefined();
 
 		// Plant a sentinel in the cache that a clean rebuild would lose.
@@ -166,20 +166,20 @@ describe("incremental build", () => {
 		expect(Object.keys(cleaned.routes)).toContain(firstKey);
 	});
 
-	it("--no-cache skips writing the cache entirely", async () => {
+	it("a non-incremental build (the default) skips the cache entirely", async () => {
 		await setupSimpleProject();
-		await build(projectRoot, config, { noCache: true });
+		await build(projectRoot, config);
 		await expect(fs.stat(path.join(projectRoot, "node_modules", ".pletivo", "cache"))).rejects.toThrow();
 	});
 
 	it("prunes cache entries for routes that no longer exist", async () => {
 		await setupSimpleProject();
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 		expect(Object.keys((await readCache()).routes)).toContain("about.ts::__static__");
 
 		// Delete about.ts and rebuild.
 		await fs.rm(path.join(projectRoot, "src/pages/about.ts"));
-		await build(projectRoot, config);
+		await build(projectRoot, config, { incremental: true });
 
 		const after = (await readCache()).routes;
 		expect(Object.keys(after)).not.toContain("about.ts::__static__");

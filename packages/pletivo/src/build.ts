@@ -88,18 +88,18 @@ interface PageResult {
 
 export interface BuildOptions {
   /**
-   * Force a full rebuild — wipe `node_modules/.pletivo/cache/` and the prior
-   * dist snapshot, then build everything from scratch. Equivalent to
-   * deleting `node_modules/.pletivo/cache/` before running.
+   * Enable the incremental cache for this run — load prior dep
+   * fingerprints + the dist snapshot, reuse unchanged routes, and save
+   * the cache afterwards. Off by default: a plain build is a full
+   * rebuild from scratch. Implied by `clean`.
+   */
+  incremental?: boolean;
+  /**
+   * Wipe `node_modules/.pletivo/cache/` and the prior dist snapshot,
+   * then build incrementally from a clean slate. Implies `incremental`.
+   * Equivalent to deleting `node_modules/.pletivo/cache/` before running.
    */
   clean?: boolean;
-  /**
-   * Disable the incremental cache entirely for this run. Unlike
-   * `clean`, this does NOT wipe an existing cache; it just skips
-   * load/save, so a subsequent `bun pletivo build` can pick up where
-   * it left off.
-   */
-  noCache?: boolean;
 }
 
 export async function build(projectRoot: string, config: PletivoConfig, options: BuildOptions = {}) {
@@ -139,7 +139,10 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   // any of those changing busts the entire route cache.
   const tCacheLoad = performance.now();
   const configHash = await computeProjectConfigHash(projectRoot, config);
-  const cache: CacheStore | null = options.noCache
+  // Incremental is opt-in: a plain build is a full rebuild. `clean`
+  // implies incremental — you only wipe the cache to rebuild it fresh.
+  const incremental = options.incremental || options.clean;
+  const cache: CacheStore | null = !incremental
     ? null
     : options.clean
       ? await CacheStore.forceClean(projectRoot, configHash)
