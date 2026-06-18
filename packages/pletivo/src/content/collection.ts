@@ -10,6 +10,7 @@ import {
   probeAndRegisterImage,
   type ImageMetadata,
 } from "../image";
+import { recordRuntimeDep } from "../incremental/dep-tracker";
 
 // ── Types ──
 
@@ -191,9 +192,15 @@ export interface GlobOptions {
  *  - `.yaml`, `.yml` → YAML parse as frontmatter, empty body
  */
 export function glob(options: GlobOptions): Loader {
-  return {
+  // `__scanRoots` lets loadCollection() learn which directories this
+  // loader walked, so the incremental cache can fingerprint each as a
+  // dep (catches add/remove of files in the collection — per-file
+  // mtime+size checks miss new files since the cache has nothing to
+  // compare against).
+  const loader: Loader & { __scanRoots?: string[] } = {
     async load(projectRoot: string): Promise<RawEntry[]> {
       const dir = path.resolve(projectRoot, options.base);
+      loader.__scanRoots = [dir];
       if (!fs.existsSync(dir)) return [];
       const globPattern = new Glob(options.pattern ?? "**/*.{md,mdx}");
       const baseUrl = pathToFileURL(dir + path.sep);
@@ -249,6 +256,7 @@ export function glob(options: GlobOptions): Loader {
       return entries;
     },
   };
+  return loader;
 }
 
 // ── defineCollection ──
@@ -266,6 +274,16 @@ export function defineCollection(config: CollectionConfig): CollectionConfig {
 const collectionCache = new Map<string, CollectionEntry[]>();
 /** In-flight loads keyed by collection name — concurrent getCollection() calls share one loadCollection() pass instead of racing. */
 const collectionInflight = new Map<string, Promise<CollectionEntry[]>>();
+/**
+ * Per-collection set of paths that contribute to the loaded entries:
+ * every entry's source file, plus the loader's scan root(s) so the
+ * incremental cache can detect additions (the root dir's listing
+ * fingerprint changes when a file appears/disappears). Populated when
+ * `loadCollection` finishes; re-fired into the active runtime-dep
+ * scope on every subsequent `getCollection` call so that pages which
+ * hit the cached entries still attribute the deps to themselves.
+ */
+const collectionDeps = new Map<string, Set<string>>();
 let collectionsConfig: Record<string, CollectionConfig> | null = null;
 let configProjectRoot: string = "";
 let configVersion = 0;
@@ -286,6 +304,7 @@ export async function initCollections(projectRoot: string): Promise<void> {
   configProjectRoot = projectRoot;
   collectionCache.clear();
   collectionInflight.clear();
+  collectionDeps.clear();
   validationFailures.length = 0;
   configVersion++;
 
@@ -336,10 +355,22 @@ export async function getCollection<T = Record<string, unknown>>(
       entries = await inflight;
     }
   }
+  // Re-fire the collection's deps into the current capture scope so
+  // every page that reads the collection (not just the first one)
+  // ends up with the entry source files in its dep set. Without this,
+  // pages that hit the warm `collectionCache` would record nothing
+  // and would happily serve stale HTML after a content edit.
+  republishCollectionDeps(name);
   if (filter) {
     entries = entries.filter(filter);
   }
   return entries;
+}
+
+function republishCollectionDeps(name: string): void {
+  const deps = collectionDeps.get(name);
+  if (!deps) return;
+  for (const p of deps) recordRuntimeDep(p);
 }
 
 /**
@@ -412,7 +443,29 @@ async function loadCollection(config: CollectionConfig, name: string): Promise<C
     rawEntries = await (config.loader as Loader).load(configProjectRoot);
   }
 
-  return buildEntries(rawEntries, config, name);
+  const entries = await buildEntries(rawEntries, config, name);
+
+  // Harvest the per-entry source paths + the loader's scan roots so
+  // subsequent `getCollection` calls (cache hits) can re-fire them as
+  // runtime deps. Scan roots are only known for the legacy `glob()`
+  // loader, which stamps them onto the loader object as `__scanRoots`.
+  const deps = new Set<string>();
+  for (const e of entries) {
+    const fp = (e as unknown as { _filePath?: unknown })._filePath;
+    if (typeof fp === "string") deps.add(fp);
+    const mfp = (e as unknown as { _mdxFilePath?: unknown })._mdxFilePath;
+    if (typeof mfp === "string") deps.add(mfp);
+  }
+  const roots = (config.loader as { __scanRoots?: unknown }).__scanRoots;
+  if (Array.isArray(roots)) {
+    for (const r of roots) if (typeof r === "string") deps.add(r);
+  }
+  collectionDeps.set(name, deps);
+  // Fire once now into the active scope — the call that triggered
+  // this load should also get the deps attributed.
+  republishCollectionDeps(name);
+
+  return entries;
 }
 
 /** Run a function loader and normalize its output to RawEntry[]. */
@@ -626,44 +679,42 @@ async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, na
       if (_mdxFilePath) {
         const mdxPath = _mdxFilePath as string;
         const validatedData = result.data as Record<string, unknown>;
-        return {
-          kind: "ok",
-          entry: {
-            id: raw.id,
-            data: validatedData,
-            body: raw.body,
-            render: async (components) => {
-              const mod = await import(mdxPath + `?v=${configVersion}`);
-              // Pass `components` so bare MDX element references (e.g. a
-              // `<Youtube />` with no import) resolve, mirroring Astro's
-              // `<Content components={...} />`.
-              let rendered = mod.default(components ? { components } : {});
-              if (rendered instanceof Promise) rendered = await rendered;
-              let html = typeof rendered === "object" && rendered !== null && "__html" in rendered
-                ? (rendered as { __html: string }).__html
-                : String(rendered);
-              if (config.transform) {
-                html = config.transform(html, validatedData);
-              }
-              return { html };
-            },
+        const entry: CollectionEntry = {
+          id: raw.id,
+          data: validatedData,
+          body: raw.body,
+          render: async (components) => {
+            const mod = await import(mdxPath + `?v=${configVersion}`);
+            // Pass `components` so bare MDX element references (e.g. a
+            // `<Youtube />` with no import) resolve, mirroring Astro's
+            // `<Content components={...} />`.
+            let rendered = mod.default(components ? { components } : {});
+            if (rendered instanceof Promise) rendered = await rendered;
+            let html = typeof rendered === "object" && rendered !== null && "__html" in rendered
+              ? (rendered as { __html: string }).__html
+              : String(rendered);
+            if (config.transform) {
+              html = config.transform(html, validatedData);
+            }
+            return { html };
           },
         };
+        attachSourcePath(entry, _filePath, _mdxFilePath);
+        return { kind: "ok", entry };
       }
 
       let html = (_html as string) ?? "";
       if (config.transform) {
         html = config.transform(html, result.data as Record<string, unknown>);
       }
-      return {
-        kind: "ok",
-        entry: {
-          id: raw.id,
-          data: result.data as Record<string, unknown>,
-          body: raw.body,
-          render: async () => ({ html }),
-        },
+      const entry: CollectionEntry = {
+        id: raw.id,
+        data: result.data as Record<string, unknown>,
+        body: raw.body,
+        render: async () => ({ html }),
       };
+      attachSourcePath(entry, _filePath, _mdxFilePath);
+      return { kind: "ok", entry };
     }),
   );
 
@@ -680,3 +731,21 @@ async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, na
 }
 
 export { z } from "zod";
+
+/**
+ * Re-stamp the entry with its source file path AFTER user-schema
+ * validation strips it from `data`. Pletivo's incremental cache walks
+ * `pathProps` looking for `_filePath` / `_mdxFilePath` markers to know
+ * which content file backs each slug (since the read happens in
+ * `getStaticPaths`, outside any per-slug capture scope). We attach it
+ * at the entry level rather than under `data` so the user's schema
+ * doesn't see it as a foreign field.
+ */
+function attachSourcePath(entry: CollectionEntry, filePath: unknown, mdxFilePath: unknown): void {
+  if (typeof filePath === "string") {
+    (entry as unknown as { _filePath: string })._filePath = filePath;
+  }
+  if (typeof mdxFilePath === "string") {
+    (entry as unknown as { _mdxFilePath: string })._mdxFilePath = mdxFilePath;
+  }
+}

@@ -61,3 +61,18 @@ gh run watch $(gh run list --workflow=release.yml --limit=1 --json databaseId -q
 
 - Island registry tracks islands per render pass — call `resetIslandRegistry()` between page renders or islands leak across pages.
 - Island props must be JSON-serializable.
+
+## Incremental build — dep tracking limits
+
+`build` is a full rebuild by default; pass `--incremental` to opt into the cache (which lives in `node_modules/.pletivo/cache/`). Two layers feed the dep tracker:
+
+1. **Static ESM graph** (`incremental/import-graph.ts`) — parses page source with Bun's transpiler + `@astrojs/compiler` for `.astro` + `@mdx-js/mdx` for `.mdx`. Catches any module reachable through a static `import` / `import()`.
+2. **Runtime capture** (`incremental/dep-tracker.ts`) — AsyncLocalStorage-scoped `recordRuntimeDep(path)` calls fired from `getCollection`, `probeAndRegisterImage`, and the `glob()` loader.
+
+**What is NOT tracked (known limitation, only relevant under `--incremental`):** direct `Bun.file()` / `fs.readFile()` / `import()` calls in user components that read an arbitrary data file. There is no general-purpose way to intercept these without monkey-patching globals. Workarounds:
+
+- Route the read through a content collection (`getCollection` is tracked).
+- Use static ESM `import` for JSON / data modules (`import data from "./data.json"` is in the static graph).
+- For one-off external data changes, run a plain `pletivo build` (full rebuild) or `pletivo build --incremental --clean`.
+
+Run `--incremental --clean` after upgrading pletivo or after any environment change you suspect the cache isn't catching.
