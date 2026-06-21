@@ -160,3 +160,36 @@ describe("build", () => {
     }
   });
 });
+
+describe("build with hashAssets: false", () => {
+  const noHashDist = path.join(fixtureRoot, "dist-nohash");
+
+  beforeAll(async () => {
+    await build(fixtureRoot, { ...config, outDir: "dist-nohash", hashAssets: false });
+  });
+
+  afterAll(async () => {
+    await fs.rm(noHashDist, { recursive: true, force: true });
+  });
+
+  test("public assets keep their original (un-hashed) names", async () => {
+    const files = readdirSync(noHashDist);
+    expect(files).toContain("style.css");
+    expect(files).toContain("test.png");
+    // No content-hashed variants are emitted.
+    expect(files.some((f) => /^style\.[0-9a-f]{8}\.css$/.test(f))).toBe(false);
+    expect(files.some((f) => /^test\.[0-9a-f]{8}\.png$/.test(f))).toBe(false);
+  });
+
+  test("the un-hashed asset content is copied verbatim", async () => {
+    const css = await Bun.file(path.join(noHashDist, "style.css")).text();
+    expect(css).toContain("font-family");
+  });
+
+  test("pages and islands still build normally", async () => {
+    const content = await Bun.file(path.join(noHashDist, "index.html")).text();
+    expect(content).toContain("<h1>Home Page</h1>");
+    const bundle = await Bun.file(path.join(noHashDist, "_islands/Counter.js")).text();
+    expect(bundle).toContain("mount");
+  });
+});
