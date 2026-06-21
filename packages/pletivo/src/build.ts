@@ -7,7 +7,8 @@ import { resetIslandRegistry } from "./runtime/island";
 import { runWithRenderTracking } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
-import { hashPublicAssets, rewriteRefs } from "./assets";
+import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
+import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { generateSitemap } from "./sitemap";
 import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss, getGlobalCssForPage, clearGlobalCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
@@ -193,7 +194,9 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   // Returns a manifest of original → hashed paths, used below to rewrite
   // references inside rendered HTML.
   const tPublic = performance.now();
-  const publicManifest = await hashPublicAssets(publicDir, distDir);
+  const publicManifest = config.hashAssets === false
+    ? await copyPublicAssets(publicDir, distDir)
+    : await hashPublicAssets(publicDir, distDir);
   phase("hashPublicAssets", tPublic);
 
   // Scan routes
@@ -786,7 +789,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
 
   const tBundle = performance.now();
   await Promise.all([
-    islandNames.size > 0 ? bundleIslands(islandNames, islandsDir, distDir) : null,
+    islandNames.size > 0 ? bundleIslands(islandNames, islandsDir, distDir, projectRoot) : null,
     referencedHashes.size > 0 ? bundleHoistedScripts(referencedHashes, distDir) : null,
   ]);
   phase("islands+hoisted bundling", tBundle);
@@ -1255,6 +1258,7 @@ async function bundleIslands(
   islandNames: Set<string>,
   islandsDir: string,
   distDir: string,
+  projectRoot?: string,
 ) {
   const islandOutDir = path.join(distDir, "_islands");
   await fs.mkdir(islandOutDir, { recursive: true });
@@ -1283,12 +1287,7 @@ async function bundleIslands(
     if (!sourcePath) continue;
 
     const wrapperPath = path.join(tmpDir, name + ".ts");
-    await fs.writeFile(
-      wrapperPath,
-      `import { hydrate, h } from "preact";\n` +
-      `import Component from "${sourcePath}";\n` +
-      `export function mount(el, props) { hydrate(h(Component, props), el); }\n`,
-    );
+    await fs.writeFile(wrapperPath, islandWrapperSource(sourcePath));
     entrypoints.push(wrapperPath);
   }
 
@@ -1305,7 +1304,7 @@ async function bundleIslands(
     format: "esm",
     minify: true,
     naming: "[name].js",
-    plugins: [islandPlugin()],
+    plugins: [islandPlugin(projectRoot)],
   });
 
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -1320,32 +1319,6 @@ async function bundleIslands(
       console.log(`  _islands/${path.basename(output.path)} (${formatSize(output.size)})`);
     }
   }
-}
-
-/**
- * Bun plugin that redirects server-side imports to Preact for island bundles.
- * - pletivo/jsx-runtime → preact/jsx-runtime (DOM-based JSX)
- * - pletivo/hooks → preact/hooks (real reactive hooks)
- * - preact/hooks → preact/hooks (bypass tsconfig path override)
- */
-function islandPlugin() {
-  const preactJsx = require.resolve("preact/jsx-runtime");
-  const preactHooks = require.resolve("preact/hooks");
-
-  return {
-    name: "pletivo-island",
-    setup(build: any) {
-      build.onResolve({ filter: /^pletivo\/jsx-runtime$/ }, () => ({
-        path: preactJsx,
-      }));
-      build.onResolve({ filter: /^pletivo\/jsx-dev-runtime$/ }, () => ({
-        path: preactJsx,
-      }));
-      build.onResolve({ filter: /^pletivo\/hooks$/ }, () => ({
-        path: preactHooks,
-      }));
-    },
-  };
 }
 
 /**

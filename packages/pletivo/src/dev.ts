@@ -37,6 +37,7 @@ import {
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
 import { registerDevTsPlugin } from "./dev-ts-plugin";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
+import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import type { PletivoConfig } from "./config";
 import type { Server, ServerWebSocket } from "bun";
 import { createRequire } from "module";
@@ -859,31 +860,18 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
         for (const candidate of candidates) {
           if (fs.existsSync(candidate)) {
-            const wrapper =
-              `import { hydrate, h } from "preact";\n` +
-              `import Component from "${candidate}";\n` +
-              `export function mount(el, props) { hydrate(h(Component, props), el); }\n`;
+            const wrapper = islandWrapperSource(candidate);
             const tmpDir = path.join(projectRoot, "node_modules/.pletivo");
             const fsP = await import("fs/promises");
             await fsP.mkdir(tmpDir, { recursive: true });
             const tmpFile = path.join(tmpDir, `${name}.ts`);
             await fsP.writeFile(tmpFile, wrapper);
             try {
-              const preactJsx = require.resolve("preact/jsx-runtime");
-              const preactHooks = require.resolve("preact/hooks");
-              const islandPlugin = {
-                name: "pletivo-island",
-                setup(build: any) {
-                  build.onResolve({ filter: /^pletivo\/jsx-runtime$/ }, () => ({ path: preactJsx }));
-                  build.onResolve({ filter: /^pletivo\/jsx-dev-runtime$/ }, () => ({ path: preactJsx }));
-                  build.onResolve({ filter: /^pletivo\/hooks$/ }, () => ({ path: preactHooks }));
-                },
-              };
               const result = await Bun.build({
                 entrypoints: [tmpFile],
                 format: "esm",
                 minify: false,
-                plugins: [islandPlugin],
+                plugins: [islandPlugin(projectRoot)],
               });
               await fsP.unlink(tmpFile);
               if (result.success && result.outputs.length > 0) {

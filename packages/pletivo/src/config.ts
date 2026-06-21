@@ -37,6 +37,14 @@ export interface PletivoConfig {
   srcDir: string;
   /** Public directory for static assets (default: "public") */
   publicDir: string;
+  /**
+   * Hash public assets (images/fonts/css/js) with a content hash and rewrite
+   * references in rendered HTML. Default: true. Set to false to keep original
+   * asset paths — needed when assets are referenced from places the build
+   * can't rewrite (e.g. hardcoded paths inside island JS bundles, or url()s in
+   * a Tailwind-generated CSS bundle). (default: true)
+   */
+  hashAssets?: boolean;
   /** MDX compilation options (remark/rehype plugins) */
   mdx?: MdxConfig;
   /** Path to custom 404 page (relative to projectRoot). Overrides the `pages/404.*` convention. */
@@ -52,6 +60,7 @@ const defaults: PletivoConfig = {
   base: "/",
   srcDir: "src",
   publicDir: "public",
+  hashAssets: true,
 };
 
 let configVersion = 0;

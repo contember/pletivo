@@ -41,20 +41,46 @@ interface FileEntry {
   relPath: string; // POSIX, relative to publicRoot
 }
 
+/** Collect every file under `publicDir`, or `[]` if the directory is absent. */
+async function collectPublicFiles(publicDir: string): Promise<FileEntry[]> {
+  try {
+    await fs.access(publicDir);
+  } catch {
+    return [];
+  }
+  const all: FileEntry[] = [];
+  await walk(publicDir, publicDir, all);
+  return all;
+}
+
+/** Copy entries into `distDir` verbatim, creating parent directories as needed. */
+async function copyEntries(entries: FileEntry[], distDir: string): Promise<void> {
+  for (const entry of entries) {
+    const outPath = path.join(distDir, entry.relPath);
+    await fs.mkdir(path.dirname(outPath), { recursive: true });
+    await fs.copyFile(entry.absPath, outPath);
+  }
+}
+
+/**
+ * Copy public/ into dist/ verbatim (no content hashing, no ref rewriting).
+ * Returns an empty manifest so downstream rewriteRefs() is a no-op.
+ */
+export async function copyPublicAssets(
+  publicDir: string,
+  distDir: string,
+): Promise<Map<string, string>> {
+  await copyEntries(await collectPublicFiles(publicDir), distDir);
+  return new Map<string, string>();
+}
+
 export async function hashPublicAssets(
   publicDir: string,
   distDir: string,
 ): Promise<Map<string, string>> {
   const manifest = new Map<string, string>();
 
-  try {
-    await fs.access(publicDir);
-  } catch {
-    return manifest;
-  }
-
-  const all: FileEntry[] = [];
-  await walk(publicDir, publicDir, all);
+  const all = await collectPublicFiles(publicDir);
 
   // Bucket files by category.
   const media: FileEntry[] = [];
@@ -84,11 +110,7 @@ export async function hashPublicAssets(
   }
 
   // 3. Non-hashable files — copy as-is.
-  for (const entry of skip) {
-    const outPath = path.join(distDir, entry.relPath);
-    await fs.mkdir(path.dirname(outPath), { recursive: true });
-    await fs.copyFile(entry.absPath, outPath);
-  }
+  await copyEntries(skip, distDir);
 
   // Defensive: anything unknown ext that isn't in either set falls through
   // to skip above (we classified unknown as skip).
