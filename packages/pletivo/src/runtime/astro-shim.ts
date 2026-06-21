@@ -15,7 +15,28 @@
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
 import { withBase } from "../base";
 import { getHoistedScript, hoistedUrl } from "../astro-plugin";
+import { renderIslandWrapper, registerIsland } from "./island";
 export { HtmlString };
+
+// Astro's compiler turns `<Comp client:visible />` into a renderComponent() call
+// whose props carry the directive (`client:visible: true`, plus
+// `client:component-hydration: "visible"`). Detect the hydration strategy so the
+// .astro path can hydrate islands the same way the native JSX runtime does — without
+// it, an island imported into a .astro file SSRs as dead static HTML (no hydration).
+const ASTRO_CLIENT_KEYS = ["client:load", "client:idle", "client:visible", "client:media", "client:only"];
+function astroHydrateStrategy(props: Record<string, unknown>): string | null {
+  const h = props["client:component-hydration"];
+  if (typeof h === "string" && h) {
+    return h === "media" && typeof props["client:media"] === "string" ? `media(${props["client:media"]})` : h;
+  }
+  for (const key of ASTRO_CLIENT_KEYS) {
+    if (key in props) {
+      const strategy = key.split(":")[1];
+      return strategy === "media" && typeof props[key] === "string" ? `media(${props[key]})` : strategy;
+    }
+  }
+  return null;
+}
 
 function escapeHtml(s: string): string {
   return s
@@ -336,7 +357,7 @@ const voidElements = new Set([
 
 export async function renderComponent(
   result: AstroResult,
-  _displayName: string,
+  displayName: string,
   Component: unknown,
   props: Record<string, unknown> = {},
   slots: SlotsRecord = {},
@@ -368,6 +389,36 @@ export async function renderComponent(
       slots,
     );
     return rendered;
+  }
+
+  // Island: a plain component used with a `client:*` directive in a .astro file.
+  // Mirror the JSX runtime's renderIsland — SSR the component, register it for
+  // bundling, and wrap it in the hydration marker the build scanner looks for.
+  if (typeof Component === "function") {
+    const hydrate = astroHydrateStrategy(props);
+    if (hydrate) {
+      const componentName = displayName || (Component as { name?: string }).name || "anonymous";
+      const islandProps: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(cleanProps)) {
+        if (k.startsWith("client:") || k === "children") continue;
+        islandProps[k] = v;
+      }
+      let innerHtml = "";
+      if (hydrate !== "only") {
+        try {
+          const out = (Component as (p: Record<string, unknown>) => unknown)(islandProps);
+          const awaited = out instanceof Promise ? await out : out;
+          if (isHtmlString(awaited)) innerHtml = awaited.__html;
+          else if (typeof awaited === "string") innerHtml = escapeHtml(awaited);
+          else innerHtml = await renderValue(awaited);
+        } catch {
+          // SSR failed → ship an empty shell and hydrate on the client.
+        }
+      }
+      registerIsland(componentName, componentName);
+      const effectiveHydrate = hydrate === "only" ? "load" : hydrate;
+      return createHtml(renderIslandWrapper(componentName, effectiveHydrate, islandProps, innerHtml));
+    }
   }
 
   // Plain function component (pletivo JSX, or shim Fragment)
