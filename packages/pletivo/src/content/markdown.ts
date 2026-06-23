@@ -1,9 +1,23 @@
 /**
- * Markdown rendering for `.md` content, built on the unified/remark pipeline
- * so user-configured remark/rehype plugins actually run (Astro parity):
+ * Markdown rendering for `.md` content.
  *
- *   remark-parse → [remark-gfm] → remarkPlugins → remark-rehype
- *     → heading-id slugs → rehypePlugins → rehype-stringify
+ * Two engines, picked per render in `parseMarkdown`:
+ *
+ *  1. Sätteri (default) — the native Rust GFM engine Astro 7 itself uses, so
+ *     output matches Astro. Used for the common case (no user remark/rehype
+ *     plugins) because it is ~30-40x faster than unified and removes pletivo's
+ *     markdown scaling bottleneck on large sites.
+ *
+ *  2. unified/remark (fallback) — used when the Astro config sets any
+ *     `markdown.remarkPlugins` / `markdown.rehypePlugins` (or `remarkRehype`
+ *     options), because those plugins are remark/rehype-specific and cannot run
+ *     on Sätteri. Preserves the Astro plugin-compat promise:
+ *
+ *       remark-parse → [remark-gfm] → remarkPlugins → remark-rehype
+ *         → heading-id slugs → rehypePlugins → rehype-stringify
+ *
+ * Both paths share the same heading-id slug algorithm (`slugify` + per-document
+ * `-1/-2` dedup), so heading anchors are identical regardless of engine.
  *
  * Plugins come from the Astro config's top-level `markdown` options and are
  * installed once via `configureMarkdown()` (see dev.ts / build.ts) before any
@@ -16,6 +30,7 @@ import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import remarkRehype from "remark-rehype";
 import rehypeStringify from "rehype-stringify";
+import { markdownToHtml, defineHastPlugin } from "satteri";
 import type { CompileOptions } from "@mdx-js/mdx";
 
 // `unified`'s `PluggableList` — derived from the published `CompileOptions`
@@ -144,11 +159,52 @@ function rehypeHeadingIds() {
 }
 
 /**
- * Render a markdown body (frontmatter already stripped) to HTML, running the
- * configured remark/rehype plugins. A fresh processor is built per call so
- * plugin config changes take effect and processors are never reused frozen.
+ * Sätteri heading-id plugin: give every heading a unique-per-document id using
+ * pletivo's `slugify` + `uniqueSlug`, matching the unified `rehypeHeadingIds`
+ * plugin byte-for-byte. A fresh `seen` map is created per call (one per
+ * document), so this must be instantiated per render.
  */
-export async function renderMarkdown(body: string): Promise<string> {
+function satteriHeadingIds() {
+  const seen = new Map<string, number>();
+  return defineHastPlugin({
+    name: "heading-ids",
+    element: {
+      filter: ["h1", "h2", "h3", "h4", "h5", "h6"],
+      visit(node, ctx) {
+        if (node.properties?.id != null) return;
+        const base = slugify(ctx.textContent(node));
+        if (base) ctx.setProperty(node, "id", uniqueSlug(base, seen));
+      },
+    },
+  });
+}
+
+/** True when the user configured remark/rehype plugins that only unified can run. */
+function hasUserPlugins(o: MarkdownOptions): boolean {
+  return Boolean(
+    o.remarkPlugins?.length ||
+      o.rehypePlugins?.length ||
+      (o.remarkRehype && Object.keys(o.remarkRehype).length),
+  );
+}
+
+/** Fast path: render via Sätteri (native). Used when no user plugins are configured. */
+async function renderMarkdownSatteri(body: string): Promise<string> {
+  const { html } = await markdownToHtml(body.trim(), {
+    features: { gfm: markdownOptions.gfm !== false, frontmatter: false },
+    hastPlugins: [satteriHeadingIds()],
+  });
+  // Sätteri appends a single document-final newline; unified does not. Drop it
+  // so output stays byte-identical to the unified path (and to prior pletivo).
+  return html.replace(/\n$/, "");
+}
+
+/**
+ * Compatibility path: the full unified/remark pipeline, so user-configured
+ * remark/rehype plugins run. A fresh processor is built per call so plugin
+ * config changes take effect and processors are never reused frozen.
+ */
+async function renderMarkdownUnified(body: string): Promise<string> {
   const processor = unified().use(remarkParse);
   if (markdownOptions.gfm !== false) processor.use(remarkGfm);
   if (markdownOptions.remarkPlugins?.length) processor.use(markdownOptions.remarkPlugins);
@@ -159,6 +215,18 @@ export async function renderMarkdown(body: string): Promise<string> {
 
   const file = await processor.process(body.trim());
   return String(file);
+}
+
+/**
+ * Render a markdown body (frontmatter already stripped) to HTML. Renders via
+ * Sätteri by default, falling back to the unified pipeline when the user has
+ * configured remark/rehype plugins (see module header). Exported so the
+ * content-collection loader can defer rendering to `entry.render()`.
+ */
+export async function renderMarkdown(body: string): Promise<string> {
+  return hasUserPlugins(markdownOptions)
+    ? renderMarkdownUnified(body)
+    : renderMarkdownSatteri(body);
 }
 
 /**
