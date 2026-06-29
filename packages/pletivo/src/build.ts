@@ -19,6 +19,7 @@ import { detectRouteLocale } from "./i18n/route-expansion";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
 import { setImageMode, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
+import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
 import { setBase } from "./base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
@@ -223,6 +224,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("build");
+  setUrlAssetMode("build");
   // Resolve the optional `sharp` dep from the consumer project, not from
   // pletivo's own (possibly symlinked) location.
   setSharpResolveBase(projectRoot);
@@ -231,6 +233,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   // serves the transform endpoint, instead of falling back to a raw <img>).
   (globalThis as Record<string, unknown>).__PLETIVO__ = true;
   clearTransforms();
+  clearUrlAssets();
 
   function makePageContext(
     pathname: string,
@@ -765,6 +768,19 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     imageCount = await processImages(imageTransforms, distDir);
     clearTransforms();
     phase("processImages", tImg);
+  }
+
+  // Emit `?url`-imported assets, copied as-is under _astro/.
+  const urlAssets = getUrlAssets();
+  if (urlAssets.size > 0) {
+    const tUrl = performance.now();
+    for (const [outputPath, sourcePath] of urlAssets) {
+      const outFile = path.join(distDir, outputPath);
+      await fs.mkdir(path.dirname(outFile), { recursive: true });
+      await fs.copyFile(sourcePath, outFile);
+    }
+    clearUrlAssets();
+    phase("processUrlAssets", tUrl);
   }
 
   // Aggregate island + hoisted references across all routes. For

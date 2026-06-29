@@ -29,6 +29,7 @@ import {
   sharpAvailable,
   setSharpResolveBase,
 } from "./image";
+import { setUrlAssetMode } from "./url-asset";
 import { setBase, withBase, stripBase } from "./base";
 import {
   resolveFallbackRoute,
@@ -227,6 +228,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("dev");
+  setUrlAssetMode("dev");
   // Resolve the optional `sharp` dep from the consumer project, not from
   // pletivo's own (possibly symlinked) location.
   setSharpResolveBase(projectRoot);
@@ -803,6 +805,20 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           }
         }
         return new Response("Image not found", { status: 404 });
+      }
+
+      // Serve `?url`-imported assets in dev mode. `registerUrlAsset()` returns
+      // URLs like `/@asset/contact-form.js?f=/abs/path/contact-form.js` that
+      // point to the original file, served as-is (Bun infers the content type).
+      if (pathname.startsWith("/@asset/")) {
+        const fsPathParam = url.searchParams.get("f");
+        if (fsPathParam) {
+          const file = Bun.file(fsPathParam);
+          if (await file.exists()) {
+            return new Response(file);
+          }
+        }
+        return new Response("Asset not found", { status: 404 });
       }
 
       // Serve bundled CSS from src/ on-the-fly. Scoped styles from <style>
