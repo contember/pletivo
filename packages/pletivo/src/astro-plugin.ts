@@ -21,6 +21,7 @@ import { transform, parse } from "@astrojs/compiler";
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import { imageUrlFor, probeAndRegisterImage } from "./image";
+import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 import { stripTypes } from "./transpile";
 
@@ -411,6 +412,21 @@ export async function registerAstroPlugin(): Promise<void> {
         };
       });
 
+      // ── `?url` imports ──
+      // `import href from "./foo.js?url"` resolves to the asset's URL string
+      // (Astro/Vite semantics) — the file is served/emitted as-is, not loaded as
+      // a module. Without this Bun loads `foo.js?url` as JS and throws on the
+      // missing default export. Registered before the image loader so `?url`
+      // wins for every file type, including images.
+      build.onLoad({ filter: /\?url$/ }, async (args) => {
+        const cleanPath = stripQuery(args.path);
+        const href = await registerUrlAsset(cleanPath);
+        return {
+          contents: `export default ${JSON.stringify(href)};`,
+          loader: "js",
+        };
+      });
+
       // ── Virtual modules ──
       // Bun's default resolver rejects colon-containing specifiers (`astro:content`)
       // before our `onResolve` hook runs, so we register them via `build.module`,
@@ -566,28 +582,46 @@ export async function registerAstroPlugin(): Promise<void> {
         contents: `export { experimental_AstroContainer } from ${JSON.stringify(containerPath)};`,
       }));
 
-      // `astro/config` — minimal shim so astro.config.mjs files that
-      // `import { defineConfig } from "astro/config"` can be loaded
-      // without having astro installed as a dependency. `defineConfig`
-      // is an identity helper in Astro (`<T>(cfg: T): T => cfg`), so
-      // our shim matches exactly. Also exports `envField` as a noop
-      // collector since some configs use it at top level.
-      mod("astro/config", () => ({
-        loader: "ts",
-        contents: `
-          export function defineConfig(config) { return config; }
-          export function getViteConfig(config) { return config; }
-          export const envField = new Proxy({}, {
-            get(_target, type) {
-              // envField.string({...}), envField.number({...}), envField.boolean({...}), envField.enum({...})
-              return (opts = {}) => ({ ...opts, type: String(type) });
-            },
-          });
-          export function sharpImageService() { return {}; }
-          export function squooshImageService() { return {}; }
-          export function passthroughImageService() { return {}; }
-        `,
-      }));
+      // `astro/config` — this Bun plugin is global, so the registration below
+      // also shadows `astro/config` for the `await import()` that loads the
+      // user's astro.config.*. Adapters/integrations pulled in there import a
+      // growing surface from `astro/config` (e.g. `@astrojs/cloudflare` imports
+      // `sessionDrivers`), which a hand-written shim can't keep up with. So when
+      // astro is installed in the project, re-export the *real* `astro/config`
+      // — the config then loads exactly as it would under Astro. The minimal
+      // shim remains a fallback for projects without astro as a dependency
+      // (`defineConfig`/`getViteConfig` are identity helpers; `envField` a noop
+      // collector; the image-service helpers return empty descriptors).
+      mod("astro/config", () => {
+        let realConfig: string | null = null;
+        try {
+          realConfig = Bun.resolveSync("astro/config", process.cwd());
+        } catch {
+          realConfig = null;
+        }
+        if (realConfig) {
+          return {
+            loader: "ts",
+            contents: `export * from ${JSON.stringify(realConfig)};`,
+          };
+        }
+        return {
+          loader: "ts",
+          contents: `
+            export function defineConfig(config) { return config; }
+            export function getViteConfig(config) { return config; }
+            export const envField = new Proxy({}, {
+              get(_target, type) {
+                // envField.string({...}), envField.number({...}), envField.boolean({...}), envField.enum({...})
+                return (opts = {}) => ({ ...opts, type: String(type) });
+              },
+            });
+            export function sharpImageService() { return {}; }
+            export function squooshImageService() { return {}; }
+            export function passthroughImageService() { return {}; }
+          `,
+        };
+      });
     },
   });
 }
