@@ -9,7 +9,7 @@ import { runWithRenderTracking } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
-import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, getGlobalCssForPage, getHoistedScriptByHash, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
+import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, getGlobalCssForPage, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "./dev-cache";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
@@ -39,6 +39,7 @@ import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
 import { registerDevTsPlugin } from "./dev-ts-plugin";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
+import { clearCollectedCss, clearJsImportedCssImportCache, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, jsOutputFromBuild, recordBuildCssOutputs } from "./js-imported-css";
 import type { PletivoConfig } from "./config";
 import type { Server, ServerWebSocket } from "bun";
 import { createRequire } from "module";
@@ -203,6 +204,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   });
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
+  configureJsImportedCss(projectRoot, config.srcDir);
   {
     const vite = astroHost?.config.vite as
       | { css?: { preprocessorOptions?: { scss?: Record<string, unknown> } } }
@@ -265,6 +267,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
       const importPath = fullPath + `?v=${getDevVersion()}`;
       const mod = await import(importPath);
+      // Non-.astro page modules don't hit the astro plugin's onLoad, so
+      // collect their CSS side-effect imports here for /__styles.css.
+      await collectPageModuleCss(fullPath, `page:${route.file}`);
       const component = mod.default;
 
       if (typeof component !== "function") return null;
@@ -401,6 +406,39 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     return req.headers.get(debugHeaderName) !== null;
   }
 
+  async function buildDevHoistedScript(hash: string) {
+    const result = await Bun.build({
+      entrypoints: [hoistedEntrypoint(hash)],
+      format: "esm",
+      target: "browser",
+      minify: false,
+      plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin()],
+    });
+    if (result.success) {
+      await recordBuildCssOutputs(result.outputs, `hoisted:${hash}`);
+    }
+    return result;
+  }
+
+  async function collectDevHoistedCss(): Promise<string | null> {
+    clearCollectedCss("hoisted:");
+    for (const entry of getAllHoistedScripts()) {
+      await collectCssSideEffectImports(entry.sourceFile, entry.code, `hoisted:${entry.hash}`, {
+        bundleExternalCss: false,
+      });
+      const result = await buildDevHoistedScript(entry.hash);
+      if (!result.success) {
+        return result.logs.map((log) => String(log)).join("\n");
+      }
+      const js = jsOutputFromBuild(result.outputs);
+      if (js) {
+        const bytes = new Uint8Array(await js.arrayBuffer());
+        setHoistedBundleCache(entry.hash, bytes);
+      }
+    }
+    return null;
+  }
+
   // Per-pathname snapshot of the last HTML successfully served to a user.
   // Populated on successful user renders; read when a later render for the
   // same path throws and stale mode is on.
@@ -419,6 +457,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   ): Promise<string | null> {
     const importPath = fullPath + `?v=${getDevVersion()}`;
     const mod = await import(importPath);
+    await collectPageModuleCss(fullPath, `page:${fullPath}`);
     if (typeof mod.default !== "function") return null;
     resetIslandRegistry();
     const { value: result, renderedModules, tsxStyles } = await runWithRenderTracking(async () => {
@@ -824,6 +863,10 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Serve bundled CSS from src/ on-the-fly. Scoped styles from <style>
       // blocks are injected per-page as inline <style> tags, not here.
       if (pathname === "/__styles.css") {
+        const hoistedCssError = await collectDevHoistedCss();
+        if (hoistedCssError) {
+          return new Response(`Hoisted script CSS collection failed:\n${hoistedCssError}`, { status: 500 });
+        }
         let css = await devCss(projectRoot, config.srcDir);
         const cssModules = getCssModulesOutput();
         if (cssModules) css += "\n" + cssModules;
@@ -846,15 +889,10 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         if (!getHoistedScriptByHash(hash)) {
           return new Response("Hoisted script not found", { status: 404 });
         }
-        const result = await Bun.build({
-          entrypoints: [hoistedEntrypoint(hash)],
-          format: "esm",
-          target: "browser",
-          minify: false,
-          plugins: [hoistedScriptBunPlugin()],
-        });
-        if (result.success && result.outputs.length > 0) {
-          const bytes = new Uint8Array(await result.outputs[0].arrayBuffer());
+        const result = await buildDevHoistedScript(hash);
+        const js = jsOutputFromBuild(result.outputs);
+        if (result.success && js) {
+          const bytes = new Uint8Array(await js.arrayBuffer());
           setHoistedBundleCache(hash, bytes);
           return new Response(bytes, {
             headers: { "Content-Type": "application/javascript" },
@@ -1086,6 +1124,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     const ext = path.extname(filename).toLowerCase();
     const isCss = ext === ".css";
     const isScss = ext === ".scss" || ext === ".sass";
+    if (/\.(css|js|jsx|ts|tsx|mjs|cjs)$/i.test(filename)) {
+      clearJsImportedCssImportCache();
+    }
     // scss changes: clear the cache so stale entries for deleted/renamed
     // files don't linger (active entries are overwritten on re-import).
     // Serve as a full reload so the page re-renders and re-imports scss

@@ -1,5 +1,9 @@
 ---
-const title = "Hoisted Imports";
+import "../../vendor/frontmatter.css";
+import "../styles/local.css";
+import { FRONTMATTER_EXTERNAL } from "../scripts/frontmatter-external.js";
+
+const title = "Hoisted Imports" + FRONTMATTER_EXTERNAL.slice(0, 0);
 ---
 <html>
   <head><title>{title}</title></head>
@@ -9,5 +13,6 @@ const title = "Hoisted Imports";
 </html>
 
 <script>
+  import '../../vendor/hoisted-entry.css';
   import '../scripts/external.js';
 </script>

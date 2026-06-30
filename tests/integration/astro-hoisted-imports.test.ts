@@ -20,6 +20,7 @@ describe("astro hoisted <script> with relative import", () => {
   let html: string;
   let bundlePath: string;
   let bundle: string;
+  let css: string;
 
   beforeAll(async () => {
     __resetForTests();
@@ -29,6 +30,9 @@ describe("astro hoisted <script> with relative import", () => {
     expect(m).not.toBeNull();
     bundlePath = path.join(distDir, "_astro", `hoisted-${m![1]}.js`);
     bundle = await Bun.file(bundlePath).text();
+    const cssHref = html.match(/href="([^"]*\/assets\/styles\.[a-f0-9]+\.css)"/);
+    expect(cssHref).not.toBeNull();
+    css = await Bun.file(path.join(distDir, cssHref![1])).text();
   });
 
   afterAll(async () => {
@@ -54,5 +58,16 @@ describe("astro hoisted <script> with relative import", () => {
     // `import '../scripts/external.js'` statement that the browser would
     // 404 on. After bundling, no relative-path imports should remain.
     expect(bundle).not.toMatch(/import\s+['"]\.\.?\//);
+  });
+
+  test("CSS side-effect imports from frontmatter and hoisted scripts land in the stylesheet", () => {
+    expect(css).toContain(".frontmatter-side-effect-css");
+    expect(css).toContain(".frontmatter-transitive-side-effect-css");
+    expect(css).toContain(".hoisted-entry-side-effect-css");
+    expect(css).toContain(".hoisted-transitive-side-effect-css");
+  });
+
+  test("CSS imported from src is not duplicated with the global src CSS scan", () => {
+    expect(css.match(/\.local-side-effect-css/g)?.length).toBe(1);
   });
 });

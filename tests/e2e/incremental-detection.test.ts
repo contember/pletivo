@@ -1,8 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+// Each test spawns one or two full `pletivo build` subprocesses. Under CI
+// CPU contention (many e2e specs running in parallel) two cold builds can
+// blow past the 5s default, so give these spawn-heavy tests generous room.
+setDefaultTimeout(30_000);
 
 /**
  * E2E coverage for change-detection edge cases the original
@@ -22,6 +27,12 @@ import path from "node:path";
  *    force cached HTML pages to be re-emitted with the new <link>.
  *  - `#6` Edits to tsconfig.json or relevant package.json fields must
  *    bust the entire route cache via configHash.
+ *  - `#7` CSS imported by Astro hoisted scripts must participate in
+ *    incremental invalidation and cached-page stylesheet relinking.
+ *  - `#8` Tailwind-mode builds must still include CSS side-effect imports
+ *    from JS when those CSS files live under src/.
+ *  - `#9` CSS side-effect imports from non-.astro page modules (.tsx/.ts)
+ *    must land in the bundle without duplicating src CSS.
  */
 
 const repoRoot = path.resolve(import.meta.dir, "../..");
@@ -52,6 +63,15 @@ function runBuild(args: string[] = []): { stdout: string; stderr: string; status
 		env: { ...process.env, NODE_ENV: "production" },
 	});
 	return { stdout: result.stdout, stderr: result.stderr, status: result.status ?? -1 };
+}
+
+async function readCssBundleFor(pageRel: string): Promise<{ href: string; css: string }> {
+	const html = await fs.readFile(path.join(projectRoot, "dist", pageRel), "utf8");
+	const href = /\/assets\/styles\.[a-f0-9]+\.css/.exec(html)?.[0];
+	expect(href).toBeDefined();
+	if (!href) throw new Error(`Missing CSS bundle link in ${pageRel}`);
+	const css = await fs.readFile(path.join(projectRoot, "dist", href.replace(/^\//, "")), "utf8");
+	return { href, css };
 }
 
 async function setupSharedCollection(): Promise<void> {
@@ -296,5 +316,126 @@ describe("incremental detection #6 — tsconfig/package.json in configHash", () 
 		const after = runBuild();
 		expect(after.status).toBe(0);
 		expect(after.stdout).toMatch(/1 rendered \+ 0 cached/);
+	});
+});
+
+describe("incremental detection #7 — Astro hoisted script CSS imports", () => {
+	it("updates the global CSS bundle and cached page links when hoisted CSS changes", async () => {
+		await write("vendor/hoisted-transitive.css", `.hoisted-css-v1 { color: red; }`);
+		await write("src/scripts/external.js", `
+			import "../../vendor/hoisted-transitive.css";
+			document.documentElement.dataset.hoisted = "loaded";
+		`);
+		await write("src/pages/index.astro", `
+---
+const title = "Hoisted CSS";
+---
+<html>
+	<head><title>{title}</title></head>
+	<body><h1>Hoisted CSS</h1></body>
+</html>
+<script>
+	import "../scripts/external.js";
+</script>
+`);
+		await write("src/pages/about.ts", `
+			export default function About() {
+				return { __html: '<!DOCTYPE html><html><head><title>About</title></head><body><h1>About</h1></body></html>' };
+			}
+		`);
+
+		const first = runBuild();
+		expect(first.status).toBe(0);
+		const firstIndex = await readCssBundleFor("index.html");
+		expect(firstIndex.css).toContain(".hoisted-css-v1");
+
+		await write("vendor/hoisted-transitive.css", `
+			.hoisted-css-v1 { color: red; }
+			.hoisted-css-v2 { color: blue; }
+		`);
+
+		const second = runBuild();
+		expect(second.status).toBe(0);
+		expect(second.stdout).toContain("about.ts → dist/about/index.html");
+		expect(second.stdout).toContain("[cached]");
+
+		const secondIndex = await readCssBundleFor("index.html");
+		const secondAbout = await readCssBundleFor("about/index.html");
+		expect(secondIndex.href).not.toBe(firstIndex.href);
+		expect(secondIndex.href).toBe(secondAbout.href);
+		expect(secondIndex.css).toContain(".hoisted-css-v2");
+	});
+});
+
+describe("incremental detection #8 — Tailwind-mode JS CSS side effects", () => {
+	it("includes src CSS imported through JS when Tailwind owns the primary CSS entry", async () => {
+		await write("node_modules/@tailwindcss/node/package.json", `{"type":"module","main":"index.js"}`);
+		await write("node_modules/@tailwindcss/node/index.js", `
+			export async function compile() {
+				return {
+					root: "none",
+					sources: [],
+					build() {
+						return ".fake-tailwind-output { color: black; }";
+					},
+				};
+			}
+		`);
+		await write("node_modules/@tailwindcss/oxide/package.json", `{"type":"module","main":"index.js"}`);
+		await write("node_modules/@tailwindcss/oxide/index.js", `
+			export class Scanner {
+				scan() {
+					return [];
+				}
+			}
+		`);
+		await write("src/styles/app.css", `@import "tailwindcss";`);
+		await write("src/styles/local.css", `.tailwind-local-side-effect-css { color: red; }`);
+		await write("src/scripts/entry.js", `import "../styles/local.css";`);
+		await write("src/pages/index.astro", `
+---
+import "../scripts/entry.js";
+---
+<html>
+	<head><title>Tailwind side effect</title></head>
+	<body><h1 class="fake-tailwind-output">Tailwind side effect</h1></body>
+</html>
+`);
+
+		const result = runBuild();
+		expect(result.status).toBe(0);
+		const { css } = await readCssBundleFor("index.html");
+		expect(css).toContain(".fake-tailwind-output");
+		expect(css).toContain(".tailwind-local-side-effect-css");
+		expect(css.match(/\.tailwind-local-side-effect-css/g)?.length).toBe(1);
+	});
+});
+
+describe("incremental detection #9 — non-.astro page CSS side effects", () => {
+	it("bundles external CSS from a .tsx page without duplicating src CSS", async () => {
+		await write("vendor/ext.css", `.tsx-external-side-effect-css { color: red; }`);
+		await write("src/styles/local.css", `.tsx-local-side-effect-css { color: blue; }`);
+		await write("src/pages/index.tsx", `
+			import "../../vendor/ext.css";
+			import "../styles/local.css";
+			export default function Index() {
+				return { __html: '<!DOCTYPE html><html><head><title>TSX</title></head><body><h1>TSX</h1></body></html>' };
+			}
+		`);
+
+		const first = runBuild();
+		expect(first.status).toBe(0);
+		const firstIndex = await readCssBundleFor("index.html");
+		// External CSS (outside src/) only reaches the bundle via the JS import scan.
+		expect(firstIndex.css).toContain(".tsx-external-side-effect-css");
+		// Source CSS is already covered by the src glob — must not be duplicated.
+		expect(firstIndex.css).toContain(".tsx-local-side-effect-css");
+		expect(firstIndex.css.match(/\.tsx-local-side-effect-css/g)?.length).toBe(1);
+
+		// Rebuild with no changes must reuse the same content hash (deterministic order).
+		const second = runBuild();
+		expect(second.status).toBe(0);
+		const secondIndex = await readCssBundleFor("index.html");
+		expect(secondIndex.href).toBe(firstIndex.href);
 	});
 });
