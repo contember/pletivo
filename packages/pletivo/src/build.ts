@@ -23,6 +23,7 @@ import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
 import { setBase } from "./base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
+import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs } from "./js-imported-css";
 import type { PletivoConfig } from "./config";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
@@ -121,6 +122,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   // project sources only. (Static import graph + runtime file reads.)
   configureImportGraph(projectRoot);
   configureDepTracker(projectRoot);
+  configureJsImportedCss(projectRoot, config.srcDir);
 
   const tPlugins = performance.now();
   await registerAstroPlugin();
@@ -131,6 +133,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureScss(readScssOptions(astroHost?.config.vite));
+  clearJsImportedCss();
   phase("plugins+astroHost", tPlugins);
   const tColl = performance.now();
   await initCollections(projectRoot);
@@ -290,6 +293,11 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   const dynamicMods = new Map<string, { default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }>();
   const dynamicStaticPathsCache = new Map<string, Promise<StaticPath[]>>();
   const dynamicRouteCacheable = new Map<string, () => Promise<void>>();
+  async function importDynamicRouteModule(fullPath: string): Promise<{ default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }> {
+    const mod = await import(fullPath);
+    await collectPageModuleCss(fullPath, `page:${fullPath}`);
+    return mod;
+  }
 
   for (const route of dynamicRoutes) {
     const fullPath = path.join(pagesDir, route.file);
@@ -307,8 +315,8 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     // the fresh path list so per-slug renders can read props from
     // it without re-importing.
     const { value: sp, runtimeDeps } = await runWithRuntimeDepCapture(async () => {
-      const mod = await import(fullPath);
-      dynamicMods.set(route.file, mod as { default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> });
+      const mod = await importDynamicRouteModule(fullPath);
+      dynamicMods.set(route.file, mod);
       if (typeof mod.default !== "function") return null;
       if (typeof mod.getStaticPaths !== "function") return null;
       const paginate = createPaginate(route, base || "/");
@@ -435,6 +443,10 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       }
 
       const mod = await import(fullPath);
+      // Collect CSS side-effect imports from non-.astro page modules. Runs
+      // unconditionally (even for cached pages) so the global stylesheet
+      // stays complete — mirrors the astro plugin's onLoad collection.
+      await collectPageModuleCss(fullPath, `page:${route.file}`);
       if (typeof mod.default !== "function") {
         console.warn(`  Skipping ${route.file}: no default export function`);
         return null;
@@ -495,11 +507,18 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       if (!modPromise) {
         const prefetched = dynamicMods.get(route.file);
         modPromise = prefetched
-          ? Promise.resolve(prefetched as { default?: unknown })
-          : (import(fullPath) as Promise<{ default?: unknown }>);
+          ? Promise.resolve(prefetched)
+          : importDynamicRouteModule(fullPath);
       }
       return modPromise;
     };
+    const hasCachedSlug = cache !== null && paramSets.some(({ params }) => {
+      const routeKey = `${route.file}::${paramsToKey(params)}`;
+      return cache.getRoute(routeKey) !== undefined;
+    });
+    if (hasCachedSlug && !dynamicMods.has(route.file)) {
+      dynamicMods.set(route.file, await importDynamicRouteModule(fullPath));
+    }
     // Index resolved paths by `paramsToKey(params)` so we can look up
     // a slug's props on demand without a linear scan each time.
     let propsIndexPromise: Promise<Map<string, Record<string, unknown> | undefined>> | null = null;
@@ -710,10 +729,33 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   );
 
   phase("renders + dedupe", tStatic);
+
+  // Aggregate island + hoisted references across all routes before writing
+  // CSS. Hoisted script bundling can emit CSS artifacts for JS side-effect
+  // imports, and those need to be present before bundleCss() hashes the
+  // final stylesheet.
+  const islandNames = new Set<string>();
+  const referencedHashes = new Set<string>();
+  for (const result of dedupedResults) {
+    if (result.islands || result.hoistedHashes) {
+      for (const name of result.islands ?? []) islandNames.add(name);
+      for (const hash of result.hoistedHashes ?? []) referencedHashes.add(hash);
+      continue;
+    }
+    for (const name of extractAll(result.html, ISLAND_NAME_RE)) islandNames.add(name);
+    for (const hash of extractAll(result.html, HOISTED_URL_RE)) referencedHashes.add(hash);
+  }
+
+  if (referencedHashes.size > 0) {
+    const tHoisted = performance.now();
+    await bundleHoistedScripts(referencedHashes, distDir);
+    phase("hoisted bundling", tHoisted);
+  }
+
   // Bundle CSS from src/ AFTER rendering — side-effect imports of
   // `.scss` / `.sass` from components populate the scss output map
-  // during page rendering, so the bundle needs to be computed here
-  // to include them.
+  // during page rendering, and hoisted-script CSS imports are collected
+  // above, so the bundle needs to be computed here to include them.
   const tCss = performance.now();
   const cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
   phase("bundleCss", tCss);
@@ -736,9 +778,12 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   await Promise.all(
     dedupedResults.map(async (result) => {
       if (result.source === "cached") {
-        const size = result.cachedSize ?? 0;
+        const size = await refreshCachedHtmlCssLink(result.outPath, base, cssPath);
         totalSize += size;
         cachedCount++;
+        if (cache && result.routeKey) {
+          recordRenderedSize(cache, result.routeKey, size);
+        }
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)}) [cached]`);
         return;
       }
@@ -758,6 +803,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   clearGlobalCss();
   clearCssModules();
   clearScss();
+  clearJsImportedCss();
 
   // Process optimized images registered by <Image> / <Picture> components
   // and passthrough copies of ESM-imported images.
@@ -783,32 +829,11 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     phase("processUrlAssets", tUrl);
   }
 
-  // Aggregate island + hoisted references across all routes. For
-  // fresh renders we scanned the produced HTML inside the orchestrator
-  // and have the results on PageResult.islands / .hoistedHashes. For
-  // cached routes those lists came directly from the cache entry —
-  // no need to read the HTML back from disk just to re-scan it.
-  // Anything that didn't get the metadata for some reason (e.g. i18n
-  // redirect emissions, 404, injected routes) falls back to scanning
-  // the in-memory HTML.
-  const islandNames = new Set<string>();
-  const referencedHashes = new Set<string>();
-  for (const result of dedupedResults) {
-    if (result.islands || result.hoistedHashes) {
-      for (const name of result.islands ?? []) islandNames.add(name);
-      for (const hash of result.hoistedHashes ?? []) referencedHashes.add(hash);
-      continue;
-    }
-    for (const name of extractAll(result.html, ISLAND_NAME_RE)) islandNames.add(name);
-    for (const hash of extractAll(result.html, HOISTED_URL_RE)) referencedHashes.add(hash);
-  }
-
   const tBundle = performance.now();
-  await Promise.all([
-    islandNames.size > 0 ? bundleIslands(islandNames, islandsDir, distDir, projectRoot) : null,
-    referencedHashes.size > 0 ? bundleHoistedScripts(referencedHashes, distDir) : null,
-  ]);
-  phase("islands+hoisted bundling", tBundle);
+  if (islandNames.size > 0) {
+    await bundleIslands(islandNames, islandsDir, distDir, projectRoot);
+  }
+  phase("islands bundling", tBundle);
   clearHoistedScripts();
 
   // Generate sitemap — skip if the user's Astro config includes a
@@ -1203,6 +1228,33 @@ async function writeHtml(
   return bytes;
 }
 
+async function refreshCachedHtmlCssLink(
+  outPath: string,
+  base: string,
+  cssPath: string | null,
+): Promise<number> {
+  let html: string;
+  try {
+    html = await fs.readFile(outPath, "utf8");
+  } catch {
+    return 0;
+  }
+
+  const stylesheetRe = /<link rel="stylesheet" href="[^"]*\/assets\/styles\.[a-f0-9]+\.css">\n?/g;
+  const nextLink = cssPath ? `<link rel="stylesheet" href="${base}${cssPath}">\n` : "";
+  let next = html.replace(stylesheetRe, nextLink);
+
+  if (cssPath && next === html && html.includes("</head>")) {
+    next = html.replace("</head>", nextLink + "</head>");
+  }
+
+  if (next !== html) {
+    await fs.writeFile(outPath, next);
+  }
+
+  return Buffer.byteLength(next, "utf-8");
+}
+
 async function render404Page(
   pagesDir: string,
   pageContext: Record<string, unknown>,
@@ -1241,13 +1293,19 @@ async function bundleHoistedScripts(
     `\nBundling ${entries.length} hoisted script${entries.length === 1 ? "" : "s"}...`,
   );
 
+  await Promise.all(entries.map((entry) =>
+    collectCssSideEffectImports(entry.sourceFile, entry.code, `hoisted:${entry.hash}`, {
+      bundleExternalCss: false,
+    })
+  ));
+
   const result = await Bun.build({
     entrypoints: entries.map((e) => hoistedEntrypoint(e.hash)),
     outdir: astroOutDir,
     format: "esm",
     target: "browser",
     minify: true,
-    plugins: [hoistedScriptBunPlugin()],
+    plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin()],
   });
 
   if (!result.success) {
@@ -1255,11 +1313,17 @@ async function bundleHoistedScripts(
     throw new Error(`Hoisted script bundling failed:\n${logs}`);
   }
 
+  await recordBuildCssOutputs(result.outputs, "hoisted");
+
   // Bun derives output basenames from the entrypoint specifier
   // (`pletivo:hoisted:<hash>.js`), so rename to the public URL shape.
   // BuildArtifact.size is lazy under `outdir` — capture it before the rename.
   const outputHashRe = /pletivo:hoisted:([a-f0-9]+)\.js$/;
   for (const output of result.outputs) {
+    if (output.type?.includes("text/css") || output.path.endsWith(".css")) {
+      await fs.rm(output.path, { force: true });
+      continue;
+    }
     const m = path.basename(output.path).match(outputHashRe);
     if (!m) continue;
     const hash = m[1];
@@ -1364,4 +1428,3 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
-

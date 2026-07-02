@@ -106,7 +106,12 @@ async function scanImportsOf(file: string): Promise<Set<string>> {
 				sourcemap: false,
 				resolvePath: async (s) => s,
 			});
-			scanSource = result.code;
+			const scriptSources = result.scripts.map((script) =>
+				script.type === "inline"
+					? script.code
+					: `import ${JSON.stringify(script.src)};`
+			);
+			scanSource = [result.code, ...scriptSources].join("\n");
 		} catch {
 			// If the compiler can't parse the file (mid-edit, syntax
 			// error, etc.) we drop dep tracking for it — the cache
@@ -178,10 +183,10 @@ async function resolveSpecifier(specifier: string, importer: string): Promise<st
 	// Relative imports that omit the extension (`./Layout`) need to be
 	// resolved to a real file. Try common extensions.
 	if (await exists(candidate)) return candidate;
-	for (const ext of [".ts", ".tsx", ".js", ".jsx", ".astro", ".mjs", ".cjs"]) {
+	for (const ext of [".ts", ".tsx", ".js", ".jsx", ".astro", ".mjs", ".cjs", ".css", ".scss", ".sass"]) {
 		if (await exists(candidate + ext)) return candidate + ext;
 	}
-	for (const ext of ["/index.ts", "/index.tsx", "/index.js", "/index.jsx"]) {
+	for (const ext of ["/index.ts", "/index.tsx", "/index.js", "/index.jsx", "/index.css", "/index.scss", "/index.sass"]) {
 		if (await exists(candidate + ext)) return candidate + ext;
 	}
 	return null;

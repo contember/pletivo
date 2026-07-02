@@ -2,6 +2,7 @@ import path from "path";
 import fs from "fs/promises";
 import { Glob } from "bun";
 import { getScssOutput } from "./scss";
+import { getJsImportedCssOutput } from "./js-imported-css";
 
 /**
  * Collect and bundle CSS from src/.
@@ -20,10 +21,13 @@ export async function bundleCss(
 ): Promise<string | null> {
   const base = await buildCss(projectRoot, srcDir);
   const scss = getScssOutput();
+  const jsImported = await getJsImportedCssOutput({
+    includeSourceCss: !base.includesAllSourceCss,
+  });
   const combined =
-    base === null && !scss
+    base.css === null && !scss && !jsImported
       ? null
-      : [base, scss].filter(Boolean).join("\n\n");
+      : [base.css, scss, jsImported].filter(Boolean).join("\n\n");
   if (combined === null) return null;
 
   const hasher = new Bun.CryptoHasher("md5");
@@ -47,10 +51,16 @@ export async function bundleCss(
 export async function devCss(projectRoot: string, srcDir: string): Promise<string> {
   const out = await buildCss(projectRoot, srcDir);
   const scss = getScssOutput();
-  return [out, scss].filter(Boolean).join("\n\n");
+  const jsImported = await getJsImportedCssOutput({
+    includeSourceCss: !out.includesAllSourceCss,
+  });
+  return [out.css, scss, jsImported].filter(Boolean).join("\n\n");
 }
 
-async function buildCss(projectRoot: string, srcDir: string): Promise<string | null> {
+async function buildCss(projectRoot: string, srcDir: string): Promise<{
+  css: string | null;
+  includesAllSourceCss: boolean;
+}> {
   const srcPath = path.join(projectRoot, srcDir);
   const cssFiles: string[] = [];
   const glob = new Glob("**/*.css");
@@ -59,13 +69,16 @@ async function buildCss(projectRoot: string, srcDir: string): Promise<string | n
     if (file.endsWith(".module.css")) continue;
     cssFiles.push(file);
   }
-  if (cssFiles.length === 0) return null;
+  if (cssFiles.length === 0) return { css: null, includesAllSourceCss: true };
 
   // Look for a Tailwind entry — a CSS file that imports tailwindcss
   const entry = await findTailwindEntry(srcPath, cssFiles);
   if (entry) {
     try {
-      return await compileTailwind(projectRoot, entry);
+      return {
+        css: await compileTailwind(projectRoot, entry),
+        includesAllSourceCss: false,
+      };
     } catch (e) {
       console.error(`  Tailwind compile failed: ${(e as Error).message}`);
       console.error(`  Falling back to raw CSS concat.`);
@@ -78,7 +91,7 @@ async function buildCss(projectRoot: string, srcDir: string): Promise<string | n
     const content = await Bun.file(path.join(srcPath, file)).text();
     parts.push(`/* ${file} */\n${content}`);
   }
-  return parts.join("\n\n");
+  return { css: parts.join("\n\n"), includesAllSourceCss: true };
 }
 
 async function findTailwindEntry(

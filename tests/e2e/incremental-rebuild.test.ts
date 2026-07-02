@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+// Spawns full `pletivo build` subprocesses; give them room under CI load.
+setDefaultTimeout(30_000);
 
 /**
  * Real-process test: each `pletivo build` invocation is a fresh Bun

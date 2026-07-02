@@ -24,6 +24,7 @@ import { imageUrlFor, probeAndRegisterImage } from "./image";
 import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 import { stripTypes } from "./transpile";
+import { collectCssSideEffectImports } from "./js-imported-css";
 
 let registered = false;
 
@@ -398,6 +399,7 @@ export async function registerAstroPlugin(): Promise<void> {
           /import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?/g,
           "",
         );
+        await collectCssSideEffectImports(cleanPath, cleanedCode, `astro:${rel}`);
 
         // In dev mode, append a version query to .astro/.scss/.sass/.json
         // import specifiers so that Bun's module cache is busted for
