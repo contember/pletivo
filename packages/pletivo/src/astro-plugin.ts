@@ -586,6 +586,20 @@ export async function registerAstroPlugin(): Promise<void> {
           export function sharpImageService() { return {}; }
           export function squooshImageService() { return {}; }
           export function passthroughImageService() { return {}; }
+          // Newer Astro's astro/config re-exports \`sessionDrivers\` (the builtin
+          // unstorage session-driver map, e.g. \`sessionDrivers.cloudflareKVBinding(cfg)\`).
+          // Configs — and helpers that re-export astro/config, like
+          // @nuasite/nua/config — both import it and *call* a driver factory at
+          // module load, so the export must exist and every property must be
+          // callable, or the whole astro.config.* fails to evaluate (taking every
+          // integration, incl. the Nua CMS contentDir, down with it). Sessions
+          // aren't run at config-load time under pletivo, so each driver returns
+          // the same \`{ entrypoint, config }\` shape real Astro produces.
+          export const sessionDrivers = new Proxy({}, {
+            get(_target, name) {
+              return (config = {}) => ({ entrypoint: String(name), config });
+            },
+          });
         `,
       }));
     },
