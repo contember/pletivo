@@ -1,5 +1,6 @@
 // @ts-nocheck — test fixture, no type checking needed
 import testImage from "../assets/test.png";
+import uppercaseImage from "../assets/UPPER.JPG";
 
 export default function ImagePage() {
   // In a real page, users would use <Image> from astro:components.
@@ -17,11 +18,24 @@ export default function ImagePage() {
           height={testImage.height}
           alt="test"
         />
+        <img
+          src={uppercaseImage.src}
+          width={uppercaseImage.width}
+          height={uppercaseImage.height}
+          alt="uppercase"
+        />
         <script
           type="application/json"
           id="image-meta"
           dangerouslySetInnerHTML={{
             __html: JSON.stringify(testImage),
+          }}
+        />
+        <script
+          type="application/json"
+          id="uppercase-image-meta"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(uppercaseImage),
           }}
         />
       </body>

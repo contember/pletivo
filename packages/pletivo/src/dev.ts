@@ -1136,7 +1136,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     const clients = sockets.size + sseClients.size + pollWaiters.size;
     console.log(`  ${config.srcDir}/${filename} changed → ${hmrType} update (${clients} clients)`);
 
-    if (filename.startsWith("content/") || filename === "content.config.ts") {
+    if (filename.startsWith("content/") || /^content\.config\.(ts|mts|mjs|js)$/.test(filename)) {
       await initCollections(projectRoot);
     }
 

@@ -999,7 +999,22 @@ async function canReuseDeps(deps: Record<string, import("./incremental/cache").D
 async function computeProjectConfigHash(projectRoot: string, config: PletivoConfig): Promise<string> {
   const parts: Array<string | Buffer> = [];
   parts.push(JSON.stringify({ base: config.base, outDir: config.outDir, srcDir: config.srcDir, publicDir: config.publicDir }));
-  for (const file of ["astro.config.mjs", "astro.config.js", "astro.config.ts", "pletivo.config.ts", "pletivo.config.js", "tsconfig.json"]) {
+  for (const file of [
+    "astro.config.mjs",
+    "astro.config.js",
+    "astro.config.ts",
+    "pletivo.config.ts",
+    "pletivo.config.js",
+    "src/content.config.ts",
+    "src/content.config.mts",
+    "src/content.config.mjs",
+    "src/content.config.js",
+    "src/content/config.ts",
+    "src/content/config.mts",
+    "src/content/config.mjs",
+    "src/content/config.js",
+    "tsconfig.json",
+  ]) {
     const p = path.join(projectRoot, file);
     const h = await hashFileContent(p);
     if (h !== "__missing__") parts.push(`${file}=${h}`);

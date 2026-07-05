@@ -50,7 +50,9 @@ import {
 } from "../mdx-plugin";
 import { createServerShim, type ServerShim, type HmrBroadcast } from "./server-shim";
 import {
+  __resetForTests as resetVitePluginHost,
   addVitePlugins,
+  configureVitePluginHost,
   ensureBunPlugin,
   runConfigureServer,
   syncServerPlugins,
@@ -113,6 +115,7 @@ export async function initAstroHost(
 
   const config = await loadAstroConfig(projectRoot);
   if (!config) return null;
+  configureVitePluginHost(projectRoot);
 
   // Seed astro:env virtual module with the env.schema from config
   try {
@@ -578,4 +581,5 @@ function mergeDeep<T extends Record<string, unknown>>(a: T, b: Record<string, un
 export function __resetForTests(): void {
   activeHost = null;
   activeHostRoot = null;
+  resetVitePluginHost();
 }

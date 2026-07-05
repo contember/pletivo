@@ -801,7 +801,7 @@ export async function processImages(
       registered.set(outputPath, {
         sourcePath: entry.sourcePath,
         outputPath: entry.outputPath,
-        format: path.extname(entry.sourcePath).slice(1),
+        format: path.extname(entry.sourcePath).slice(1).toLowerCase(),
       });
     }
   }

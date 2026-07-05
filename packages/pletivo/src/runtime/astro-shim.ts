@@ -105,8 +105,16 @@ type SlotFn = () => unknown;
 type SlotsRecord = Record<string, SlotFn>;
 
 function makeResult(pageContext: PageContext = {}): AstroResult {
+  const request =
+    pageContext.request ??
+    new Request(pageContext.url ?? "http://localhost/");
+  const normalizedPageContext: PageContext = {
+    ...pageContext,
+    request,
+  };
+
   return {
-    pageContext,
+    pageContext: normalizedPageContext,
     createAstro(props, slots) {
       // Proxy so that `'slotName' in Astro.slots` works (compiled code
       // uses the `in` operator to check for filled slots).
@@ -147,14 +155,14 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
       return {
         props: props || {},
         slots: slotsAccessor,
-        url: pageContext.url,
-        request: pageContext.request,
-        site: pageContext.site,
-        params: pageContext.params || {},
+        url: normalizedPageContext.url,
+        request: normalizedPageContext.request,
+        site: normalizedPageContext.site,
+        params: normalizedPageContext.params || {},
         generator: "pletivo",
-        currentLocale: pageContext.currentLocale,
-        preferredLocale: pageContext.preferredLocale,
-        preferredLocaleList: pageContext.preferredLocaleList ?? [],
+        currentLocale: normalizedPageContext.currentLocale,
+        preferredLocale: normalizedPageContext.preferredLocale,
+        preferredLocaleList: normalizedPageContext.preferredLocaleList ?? [],
       };
     },
   };

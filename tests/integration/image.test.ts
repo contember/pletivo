@@ -184,11 +184,25 @@ describe("image build integration", () => {
     expect(meta.src).toMatch(/\/_astro\/test\.[a-f0-9]+\.png/);
   });
 
+  test("uppercase image extensions are loaded as image metadata", async () => {
+    const html = await Bun.file(path.join(distDir, "index.html")).text();
+    const match = html.match(
+      /<script[^>]*id="uppercase-image-meta"[^>]*>(.*?)<\/script>/,
+    );
+    expect(match).not.toBeNull();
+    const meta = JSON.parse(match![1]);
+    expect(meta.width).toBe(4);
+    expect(meta.height).toBe(4);
+    expect(meta.src).toMatch(/\/_astro\/UPPER\.[a-f0-9]+\.JPG/);
+    expect(meta.src).not.toContain(fixtureRoot);
+  });
+
   test("image file is copied to dist/_astro/", async () => {
     const files = await fs.readdir(path.join(distDir, "_astro"));
     const imageFile = files.find(
       (f) => f.startsWith("test.") && f.endsWith(".png"),
     );
     expect(imageFile).toBeDefined();
+    expect(files.some((f) => /^UPPER\.[a-f0-9]+\.JPG$/.test(f))).toBe(true);
   });
 });

@@ -15,12 +15,21 @@
  *    levels pletivo bypasses.
  */
 
+import { createHash } from "crypto";
+import fs from "fs/promises";
 import path from "path";
+import { pathToFileURL } from "url";
 import type { ServerShim } from "./server-shim";
-import type { ViteLikePlugin } from "./types";
+import type { LoadResult, ResolveIdResult, ViteLikePlugin } from "./types";
 
 let bunPluginRegistered = false;
 const collectedPlugins: ViteLikePlugin[] = [];
+let projectRootForVirtualModules = process.cwd();
+const tsTranspiler = new Bun.Transpiler({ loader: "ts" });
+
+export function configureVitePluginHost(projectRoot: string): void {
+  projectRootForVirtualModules = projectRoot;
+}
 
 /**
  * Register all previously-collected plugins with Bun's module loader.
@@ -50,19 +59,12 @@ export async function ensureBunPlugin(): Promise<void> {
       build.onResolve(
         { filter: /^(virtual:|\/@|@id\/|\0virtual:)/ },
         async (args) => {
-          for (const p of collectedPlugins) {
-            if (typeof p.resolveId !== "function") continue;
-            try {
-              const resolved = await p.resolveId(args.path, args.importer);
-              if (typeof resolved === "string") {
-                return {
-                  path: resolved,
-                  namespace: "pletivo-vite-virtual",
-                };
-              }
-            } catch {
-              // fall through to next plugin
-            }
+          const resolved = await resolveViteId(args.path, args.importer);
+          if (resolved) {
+            return {
+              path: resolved,
+              namespace: "pletivo-vite-virtual",
+            };
           }
           return undefined;
         },
@@ -71,29 +73,9 @@ export async function ensureBunPlugin(): Promise<void> {
       build.onLoad(
         { filter: /.*/, namespace: "pletivo-vite-virtual" },
         async (args) => {
-          for (const p of collectedPlugins) {
-            if (typeof p.load !== "function") continue;
-            try {
-              const result = await p.load(args.path);
-              if (result == null) continue;
-              const code = typeof result === "string" ? result : result.code;
-              // Pick a loader based on extension, default to ts for virtual
-              const ext = path.extname(args.path.replace(/\0/g, "")).toLowerCase();
-              const loader =
-                ext === ".css"
-                  ? "css"
-                  : ext === ".js" || ext === ".mjs"
-                    ? "js"
-                    : ext === ".json"
-                      ? "json"
-                      : "ts";
-              return { contents: code, loader };
-            } catch (e) {
-              console.error(
-                `[pletivo-vite-host] ${p.name}.load failed for ${args.path}:`,
-                (e as Error).message,
-              );
-            }
+          const loaded = await loadViteId(args.path);
+          if (loaded) {
+            return { contents: loaded.code, loader: loaded.loader };
           }
           return undefined;
         },
@@ -115,6 +97,147 @@ export function addVitePlugins(plugins: ViteLikePlugin[]): ViteLikePlugin[] {
     added.push(p);
   }
   return added;
+}
+
+/**
+ * Bun's runtime importer does not run `onResolve` for bare specifiers
+ * such as `virtual:astro-icon`. Astro-compiled modules can still contain
+ * those imports, so materialize matching Vite virtual modules into a
+ * generated file and rewrite the import before Bun sees the module graph.
+ */
+export async function materializeViteVirtualImports(
+  code: string,
+  importerPath: string,
+): Promise<string> {
+  if (collectedPlugins.length === 0) return code;
+
+  const specifiers = findVirtualSpecifiers(code);
+  if (specifiers.length === 0) return code;
+
+  const replacements = new Map<string, string>();
+  for (const specifier of specifiers) {
+    const filePath = await materializeViteVirtualModule(specifier, importerPath);
+    if (filePath) replacements.set(specifier, pathToFileURL(filePath).href);
+  }
+  if (replacements.size === 0) return code;
+
+  return code.replace(/(["'])([^"']+)\1/g, (match, quote: string, specifier: string) => {
+    const replacement = replacements.get(specifier);
+    return replacement ? `${quote}${replacement}${quote}` : match;
+  });
+}
+
+function findVirtualSpecifiers(code: string): string[] {
+  const out = new Set<string>();
+  try {
+    for (const entry of tsTranspiler.scanImports(code)) {
+      if (isViteVirtualSpecifier(entry.path)) out.add(entry.path);
+    }
+  } catch {
+    for (const match of code.matchAll(/["']((?:virtual:|\/@|@id\/|\0virtual:)[^"']+)["']/g)) {
+      out.add(match[1]);
+    }
+  }
+  return [...out];
+}
+
+function isViteVirtualSpecifier(specifier: string): boolean {
+  return (
+    specifier.startsWith("virtual:") ||
+    specifier.startsWith("/@") ||
+    specifier.startsWith("@id/") ||
+    specifier.startsWith("\0virtual:")
+  );
+}
+
+async function materializeViteVirtualModule(
+  specifier: string,
+  importerPath: string,
+): Promise<string | null> {
+  const resolvedId = await resolveViteId(specifier, importerPath);
+  const loaded = await loadViteId(resolvedId ?? specifier);
+  if (!loaded) {
+    if (resolvedId && path.isAbsolute(resolvedId) && await Bun.file(resolvedId).exists()) {
+      return resolvedId;
+    }
+    return null;
+  }
+
+  const hash = createHash("sha256")
+    .update(specifier)
+    .update("\0")
+    .update(resolvedId ?? specifier)
+    .update("\0")
+    .update(loaded.code)
+    .digest("hex")
+    .slice(0, 24);
+  const dir = path.join(projectRootForVirtualModules, "node_modules", ".pletivo", "virtual");
+  const filePath = path.join(dir, `${hash}${extensionForLoader(loaded.loader)}`);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(filePath, loaded.code);
+  return filePath;
+}
+
+async function resolveViteId(specifier: string, importer?: string): Promise<string | null> {
+  for (const p of collectedPlugins) {
+    if (typeof p.resolveId !== "function") continue;
+    try {
+      const resolved = normalizeResolvedId(await p.resolveId(specifier, importer));
+      if (resolved) return resolved;
+    } catch {
+      // fall through to next plugin
+    }
+  }
+  return null;
+}
+
+function normalizeResolvedId(result: ResolveIdResult): string | null {
+  if (typeof result === "string") return result;
+  if (result && typeof result === "object" && typeof result.id === "string") return result.id;
+  return null;
+}
+
+async function loadViteId(id: string): Promise<{ code: string; loader: string } | null> {
+  for (const p of collectedPlugins) {
+    if (typeof p.load !== "function") continue;
+    try {
+      const result = await p.load(id);
+      if (result == null) continue;
+      return {
+        code: codeFromLoadResult(result),
+        loader: loaderForVirtualId(id),
+      };
+    } catch (e) {
+      console.error(
+        `[pletivo-vite-host] ${p.name}.load failed for ${id}:`,
+        (e as Error).message,
+      );
+    }
+  }
+  return null;
+}
+
+function codeFromLoadResult(result: LoadResult): string {
+  return typeof result === "string" ? result : result.code;
+}
+
+function loaderForVirtualId(id: string): string {
+  const ext = path.extname(id.replace(/\0/g, "")).toLowerCase();
+  if (ext === ".css") return "css";
+  if (ext === ".jsx") return "jsx";
+  if (ext === ".tsx") return "tsx";
+  if (ext === ".js" || ext === ".mjs") return "js";
+  if (ext === ".json") return "json";
+  return "ts";
+}
+
+function extensionForLoader(loader: string): string {
+  if (loader === "css") return ".css";
+  if (loader === "jsx") return ".jsx";
+  if (loader === "tsx") return ".tsx";
+  if (loader === "json") return ".json";
+  if (loader === "js") return ".mjs";
+  return ".ts";
 }
 
 /**
@@ -275,4 +398,5 @@ export async function bundleVirtualEntry(
 export function __resetForTests(): void {
   collectedPlugins.length = 0;
   bunPluginRegistered = false;
+  projectRootForVirtualModules = process.cwd();
 }

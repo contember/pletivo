@@ -288,6 +288,17 @@ let collectionsConfig: Record<string, CollectionConfig> | null = null;
 let configProjectRoot: string = "";
 let configVersion = 0;
 
+const CONTENT_CONFIG_CANDIDATES = [
+  "src/content.config.ts",
+  "src/content.config.mts",
+  "src/content.config.mjs",
+  "src/content.config.js",
+  "src/content/config.ts",
+  "src/content/config.mts",
+  "src/content/config.mjs",
+  "src/content/config.js",
+];
+
 /**
  * Entries that failed schema validation since the last `initCollections()`.
  * Build.ts reads this after rendering and exits non-zero if non-empty,
@@ -308,10 +319,9 @@ export async function initCollections(projectRoot: string): Promise<void> {
   validationFailures.length = 0;
   configVersion++;
 
-  const configPath = path.join(projectRoot, "src/content.config.ts");
-  const configFile = Bun.file(configPath);
+  const configPath = await findContentConfigPath(projectRoot);
 
-  if (await configFile.exists()) {
+  if (configPath) {
     const mod = await import(configPath + `?v=${configVersion}`);
     collectionsConfig = mod.collections || {};
   } else {
@@ -331,7 +341,9 @@ export async function getCollection<T = Record<string, unknown>>(
 
   const config = collectionsConfig[name];
   if (!config) {
-    throw new Error(`Collection "${name}" not found. Define it in src/content.config.ts`);
+    throw new Error(
+      `Collection "${name}" not found. Define it in src/content.config.ts or src/content/config.ts`,
+    );
   }
 
   let entries = collectionCache.get(name) as CollectionEntry<T>[] | undefined;
@@ -728,6 +740,14 @@ async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, na
     }
   }
   return entries;
+}
+
+async function findContentConfigPath(projectRoot: string): Promise<string | null> {
+  for (const candidate of CONTENT_CONFIG_CANDIDATES) {
+    const configPath = path.join(projectRoot, candidate);
+    if (await Bun.file(configPath).exists()) return configPath;
+  }
+  return null;
 }
 
 export { z } from "zod";

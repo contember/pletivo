@@ -72,7 +72,7 @@ export interface ViteUserConfig {
 export interface ViteLikePlugin {
   name: string;
   enforce?: "pre" | "post";
-  resolveId?(id: string, importer?: string): string | null | undefined | Promise<string | null | undefined>;
+  resolveId?(id: string, importer?: string): ResolveIdResult | Promise<ResolveIdResult>;
   load?(id: string): LoadResult | null | undefined | Promise<LoadResult | null | undefined>;
   transform?(
     code: string,
@@ -83,6 +83,7 @@ export interface ViteLikePlugin {
   [key: string]: unknown;
 }
 
+export type ResolveIdResult = string | { id: string } | null | undefined;
 export type LoadResult = string | { code: string; map?: unknown };
 export type TransformResult = string | { code: string; map?: unknown };
 

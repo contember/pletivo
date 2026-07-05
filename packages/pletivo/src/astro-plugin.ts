@@ -25,6 +25,7 @@ import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 import { stripTypes } from "./transpile";
 import { collectCssSideEffectImports } from "./js-imported-css";
+import { materializeViteVirtualImports } from "./astro-host/vite-plugins";
 
 let registered = false;
 
@@ -399,6 +400,7 @@ export async function registerAstroPlugin(): Promise<void> {
           /import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?/g,
           "",
         );
+        cleanedCode = await materializeViteVirtualImports(cleanedCode, cleanPath);
         await collectCssSideEffectImports(cleanPath, cleanedCode, `astro:${rel}`);
 
         // In dev mode, append a version query to .astro/.scss/.sass/.json
@@ -535,7 +537,7 @@ export async function registerAstroPlugin(): Promise<void> {
       // Vite-style `?raw` / `?inline` imports return the file content
       // as a default-exported string instead of image metadata.
       build.onLoad(
-        { filter: /\.(png|jpe?g|webp|avif|gif|tiff|svg)(\?.*)?$/ },
+        { filter: /\.(png|jpe?g|webp|avif|gif|tiff|svg)(\?.*)?$/i },
         async (args) => {
           const cleanPath = stripQuery(args.path);
 

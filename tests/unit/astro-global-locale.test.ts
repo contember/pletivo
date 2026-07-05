@@ -64,4 +64,23 @@ describe("AstroGlobal locale plumbing", () => {
     expect(holder.captured?.site?.origin).toBe("http://example.com");
     expect(holder.captured?.currentLocale).toBe("pt");
   });
+
+  test("static renders provide a stable Request object", async () => {
+    const holder: { first?: Request; second?: Request } = {};
+    const factory = createComponent(
+      (result, props, slots) => {
+        holder.first = result.createAstro(props, slots).request;
+        holder.second = result.createAstro(props, slots).request;
+        return { __html: "" };
+      },
+      "request-capture",
+    );
+
+    await renderAstroPage(factory, {}, {
+      url: new URL("http://example.com/request-test"),
+    });
+    expect(holder.first).toBeInstanceOf(Request);
+    expect(holder.first).toBe(holder.second);
+    expect(holder.first?.url).toBe("http://example.com/request-test");
+  });
 });
