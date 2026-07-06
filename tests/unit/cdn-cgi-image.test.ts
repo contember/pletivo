@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { createRequire } from "module";
 import {
   parseCdnCgiImageUrl,
+  buildCdnCgiImageUrl,
   parseCfImageOptions,
   resolveCfTargetFormat,
   formatFromPath,
@@ -57,6 +58,43 @@ describe("parseCdnCgiImageUrl", () => {
 
   test("returns null when the source segment is missing", () => {
     expect(parseCdnCgiImageUrl("/cdn-cgi/image/width=100")).toBeNull();
+  });
+});
+
+describe("buildCdnCgiImageUrl", () => {
+  test("builds a same-zone url that round-trips through the parser", () => {
+    const url = buildCdnCgiImageUrl("/_astro/hero.abc123.jpg", {
+      width: 1024,
+      quality: 85,
+    });
+    expect(url).toBe(
+      "/cdn-cgi/image/width=1024,quality=85,format=auto/_astro/hero.abc123.jpg",
+    );
+    const parsed = parseCdnCgiImageUrl(url);
+    expect(parsed!.source).toBe("_astro/hero.abc123.jpg");
+    expect(parsed!.options).toEqual({ width: 1024, quality: 85, format: "auto" });
+  });
+
+  test("defaults format to auto and omits unset options", () => {
+    expect(buildCdnCgiImageUrl("/assets/x.png", {})).toBe(
+      "/cdn-cgi/image/format=auto/assets/x.png",
+    );
+  });
+
+  test("keeps an absolute source url intact and round-trips it", () => {
+    const url = buildCdnCgiImageUrl("https://cdn.example.com/p.jpg", {
+      width: 200,
+    });
+    expect(url).toBe(
+      "/cdn-cgi/image/width=200,format=auto/https://cdn.example.com/p.jpg",
+    );
+    expect(parseCdnCgiImageUrl(url)!.source).toBe("https://cdn.example.com/p.jpg");
+  });
+
+  test("honors an explicit format and fit", () => {
+    expect(
+      buildCdnCgiImageUrl("/a.jpg", { width: 100, format: "webp", fit: "cover" }),
+    ).toBe("/cdn-cgi/image/width=100,format=webp,fit=cover/a.jpg");
   });
 });
 

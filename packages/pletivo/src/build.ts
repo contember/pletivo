@@ -18,13 +18,13 @@ import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { setI18nRuntimeState } from "./i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
-import { setImageMode, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
+import { setImageMode, setImageService, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
 import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
 import { setBase } from "./base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs } from "./js-imported-css";
-import type { PletivoConfig } from "./config";
+import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture } from "./incremental/dep-tracker";
@@ -227,6 +227,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("build");
+  setImageService(resolveImageServiceConfig(config));
   setUrlAssetMode("build");
   // Resolve the optional `sharp` dep from the consumer project, not from
   // pletivo's own (possibly symlinked) location.
@@ -998,7 +999,13 @@ async function canReuseDeps(deps: Record<string, import("./incremental/cache").D
  */
 async function computeProjectConfigHash(projectRoot: string, config: PletivoConfig): Promise<string> {
   const parts: Array<string | Buffer> = [];
-  parts.push(JSON.stringify({ base: config.base, outDir: config.outDir, srcDir: config.srcDir, publicDir: config.publicDir }));
+  parts.push(JSON.stringify({
+    base: config.base,
+    outDir: config.outDir,
+    srcDir: config.srcDir,
+    publicDir: config.publicDir,
+    imageService: imageServiceHashValue(config),
+  }));
   for (const file of [
     "astro.config.mjs",
     "astro.config.js",
@@ -1026,6 +1033,17 @@ async function computeProjectConfigHash(projectRoot: string, config: PletivoConf
   const cssParts = await hashSrcCssFiles(path.join(projectRoot, config.srcDir));
   for (const p of cssParts) parts.push(p);
   return await computeConfigHash(parts);
+}
+
+function imageServiceHashValue(config: PletivoConfig): string {
+  const service = resolveImageServiceConfig(config);
+  if (!service) return "sharp";
+  if (typeof service === "string") return service;
+  return service.cacheKey ?? [
+    service.name,
+    service.processing,
+    service.supportsResponsive === true ? "responsive" : "fixed",
+  ].join(":");
 }
 
 /**

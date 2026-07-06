@@ -10,6 +10,19 @@ export type {
   SchemaFn,
 } from "./content/collection";
 export type { ImageMetadata } from "./image";
+export {
+  cloudflareImageService,
+  passthroughImageService,
+  sharpImageService,
+} from "./image";
+export type {
+  BuiltInImageServiceName,
+  CdnCgiImageUrlOptions,
+  CloudflareImageServiceOptions,
+  ImageService,
+  ImageServiceConfig,
+  ImageServiceUrlOptions,
+} from "./image-service";
 export { defineConfig } from "./config";
 export type { PletivoConfig } from "./config";
 export { useState } from "./runtime/hooks";

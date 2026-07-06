@@ -13,6 +13,19 @@ import fs from "fs/promises";
 import { createRequire } from "module";
 import { withBase } from "./base";
 import { recordRuntimeDep } from "./incremental/dep-tracker";
+import {
+  resolveImageService,
+  type ImageProcessing,
+  type ImageService,
+  type ImageServiceConfig,
+} from "./image-service";
+
+export {
+  buildCdnCgiImageUrl,
+  cloudflareImageService,
+  passthroughImageService,
+  sharpImageService,
+} from "./image-service";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -45,6 +58,7 @@ export interface ImageTransformEntry {
   height?: number;
   format: string;
   quality?: number | string;
+  processing?: ImageProcessing;
 }
 
 // ── Runtime state ──────────────────────────────────────────────────────
@@ -55,6 +69,12 @@ export function setImageMode(mode: "dev" | "build"): void {
   imageMode = mode;
   probeCache.clear();
   probeInflight.clear();
+}
+
+let imageService: ImageService = resolveImageService(undefined);
+
+export function setImageService(service: ImageServiceConfig | undefined): void {
+  imageService = resolveImageService(service);
 }
 
 /**
@@ -344,30 +364,56 @@ function isImageMetadata(src: unknown): src is ImageMetadata {
   );
 }
 
+function parseOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseQualityOption(value: unknown): number | string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") return value;
+  return undefined;
+}
+
+function parseWidths(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const widths: number[] = [];
+  for (const item of value) {
+    const width = parseOptionalNumber(item);
+    if (width && width > 0) widths.push(width);
+  }
+  return widths;
+}
+
+function getDefaultExport(value: unknown): unknown {
+  if (typeof value === "object" && value !== null && "default" in value) {
+    return value.default;
+  }
+  return value;
+}
+
 export async function getImage(
   options: Record<string, unknown>,
 ): Promise<GetImageResult> {
-  // Resolve src — may be a dynamic import Promise
-  let src = options.src as unknown;
-  if (src && typeof src === "object" && "then" in src) {
-    const resolved = await (src as Promise<{ default?: unknown }>);
-    src = resolved.default ?? resolved;
-  }
+  const src = getDefaultExport(await options.src);
 
-  const metadata = isImageMetadata(src) ? (src as ImageMetadata) : null;
+  const metadata = isImageMetadata(src) ? src : null;
   const srcPath = metadata ? metadata.src : String(src ?? "");
-  const fsPath =
-    metadata?.fsPath ??
-    (metadata as Record<string, unknown> | null)?.["fsPath"];
+  const fsPath = metadata?.fsPath;
 
   // Compute dimensions
   const origW = metadata?.width;
   const origH = metadata?.height;
-  let width = options.width as number | undefined;
-  let height = options.height as number | undefined;
-
-  if (typeof width === "string") width = parseInt(width, 10);
-  if (typeof height === "string") height = parseInt(height, 10);
+  let width = parseOptionalNumber(options.width);
+  let height = parseOptionalNumber(options.height);
 
   if (origW && origH) {
     const ratio = origW / origH;
@@ -381,10 +427,11 @@ export async function getImage(
 
   // Output format — SVG stays SVG, otherwise default to webp
   const sourceFormat = metadata?.format ?? "png";
+  const requestedFormat = parseOptionalString(options.format);
   const format =
-    (options.format as string) ??
-    (sourceFormat === "svg" ? "svg" : "webp");
-  const quality = options.quality as number | string | undefined;
+    requestedFormat ?? (sourceFormat === "svg" ? "svg" : "webp");
+  const quality = parseQualityOption(options.quality);
+  const fit = parseOptionalString(options.fit);
 
   // Compute deterministic output path
   const hash = computeHash(srcPath, width, height, format, quality);
@@ -392,20 +439,58 @@ export async function getImage(
   const outputFile = `_astro/${baseName}.${hash}.${format}`;
 
   let finalSrc: string;
+  let srcSet: { values: SrcSetValue[]; attribute: string } = {
+    values: [],
+    attribute: "",
+  };
 
   if (imageMode === "build") {
     if (fsPath) {
-      // On-disk source (ESM-imported or probed asset): optimize/copy it
-      // into _astro/ during post-render processing.
-      registerTransform({
-        sourcePath: fsPath as string,
+      if (imageService.processing === "transform") {
+        // On-disk source: optimize/copy it into _astro/ after render.
+        registerTransform({
+          sourcePath: fsPath,
+          outputPath: outputFile,
+          width,
+          height,
+          format,
+          quality,
+          processing: "transform",
+        });
+      }
+      finalSrc = imageService.getURL({
+        src: srcPath,
         outputPath: outputFile,
         width,
         height,
-        format,
+        sourceFormat,
+        outputFormat: format,
+        requestedFormat,
         quality,
+        fit,
       });
-      finalSrc = withBase(`/${outputFile}`);
+      if (imageService.supportsResponsive && sourceFormat !== "svg") {
+        const widths = parseWidths(options.widths);
+        if (widths.length) {
+          const values = widths.map((responsiveWidth) => ({
+            url: imageService.getURL({
+              src: srcPath,
+              outputPath: outputFile,
+              width: responsiveWidth,
+              sourceFormat,
+              outputFormat: format,
+              requestedFormat,
+              quality,
+              fit,
+            }),
+            descriptor: `${responsiveWidth}w`,
+          }));
+          srcSet = {
+            values,
+            attribute: values.map((v) => `${v.url} ${v.descriptor}`).join(", "),
+          };
+        }
+      }
     } else {
       // Bare string src with no on-disk source: a public-root path
       // (e.g. "/uploads/foo.jpg") or a remote URL. Astro does not run
@@ -418,7 +503,7 @@ export async function getImage(
   } else {
     // Dev mode — serve original file
     if (fsPath) {
-      finalSrc = withBase(`/@image/${path.basename(fsPath as string)}?f=${fsPath}`);
+      finalSrc = withBase(`/@image/${path.basename(fsPath)}?f=${fsPath}`);
     } else {
       finalSrc = srcPath;
     }
@@ -432,7 +517,7 @@ export async function getImage(
   attributes.decoding = options.decoding ?? "async";
   if (options.alt !== undefined) attributes.alt = options.alt;
 
-  // Pass through data-* and common HTML attributes
+  // Pass through data-* and common HTML attributes.
   for (const [k, v] of Object.entries(options)) {
     if (
       k.startsWith("data-") ||
@@ -440,6 +525,7 @@ export async function getImage(
       k === "style" ||
       k === "id" ||
       k === "role" ||
+      k === "sizes" ||
       k === "fetchpriority"
     ) {
       attributes[k] = v;
@@ -450,7 +536,7 @@ export async function getImage(
     rawOptions: { ...options, src },
     options: { ...options, src, width, height, format },
     src: finalSrc,
-    srcSet: { values: [], attribute: "" },
+    srcSet,
     attributes,
   };
 }
@@ -802,14 +888,18 @@ export async function processImages(
         sourcePath: entry.sourcePath,
         outputPath: entry.outputPath,
         format: path.extname(entry.sourcePath).slice(1).toLowerCase(),
+        processing: "passthrough",
       });
     }
   }
 
   if (registered.size === 0) return 0;
 
-  const sharp = loadSharp();
-  if (!sharp) {
+  const needsSharp = [...registered.values()].some(
+    (entry) => entry.processing !== "passthrough" && entry.format !== "svg",
+  );
+  const sharp = needsSharp ? loadSharp() : null;
+  if (needsSharp && !sharp) {
     console.warn(
       "  sharp not installed — images will be copied without optimization.",
     );
@@ -822,7 +912,7 @@ export async function processImages(
     await fs.mkdir(path.dirname(outFile), { recursive: true });
 
     try {
-      if (sharp && entry.format !== "svg") {
+      if (sharp && entry.processing !== "passthrough" && entry.format !== "svg") {
         try {
           let pipeline = sharp(entry.sourcePath);
 
