@@ -144,13 +144,11 @@ function rehypeHeadingIds() {
 }
 
 /**
- * Parse a markdown file's content into frontmatter + rendered HTML, running
- * the configured remark/rehype plugins. A fresh processor is built per call so
+ * Render a markdown body (frontmatter already stripped) to HTML, running the
+ * configured remark/rehype plugins. A fresh processor is built per call so
  * plugin config changes take effect and processors are never reused frozen.
  */
-export async function parseMarkdown(content: string): Promise<ParsedMarkdown> {
-  const { frontmatter, body } = parseFrontmatter(content);
-
+export async function renderMarkdown(body: string): Promise<string> {
   const processor = unified().use(remarkParse);
   if (markdownOptions.gfm !== false) processor.use(remarkGfm);
   if (markdownOptions.remarkPlugins?.length) processor.use(markdownOptions.remarkPlugins);
@@ -160,5 +158,16 @@ export async function parseMarkdown(content: string): Promise<ParsedMarkdown> {
   processor.use(rehypeStringify, { allowDangerousHtml: true });
 
   const file = await processor.process(body.trim());
-  return { frontmatter, body, html: String(file) };
+  return String(file);
+}
+
+/**
+ * Parse a markdown file's content into frontmatter + rendered HTML. Kept for
+ * callers that need both up front; the content-collection loader parses
+ * frontmatter eagerly and defers `renderMarkdown` to `entry.render()`.
+ */
+export async function parseMarkdown(content: string): Promise<ParsedMarkdown> {
+  const { frontmatter, body } = parseFrontmatter(content);
+  const html = await renderMarkdown(body);
+  return { frontmatter, body, html };
 }

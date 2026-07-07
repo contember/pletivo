@@ -3,7 +3,7 @@ import fs from "fs";
 import { pathToFileURL } from "url";
 import { Glob } from "bun";
 import { z } from "zod";
-import { parseMarkdown, parseFrontmatter, parseYamlObject } from "./markdown";
+import { renderMarkdown, parseFrontmatter, parseYamlObject } from "./markdown";
 import {
   imageUrlFor,
   makeImageMetadata,
@@ -240,10 +240,14 @@ export function glob(options: GlobOptions): Loader {
           body = parsed.body;
           extras = { _filePath: fullPath, _mdxFilePath: fullPath };
         } else {
-          const parsed = await parseMarkdown(content);
+          // Parse frontmatter eagerly, but defer rendering the markdown body
+          // to HTML until `entry.render()` is called. Listing pages read only
+          // frontmatter, so rendering every entry's body up front is wasted
+          // work (dominant cost of loading a large collection).
+          const parsed = parseFrontmatter(content);
           data = parsed.frontmatter;
           body = parsed.body;
-          extras = { _filePath: fullPath, _html: parsed.html };
+          extras = { _filePath: fullPath };
         }
 
         const id = options.generateId
@@ -715,15 +719,25 @@ async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, na
         return { kind: "ok", entry };
       }
 
-      let html = (_html as string) ?? "";
-      if (config.transform) {
-        html = config.transform(html, result.data as Record<string, unknown>);
-      }
+      const validatedData = result.data as Record<string, unknown>;
+      // Pre-rendered HTML from an Astro Content Layer loader (entry.rendered)
+      // is used as-is; a glob() `.md` entry has no `_html` and renders its
+      // body lazily on first `render()`. Either way the result is memoized so
+      // repeated renders don't re-run the markdown pipeline.
+      const preRendered = typeof _html === "string" ? _html : undefined;
+      let renderedHtml: string | null = null;
       const entry: CollectionEntry = {
         id: raw.id,
-        data: result.data as Record<string, unknown>,
+        data: validatedData,
         body: raw.body,
-        render: async () => ({ html }),
+        render: async () => {
+          if (renderedHtml === null) {
+            let html = preRendered ?? (await renderMarkdown(raw.body));
+            if (config.transform) html = config.transform(html, validatedData);
+            renderedHtml = html;
+          }
+          return { html: renderedHtml };
+        },
       };
       attachSourcePath(entry, _filePath, _mdxFilePath);
       return { kind: "ok", entry };
