@@ -105,7 +105,8 @@ switch (command) {
                              the error-page / snapshot fallback (default: x-pletivo-debug)
     --help                   Show this help
 
-  Env vars: PLETIVO_404_PAGE, PLETIVO_ERROR_PAGE, PLETIVO_STALE=1, PLETIVO_DEBUG_HEADER
+  Env vars: PLETIVO_404_PAGE, PLETIVO_ERROR_PAGE, PLETIVO_STALE=1,
+            PLETIVO_DEBUG_HEADER, PLETIVO_IMAGE_SERVICE=sharp|passthrough|cloudflare
 
   Config:
     Create pletivo.config.ts to customize:

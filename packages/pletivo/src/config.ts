@@ -1,5 +1,9 @@
 import path from "path";
 import type { CompileOptions } from "@mdx-js/mdx";
+import {
+  imageServiceConfigFromEnv,
+  type ImageServiceConfig,
+} from "./image-service";
 
 // `unified`'s `PluggableList` isn't re-exported by @mdx-js/mdx and `unified`
 // itself isn't a direct dependency (only resolvable transitively), so derive
@@ -9,6 +13,18 @@ type PluggableList = NonNullable<CompileOptions["remarkPlugins"]>;
 export interface MdxConfig {
   remarkPlugins?: PluggableList;
   rehypePlugins?: PluggableList;
+}
+
+export interface ImageConfig {
+  /**
+   * Image service used for Astro `<Image>` / `<Picture>` output.
+   * - "sharp" (default): build-time resize + re-encode into `_astro/`.
+   * - "passthrough": copy originals and emit their `_astro/` URLs.
+   * - "cloudflare": copy originals and emit `/cdn-cgi/image/...` URLs.
+   * Custom services can provide another URL-based resize adapter.
+   * If unset, `PLETIVO_IMAGE_SERVICE` may change the default.
+   */
+  service?: ImageServiceConfig;
 }
 
 export interface DevHybridConfig {
@@ -45,12 +61,21 @@ export interface PletivoConfig {
    * a Tailwind-generated CSS bundle). (default: true)
    */
   hashAssets?: boolean;
+  /** Image output service (default: "sharp"). */
+  image?: ImageConfig;
   /** MDX compilation options (remark/rehype plugins) */
   mdx?: MdxConfig;
   /** Path to custom 404 page (relative to projectRoot). Overrides the `pages/404.*` convention. */
   notFoundPage?: string;
   /** Dev-time dual-render config: agents see errors, users see overlay or snapshot. */
   dev?: DevHybridConfig;
+}
+
+export function resolveImageServiceConfig(
+  config: Pick<PletivoConfig, "image">,
+  env?: Record<string, string | undefined>,
+): ImageServiceConfig | undefined {
+  return config.image?.service ?? imageServiceConfigFromEnv(env);
 }
 
 const defaults: PletivoConfig = {
