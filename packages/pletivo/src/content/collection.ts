@@ -23,6 +23,8 @@ export interface RawEntry {
 /** Legacy pletivo loader — returns entries directly. */
 export interface Loader {
   load(projectRoot: string): Promise<RawEntry[]>;
+  /** Internal: raw base dir of a glob() loader, read to watch content outside `src/`. */
+  __globBase?: string;
 }
 
 /**
@@ -198,6 +200,9 @@ export function glob(options: GlobOptions): Loader {
   // mtime+size checks miss new files since the cache has nothing to
   // compare against).
   const loader: Loader & { __scanRoots?: string[] } = {
+    // Raw base dir — read at dev-server startup (see getContentBaseDirs) to watch
+    // content that lives outside `src/`, without having to load the collection first.
+    __globBase: options.base,
     async load(projectRoot: string): Promise<RawEntry[]> {
       const dir = path.resolve(projectRoot, options.base);
       loader.__scanRoots = [dir];
@@ -331,6 +336,24 @@ export async function initCollections(projectRoot: string): Promise<void> {
   } else {
     collectionsConfig = {};
   }
+}
+
+/**
+ * Absolute base directories of every glob-backed collection, read from `collectionsConfig`
+ * (so available right after `initCollections`, without loading any collection). The dev
+ * server watches these for content that lives outside `src/` — e.g. a project-root
+ * `content/` dir — which its `srcDir` watcher can't see, so a CMS/external write there
+ * still invalidates the collection cache and reloads the preview.
+ */
+export function getContentBaseDirs(projectRoot: string): string[] {
+  if (!collectionsConfig) return [];
+  const dirs = new Set<string>();
+  for (const config of Object.values(collectionsConfig)) {
+    const loader = config.loader;
+    const base = (loader && "__globBase" in loader ? loader.__globBase : undefined) ?? config.directory;
+    if (typeof base === "string") dirs.add(path.resolve(projectRoot, base));
+  }
+  return [...dirs];
 }
 
 // ── Query API ──

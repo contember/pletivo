@@ -1,6 +1,8 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import path from "path";
-import { initCollections, getCollection, getEntry } from "../../packages/pletivo/src/content/collection";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import { initCollections, getCollection, getContentBaseDirs, getEntry } from "../../packages/pletivo/src/content/collection";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
 
@@ -12,6 +14,13 @@ describe("content collections", () => {
   test("getCollection returns all entries", async () => {
     const posts = await getCollection("blog");
     expect(posts.length).toBe(2);
+  });
+
+  test("getContentBaseDirs returns each collection's resolved base dir", () => {
+    // Drives the dev server's watching of content that lives outside `src/`.
+    const dirs = getContentBaseDirs(fixtureRoot);
+    expect(dirs).toContain(path.join(fixtureRoot, "src/content/blog"));
+    expect(dirs).toContain(path.join(fixtureRoot, "src/content/news"));
   });
 
   test("entries have correct structure", async () => {
@@ -92,5 +101,31 @@ describe("content collections", () => {
     const entry = await getEntry("news", "cs/praha-2");
     expect(entry).toBeDefined();
     expect(entry!.data.title).toBe("Praha 2");
+  });
+});
+
+describe("content roots outside src/", () => {
+  test("getContentBaseDirs surfaces a project-root content dir (the CMS-write case the dev watcher must cover)", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pletivo-roots-"));
+    const collectionModule = path.join(import.meta.dir, "../../packages/pletivo/src/content/collection");
+    try {
+      await fsp.mkdir(path.join(root, "src"), { recursive: true });
+      await fsp.mkdir(path.join(root, "content/posts"), { recursive: true });
+      await fsp.writeFile(
+        path.join(root, "src/content.config.ts"),
+        `import { defineCollection, glob } from ${JSON.stringify(collectionModule)};\n`
+          + `export const collections = { posts: defineCollection({ loader: glob({ base: "content/posts" }) }) };\n`,
+      );
+
+      await initCollections(root);
+      const dirs = getContentBaseDirs(root);
+
+      // The base lives at project-root content/, NOT under src/ — so the dev server's
+      // srcDir watcher can't see writes there and must add a dedicated watcher.
+      expect(dirs).toContain(path.join(root, "content", "posts"));
+      expect(path.relative(root, path.join(root, "content", "posts")).startsWith("src")).toBe(false);
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
   });
 });
