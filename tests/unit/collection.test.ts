@@ -39,6 +39,17 @@ describe("defineCollection", () => {
     expect(result.loader!.load).toBeTypeOf("function");
   });
 
+  test("glob stamps __globBase (used to watch content outside src/)", () => {
+    const loader = glob({ base: "content/references" });
+    expect(loader.__globBase).toBe("content/references");
+  });
+
+  test("directory sugar exposes __globBase on the created loader", () => {
+    const result = defineCollection({ directory: "content/docs", schema: z.object({ title: z.string() }) });
+    const loader = result.loader;
+    expect(loader && "__globBase" in loader ? loader.__globBase : undefined).toBe("content/docs");
+  });
+
   test("explicit loader takes precedence over directory", () => {
     const customLoader = { load: async () => [] };
     const result = defineCollection({

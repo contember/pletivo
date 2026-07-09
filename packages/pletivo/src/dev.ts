@@ -3,7 +3,7 @@ import fs from "fs";
 import { watch } from "fs";
 import { scanRoutes, matchRoute, type Route, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
-import { initCollections } from "./content/collection";
+import { getContentBaseDirs, initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
 import { runWithRenderTracking } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
@@ -1164,6 +1164,36 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     });
   } catch {
     // no public dir
+  }
+
+  // Content that lives OUTSIDE `src/` — e.g. a project-root `content/` dir referenced by a
+  // collection's `glob({ base })` — is invisible to the srcDir watcher above, so a CMS or
+  // external write there never invalidates the collection cache and the preview keeps serving
+  // stale entries. Watch each such content root's top-level project dir; on a change, drop the
+  // collection cache (initCollections) and reload the page so getCollection re-reads from disk.
+  const watchedContentRoots = new Set<string>();
+  for (const baseDir of getContentBaseDirs(projectRoot)) {
+    const rel = path.relative(projectRoot, baseDir);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) continue; // outside the project
+    const top = rel.split(path.sep)[0];
+    if (!top || top === "." || top === config.srcDir) continue; // srcDir is already watched
+    const rootDir = path.join(projectRoot, top);
+    if (watchedContentRoots.has(rootDir) || !fs.existsSync(rootDir)) continue;
+    watchedContentRoots.add(rootDir);
+    try {
+      watch(rootDir, { recursive: true }, async (_event, filename) => {
+        if (!filename || filename.includes("_tmp_")) return;
+        await initCollections(projectRoot); // clears the collection cache
+        if (astroHost) {
+          const absPath = path.join(rootDir, filename);
+          astroHost.server.watcher.emit(fs.existsSync(absPath) ? "change" : "unlink", absPath);
+        }
+        broadcastHmr(JSON.stringify({ type: "html" }));
+      });
+      console.log(`  watching ${top}/ for content changes`);
+    } catch {
+      // dir vanished between existsSync and watch
+    }
   }
 
   const displayHost = config.host === "0.0.0.0" ? "localhost" : config.host;
