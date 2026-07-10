@@ -30,6 +30,7 @@ import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from ".
 import { configureDepTracker, runWithRuntimeDepCapture } from "./incremental/dep-tracker";
 import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "./incremental/extract-deps";
+import { phase, timeSync, timeAsync, flushProfile } from "./profile";
 
 interface PageResult {
   file: string;
@@ -106,10 +107,6 @@ export interface BuildOptions {
 }
 
 export async function build(projectRoot: string, config: PletivoConfig, options: BuildOptions = {}) {
-  const profile = process.env.PLETIVO_PROFILE === "1";
-  const phase = (name: string, t0: number) => {
-    if (profile) console.error(`[PROFILE] ${name}: ${(performance.now() - t0).toFixed(0)}ms`);
-  };
   const tStart = performance.now();
   const pagesDir = path.join(projectRoot, config.srcDir, "pages");
   const distDir = path.join(projectRoot, config.outDir);
@@ -800,6 +797,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     }),
   );
   phase("writeHtml all pages", tWrite);
+  flushProfile("writeHtml");
   clearScopedCss();
   clearGlobalCss();
   clearCssModules();
@@ -1184,7 +1182,7 @@ async function writeHtml(
   // Rewrite references to hashed public assets (e.g. /style.css → /style.abc123.css).
   // Done before CSS/island injection so the injected tags (which use already-hashed
   // paths from bundleCss) are not double-rewritten.
-  html = rewriteRefs(html, publicManifest);
+  html = timeSync("rewriteRefs", () => rewriteRefs(html, publicManifest));
 
   if (cssPath && html.includes("</head>")) {
     html = html.replace("</head>", `<link rel="stylesheet" href="${base}${cssPath}">\n</head>`);
@@ -1197,11 +1195,13 @@ async function writeHtml(
   //   - `is:global` blocks: gated by whether the component was actually
   //     rendered on this page (the scope class may be absent from the
   //     DOM when a component emits only global styles).
-  const astroClasses = extractAstroClasses(html);
-  const pageScopedCss = getScopedCssForPage(astroClasses);
-  const pageGlobalCss = renderedModules ? getGlobalCssForPage(renderedModules) : "";
-  const pageTsxCss = tsxStyles && tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
-  const combinedCss = [pageGlobalCss, pageScopedCss, pageTsxCss].filter(Boolean).join("\n");
+  const combinedCss = timeSync("pageCss", () => {
+    const astroClasses = extractAstroClasses(html);
+    const pageScopedCss = getScopedCssForPage(astroClasses);
+    const pageGlobalCss = renderedModules ? getGlobalCssForPage(renderedModules) : "";
+    const pageTsxCss = tsxStyles && tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
+    return [pageGlobalCss, pageScopedCss, pageTsxCss].filter(Boolean).join("\n");
+  });
   if (combinedCss) {
     const styleTag = `<style>${combinedCss}</style>`;
     if (html.includes("</head>")) {
@@ -1255,9 +1255,11 @@ async function writeHtml(
     }
   }
 
-  await fs.mkdir(path.dirname(outPath), { recursive: true });
   const bytes = Buffer.byteLength(html, "utf-8");
-  await fs.writeFile(outPath, html);
+  await timeAsync("fsWrite", async () => {
+    await fs.mkdir(path.dirname(outPath), { recursive: true });
+    await fs.writeFile(outPath, html);
+  });
   return bytes;
 }
 
