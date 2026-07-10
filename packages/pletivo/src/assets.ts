@@ -159,20 +159,56 @@ async function writeHashed(
  * an original path (as a whole token) with its hashed counterpart.
  *
  * Matches on delimiter boundaries so `/foo.css` is not replaced inside
- * `/foo.css.bak`. Delimiters are anything in [`"'()\s=<>]; lookbehind +
- * lookahead preserve the surrounding characters.
+ * `/foo.css.bak`. Delimiters are anything in [`"'()\s=<>]; the captured
+ * leading delimiter is preserved, the trailing one is a lookahead.
+ *
+ * The document is scanned ONCE regardless of manifest size (see
+ * `getScanner`) — the difference between O(pages × assets) and O(pages)
+ * on asset-heavy sites. The common fast path emits a generic
+ * path-token regex and resolves each hit with an O(1) map lookup.
  */
 export function rewriteRefs(content: string, manifest: Map<string, string>): string {
   if (manifest.size === 0) return content;
-  for (const [orig, hashed] of manifest) {
-    const escaped = orig.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // Look-behind: start of string or a delimiter.
-    // Look-ahead: end of string, a delimiter, or query/hash fragment.
-    const re = new RegExp(
-      `(^|[\\s"'(<>=,;])${escaped}(?=$|[\\s"')<>?#,;])`,
-      "g",
-    );
-    content = content.replace(re, (_m, pre) => pre + hashed);
+  const { re } = getScanner(manifest);
+  re.lastIndex = 0;
+  return content.replace(re, (m: string, pre: string, token: string) => {
+    const hashed = manifest.get(token);
+    return hashed ? pre + hashed : m;
+  });
+}
+
+// Compiled scanners, keyed by the manifest they were built from. Rebuilt
+// only when the manifest's size changes — `hashPublicAssets` grows the
+// map while hashing text assets, then the page-write loop reuses the
+// final, stable map across every page.
+const scannerCache = new WeakMap<Map<string, string>, { size: number; re: RegExp }>();
+
+// Characters that bound a path token. A manifest key containing any of
+// these can't be matched by the generic token regex and forces the
+// alternation fallback.
+const DELIM_IN_KEY = /[\s"'()<>=,;?#]/;
+
+function getScanner(manifest: Map<string, string>): { size: number; re: RegExp } {
+  const cached = scannerCache.get(manifest);
+  if (cached && cached.size === manifest.size) return cached;
+  const keys = [...manifest.keys()];
+  let re: RegExp;
+  if (keys.every((k) => !DELIM_IN_KEY.test(k))) {
+    // Fast path: every key is a plain `/…` token, so one generic scan
+    // for path-shaped tokens + a map lookup per hit resolves them all —
+    // no giant alternation to backtrack through.
+    re = /(^|[\s"'(<>=,;])(\/[^\s"'()<>=,;?#]*)(?=$|[\s"')<>?#,;])/g;
+  } else {
+    // Fallback: a key itself contains a delimiter (e.g. a space in a
+    // filename). Fold every key into one alternation, longest first so a
+    // longer path wins over a shorter prefix that is also a token.
+    const alt = keys
+      .sort((a, b) => b.length - a.length)
+      .map((o) => o.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|");
+    re = new RegExp(`(^|[\\s"'(<>=,;])(${alt})(?=$|[\\s"')<>?#,;])`, "g");
   }
-  return content;
+  const scanner = { size: manifest.size, re };
+  scannerCache.set(manifest, scanner);
+  return scanner;
 }
