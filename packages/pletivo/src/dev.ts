@@ -491,6 +491,50 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     return html;
   }
 
+  /**
+   * Serve an endpoint route (`robots.txt.ts`, `rss.xml.ts`) by calling its
+   * exported GET(). The handler's own Response is returned untouched, so it
+   * keeps its status and Content-Type.
+   */
+  async function serveEndpoint(
+    route: Route,
+    params: Record<string, string>,
+    pathname: string,
+    req: Request,
+  ): Promise<Response | null> {
+    const fullPath = path.join(pagesDir, route.file);
+    try {
+      const mod = await import(fullPath + `?v=${getDevVersion()}`);
+      if (typeof mod.GET !== "function") return null;
+
+      const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+      const devHost = config.host === "0.0.0.0" ? "localhost" : config.host;
+      const origin = siteUrl ? siteUrl.origin : `http://${devHost}:${config.port}`;
+      const url = new URL(pathname, origin);
+      const response: unknown = await mod.GET({
+        site: siteUrl,
+        url,
+        params,
+        props: {},
+        request: req,
+        redirect: (dest: string, status = 302) => new Response(null, { status, headers: { Location: dest } }),
+      });
+      if (!(response instanceof Response)) {
+        throw new Error(`${route.file}: endpoint GET() must return a Response`);
+      }
+      return response;
+    } catch (e) {
+      if (seesRawErrors(req)) {
+        return new Response(formatDevErrorHtml(e as Error), {
+          status: 500,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+      console.error(`Error rendering endpoint "${route.file}":`, e);
+      return new Response("Endpoint error", { status: 500 });
+    }
+  }
+
   // Route rendering wrapper. Calls renderPage, then:
   // - success: update snapshot (for shielded requests), return Response
   // - miss (null): return null so the caller can cascade to the next route
@@ -503,6 +547,11 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     req: Request,
     localeOverride?: string,
   ): Promise<Response | null> {
+    // Endpoint routes bypass the HTML render pipeline entirely — their GET()
+    // owns the status and Content-Type, and the body must not be touched.
+    if (route.isEndpoint) {
+      return await serveEndpoint(route, params, pathname, req);
+    }
     const outcome = await renderPage(route, params, pathname, req, localeOverride);
     if (outcome === null) return null;
     const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
@@ -1040,6 +1089,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
                 segments: [],
                 isDynamic: false,
                 priority: 0,
+                isEndpoint: false,
               };
               const response = await resolveRoute(fakeRoute, {}, cleanPathname, req);
               if (response !== null) return response;

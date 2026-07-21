@@ -1,6 +1,6 @@
 import path from "path";
 import fs from "fs/promises";
-import { scanRoutes, routeToOutputPath, type Route, type StaticPath } from "./router";
+import { scanRoutes, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
 import { initCollections, getValidationFailures } from "./content/collection";
 import { resetIslandRegistry } from "./runtime/island";
@@ -88,6 +88,13 @@ interface PageResult {
    * back via `recordRenderedSize`.
    */
   cachedSize?: number;
+  /**
+   * Emit `html` byte-for-byte, skipping writeHtml's HTML pipeline.
+   * Endpoint routes and injected endpoints produce JSON/XML/text, which
+   * asset-ref rewriting and CSS/hydration injection would corrupt — a page
+   * with no `</head>` gets the `<style>` block prepended to its body.
+   */
+  raw?: boolean;
 }
 
 export interface BuildOptions {
@@ -445,6 +452,20 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       // unconditionally (even for cached pages) so the global stylesheet
       // stays complete — mirrors the astro plugin's onLoad collection.
       await collectPageModuleCss(fullPath, `page:${route.file}`);
+
+      // Endpoint routes (robots.txt.ts, rss.xml.ts) emit their GET() body
+      // verbatim. Not incrementally cached: the cache layer is HTML-shaped,
+      // and endpoints are a handful of cheap routes per project.
+      if (route.isEndpoint) {
+        const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+        const body = await renderEndpoint(mod, makeEndpointContext("/" + outFile, siteUrl));
+        if (body === null) {
+          console.warn(`  Skipping ${route.file}: endpoint route without an exported GET()`);
+          return null;
+        }
+        return { file: route.file, label: route.file, outPath, html: body, raw: true };
+      }
+
       if (typeof mod.default !== "function") {
         console.warn(`  Skipping ${route.file}: no default export function`);
         return null;
@@ -488,6 +509,12 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   //     stat calls for content-collection-backed routes.
   const tDynamic = performance.now();
   for (const route of dynamicRoutes) {
+    // Dynamic endpoints (`[slug].json.ts`) are not supported. Say so loudly —
+    // silently emitting nothing is how a broken deploy ships green.
+    if (route.isEndpoint) {
+      console.warn(`  Skipping ${route.file}: dynamic endpoint routes are not supported (only static ones like rss.xml.ts)`);
+      continue;
+    }
     const paramSets = dynamicParamSets.get(route.file);
     if (!paramSets) {
       console.warn(`  Skipping ${route.file}: dynamic route without getStaticPaths()`);
@@ -654,32 +681,23 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
         const outPath = path.join(distDir, pattern);
 
         if (typeof mod.GET === "function") {
-          // Endpoint — call GET() and write the response body
+          // Endpoint — emit the GET() body verbatim via the raw write path.
           const siteUrl = astroHost.config.site ? new URL(astroHost.config.site) : undefined;
-          const origin = siteUrl ? siteUrl.origin : "http://localhost/";
-          const url = new URL("/" + pattern, origin);
-          const response: Response = await mod.GET({
-            site: siteUrl,
-            url,
-            params: {},
-            props: {},
-            request: new Request(url),
-            redirect: (dest: string, status = 302) => new Response(null, { status, headers: { Location: dest } }),
-          });
-          const body = await response.text();
-          await fs.mkdir(path.dirname(outPath), { recursive: true });
-          await fs.writeFile(outPath, body);
-          results.push({
-            file: injected.entrypoint,
-            label: `[injected] ${injected.pattern}`,
-            outPath,
-            html: body,
-          });
+          const body = await renderEndpoint(mod, makeEndpointContext("/" + pattern, siteUrl));
+          if (body !== null) {
+            results.push({
+              file: injected.entrypoint,
+              label: `[injected] ${injected.pattern}`,
+              outPath,
+              html: body,
+              raw: true,
+            });
+          }
         } else if (typeof mod.default === "function") {
           // Page component — render as HTML
           resetIslandRegistry();
           const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-            renderComponent(mod.default, makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0 })),
+            renderComponent(mod.default, makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0, isEndpoint: false })),
           );
           if (html !== null) {
             results.push({
@@ -708,6 +726,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       segments: [],
       isDynamic: false,
       priority: 0,
+      isEndpoint: false,
     }),
   );
   if (result404) {
@@ -783,6 +802,17 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
           recordRenderedSize(cache, result.routeKey, size);
         }
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)}) [cached]`);
+        return;
+      }
+      if (result.raw) {
+        // Endpoint output — bytes as produced. writeHtml would rewrite asset
+        // refs and, lacking a </head>, prepend the page <style> block.
+        const size = Buffer.byteLength(result.html, "utf-8");
+        await fs.mkdir(path.dirname(result.outPath), { recursive: true });
+        await fs.writeFile(result.outPath, result.html);
+        totalSize += size;
+        renderedCount++;
+        console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
         return;
       }
       const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest, result.renderedModules, result.tsxStyles);
@@ -1151,6 +1181,51 @@ function extractAll(html: string, regex: RegExp): string[] {
 }
 
 const ISLAND_NAME_RE = /data-component="([^"]+)"/g;
+
+/** Shape an endpoint's `GET()` receives — mirrors Astro's APIContext for SSG. */
+export interface EndpointContext {
+  site: URL | undefined;
+  url: URL;
+  params: RouteParams;
+  props: Record<string, unknown>;
+  request: Request;
+  redirect: (dest: string, status?: number) => Response;
+}
+
+export function makeEndpointContext(
+  pathname: string,
+  siteUrl: URL | undefined,
+  params: RouteParams = {},
+  props: Record<string, unknown> = {},
+): EndpointContext {
+  const origin = siteUrl ? siteUrl.origin : "http://localhost/";
+  const url = new URL(pathname.startsWith("/") ? pathname : "/" + pathname, origin);
+  return {
+    site: siteUrl,
+    url,
+    params,
+    props,
+    request: new Request(url),
+    redirect: (dest: string, status = 302) => new Response(null, { status, headers: { Location: dest } }),
+  };
+}
+
+/**
+ * Call an endpoint module's `GET()` and return its body.
+ * Returns null when the module exports no GET — the caller warns and skips.
+ */
+export async function renderEndpoint(
+  mod: Record<string, unknown>,
+  ctx: EndpointContext,
+): Promise<string | null> {
+  const handler = mod.GET;
+  if (typeof handler !== "function") return null;
+  const response: unknown = await handler(ctx);
+  if (!(response instanceof Response)) {
+    throw new Error("endpoint GET() must return a Response");
+  }
+  return await response.text();
+}
 
 async function renderComponent(
   component: (props: Record<string, unknown>) => unknown,

@@ -15,6 +15,7 @@ SSG-relevant gaps in Astro API surface support, ordered by priority.
 ## B-tier — Unlocks integrations and specific use-cases
 
 - [004 — injectRoute()](004-inject-route.md) — sitemap, RSS, robots.txt integrations broken
+- [012 — Endpoint routes](012-endpoint-routes.md) — `src/pages/robots.txt.ts` was skipped silently; done for static endpoints
 - [006 — Content Layer Custom Loaders](006-content-layer-custom-loaders.md) — CMS integrations need this
 - [007 — astro:env Virtual Module](007-astro-env-module.md) — type-safe env variables
 - [008 — CSS Modules](008-css-modules.md) — `.module.css` imports

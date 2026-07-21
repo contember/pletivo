@@ -21,6 +21,13 @@ export interface Route {
   isDynamic: boolean;
   /** Priority for matching (lower = higher priority) */
   priority: number;
+  /**
+   * Non-HTML endpoint route — a script file carrying its own extension
+   * (`robots.txt.ts`, `eshop.json.ts`). Renders via an exported `GET()`
+   * returning a Response, and emits that path verbatim instead of an
+   * `index.html` directory.
+   */
+  isEndpoint: boolean;
 }
 
 interface RouteSegment {
@@ -37,6 +44,13 @@ export function parseRoute(file: string): Route {
   const segments: RouteSegment[] = [];
   let isDynamic = false;
   let priority = 0;
+
+  // Astro convention: a .ts/.js route whose remaining basename still carries an
+  // extension emits that file verbatim (`rss.xml.ts` → /rss.xml) rather than an
+  // HTML page. Template formats are always HTML, so they never qualify.
+  const isScript = /\.(ts|js)$/.test(file);
+  const basename = parts[parts.length - 1] ?? "";
+  const isEndpoint = isScript && basename.includes(".");
 
   for (const part of parts) {
     if (part === "index") {
@@ -59,7 +73,7 @@ export function parseRoute(file: string): Route {
     }
   }
 
-  return { file, segments, isDynamic, priority };
+  return { file, segments, isDynamic, priority, isEndpoint };
 }
 
 /**
@@ -125,6 +139,10 @@ export function routeToOutputPath(route: Route, params: RouteParams): string {
 
   if (parts.length === 0) {
     return "index.html";
+  }
+  // Endpoints own their filename — no index.html directory wrapper.
+  if (route.isEndpoint) {
+    return path.join(...parts);
   }
   return path.join(...parts, "index.html");
 }

@@ -197,3 +197,42 @@ describe("findRoute", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("endpoint routes", () => {
+  test("script file carrying its own extension is an endpoint", () => {
+    const route = parseRoute("robots.txt.ts");
+    expect(route.isEndpoint).toBe(true);
+    expect(route.segments).toEqual([{ type: "static", value: "robots.txt" }]);
+    expect(routeToOutputPath(route, {})).toBe("robots.txt");
+  });
+
+  test("endpoint output keeps its extension instead of index.html", () => {
+    expect(routeToOutputPath(parseRoute("eshop.json.ts"), {})).toBe("eshop.json");
+    expect(routeToOutputPath(parseRoute("rss.xml.js"), {})).toBe("rss.xml");
+  });
+
+  test("nested endpoint", () => {
+    const route = parseRoute("api/products.json.ts");
+    expect(route.isEndpoint).toBe(true);
+    expect(routeToOutputPath(route, {})).toBe("api/products.json");
+  });
+
+  test("endpoint URL matches its full filename", () => {
+    const route = parseRoute("robots.txt.ts");
+    expect(matchRoute(route, "/robots.txt")).toEqual({});
+    expect(matchRoute(route, "/robots")).toBeNull();
+  });
+
+  test("ordinary pages are not endpoints", () => {
+    expect(parseRoute("index.tsx").isEndpoint).toBe(false);
+    expect(parseRoute("about.astro").isEndpoint).toBe(false);
+    expect(parseRoute("blog/[slug].tsx").isEndpoint).toBe(false);
+    expect(routeToOutputPath(parseRoute("about.tsx"), {})).toBe("about/index.html");
+  });
+
+  test("template formats are never endpoints even with a dotted name", () => {
+    // `.astro`/`.md` always render HTML — only .ts/.js opt into raw output.
+    expect(parseRoute("weird.name.astro").isEndpoint).toBe(false);
+    expect(parseRoute("weird.name.md").isEndpoint).toBe(false);
+  });
+});
