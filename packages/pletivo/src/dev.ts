@@ -5,7 +5,7 @@ import { scanRoutes, matchRoute, type Route, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
 import { getContentBaseDirs, initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
-import { runWithRenderTracking } from "./runtime/astro-shim";
+import { runWithRenderTracking, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
@@ -244,8 +244,53 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   }
 
   type RenderOutcome =
-    | { ok: true; html: string }
+    | { ok: true; html: string; response?: AstroResponse; cookies?: AstroCookies }
+    // The page returned a Response itself (`Astro.redirect` / `Astro.rewrite`)
+    // — pass it through.
+    | { ok: true; raw: Response }
     | { ok: false; error: unknown };
+
+  /**
+   * Backs `Astro.clientAddress`. Honours `x-forwarded-for` (dev behind a
+   * proxy such as tudy) and otherwise asks Bun for the socket address.
+   */
+  function clientAddressOf(request: Request): string | undefined {
+    const forwarded = request.headers.get("x-forwarded-for");
+    if (forwarded) return forwarded.split(",")[0]!.trim();
+    return server?.requestIP(request)?.address;
+  }
+
+  /**
+   * Backs `Astro.rewrite` in dev: re-runs routing for `target` and serves that
+   * route's response at the current URL. `depth` guards against cycles.
+   */
+  async function resolveRewrite(
+    target: string,
+    req: Request,
+    depth: number,
+  ): Promise<Response | null> {
+    if (depth > MAX_REWRITE_DEPTH) {
+      throw new Error(
+        `Astro.rewrite("${target}") exceeded ${MAX_REWRITE_DEPTH} hops — cycle?`,
+      );
+    }
+    const rawPath = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    const routePath = rawPath === "/" ? "/" : rawPath.replace(/\/$/, "");
+    for (const route of routes) {
+      const params = matchRoute(route, routePath);
+      if (params === null) continue;
+      const response = await resolveRoute(
+        route,
+        params as Record<string, string>,
+        routePath,
+        req,
+        undefined,
+        depth + 1,
+      );
+      if (response !== null) return response;
+    }
+    return null;
+  }
 
   async function renderPage(
     route: Route,
@@ -253,6 +298,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     pathname: string = "/",
     request?: Request,
     localeOverride?: string,
+    rewriteDepth = 0,
   ): Promise<RenderOutcome | null> {
     const fullPath = path.join(pagesDir, route.file);
 
@@ -309,6 +355,14 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         preferredLocale = parsed.preferredLocale;
         preferredLocaleList = parsed.preferredLocaleList;
       }
+      // Backs `Astro.response` for this render; whatever the page writes
+      // here is merged into the dev server's Response below.
+      const astroResponse: AstroResponse = {
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+      };
+      const astroCookies = new AstroCookies(request);
       const pageContext = {
         url: new URL(pathname || "/", origin),
         site: siteUrl,
@@ -317,6 +371,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         currentLocale,
         preferredLocale,
         preferredLocaleList,
+        response: astroResponse,
+        cookies: astroCookies,
+        rewrite: request
+          ? (target: string) => resolveRewrite(target, request, rewriteDepth)
+          : undefined,
+        clientAddress: request ? clientAddressOf(request) : undefined,
       };
 
       resetIslandRegistry();
@@ -325,6 +385,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         if (r instanceof Promise) r = await r;
         return r;
       });
+
+      // `return Astro.redirect(...)` — serve it as a real redirect. The
+      // Response already carries the accumulated headers and cookies.
+      if (renderResult instanceof Response) {
+        return { ok: true, raw: renderResult };
+      }
 
       let html: string;
       if (typeof renderResult === "string") {
@@ -384,7 +450,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         html = await astroHost.server.transformIndexHtml(pathname, html);
       }
 
-      return { ok: true, html };
+      return { ok: true, html, response: astroResponse, cookies: astroCookies };
     } catch (e) {
       console.error(`Error rendering ${route.file}:`, e);
       return { ok: false, error: e };
@@ -546,18 +612,30 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     pathname: string,
     req: Request,
     localeOverride?: string,
+    rewriteDepth = 0,
   ): Promise<Response | null> {
     // Endpoint routes bypass the HTML render pipeline entirely — their GET()
     // owns the status and Content-Type, and the body must not be touched.
     if (route.isEndpoint) {
       return await serveEndpoint(route, params, pathname, req);
     }
-    const outcome = await renderPage(route, params, pathname, req, localeOverride);
+    const outcome = await renderPage(route, params, pathname, req, localeOverride, rewriteDepth);
     if (outcome === null) return null;
     const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
     if (outcome.ok) {
+      if ("raw" in outcome) return outcome.raw;
       if (!seesRawErrors(req)) snapshots.set(pathname, outcome.html);
-      return new Response(outcome.html, { headers: htmlHeaders });
+      // Merge anything the page wrote to `Astro.response` / `Astro.cookies`.
+      // Content-Type stays ours unless the page overrode it explicitly.
+      const headers = new Headers(htmlHeaders);
+      outcome.response?.headers.forEach((v, k) => headers.set(k, v));
+      for (const cookie of outcome.cookies?.headers() ?? []) {
+        headers.append("set-cookie", cookie);
+      }
+      return new Response(outcome.html, {
+        status: outcome.response?.status ?? 200,
+        headers,
+      });
     }
     if (seesRawErrors(req)) {
       return new Response(formatDevErrorHtml(outcome.error), { headers: htmlHeaders });

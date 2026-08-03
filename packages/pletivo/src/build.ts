@@ -1,10 +1,10 @@
 import path from "path";
 import fs from "fs/promises";
-import { scanRoutes, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "./router";
+import { scanRoutes, matchRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
 import { initCollections, getValidationFailures } from "./content/collection";
 import { resetIslandRegistry } from "./runtime/island";
-import { runWithRenderTracking } from "./runtime/astro-shim";
+import { runWithRenderTracking, redirectPageHtml, MAX_REWRITE_DEPTH } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { bundleCss } from "./css";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
@@ -243,11 +243,63 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   clearTransforms();
   clearUrlAssets();
 
+  /**
+   * Backs `Astro.rewrite` during a build: re-runs routing for `target` and
+   * renders that route's component, so its HTML gets written at the
+   * rewriting route's path. `depth` guards against rewrite cycles.
+   */
+  async function resolveRewrite(
+    target: string,
+    depth: number,
+  ): Promise<Response | null> {
+    if (depth > MAX_REWRITE_DEPTH) {
+      throw new Error(
+        `Astro.rewrite("${target}") exceeded ${MAX_REWRITE_DEPTH} hops — cycle?`,
+      );
+    }
+    const rawPath = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    const routePath = rawPath === "/" ? "/" : rawPath.replace(/\/$/, "");
+    for (const route of routes) {
+      const params = matchRoute(route, routePath);
+      if (params === null) continue;
+      const mod = await import(path.join(pagesDir, route.file));
+      if (typeof mod.default !== "function") continue;
+      // A dynamic target still needs its getStaticPaths props, or the
+      // rewritten page renders with params but no data.
+      let props: Record<string, unknown> = {};
+      if (route.isDynamic && typeof mod.getStaticPaths === "function") {
+        const paginate = createPaginate(route, base || "/");
+        const paths = (await mod.getStaticPaths({ paginate })) as StaticPath[];
+        const match = paths.find((sp) =>
+          Object.entries(params).every(([k, v]) => String(sp.params[k]) === v),
+        );
+        if (!match) continue;
+        props = match.props || {};
+      }
+      const html = await renderComponent(mod.default, {
+        ...props,
+        ...makePageContext(
+          routePath,
+          params as Record<string, string>,
+          route,
+          undefined,
+          depth + 1,
+        ),
+      });
+      if (html === null) continue;
+      return new Response(html, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+    return null;
+  }
+
   function makePageContext(
     pathname: string,
     params: Record<string, string>,
     route: Route,
     localeOverride?: string,
+    rewriteDepth = 0,
   ) {
     // Astro expects `Astro.url` to be a real URL with pathname + origin.
     // Use the configured site origin if present, else a localhost stand-in.
@@ -270,6 +322,8 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
         currentLocale,
         preferredLocale: undefined as string | undefined,
         preferredLocaleList: [] as string[],
+        rewrite: (target: string) => resolveRewrite(target, rewriteDepth),
+        // No request during a build, so `Astro.clientAddress` stays undefined.
       },
     };
   }
@@ -1235,6 +1289,20 @@ async function renderComponent(
   if (result instanceof Promise) result = await result;
 
   if (typeof result === "string") return result;
+  if (result instanceof Response) {
+    // `return Astro.redirect(...)` — a static file can't send a 3xx, so emit
+    // the meta-refresh page Astro's static output produces.
+    if (result.headers.get("location")) return redirectPageHtml(result);
+    // `return Astro.rewrite(...)` — the rewritten route's HTML, written at
+    // this route's path.
+    if ((result.headers.get("content-type") ?? "").includes("html")) {
+      return await result.text();
+    }
+    console.warn(
+      `  Page returned a ${result.status} Response that is neither a redirect nor HTML — skipping`,
+    );
+    return null;
+  }
   if (result && typeof result === "object" && "__html" in result) {
     return (result as { __html: string }).__html;
   }
