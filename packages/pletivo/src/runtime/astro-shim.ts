@@ -71,12 +71,207 @@ export interface AstroGlobal {
   preferredLocale?: string;
   /** Ordered list of every configured locale matched against Accept-Language. */
   preferredLocaleList: string[];
+  /**
+   * Mutable response init, shared by the page and every child component of
+   * one render pass. SSR-only in Astro; here it exists so that pages doing
+   * `Astro.response.headers.set(...)` render instead of crashing. In dev the
+   * server merges it into the outgoing response; in a static build it is
+   * collected and discarded (a file has no headers).
+   */
+  response: AstroResponse;
+  /** Per-render scratch state. Always starts empty — no middleware runs. */
+  locals: Record<string, unknown>;
+  /**
+   * Request cookies plus anything the render writes. Shared across the render
+   * pass like `response`. Reads work wherever a request exists (dev); writes
+   * are turned into `Set-Cookie` by the dev server and dropped by the build.
+   */
+  cookies: AstroCookies;
+  /**
+   * Returns a redirect `Response`. In dev it is served as a real redirect; in
+   * a static build it becomes a meta-refresh HTML page, matching Astro's
+   * static output. Must be `return`ed from the frontmatter to take effect.
+   */
+  redirect(path: string, status?: number): Response;
+  /**
+   * Renders another route's content at the current URL. Resolved by the host
+   * (dev server / build), which re-runs routing for the target path. Must be
+   * `return`ed from the frontmatter. Throws if the target matches no route,
+   * or if the render context has no host to resolve against.
+   */
+  rewrite(payload: RewritePayload): Promise<Response>;
+  /**
+   * Requesting IP. Real in dev; reading it in a prerendered page throws, as
+   * it does in Astro — a static file is served to everyone, so there is no
+   * honest value to hand back.
+   */
+  readonly clientAddress: string;
   [key: string]: unknown;
+}
+
+export type RewritePayload = string | URL | Request;
+
+/** Resolves a rewrite target to a Response. Supplied by dev.ts / build.ts. */
+export type RewriteHandler = (pathname: string) => Promise<Response | null>;
+
+/** Hop limit before a chain of rewrites is treated as a cycle. */
+export const MAX_REWRITE_DEPTH = 5;
+
+export interface AstroResponse {
+  status: number;
+  statusText: string;
+  headers: Headers;
 }
 
 interface SlotsAccessor {
   has(name: string): boolean;
   render(name: string, args?: unknown[]): Promise<string>;
+}
+
+/**
+ * Normalize an `Astro.rewrite` payload to a path. Astro accepts a string, a
+ * URL, or a Request; only the path (plus query) is meaningful to routing.
+ */
+function rewriteTarget(payload: RewritePayload): string {
+  if (typeof payload === "string") return payload;
+  const url = payload instanceof URL ? payload : new URL(payload.url);
+  return url.pathname + url.search;
+}
+
+// ── Cookies ─────────────────────────────────────────────────────────
+
+export interface AstroCookieSetOptions {
+  domain?: string;
+  expires?: Date;
+  httpOnly?: boolean;
+  maxAge?: number;
+  path?: string;
+  sameSite?: boolean | "lax" | "none" | "strict";
+  secure?: boolean;
+  encode?: (value: string) => string;
+}
+
+export interface AstroCookieGetOptions {
+  decode?: (value: string) => string;
+}
+
+/** A single cookie value with Astro's coercion helpers. */
+export class AstroCookie {
+  constructor(readonly value: string) {}
+  json(): unknown {
+    return JSON.parse(this.value);
+  }
+  number(): number {
+    return Number(this.value);
+  }
+  boolean(): boolean {
+    if (this.value === "false") return false;
+    if (this.value === "0") return false;
+    return Boolean(this.value);
+  }
+}
+
+function serializeCookie(
+  name: string,
+  value: string,
+  opts: AstroCookieSetOptions = {},
+): string {
+  const encode = opts.encode ?? encodeURIComponent;
+  const parts = [`${name}=${encode(value)}`];
+  if (opts.maxAge !== undefined) parts.push(`Max-Age=${Math.floor(opts.maxAge)}`);
+  if (opts.domain) parts.push(`Domain=${opts.domain}`);
+  if (opts.path) parts.push(`Path=${opts.path}`);
+  if (opts.expires) parts.push(`Expires=${opts.expires.toUTCString()}`);
+  if (opts.httpOnly) parts.push("HttpOnly");
+  if (opts.secure) parts.push("Secure");
+  if (opts.sameSite !== undefined) {
+    const v = opts.sameSite === true ? "Strict" : opts.sameSite;
+    if (v) parts.push(`SameSite=${v.charAt(0).toUpperCase()}${v.slice(1)}`);
+  }
+  return parts.join("; ");
+}
+
+function parseCookieHeader(header: string | null): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!header) return out;
+  for (const pair of header.split(";")) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) continue;
+    const name = pair.slice(0, eq).trim();
+    if (!name || out.has(name)) continue;
+    try {
+      out.set(name, decodeURIComponent(pair.slice(eq + 1).trim()));
+    } catch {
+      out.set(name, pair.slice(eq + 1).trim());
+    }
+  }
+  return out;
+}
+
+/**
+ * Astro's `Astro.cookies` API. Reads are seeded from the request's `Cookie`
+ * header (dev only — a static build has no request, so reads come back
+ * empty). Writes accumulate here and are surfaced through `headers()`; the
+ * dev server attaches them as `Set-Cookie`, the build discards them.
+ */
+export class AstroCookies {
+  #incoming: Map<string, string>;
+  /** Writes made during this render, in insertion order. null = deleted. */
+  #outgoing = new Map<string, { value: string | null; serialized: string }>();
+
+  constructor(request?: Request) {
+    this.#incoming = parseCookieHeader(request?.headers.get("cookie") ?? null);
+  }
+
+  has(key: string, _options?: AstroCookieGetOptions): boolean {
+    const written = this.#outgoing.get(key);
+    if (written) return written.value !== null;
+    return this.#incoming.has(key);
+  }
+
+  get(key: string, options?: AstroCookieGetOptions): AstroCookie | undefined {
+    const written = this.#outgoing.get(key);
+    if (written) {
+      return written.value === null ? undefined : new AstroCookie(written.value);
+    }
+    const raw = this.#incoming.get(key);
+    if (raw === undefined) return undefined;
+    return new AstroCookie(options?.decode ? options.decode(raw) : raw);
+  }
+
+  set(
+    key: string,
+    value: string | number | boolean | Record<string, unknown> | unknown[],
+    options?: AstroCookieSetOptions,
+  ): void {
+    const serializedValue =
+      typeof value === "string" ? value : JSON.stringify(value);
+    this.#outgoing.set(key, {
+      value: serializedValue,
+      serialized: serializeCookie(key, serializedValue, options),
+    });
+  }
+
+  delete(key: string, options?: AstroCookieSetOptions): void {
+    this.#outgoing.set(key, {
+      value: null,
+      serialized: serializeCookie(key, "", {
+        ...options,
+        expires: new Date(0),
+        maxAge: 0,
+      }),
+    });
+  }
+
+  /** Merge another render's writes into this one (Astro 5 parity). */
+  merge(other: AstroCookies): void {
+    for (const [key, entry] of other.#outgoing) this.#outgoing.set(key, entry);
+  }
+
+  /** Serialized `Set-Cookie` values for every write made this render. */
+  *headers(): Generator<string> {
+    for (const { serialized } of this.#outgoing.values()) yield serialized;
+  }
 }
 
 export interface AstroResult {
@@ -99,6 +294,28 @@ export interface PageContext {
   preferredLocale?: string;
   /** All matched Accept-Language locales in priority order. */
   preferredLocaleList?: string[];
+  /**
+   * Response init backing `Astro.response`. Pass one in to observe what the
+   * page wrote (dev server does this); omitted, a throwaway is created.
+   */
+  response?: AstroResponse;
+  /** Seed for `Astro.locals`. Defaults to an empty object. */
+  locals?: Record<string, unknown>;
+  /**
+   * Cookie jar backing `Astro.cookies`. Pass one in to read back what the
+   * page wrote (dev server does this); omitted, one is built from `request`.
+   */
+  cookies?: AstroCookies;
+  /**
+   * Host resolver backing `Astro.rewrite`. Omitted (container renders, unit
+   * tests), calling `Astro.rewrite` throws rather than silently no-opping.
+   */
+  rewrite?: RewriteHandler;
+  /**
+   * Seed for `Astro.clientAddress`. Dev only — a build has no request, and
+   * reading it there throws instead.
+   */
+  clientAddress?: string;
 }
 
 type SlotFn = () => unknown;
@@ -113,6 +330,41 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
     request,
   };
 
+  // One response/locals pair per render pass — created here (not per
+  // `createAstro` call) so a header set by a child component is visible to
+  // the page and to the dev server, matching Astro's shared-response model.
+  const response: AstroResponse = normalizedPageContext.response ?? {
+    status: 200,
+    statusText: "OK",
+    headers: new Headers(),
+  };
+  const locals = normalizedPageContext.locals ?? {};
+  // `request` is synthesized when the host didn't supply one (static build),
+  // and a synthesized request carries no Cookie header — reads come back
+  // empty there, which is the intent.
+  const cookies = normalizedPageContext.cookies ?? new AstroCookies(request);
+  // Astro copies the accumulated response headers and cookies onto the
+  // redirect, so a redirect can still set a session cookie.
+  const redirect = (path: string, status = 302): Response => {
+    const headers = new Headers(response.headers);
+    for (const cookie of cookies.headers()) headers.append("set-cookie", cookie);
+    headers.set("location", path);
+    return new Response(null, { status, headers });
+  };
+  const rewrite = async (payload: RewritePayload): Promise<Response> => {
+    const target = rewriteTarget(payload);
+    if (!normalizedPageContext.rewrite) {
+      throw new Error(
+        `Astro.rewrite("${target}") is unavailable in this render context — ` +
+          `no route resolver was provided.`,
+      );
+    }
+    const out = await normalizedPageContext.rewrite(target);
+    if (!out) {
+      throw new Error(`Astro.rewrite("${target}") matched no route.`);
+    }
+    return out;
+  };
   return {
     pageContext: normalizedPageContext,
     createAstro(props, slots) {
@@ -163,6 +415,27 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
         currentLocale: normalizedPageContext.currentLocale,
         preferredLocale: normalizedPageContext.preferredLocale,
         preferredLocaleList: normalizedPageContext.preferredLocaleList ?? [],
+        response,
+        locals,
+        cookies,
+        redirect,
+        rewrite,
+        // Astro errors when a prerendered page reads this, and pletivo
+        // prerenders everything — so it only resolves in dev, where a real
+        // request exists. A getter, so merely rendering a page that never
+        // touches it stays fine.
+        get clientAddress(): string {
+          const address = normalizedPageContext.clientAddress;
+          if (address === undefined) {
+            throw new Error(
+              "`Astro.clientAddress` is not available in a static build — " +
+                "the same file is served to every visitor, so there is no " +
+                "client address to report. Move this to client-side code or " +
+                "an endpoint fronted by your host.",
+            );
+          }
+          return address;
+        },
       };
     },
   };
@@ -612,8 +885,33 @@ export async function renderAstroPage(
   pageContext: PageContext = {},
 ): Promise<string> {
   const result = makeResult(pageContext);
-  const out = await Component(result, props, {});
-  return out.__html;
+  const out = (await Component(result, props, {})) as unknown;
+  // The page returned a Response: a redirect folds into a meta-refresh page,
+  // a rewrite's HTML body is the page's content (same rules as build.ts).
+  if (out instanceof Response) {
+    return out.headers.get("location") ? redirectPageHtml(out) : await out.text();
+  }
+  return (out as HtmlString).__html;
+}
+
+/**
+ * Astro's static-output rendering of `return Astro.redirect(...)`: a
+ * prerendered page can't send a 3xx, so it emits a meta-refresh document.
+ * Returns "" for a Response that isn't a redirect — the caller decides what
+ * to do with it.
+ */
+export function redirectPageHtml(response: Response): string {
+  const location = response.headers.get("location");
+  if (!location) return "";
+  const href = escapeAttr(location);
+  return (
+    `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+    `<title>Redirecting to: ${escapeHtml(location)}</title>` +
+    `<meta http-equiv="refresh" content="0;url=${href}">` +
+    `<meta name="robots" content="noindex">` +
+    `<link rel="canonical" href="${href}">` +
+    `</head><body><a href="${href}">Redirecting to ${escapeHtml(location)}</a></body></html>`
+  );
 }
 
 export function isAstroComponent(x: unknown): x is AstroComponentFactory {

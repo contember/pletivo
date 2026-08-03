@@ -1,0 +1,5 @@
+---
+// Rewrite to a .md route — no module to import, so both hosts have to take
+// their markdown path rather than blowing up on `await import()`.
+return Astro.rewrite("/note");
+---

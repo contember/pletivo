@@ -33,6 +33,8 @@ setDefaultTimeout(30_000);
  *    from JS when those CSS files live under src/.
  *  - `#9` CSS side-effect imports from non-.astro page modules (.tsx/.ts)
  *    must land in the bundle without duplicating src CSS.
+ *  - `#10` An `Astro.rewrite` target is resolved from a runtime string, so
+ *    it must be recorded as a runtime dep or the rewriting page goes stale.
  */
 
 const repoRoot = path.resolve(import.meta.dir, "../..");
@@ -437,5 +439,33 @@ describe("incremental detection #9 — non-.astro page CSS side effects", () => 
 		expect(second.status).toBe(0);
 		const secondIndex = await readCssBundleFor("index.html");
 		expect(secondIndex.href).toBe(firstIndex.href);
+	});
+});
+
+
+describe("incremental detection #10 — Astro.rewrite targets", () => {
+	it("editing the rewrite target invalidates the rewriting page", async () => {
+		// The target is resolved from a runtime string, so it appears in
+		// neither the static import graph nor any wrapped API — only the
+		// explicit recordRuntimeDep in resolveRewrite makes this work.
+		await write("src/pages/target.astro", `<p id="v">v1</p>`);
+		await write("src/pages/aliased.astro", `---\nreturn Astro.rewrite("/target");\n---\n`);
+
+		expect(runBuild().status).toBe(0);
+		const before = await fs.readFile(
+			path.join(projectRoot, "dist", "aliased", "index.html"),
+			"utf8",
+		);
+		expect(before).toContain("v1");
+
+		// Only the target changed; the rewriting page's own source is untouched.
+		await write("src/pages/target.astro", `<p id="v">v2</p>`);
+
+		expect(runBuild().status).toBe(0);
+		const after = await fs.readFile(
+			path.join(projectRoot, "dist", "aliased", "index.html"),
+			"utf8",
+		);
+		expect(after).toContain("v2");
 	});
 });
