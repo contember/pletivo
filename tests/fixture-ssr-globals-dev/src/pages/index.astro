@@ -1,0 +1,16 @@
+---
+// `Astro.clientAddress` resolves in dev (a real request exists) and throws in
+// a build, matching Astro. This fixture is therefore dev-only: `pletivo build`
+// against it is expected to fail, which is itself a test.
+const ip = Astro.clientAddress;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Client Address</title>
+  </head>
+  <body>
+    <p id="ip">{ip}</p>
+  </body>
+</html>

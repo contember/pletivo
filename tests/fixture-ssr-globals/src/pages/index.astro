@@ -8,7 +8,6 @@ export const prerender = false;
 Astro.response.headers.set("cache-control", "s-maxage=60");
 Astro.cookies.set("visited", "1", { path: "/" });
 const seen = Astro.cookies.get("seen")?.value ?? "none";
-const ip = Astro.clientAddress ?? "none";
 ---
 
 <!doctype html>
@@ -19,6 +18,5 @@ const ip = Astro.clientAddress ?? "none";
   <body>
     <h1>Home Page</h1>
     <p id="seen">{seen}</p>
-    <p id="ip">{ip}</p>
   </body>
 </html>

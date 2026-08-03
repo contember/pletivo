@@ -5,7 +5,7 @@ import { scanRoutes, matchRoute, type Route, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
 import { getContentBaseDirs, initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
-import { runWithRenderTracking, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse } from "./runtime/astro-shim";
+import { runWithRenderTracking, AstroCookies, type AstroResponse } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
@@ -245,8 +245,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
   type RenderOutcome =
     | { ok: true; html: string; response?: AstroResponse; cookies?: AstroCookies }
-    // The page returned a Response itself (`Astro.redirect` / `Astro.rewrite`)
-    // — pass it through.
+    // The page returned a Response itself (`Astro.redirect`) — pass it through.
     | { ok: true; raw: Response }
     | { ok: false; error: unknown };
 
@@ -260,58 +259,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     return server?.requestIP(request)?.address;
   }
 
-  /**
-   * State carried into a rewritten render. `response` and `cookies` are the
-   * *rewriting* page's — Astro shares one response across a rewrite, so a
-   * cookie set before `return Astro.rewrite(...)` must still reach the
-   * browser. `depth` guards against cycles.
-   */
-  interface RewriteContext {
-    depth: number;
-    response: AstroResponse;
-    cookies: AstroCookies;
-  }
-
-  /**
-   * Backs `Astro.rewrite` in dev: re-runs routing for `target` and serves that
-   * route's response at the current URL.
-   */
-  async function resolveRewrite(
-    target: string,
-    req: Request,
-    context: RewriteContext,
-  ): Promise<Response | null> {
-    if (context.depth > MAX_REWRITE_DEPTH) {
-      throw new Error(
-        `Astro.rewrite("${target}") exceeded ${MAX_REWRITE_DEPTH} hops — cycle?`,
-      );
-    }
-    const rawPath = (target.split("?")[0] || "/").replace(/^\/+/, "/");
-    const routePath = rawPath === "/" ? "/" : rawPath.replace(/\/$/, "");
-    for (const route of routes) {
-      const params = matchRoute(route, routePath);
-      if (params === null) continue;
-      const response = await resolveRoute(
-        route,
-        params as Record<string, string>,
-        routePath,
-        req,
-        undefined,
-        context,
-      );
-      if (response !== null) return response;
-    }
-    return null;
-  }
-
   async function renderPage(
     route: Route,
     params: Record<string, string>,
     pathname: string = "/",
     request?: Request,
     localeOverride?: string,
-    /** Set when this render is the target of an `Astro.rewrite`. */
-    rewrittenFrom?: RewriteContext,
   ): Promise<RenderOutcome | null> {
     const fullPath = path.join(pagesDir, route.file);
 
@@ -369,15 +322,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         preferredLocaleList = parsed.preferredLocaleList;
       }
       // Backs `Astro.response` / `Astro.cookies` for this render; whatever
-      // the page writes is merged into the dev server's Response below. A
-      // rewritten render inherits the rewriting page's pair, so writes made
-      // before `return Astro.rewrite(...)` survive.
-      const astroResponse: AstroResponse = rewrittenFrom?.response ?? {
+      // the page writes is merged into the dev server's Response below.
+      const astroResponse: AstroResponse = {
         status: 200,
         statusText: "OK",
         headers: new Headers(),
       };
-      const astroCookies = rewrittenFrom?.cookies ?? new AstroCookies(request);
+      const astroCookies = new AstroCookies(request);
       const pageContext = {
         url: new URL(pathname || "/", origin),
         site: siteUrl,
@@ -388,14 +339,6 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         preferredLocaleList,
         response: astroResponse,
         cookies: astroCookies,
-        rewrite: request
-          ? (target: string) =>
-              resolveRewrite(target, request, {
-                depth: (rewrittenFrom?.depth ?? 0) + 1,
-                response: astroResponse,
-                cookies: astroCookies,
-              })
-          : undefined,
         clientAddress: request ? clientAddressOf(request) : undefined,
       };
 
@@ -632,14 +575,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     pathname: string,
     req: Request,
     localeOverride?: string,
-    rewrittenFrom?: RewriteContext,
   ): Promise<Response | null> {
     // Endpoint routes bypass the HTML render pipeline entirely — their GET()
     // owns the status and Content-Type, and the body must not be touched.
     if (route.isEndpoint) {
       return await serveEndpoint(route, params, pathname, req);
     }
-    const outcome = await renderPage(route, params, pathname, req, localeOverride, rewrittenFrom);
+    const outcome = await renderPage(route, params, pathname, req, localeOverride);
     if (outcome === null) return null;
     const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
     if (outcome.ok) {
@@ -706,10 +648,6 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       preferredLocaleList: [] as string[],
       response,
       cookies,
-      rewrite: req
-        ? (target: string) =>
-            resolveRewrite(target, req, { depth: 1, response, cookies })
-        : undefined,
       clientAddress: req ? clientAddressOf(req) : undefined,
     };
     // Explicit config override first; fall back to the pages/404.* convention.

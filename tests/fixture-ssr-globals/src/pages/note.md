@@ -1,5 +1,0 @@
----
-title: Note
----
-
-# Markdown Target

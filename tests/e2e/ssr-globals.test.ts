@@ -3,10 +3,11 @@ import fs from "fs/promises";
 import path from "path";
 
 // End-to-end cover for the SSR-shaped Astro globals — `Astro.response`,
-// `Astro.cookies`, `Astro.redirect`. These have no meaning in a static build,
-// but pages written for SSR use them constantly, so they must render rather
-// than throw. In dev the values are served for real; a build folds a redirect
-// into a meta-refresh page and drops headers/cookies (a file has neither).
+// `Astro.locals`, `Astro.cookies`, `Astro.redirect`, `Astro.clientAddress`.
+// These have no meaning in a static build, but pages written for SSR use them
+// constantly, so they must render rather than throw. In dev the values are
+// served for real; a build folds a redirect into a meta-refresh page, drops
+// headers/cookies (a file has neither), and warns that it did.
 const fixtureRoot = path.join(import.meta.dir, "../fixture-ssr-globals");
 const cliPath = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 const PORT = 5678 + Math.floor(Math.random() * 1000);
@@ -63,52 +64,12 @@ describe("dev server - SSR-shaped Astro globals", () => {
     expect(res.headers.get("set-cookie")).toContain("redirected=1");
   });
 
-  test("Astro.clientAddress is the requesting IP", async () => {
-    const html = await (await fetch(BASE + "/")).text();
-    const ip = html.match(/<p id="ip">([^<]*)<\/p>/)?.[1];
-    expect(ip).toBeTruthy();
-    expect(ip).not.toBe("none");
-  });
-
-  test("Astro.clientAddress honours x-forwarded-for", async () => {
-    const res = await fetch(BASE + "/", {
-      headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" },
-    });
-    expect(await res.text()).toContain('<p id="ip">203.0.113.7</p>');
-  });
-
-  test("a returned Astro.rewrite serves the target's content at this URL", async () => {
-    const res = await fetch(BASE + "/rewritten");
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("<h1>Rewrite Target</h1>");
-    // Routing re-ran for the target, so the rendered route sees its own path.
-    expect(html).toContain('<p id="pathname">/target</p>');
-  });
-
-  test("writes made before a rewrite survive it", async () => {
-    const res = await fetch(BASE + "/rewrite-cookie");
-    expect(await res.text()).toContain("<h1>Rewrite Target</h1>");
-    // Astro shares one response across a rewrite — the rewriting page's
-    // cookie and header must not be dropped with its discarded render.
-    expect(res.headers.get("set-cookie")).toContain("before-rewrite=1");
-    expect(res.headers.get("x-before-rewrite")).toBe("1");
-  });
-
-  test("a rewrite to a .md route renders the markdown", async () => {
-    const res = await fetch(BASE + "/from-md");
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain(">Markdown Target</h1>");
-  });
-
   test("a custom 404 gets the SSR globals too", async () => {
     const res = await fetch(BASE + "/no-such-page");
     expect(res.status).toBe(404);
-    const html = await res.text();
-    expect(html).toContain("<h1>Custom 404</h1>");
+    expect(await res.text()).toContain("<h1>Custom 404</h1>");
     expect(res.headers.get("x-from-404")).toBe("1");
     expect(res.headers.get("set-cookie")).toContain("seen-404=1");
-    expect(html).not.toContain('<p id="ip">none</p>');
   });
 
   test("the dev server survives all of the above", async () => {
@@ -119,13 +80,17 @@ describe("dev server - SSR-shaped Astro globals", () => {
 });
 
 describe("build - SSR-shaped Astro globals", () => {
-  test("pages using them build, and a redirect becomes a meta-refresh page", async () => {
+  test("pages using them build, a redirect becomes meta-refresh, and dropped writes are reported", async () => {
     const proc = Bun.spawn(["bun", "run", cliPath, "build"], {
       cwd: fixtureRoot,
       stdout: "pipe",
       stderr: "pipe",
     });
-    const exitCode = await proc.exited;
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
     expect(exitCode).toBe(0);
 
     const distDir = path.join(fixtureRoot, "dist");
@@ -134,44 +99,37 @@ describe("build - SSR-shaped Astro globals", () => {
     // No request during a build, so the cookie read falls back.
     expect(index).toContain(">none<");
 
-    // No request during a build, so `Astro.clientAddress` falls back too.
-    expect(index).toContain('<p id="ip">none</p>');
-
     const redirected = await fs.readFile(path.join(distDir, "old/index.html"), "utf-8");
     expect(redirected).toContain('<meta http-equiv="refresh" content="0;url=/">');
     expect(redirected).toContain('<meta name="robots" content="noindex">');
 
-    // A rewrite writes the target's HTML at the rewriting route's path.
-    const rewritten = await fs.readFile(
-      path.join(distDir, "rewritten/index.html"),
-      "utf-8",
-    );
-    expect(rewritten).toContain("<h1>Rewrite Target</h1>");
-    expect(rewritten).toContain('<p id="pathname">/target</p>');
-
-    // A .md target has no module to import — the markdown path has to run.
-    const fromMd = await fs.readFile(path.join(distDir, "from-md/index.html"), "utf-8");
-    expect(fromMd).toContain(">Markdown Target</h1>");
+    // The whole point of the warning: a page whose cache headers silently
+    // never ship should say so at build time.
+    const out = stdout + stderr;
+    expect(out).toContain("index.astro");
+    expect(out).toContain("prerender = false");
+    expect(out).toContain("cache-control");
+    expect(out).toContain("Astro.cookies");
   });
 });
 
-// A bad rewrite must fail loudly. Own fixture + dev server: a cycle or an
-// unmatched target would otherwise hang the build used above.
-describe("dev server - bad Astro.rewrite targets", () => {
-  const loopRoot = path.join(import.meta.dir, "../fixture-ssr-globals-loop");
-  const loopPort = PORT + 1;
-  const loopBase = `http://localhost:${loopPort}`;
-  let loopProcess: ReturnType<typeof Bun.spawn>;
+// `Astro.clientAddress` resolves only in dev, and throws in a build the way
+// Astro does — so its fixture is dev-only and its build is expected to fail.
+describe("Astro.clientAddress", () => {
+  const devRoot = path.join(import.meta.dir, "../fixture-ssr-globals-dev");
+  const devPort = PORT + 1;
+  const devBase = `http://localhost:${devPort}`;
+  let devProcess: ReturnType<typeof Bun.spawn>;
 
   beforeAll(async () => {
-    loopProcess = Bun.spawn(["bun", "run", cliPath, "dev", String(loopPort)], {
-      cwd: loopRoot,
+    devProcess = Bun.spawn(["bun", "run", cliPath, "dev", String(devPort)], {
+      cwd: devRoot,
       stdout: "pipe",
       stderr: "pipe",
     });
     for (let i = 0; i < 50; i++) {
       try {
-        await fetch(loopBase);
+        await fetch(devBase);
         return;
       } catch {
         await new Promise((r) => setTimeout(r, 100));
@@ -180,15 +138,36 @@ describe("dev server - bad Astro.rewrite targets", () => {
     throw new Error("Dev server did not start in time");
   });
 
-  afterAll(() => loopProcess.kill());
-
-  test("a rewrite cycle stops at the hop limit instead of hanging", async () => {
-    const html = await (await fetch(loopBase + "/loop")).text();
-    expect(html).toContain("hops");
+  afterAll(async () => {
+    devProcess.kill();
+    await fs.rm(path.join(devRoot, "dist"), { recursive: true, force: true });
   });
 
-  test("a rewrite to an unmatched route errors", async () => {
-    const html = await (await fetch(loopBase + "/missing")).text();
-    expect(html).toContain("matched no route");
+  test("resolves to the requesting IP in dev", async () => {
+    const html = await (await fetch(devBase + "/")).text();
+    const ip = html.match(/<p id="ip">([^<]*)<\/p>/)?.[1];
+    expect(ip).toBeTruthy();
+  });
+
+  test("honours x-forwarded-for", async () => {
+    const res = await fetch(devBase + "/", {
+      headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" },
+    });
+    expect(await res.text()).toContain('<p id="ip">203.0.113.7</p>');
+  });
+
+  test("reading it in a build fails, as it does in Astro", async () => {
+    const proc = Bun.spawn(["bun", "run", cliPath, "build"], {
+      cwd: devRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stdout + stderr).toContain("`Astro.clientAddress` is not available in a static build");
   });
 });
