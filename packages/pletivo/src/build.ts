@@ -27,7 +27,7 @@ import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, 
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
-import { configureDepTracker, runWithRuntimeDepCapture } from "./incremental/dep-tracker";
+import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
 import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "./incremental/extract-deps";
 import { phase, timeSync, timeAsync, flushProfile } from "./profile";
@@ -262,7 +262,18 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     for (const route of routes) {
       const params = matchRoute(route, routePath);
       if (params === null) continue;
-      const mod = await import(path.join(pagesDir, route.file));
+      const fullPath = path.join(pagesDir, route.file);
+      // The target is resolved by runtime string, so neither the static
+      // import graph nor any wrapped API sees it. Without this the
+      // incremental cache would serve stale HTML for the rewriting page
+      // after the target's source changed.
+      recordRuntimeDep(fullPath);
+      // Markdown pages have no module to import — same special case the
+      // main render loop makes.
+      if (route.file.endsWith(".md")) {
+        return htmlResponse(await renderMarkdownFile(fullPath));
+      }
+      const mod = await import(fullPath);
       if (typeof mod.default !== "function") continue;
       // A dynamic target still needs its getStaticPaths props, or the
       // rewritten page renders with params but no data.
@@ -287,9 +298,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
         ),
       });
       if (html === null) continue;
-      return new Response(html, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
+      return htmlResponse(html);
     }
     return null;
   }
@@ -490,13 +499,11 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
           cache,
           fragments,
           distFiles,
-          doRender: async () => {
-            const source = await Bun.file(fullPath).text();
-            const { html: body, frontmatter } = await parseMarkdown(source);
-            const title = (frontmatter.title as string) || "";
-            const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
-            return { html, renderedModules: new Set<string>(), tsxStyles: [] };
-          },
+          doRender: async () => ({
+            html: await renderMarkdownFile(fullPath),
+            renderedModules: new Set<string>(),
+            tsxStyles: [],
+          }),
         });
         return { file: route.file, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
       }
@@ -1279,6 +1286,21 @@ export async function renderEndpoint(
     throw new Error("endpoint GET() must return a Response");
   }
   return await response.text();
+}
+
+/** Render a `.md` page — no module to import, so the main render loop and
+ * `Astro.rewrite` both go through here. */
+async function renderMarkdownFile(fullPath: string): Promise<string> {
+  const source = await Bun.file(fullPath).text();
+  const { html: body, frontmatter } = await parseMarkdown(source);
+  const title = (frontmatter.title as string) || "";
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
+}
+
+function htmlResponse(html: string): Response {
+  return new Response(html, {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
 }
 
 async function renderComponent(

@@ -86,6 +86,31 @@ describe("dev server - SSR-shaped Astro globals", () => {
     expect(html).toContain('<p id="pathname">/target</p>');
   });
 
+  test("writes made before a rewrite survive it", async () => {
+    const res = await fetch(BASE + "/rewrite-cookie");
+    expect(await res.text()).toContain("<h1>Rewrite Target</h1>");
+    // Astro shares one response across a rewrite — the rewriting page's
+    // cookie and header must not be dropped with its discarded render.
+    expect(res.headers.get("set-cookie")).toContain("before-rewrite=1");
+    expect(res.headers.get("x-before-rewrite")).toBe("1");
+  });
+
+  test("a rewrite to a .md route renders the markdown", async () => {
+    const res = await fetch(BASE + "/from-md");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(">Markdown Target</h1>");
+  });
+
+  test("a custom 404 gets the SSR globals too", async () => {
+    const res = await fetch(BASE + "/no-such-page");
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("<h1>Custom 404</h1>");
+    expect(res.headers.get("x-from-404")).toBe("1");
+    expect(res.headers.get("set-cookie")).toContain("seen-404=1");
+    expect(html).not.toContain('<p id="ip">none</p>');
+  });
+
   test("the dev server survives all of the above", async () => {
     const res = await fetch(BASE + "/");
     expect(res.status).toBe(200);
@@ -123,6 +148,10 @@ describe("build - SSR-shaped Astro globals", () => {
     );
     expect(rewritten).toContain("<h1>Rewrite Target</h1>");
     expect(rewritten).toContain('<p id="pathname">/target</p>');
+
+    // A .md target has no module to import — the markdown path has to run.
+    const fromMd = await fs.readFile(path.join(distDir, "from-md/index.html"), "utf-8");
+    expect(fromMd).toContain(">Markdown Target</h1>");
   });
 });
 
