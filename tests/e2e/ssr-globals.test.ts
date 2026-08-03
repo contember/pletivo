@@ -171,3 +171,89 @@ describe("Astro.clientAddress", () => {
     expect(stdout + stderr).toContain("`Astro.clientAddress` is not available in a static build");
   });
 });
+
+// `Astro.rewrite` renders another route's content at the current URL.
+describe("Astro.rewrite", () => {
+  test("dev serves the target's content at the rewriting URL", async () => {
+    const res = await fetch(BASE + "/rewritten");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("<h1>Rewrite Target</h1>");
+    // Routing re-ran for the target, so the rendered route sees its own path.
+    expect(html).toContain('<p id="pathname">/target</p>');
+  });
+
+  test("writes made before a rewrite survive it", async () => {
+    const res = await fetch(BASE + "/rewrite-cookie");
+    expect(await res.text()).toContain("<h1>Rewrite Target</h1>");
+    // Astro shares one response across a rewrite — the rewriting page's
+    // cookie and header must not be dropped with its discarded render.
+    expect(res.headers.get("set-cookie")).toContain("before-rewrite=1");
+    expect(res.headers.get("x-before-rewrite")).toBe("1");
+  });
+
+  test("a rewrite to a .md route renders the markdown", async () => {
+    const res = await fetch(BASE + "/from-md");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(">Markdown Target</h1>");
+  });
+
+  test("a build writes the target's HTML at the rewriting route's path", async () => {
+    const proc = Bun.spawn(["bun", "run", cliPath, "build"], {
+      cwd: fixtureRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await proc.exited).toBe(0);
+
+    const distDir = path.join(fixtureRoot, "dist");
+    const rewritten = await fs.readFile(
+      path.join(distDir, "rewritten/index.html"),
+      "utf-8",
+    );
+    expect(rewritten).toContain("<h1>Rewrite Target</h1>");
+    expect(rewritten).toContain('<p id="pathname">/target</p>');
+
+    // A .md target has no module to import — the markdown path has to run.
+    const fromMd = await fs.readFile(path.join(distDir, "from-md/index.html"), "utf-8");
+    expect(fromMd).toContain(">Markdown Target</h1>");
+  });
+});
+
+// A bad rewrite must fail loudly. Own fixture + dev server: a cycle or an
+// unmatched target would otherwise hang the build used above.
+describe("bad Astro.rewrite targets", () => {
+  const loopRoot = path.join(import.meta.dir, "../fixture-ssr-globals-loop");
+  const loopPort = PORT + 2;
+  const loopBase = `http://localhost:${loopPort}`;
+  let loopProcess: ReturnType<typeof Bun.spawn>;
+
+  beforeAll(async () => {
+    loopProcess = Bun.spawn(["bun", "run", cliPath, "dev", String(loopPort)], {
+      cwd: loopRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    for (let i = 0; i < 50; i++) {
+      try {
+        await fetch(loopBase);
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    throw new Error("Dev server did not start in time");
+  });
+
+  afterAll(() => loopProcess.kill());
+
+  test("a rewrite cycle stops at the hop limit instead of hanging", async () => {
+    const html = await (await fetch(loopBase + "/loop")).text();
+    expect(html).toContain("hops");
+  });
+
+  test("a rewrite to an unmatched route errors", async () => {
+    const html = await (await fetch(loopBase + "/missing")).text();
+    expect(html).toContain("matched no route");
+  });
+});

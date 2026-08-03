@@ -12,7 +12,7 @@ import { createHtml } from "../../packages/pletivo/src/runtime/html-string";
 
 /**
  * Astro's SSR-shaped globals — `response`, `locals`, `cookies`, `redirect`,
- * `clientAddress` — exist so pages written for SSR (typically
+ * `rewrite`, `clientAddress` — exist so pages written for SSR (typically
  * `export const prerender = false` with `Astro.response.headers.set(...)` for
  * edge caching) render under pletivo instead of throwing. They are honoured
  * for real in dev; a static build discards what a file can't carry.
@@ -262,5 +262,76 @@ describe("Astro.clientAddress", () => {
   test("is a getter — a page that never reads it still renders", async () => {
     const page = createComponent(() => createHtml("ok"), "page");
     expect(await renderAstroPage(page, {}, {})).toBe("ok");
+  });
+});
+
+describe("Astro.rewrite", () => {
+  test("delegates to the host resolver with the target path", async () => {
+    const seen: string[] = [];
+    const page = createComponent(async (result, props, slots) => {
+      await result.createAstro(props, slots).rewrite("/target?a=1");
+      return createHtml("");
+    }, "page");
+
+    await renderAstroPage(page, {}, {
+      rewrite: async (target) => {
+        seen.push(target);
+        return new Response("ok");
+      },
+    });
+    expect(seen).toEqual(["/target?a=1"]);
+  });
+
+  test("accepts a URL or a Request, passing path + query", async () => {
+    const seen: string[] = [];
+    const hook = async (target: string) => {
+      seen.push(target);
+      return new Response("ok");
+    };
+    const page = createComponent(async (result, props, slots) => {
+      const Astro = result.createAstro(props, slots);
+      await Astro.rewrite(new URL("http://x/from-url?a=1"));
+      await Astro.rewrite(new Request("http://x/from-request"));
+      return createHtml("");
+    }, "page");
+
+    await renderAstroPage(page, {}, { rewrite: hook });
+    expect(seen).toEqual(["/from-url?a=1", "/from-request"]);
+  });
+
+  test("the resolver's Response is what the page returns", async () => {
+    const page = createComponent(async (result, props, slots) => {
+      return (await result.createAstro(props, slots).rewrite("/target")) as never;
+    }, "page");
+
+    const html = await renderAstroPage(page, {}, {
+      rewrite: async () =>
+        new Response("<h1>Target</h1>", {
+          headers: { "content-type": "text/html" },
+        }),
+    });
+    expect(html).toBe("<h1>Target</h1>");
+  });
+
+  test("throws when the target matches no route", async () => {
+    const page = createComponent(async (result, props, slots) => {
+      await result.createAstro(props, slots).rewrite("/nope");
+      return createHtml("");
+    }, "page");
+
+    await expect(
+      renderAstroPage(page, {}, { rewrite: async () => null }),
+    ).rejects.toThrow('Astro.rewrite("/nope") matched no route');
+  });
+
+  test("throws when no resolver was provided", async () => {
+    const page = createComponent(async (result, props, slots) => {
+      await result.createAstro(props, slots).rewrite("/nope");
+      return createHtml("");
+    }, "page");
+
+    await expect(renderAstroPage(page, {}, {})).rejects.toThrow(
+      "no route resolver was provided",
+    );
   });
 });

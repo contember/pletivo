@@ -94,6 +94,13 @@ export interface AstroGlobal {
    */
   redirect(path: string, status?: number): Response;
   /**
+   * Renders another route's content at the current URL. Resolved by the host
+   * (dev server / build), which re-runs routing for the target path. Must be
+   * `return`ed from the frontmatter. Throws if the target matches no route,
+   * or if the render context has no host to resolve against.
+   */
+  rewrite(payload: RewritePayload): Promise<Response>;
+  /**
    * Requesting IP. Real in dev; reading it in a prerendered page throws, as
    * it does in Astro — a static file is served to everyone, so there is no
    * honest value to hand back.
@@ -101,6 +108,14 @@ export interface AstroGlobal {
   readonly clientAddress: string;
   [key: string]: unknown;
 }
+
+export type RewritePayload = string | URL | Request;
+
+/** Resolves a rewrite target to a Response. Supplied by dev.ts / build.ts. */
+export type RewriteHandler = (pathname: string) => Promise<Response | null>;
+
+/** Hop limit before a chain of rewrites is treated as a cycle. */
+export const MAX_REWRITE_DEPTH = 5;
 
 export interface AstroResponse {
   status: number;
@@ -111,6 +126,16 @@ export interface AstroResponse {
 interface SlotsAccessor {
   has(name: string): boolean;
   render(name: string, args?: unknown[]): Promise<string>;
+}
+
+/**
+ * Normalize an `Astro.rewrite` payload to a path. Astro accepts a string, a
+ * URL, or a Request; only the path (plus query) is meaningful to routing.
+ */
+function rewriteTarget(payload: RewritePayload): string {
+  if (typeof payload === "string") return payload;
+  const url = payload instanceof URL ? payload : new URL(payload.url);
+  return url.pathname + url.search;
 }
 
 // ── Cookies ─────────────────────────────────────────────────────────
@@ -282,6 +307,11 @@ export interface PageContext {
    */
   cookies?: AstroCookies;
   /**
+   * Host resolver backing `Astro.rewrite`. Omitted (container renders, unit
+   * tests), calling `Astro.rewrite` throws rather than silently no-opping.
+   */
+  rewrite?: RewriteHandler;
+  /**
    * Seed for `Astro.clientAddress`. Dev only — a build has no request, and
    * reading it there throws instead.
    */
@@ -320,6 +350,20 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
     for (const cookie of cookies.headers()) headers.append("set-cookie", cookie);
     headers.set("location", path);
     return new Response(null, { status, headers });
+  };
+  const rewrite = async (payload: RewritePayload): Promise<Response> => {
+    const target = rewriteTarget(payload);
+    if (!normalizedPageContext.rewrite) {
+      throw new Error(
+        `Astro.rewrite("${target}") is unavailable in this render context — ` +
+          `no route resolver was provided.`,
+      );
+    }
+    const out = await normalizedPageContext.rewrite(target);
+    if (!out) {
+      throw new Error(`Astro.rewrite("${target}") matched no route.`);
+    }
+    return out;
   };
   return {
     pageContext: normalizedPageContext,
@@ -375,6 +419,7 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
         locals,
         cookies,
         redirect,
+        rewrite,
         // Astro errors when a prerendered page reads this, and pletivo
         // prerenders everything — so it only resolves in dev, where a real
         // request exists. A getter, so merely rendering a page that never
@@ -841,7 +886,11 @@ export async function renderAstroPage(
 ): Promise<string> {
   const result = makeResult(pageContext);
   const out = (await Component(result, props, {})) as unknown;
-  if (out instanceof Response) return redirectPageHtml(out);
+  // The page returned a Response: a redirect folds into a meta-refresh page,
+  // a rewrite's HTML body is the page's content (same rules as build.ts).
+  if (out instanceof Response) {
+    return out.headers.get("location") ? redirectPageHtml(out) : await out.text();
+  }
   return (out as HtmlString).__html;
 }
 

@@ -1,0 +1,7 @@
+---
+// A cookie written before the rewrite must still reach the browser — Astro
+// shares one response across a rewrite.
+Astro.cookies.set("before-rewrite", "1", { path: "/" });
+Astro.response.headers.set("x-before-rewrite", "1");
+return Astro.rewrite("/target");
+---
