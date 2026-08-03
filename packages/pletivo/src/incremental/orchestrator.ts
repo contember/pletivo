@@ -54,6 +54,12 @@ export interface RenderProducts {
 	html: string;
 	renderedModules: Set<string>;
 	tsxStyles: string[];
+	/**
+	 * Page module whose CSS this output links, when it is not the page's
+	 * own entry: a page that `Astro.rewrite`s emits the target's HTML, so
+	 * it needs the target's CSS groups.
+	 */
+	cssEntry?: string;
 }
 
 export interface RenderRequest {
@@ -115,6 +121,12 @@ export interface RenderOutcome {
 	islands: string[];
 	hoistedHashes: string[];
 	/**
+	 * Page module whose CSS this output links, when it is not the page's
+	 * own entry: a page that `Astro.rewrite`s emits the target's HTML, so
+	 * it needs the target's CSS groups.
+	 */
+	cssEntry?: string;
+	/**
 	 * Byte size of the output file. Cached path returns the persisted
 	 * value (no stat); rendered path returns the freshly-emitted size
 	 * once `writeHtml` runs (populated downstream — the orchestrator
@@ -147,6 +159,7 @@ export async function runIncrementalRender(req: RenderRequest): Promise<RenderOu
 				tsxStyles: cached.tsxStyles,
 				islands: cached.islands ?? [],
 				hoistedHashes: cached.hoistedHashes ?? [],
+				cssEntry: cached.cssEntry,
 				size: cached.size ?? 0,
 			};
 		}
@@ -212,6 +225,7 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			fragments: fragmentsList,
 			islands,
 			hoistedHashes,
+			cssEntry: value.cssEntry,
 			// Populated downstream after writeHtml — we don't know the
 			// final byte length yet (CSS/script injection happens there).
 			size: 0,
@@ -230,6 +244,7 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 		tsxStyles: value.tsxStyles,
 		islands,
 		hoistedHashes,
+		cssEntry: value.cssEntry,
 		size: 0,
 	};
 }

@@ -1,11 +1,11 @@
 import path from "path";
 import fs from "fs/promises";
 import { scanRoutes } from "./router";
-import { routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { matchRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
 import { initCollections, getValidationFailures, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry } from "@pletivo/runtime/island";
-import { runWithRenderTracking, redirectPageHtml, AstroCookies, type AstroResponse } from "@pletivo/runtime/astro-shim";
+import { runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
 import { bundleCss, cssHrefsForPage, type CssBundle } from "./css";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
@@ -29,7 +29,7 @@ import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-a
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
-import { configureDepTracker, runWithRuntimeDepCapture } from "./incremental/dep-tracker";
+import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
 import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
@@ -275,11 +275,81 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   clearTransforms();
   clearUrlAssets();
 
+  /**
+   * Which page module produced a render's HTML when the page rewrote, keyed
+   * by the render's page context. The output takes that module's CSS: its
+   * HTML is the target's, and a page links only the CSS groups its own
+   * entry reaches, so linking the rewriting page's groups would drop the
+   * target's stylesheets.
+   */
+  const rewriteEntries = new WeakMap<object, string>();
+  /** The module whose CSS a render's output should link. */
+  function cssEntryOf(ctx: ReturnType<typeof makePageContext>, ownEntry: string): string {
+    return rewriteEntries.get(ctx.__pageContext) ?? ownEntry;
+  }
+
+  /**
+   * Backs `Astro.rewrite` during a build: re-runs routing for `target` and
+   * renders that route's component, so its HTML gets written at the
+   * rewriting route's path. `depth` guards against rewrite cycles.
+   */
+  async function resolveRewrite(
+    target: string,
+    depth: number,
+    from: object,
+  ): Promise<Response | null> {
+    if (depth > MAX_REWRITE_DEPTH) {
+      throw new Error(
+        `Astro.rewrite("${target}") exceeded ${MAX_REWRITE_DEPTH} hops (a cycle?)`,
+      );
+    }
+    const rawPath = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    const routePath = rawPath === "/" ? "/" : rawPath.replace(/\/$/, "");
+    for (const route of routes) {
+      const params = matchRoute(route, routePath);
+      if (params === null) continue;
+      const fullPath = path.join(pagesDir, route.file);
+      // The target is resolved by runtime string, so neither the static
+      // import graph nor any wrapped API sees it. Without this the
+      // incremental cache would serve stale HTML for the rewriting page
+      // after the target's source changed.
+      recordRuntimeDep(fullPath);
+      // Markdown pages have no module to import: same special case the
+      // main render loop makes.
+      if (route.file.endsWith(".md")) {
+        rewriteEntries.set(from, fullPath);
+        return htmlResponse(await renderMarkdownFile(fullPath));
+      }
+      const mod = await import(fullPath);
+      if (typeof mod.default !== "function") continue;
+      // A dynamic target still needs its getStaticPaths props, or the
+      // rewritten page renders with params but no data. Goes through the
+      // build's memo, so the target's getStaticPaths runs once per build.
+      let props: Record<string, unknown> = {};
+      if (route.isDynamic) {
+        const key = paramsToKey(params);
+        const match = (await getDynamicStaticPaths(route.file, route)).find(
+          (sp) => paramsToKey(sp.params) === key,
+        );
+        if (!match) continue;
+        props = match.props || {};
+      }
+      const ctx = makePageContext(routePath, params, route, undefined, depth + 1);
+      const html = await renderComponent(mod.default, { ...props, ...ctx });
+      if (html === null) continue;
+      // A chain of rewrites ends at the innermost page.
+      rewriteEntries.set(from, cssEntryOf(ctx, fullPath));
+      return htmlResponse(html);
+    }
+    return null;
+  }
+
   function makePageContext(
     pathname: string,
     params: RouteParams,
     route: Route,
     localeOverride?: string,
+    rewriteDepth = 0,
   ) {
     // Astro expects `Astro.url` to be a real URL with pathname + origin.
     // Use the configured site origin if present, else a localhost stand-in.
@@ -294,25 +364,26 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     const currentLocale =
       localeOverride ??
       (i18n ? detectRouteLocale(route, i18n).locale?.code : undefined);
-    return {
-      __pageContext: {
-        url: new URL(urlPath, origin),
-        site: siteUrl,
-        params,
-        currentLocale,
-        preferredLocale: undefined as string | undefined,
-        preferredLocaleList: [] as string[],
-        // Owned here rather than left to the shim's default so the caller can
-        // read back what the page wrote and warn that it goes nowhere.
-        response: {
-          status: 200,
-          statusText: "OK",
-          headers: new Headers(),
-        } as AstroResponse,
-        cookies: new AstroCookies(),
-        // No request during a build, so `Astro.clientAddress` throws if read.
-      },
+    const pageContext = {
+      url: new URL(urlPath, origin),
+      site: siteUrl,
+      params,
+      currentLocale,
+      preferredLocale: undefined as string | undefined,
+      preferredLocaleList: [] as string[],
+      // Owned here rather than left to the shim's default so the caller can
+      // read back what the page wrote and warn that it goes nowhere.
+      response: {
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+      } as AstroResponse,
+      cookies: new AstroCookies(),
+      rewrite: (target: string): Promise<Response | null> =>
+        resolveRewrite(target, rewriteDepth, pageContext),
+      // No request during a build, so `Astro.clientAddress` throws if read.
     };
+    return { __pageContext: pageContext };
   }
 
   /**
@@ -570,14 +641,15 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
             renderComponent(mod.default, ctx),
           );
           warnDroppedSsrWrites(route.file, ctx, mod);
-          return { html: html ?? "", renderedModules, tsxStyles };
+          return { html: html ?? "", renderedModules, tsxStyles, cssEntry: rewriteEntries.get(ctx.__pageContext) };
         },
       });
       if (outcome.source === "rendered" && outcome.html === "") {
         console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         return null;
       }
-      return { file: route.file, entryFile: fullPath, label: route.file, pageEntry: fullPath, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
+      const cssEntry = outcome.cssEntry ?? fullPath;
+      return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
     }),
   );
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
@@ -674,13 +746,14 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
           // Keyed by route file, not by slug — one warning per route is the
           // signal; repeating it per slug is noise.
           warnDroppedSsrWrites(route.file, ctx, mod as Record<string, unknown>);
-          return { html: html ?? "", renderedModules, tsxStyles };
+          return { html: html ?? "", renderedModules, tsxStyles, cssEntry: rewriteEntries.get(ctx.__pageContext) };
         },
       });
       if (outcome.source === "rendered" && outcome.html === "") continue;
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
-      results.push({ file: route.file, entryFile: fullPath, label, pageEntry: fullPath, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size });
+      const cssEntry = outcome.cssEntry ?? fullPath;
+      results.push({ file: route.file, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size });
     }
   }
   phase("dynamic routes", tDynamic);
@@ -750,9 +823,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       if (html === null) continue;
       results.push({
         file: emission.sourceRoute.file,
-        entryFile: srcFullPath,
+        entryFile: cssEntryOf(ctx, srcFullPath),
         label,
-        pageEntry: srcFullPath,
+        pageEntry: cssEntryOf(ctx, srcFullPath),
         outPath,
         html,
         renderedModules,
@@ -789,15 +862,16 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         } else if (typeof mod.default === "function") {
           // Page component — render as HTML
           resetIslandRegistry();
+          const ctx = makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0, isEndpoint: false });
           const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-            renderComponent(mod.default, makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0, isEndpoint: false })),
+            renderComponent(mod.default, ctx),
           );
           if (html !== null) {
             results.push({
               file: injected.entrypoint,
-              entryFile: entrypoint,
+              entryFile: cssEntryOf(ctx, entrypoint),
               label: `[injected] ${injected.pattern}`,
-              pageEntry: entrypoint,
+              pageEntry: cssEntryOf(ctx, entrypoint),
               outPath,
               html,
               renderedModules,
@@ -814,18 +888,17 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // Render custom 404 page — pass a synthetic page context so .astro
   // 404 templates that dereference Astro.url (e.g. to highlight the
   // active nav item in a shared layout) don't blow up.
-  const result404 = await render404Page(
-    pagesDir,
-    makePageContext("/404", {}, {
-      file: "404.astro",
-      segments: [],
-      isDynamic: false,
-      priority: 0,
-      isEndpoint: false,
-    }),
-  );
+  const ctx404 = makePageContext("/404", {}, {
+    file: "404.astro",
+    segments: [],
+    isDynamic: false,
+    priority: 0,
+    isEndpoint: false,
+  });
+  const result404 = await render404Page(pagesDir, ctx404);
   if (result404) {
-    results.push({ file: result404.file, entryFile: path.join(pagesDir, result404.file), label: result404.file, pageEntry: result404.entry, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles });
+    const cssEntry404 = cssEntryOf(ctx404, result404.entry);
+    results.push({ file: result404.file, entryFile: cssEntry404, label: result404.file, pageEntry: cssEntry404, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles });
   }
 
   // Deduplicate by output path — later entries win. The main use case
@@ -1326,8 +1399,14 @@ export async function renderEndpoint(
   return await response.text();
 }
 
-/** Render a `.md` page — no module to import, so this stands in for the
- * component render the other page kinds get. */
+function htmlResponse(html: string): Response {
+  return new Response(html, {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+/** Render a `.md` page. It has no module to import, so the main render loop and
+ * `Astro.rewrite` both go through here. */
 async function renderMarkdownFile(fullPath: string): Promise<string> {
   const source = await Bun.file(fullPath).text();
   const { html: body, frontmatter } = await parseMarkdown(source);
@@ -1343,13 +1422,17 @@ async function renderComponent(
   if (result instanceof Promise) result = await result;
 
   if (typeof result === "string") return result;
-  // `return Astro.redirect(...)` — a static file can't send a 3xx, so emit
-  // the meta-refresh page Astro's static output produces. Any other Response
-  // has no static equivalent.
   if (result instanceof Response) {
+    // `return Astro.redirect(...)` — a static file can't send a 3xx, so emit
+    // the meta-refresh page Astro's static output produces.
     if (result.headers.get("location")) return redirectPageHtml(result);
+    // `return Astro.rewrite(...)`: the rewritten route's HTML, written at
+    // this route's path.
+    if ((result.headers.get("content-type") ?? "").includes("html")) {
+      return await result.text();
+    }
     console.warn(
-      `  Page returned a ${result.status} Response that is not a redirect — skipping`,
+      `  Page returned a ${result.status} Response that is neither a redirect nor HTML, skipping`,
     );
     return null;
   }
