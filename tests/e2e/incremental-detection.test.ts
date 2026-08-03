@@ -439,3 +439,4 @@ describe("incremental detection #9 — non-.astro page CSS side effects", () => 
 		expect(secondIndex.href).toBe(firstIndex.href);
 	});
 });
+

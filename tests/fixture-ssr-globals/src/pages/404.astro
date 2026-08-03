@@ -1,0 +1,15 @@
+---
+// A custom 404 gets the same SSR globals as any other page.
+Astro.response.headers.set("x-from-404", "1");
+Astro.cookies.set("seen-404", "1", { path: "/" });
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Not Found</title>
+  </head>
+  <body>
+    <h1>Custom 404</h1>
+  </body>
+</html>

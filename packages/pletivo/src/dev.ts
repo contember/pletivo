@@ -5,7 +5,7 @@ import { scanRoutes, matchRoute, type Route, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
 import { getContentBaseDirs, initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
-import { runWithRenderTracking } from "./runtime/astro-shim";
+import { runWithRenderTracking, AstroCookies, type AstroResponse } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
 import { hmrClientScript } from "./runtime/hmr-client";
 import { devCss } from "./css";
@@ -244,8 +244,20 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   }
 
   type RenderOutcome =
-    | { ok: true; html: string }
+    | { ok: true; html: string; response?: AstroResponse; cookies?: AstroCookies }
+    // The page returned a Response itself (`Astro.redirect`) — pass it through.
+    | { ok: true; raw: Response }
     | { ok: false; error: unknown };
+
+  /**
+   * Backs `Astro.clientAddress`. Honours `x-forwarded-for` (dev behind a
+   * proxy such as tudy) and otherwise asks Bun for the socket address.
+   */
+  function clientAddressOf(request: Request): string | undefined {
+    const forwarded = request.headers.get("x-forwarded-for");
+    if (forwarded) return forwarded.split(",")[0]!.trim();
+    return server?.requestIP(request)?.address;
+  }
 
   async function renderPage(
     route: Route,
@@ -309,6 +321,14 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         preferredLocale = parsed.preferredLocale;
         preferredLocaleList = parsed.preferredLocaleList;
       }
+      // Backs `Astro.response` / `Astro.cookies` for this render; whatever
+      // the page writes is merged into the dev server's Response below.
+      const astroResponse: AstroResponse = {
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+      };
+      const astroCookies = new AstroCookies(request);
       const pageContext = {
         url: new URL(pathname || "/", origin),
         site: siteUrl,
@@ -317,6 +337,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         currentLocale,
         preferredLocale,
         preferredLocaleList,
+        response: astroResponse,
+        cookies: astroCookies,
+        clientAddress: request ? clientAddressOf(request) : undefined,
       };
 
       resetIslandRegistry();
@@ -325,6 +348,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         if (r instanceof Promise) r = await r;
         return r;
       });
+
+      // `return Astro.redirect(...)` — serve it as a real redirect. The
+      // Response already carries the accumulated headers and cookies.
+      if (renderResult instanceof Response) {
+        return { ok: true, raw: renderResult };
+      }
 
       let html: string;
       if (typeof renderResult === "string") {
@@ -384,7 +413,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         html = await astroHost.server.transformIndexHtml(pathname, html);
       }
 
-      return { ok: true, html };
+      return { ok: true, html, response: astroResponse, cookies: astroCookies };
     } catch (e) {
       console.error(`Error rendering ${route.file}:`, e);
       return { ok: false, error: e };
@@ -556,8 +585,19 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     if (outcome === null) return null;
     const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
     if (outcome.ok) {
+      if ("raw" in outcome) return outcome.raw;
       if (!seesRawErrors(req)) snapshots.set(pathname, outcome.html);
-      return new Response(outcome.html, { headers: htmlHeaders });
+      // Merge anything the page wrote to `Astro.response` / `Astro.cookies`.
+      // Content-Type stays ours unless the page overrode it explicitly.
+      const headers = new Headers(htmlHeaders);
+      outcome.response?.headers.forEach((v, k) => headers.set(k, v));
+      for (const cookie of outcome.cookies?.headers() ?? []) {
+        headers.append("set-cookie", cookie);
+      }
+      return new Response(outcome.html, {
+        status: outcome.response?.status ?? 200,
+        headers,
+      });
     }
     if (seesRawErrors(req)) {
       return new Response(formatDevErrorHtml(outcome.error), { headers: htmlHeaders });
@@ -581,7 +621,10 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     ? path.resolve(projectRoot, config.notFoundPage)
     : undefined;
 
-  async function render404(req?: Request, reqUrl?: URL): Promise<string | null> {
+  async function render404(
+    req?: Request,
+    reqUrl?: URL,
+  ): Promise<{ html: string; response: AstroResponse; cookies: AstroCookies } | null> {
     // Build the same Astro-style pageContext the normal render path does, so a
     // custom 404 page (and any component it pulls in, e.g. Seo reading
     // `Astro.url.pathname`) renders against a real `Astro.url`/`Astro.request`
@@ -589,6 +632,12 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
     const devHost = config.host === "0.0.0.0" ? "localhost" : config.host;
     const origin = siteUrl ? siteUrl.origin : `http://${devHost}:${config.port}`;
+    const response: AstroResponse = {
+      status: 404,
+      statusText: "Not Found",
+      headers: new Headers(),
+    };
+    const cookies = new AstroCookies(req);
     const pageContext = {
       url: reqUrl ?? new URL("/", origin),
       site: siteUrl,
@@ -597,6 +646,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       currentLocale: undefined,
       preferredLocale: undefined,
       preferredLocaleList: [] as string[],
+      response,
+      cookies,
+      clientAddress: req ? clientAddressOf(req) : undefined,
     };
     // Explicit config override first; fall back to the pages/404.* convention.
     const candidates: string[] = [];
@@ -608,7 +660,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       if (!fs.existsSync(fullPath)) continue;
       try {
         const html = await renderComponentFile(fullPath, { __pageContext: pageContext });
-        if (html) return html;
+        if (html) return { html, response, cookies };
       } catch (e) {
         console.error(`Error rendering 404 page ${fullPath}:`, e);
       }
@@ -1154,9 +1206,17 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // Custom 404 page
       const custom404 = await render404(req, url);
       if (custom404) {
-        return new Response(custom404, {
-          status: 404,
-          headers: { "Content-Type": "text/html; charset=utf-8" },
+        // Same merge as the normal render path — a 404 page can set cache
+        // headers or cookies. `status` starts at 404, so a page that wants a
+        // different one (410, say) can still say so.
+        const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+        custom404.response.headers.forEach((v, k) => headers.set(k, v));
+        for (const cookie of custom404.cookies.headers()) {
+          headers.append("set-cookie", cookie);
+        }
+        return new Response(custom404.html, {
+          status: custom404.response.status,
+          headers,
         });
       }
 
