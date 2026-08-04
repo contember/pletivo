@@ -1,0 +1,16 @@
+---
+// Neither `getStaticPaths` nor `prerender = false` — nothing says what this
+// route's paths are, so it stays a 404. Guards the on-demand branch from
+// turning every unresolvable dynamic route into a render.
+const { slug } = Astro.params;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Unresolvable</title>
+  </head>
+  <body>
+    <p id="slug">{slug}</p>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+---
+// An on-demand dynamic route: no `getStaticPaths`, because there is no path
+// list to enumerate — the params come from the URL. This is the shape every
+// SSR site uses for CMS-backed detail pages.
+export const prerender = false;
+
+const { slug } = Astro.params;
+Astro.response.headers.set("cache-control", "s-maxage=300");
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>On demand</title>
+  </head>
+  <body>
+    <h1>On Demand</h1>
+    <p id="slug">{slug}</p>
+    <p id="pathname">{Astro.url.pathname}</p>
+  </body>
+</html>

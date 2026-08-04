@@ -289,20 +289,26 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       let props: Record<string, unknown> = {};
 
       if (route.isDynamic) {
-        if (typeof mod.getStaticPaths !== "function") {
+        if (typeof mod.getStaticPaths === "function") {
+          const paginate = createPaginate(route, config.base || "/");
+          const staticPaths: StaticPath[] = await mod.getStaticPaths({ paginate });
+          const match = staticPaths.find((sp) => {
+            return Object.entries(params).every(([k, v]) => sp.params[k] === v);
+          });
+          if (!match) {
+            // No matching static path — cascade to 404
+            return null;
+          }
+          props = match.props || {};
+        } else if (mod.prerender !== false) {
           // Dynamic route without getStaticPaths — cannot resolve, treat as miss
           return null;
         }
-        const paginate = createPaginate(route, config.base || "/");
-        const staticPaths: StaticPath[] = await mod.getStaticPaths({ paginate });
-        const match = staticPaths.find((sp) => {
-          return Object.entries(params).every(([k, v]) => sp.params[k] === v);
-        });
-        if (!match) {
-          // No matching static path — cascade to 404
-          return null;
-        }
-        props = match.props || {};
+        // `prerender = false`: an on-demand route has no path list to match
+        // against — the params come from the URL, which is what a server
+        // would do. A static build still cannot emit it, and says so
+        // (see `warnDroppedSsrWrites` in build.ts); dev renders it, so pages
+        // written for a server can be previewed instead of 404ing.
       }
 
       // Build Astro-style pageContext with url/site/params so .astro
