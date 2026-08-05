@@ -19,6 +19,7 @@ import { createHash } from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { pathToFileURL } from "url";
+import type { Loader } from "bun";
 import type { ServerShim } from "./server-shim";
 import type { LoadResult, ResolveIdResult, ViteLikePlugin } from "./types";
 
@@ -203,7 +204,7 @@ function normalizeResolvedId(result: ResolveIdResult): string | null {
   return null;
 }
 
-async function loadViteId(id: string): Promise<{ code: string; loader: string } | null> {
+async function loadViteId(id: string): Promise<{ code: string; loader: Loader } | null> {
   for (const p of collectedPlugins) {
     if (typeof p.load !== "function") continue;
     try {
@@ -227,7 +228,7 @@ function codeFromLoadResult(result: LoadResult): string {
   return typeof result === "string" ? result : result.code;
 }
 
-function loaderForVirtualId(id: string): string {
+function loaderForVirtualId(id: string): Loader {
   const ext = path.extname(id.replace(/\0/g, "")).toLowerCase();
   if (ext === ".css") return "css";
   if (ext === ".jsx") return "jsx";
@@ -237,7 +238,7 @@ function loaderForVirtualId(id: string): string {
   return "ts";
 }
 
-function extensionForLoader(loader: string): string {
+function extensionForLoader(loader: Loader): string {
   if (loader === "css") return ".css";
   if (loader === "jsx") return ".jsx";
   if (loader === "tsx") return ".tsx";
