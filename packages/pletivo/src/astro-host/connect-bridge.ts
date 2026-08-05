@@ -50,8 +50,12 @@ interface MockRes extends Writable {
     statusOrHeaders?: string | Record<string, string | number>,
     maybeHeaders?: Record<string, string | number>,
   ): MockRes;
-  write(chunk: string | Uint8Array, encodingOrCb?: string | (() => void)): boolean;
-  end(chunkOrCb?: unknown, encodingOrCb?: unknown): MockRes;
+  // `write` is deliberately NOT redeclared: the object is a real `new Writable`,
+  // so it inherits Node's own overloads (which already cover `write(chunk)` and
+  // `write(chunk, cb)`). Narrowing them here made MockRes an invalid Writable.
+  // Returns `this`, not `MockRes` — Writable.end() is polymorphic, so a
+  // concrete return type makes MockRes an invalid subtype of Writable.
+  end(chunkOrCb?: unknown, encodingOrCb?: unknown): this;
 }
 
 /**

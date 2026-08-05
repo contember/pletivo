@@ -3,6 +3,7 @@
     "jsx": "react-jsx",
     "jsxImportSource": "pletivo",
     "strict": true,
+    "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
     "target": "ESNext",

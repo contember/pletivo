@@ -1,6 +1,9 @@
 {
   "private": true,
   "workspaces": ["packages/*", "examples/*"],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p packages/pletivo/tsconfig.json"
+  },
   "devDependencies": {
     "@astrojs/compiler": "3.0.1",
     "@nuasite/agent-summary": "^0.36.0",

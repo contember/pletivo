@@ -127,7 +127,10 @@ export function routeToOutputPath(route: Route, params: RouteParams): string {
     if (seg.type === "static") {
       parts.push(seg.value);
     } else if (seg.type === "param") {
-      parts.push(params[seg.value]);
+      // A required `[param]` segment always matched a non-empty path part, so
+      // its value is present. (Only `rest` segments may be undefined — see
+      // RouteParams.) Dropping it instead would silently emit a colliding path.
+      parts.push(params[seg.value]!);
     } else if (seg.type === "rest") {
       // Astro's convention for catch-all routes: `undefined` means
       // "no extra segments" (the catch-all matched nothing). We

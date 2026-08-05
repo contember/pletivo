@@ -38,6 +38,8 @@
     "preact": "^10.29.1"
   },
   "devDependencies": {
+    "@tailwindcss/node": "^4",
+    "@tailwindcss/oxide": "^4",
     "@types/js-yaml": "^4.0.9",
     "preact": "^10.29.1"
   }

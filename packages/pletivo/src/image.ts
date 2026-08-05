@@ -773,7 +773,7 @@ export async function transformCfImage(
   sourceFormat: string,
   options: CfImageOptions,
   accept?: string,
-): Promise<{ data: Uint8Array; format: string; contentType: string } | null> {
+): Promise<{ data: Uint8Array<ArrayBuffer>; format: string; contentType: string } | null> {
   if (sourceFormat === "svg") return null;
   const sharp = loadSharp();
   if (!sharp) return null;

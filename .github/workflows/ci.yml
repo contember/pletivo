@@ -26,6 +26,12 @@ jobs:
       - name: Build astro-jsx-pages
         run: bun run --cwd packages/astro-jsx-pages build
 
+      # pletivo publishes raw src/ (its exports map points at .ts), so every
+      # consumer typechecks these files — a type error here breaks downstream
+      # builds even though Bun strips types at runtime. Keep this gated.
+      - name: Typecheck
+        run: bun run typecheck
+
       - name: Unit & integration tests
         run: bun test tests/unit tests/integration tests/e2e
 

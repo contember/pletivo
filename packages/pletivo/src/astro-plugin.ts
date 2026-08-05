@@ -17,6 +17,7 @@
 
 import path from "path";
 import { fileURLToPath } from "url";
+import type { BunPlugin } from "bun";
 import { transform, parse } from "@astrojs/compiler";
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
@@ -73,7 +74,7 @@ export interface HoistedScriptEntry {
 const hoistedScriptMap = new Map<string, HoistedScriptEntry>();
 const hoistedScriptByHash = new Map<string, HoistedScriptEntry>();
 /** Bun.build outputs cached by hash, populated by the dev route on first hit. */
-const hoistedBundleCache = new Map<string, Uint8Array>();
+const hoistedBundleCache = new Map<string, Uint8Array<ArrayBuffer>>();
 
 /** Specifier used as the Bun.build entrypoint for hoisted scripts. */
 const HOISTED_PREFIX = "pletivo:hoisted:";
@@ -130,11 +131,11 @@ export function clearHoistedScripts(): void {
   hoistedBundleCache.clear();
 }
 
-export function getHoistedBundleCache(hash: string): Uint8Array | undefined {
+export function getHoistedBundleCache(hash: string): Uint8Array<ArrayBuffer> | undefined {
   return hoistedBundleCache.get(hash);
 }
 
-export function setHoistedBundleCache(hash: string, bytes: Uint8Array): void {
+export function setHoistedBundleCache(hash: string, bytes: Uint8Array<ArrayBuffer>): void {
   hoistedBundleCache.set(hash, bytes);
 }
 
@@ -147,22 +148,13 @@ export function setHoistedBundleCache(hash: string, bytes: Uint8Array): void {
  * basename from the entrypoint specifier (not the resolved path), so
  * callers must rename `pletivo:hoisted:<hash>.js` outputs themselves.
  */
-export function hoistedScriptBunPlugin() {
+export function hoistedScriptBunPlugin(): BunPlugin {
   const resolveFilter = new RegExp(`^${HOISTED_PREFIX}[a-f0-9]+$`);
   // 16-hex-char filename (matches our `Bun.hash().padStart(16,"0")` output).
   const loadFilter = /\/[a-f0-9]{16}\.js$/;
   return {
     name: "pletivo-hoisted",
-    setup(build: {
-      onResolve: (
-        opts: { filter: RegExp },
-        cb: (args: { path: string }) => { path: string } | undefined,
-      ) => void;
-      onLoad: (
-        opts: { filter: RegExp },
-        cb: (args: { path: string }) => { contents: string; loader: string } | undefined,
-      ) => void;
-    }) {
+    setup(build) {
       build.onResolve({ filter: resolveFilter }, (args) => {
         const hash = args.path.slice(HOISTED_PREFIX.length);
         const entry = hoistedScriptByHash.get(hash);

@@ -16,9 +16,17 @@ export interface FragmentsHelper {
 	isRegistryEnabled: () => boolean;
 }
 
+/**
+ * Optional peer: resolved from the consuming project at runtime, never a
+ * pletivo dependency, and not published to npm — so TypeScript cannot resolve
+ * the specifier. Held in a variable rather than written inline so it stays out
+ * of the static import position; the shape is validated below either way.
+ */
+const FRAGMENTS_MODULE = "@nuasite/astro-fragments";
+
 export async function resolveFragmentsHelper(): Promise<FragmentsHelper | null> {
 	try {
-		const mod = (await import("@nuasite/astro-fragments")) as unknown as Partial<FragmentsHelper>;
+		const mod = (await import(FRAGMENTS_MODULE)) as unknown as Partial<FragmentsHelper>;
 		if (
 			typeof mod.runInRenderPass !== "function" ||
 			typeof mod.getFragments !== "function" ||
