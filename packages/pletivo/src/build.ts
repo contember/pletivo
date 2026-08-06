@@ -162,7 +162,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     : options.clean
       ? await CacheStore.forceClean(projectRoot, configHash)
       : await CacheStore.load(projectRoot, configHash);
-  const fragments: FragmentsHelper | null = await resolveFragmentsHelper();
+  const fragments: FragmentsHelper | null = await resolveFragmentsHelper(projectRoot);
   phase("cache load + fragments resolve", tCacheLoad);
 
   const tAstroStart = performance.now();

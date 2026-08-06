@@ -17,16 +17,19 @@ export interface FragmentsHelper {
 }
 
 /**
- * Optional peer: resolved from the consuming project at runtime, never a
- * pletivo dependency, and not published to npm — so TypeScript cannot resolve
- * the specifier. Held in a variable rather than written inline so it stays out
- * of the static import position; the shape is validated below either way.
+ * Optional peer: owned by the consuming project, never a pletivo dependency,
+ * and not published to npm. Resolved the same way `css.ts` resolves Tailwind —
+ * `require.resolve` against the project root, then import the resolved path.
+ * That both keeps the specifier out of TypeScript's static resolution and
+ * finds the module in non-hoisted (pnpm) layouts where pletivo's own
+ * node_modules can't see it. The shape is validated below either way.
  */
 const FRAGMENTS_MODULE = "@nuasite/astro-fragments";
 
-export async function resolveFragmentsHelper(): Promise<FragmentsHelper | null> {
+export async function resolveFragmentsHelper(projectRoot: string): Promise<FragmentsHelper | null> {
 	try {
-		const mod = (await import(FRAGMENTS_MODULE)) as unknown as Partial<FragmentsHelper>;
+		const resolved = require.resolve(FRAGMENTS_MODULE, { paths: [projectRoot] });
+		const mod = (await import(resolved)) as unknown as Partial<FragmentsHelper>;
 		if (
 			typeof mod.runInRenderPass !== "function" ||
 			typeof mod.getFragments !== "function" ||
