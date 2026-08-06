@@ -55,7 +55,9 @@ interface MockRes extends Writable {
   // `write(chunk, cb)`). Narrowing them here made MockRes an invalid Writable.
   // Returns `this`, not `MockRes` — Writable.end() is polymorphic, so a
   // concrete return type makes MockRes an invalid subtype of Writable.
-  end(chunkOrCb?: unknown, encodingOrCb?: unknown): this;
+  // All three of Node's trailing arguments are declared: middleware may call
+  // `end(chunk, cb)` or `end(chunk, encoding, cb)` and expects `cb` to run.
+  end(chunkOrCb?: unknown, encodingOrCb?: unknown, cb?: unknown): this;
 }
 
 /**
@@ -293,10 +295,26 @@ function createMockRes(resolve: (r: Response) => void): MockRes {
   const origEnd = writable.end.bind(writable);
   writable.end = function (
     chunkOrCb?: unknown,
-    _encodingOrCb?: unknown,
-    _cb?: unknown,
+    encodingOrCb?: unknown,
+    cb?: unknown,
   ): MockRes {
-    if (writable._done) return writable;
+    // Node's `end([chunk][, encoding][, callback])` runs the callback once the
+    // stream finishes. Middleware sequences cleanup off it (release a lock,
+    // close a span), so it must survive whichever position it was passed in.
+    const done =
+      typeof chunkOrCb === "function"
+        ? (chunkOrCb as () => void)
+        : typeof encodingOrCb === "function"
+          ? (encodingOrCb as () => void)
+          : typeof cb === "function"
+            ? (cb as () => void)
+            : undefined;
+    if (writable._done) {
+      // Already ended: Node still invokes the callback (with an ERR_STREAM_
+      // ALREADY_FINISHED error). Fire it so callers never hang.
+      if (done) queueMicrotask(done);
+      return writable;
+    }
     if (chunkOrCb != null && typeof chunkOrCb !== "function") {
       const c =
         typeof chunkOrCb === "string"
@@ -327,11 +345,15 @@ function createMockRes(resolve: (r: Response) => void): MockRes {
       }),
     );
 
-    // Still invoke the underlying Writable end so stream consumers resolve
+    // Still invoke the underlying Writable end so stream consumers resolve,
+    // handing it the completion callback so it fires on 'finish'.
     try {
-      origEnd();
+      if (done) origEnd(done);
+      else origEnd();
     } catch {
-      // ignore
+      // The stream refused to end — run the callback anyway rather than
+      // leaving the caller's continuation dangling.
+      if (done) queueMicrotask(done);
     }
     return writable;
   };
