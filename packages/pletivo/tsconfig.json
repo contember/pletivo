@@ -4,6 +4,11 @@
     "jsxImportSource": "pletivo",
     "strict": true,
     "skipLibCheck": true,
+    // Pin the ambient types instead of letting TS auto-include every @types
+    // package it can find — without this it walks up past the repo root and
+    // silently picks up a parent directory's @types/bun, so the typecheck
+    // passes locally and fails in CI. @types/bun brings node's types with it.
+    "types": ["bun"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "target": "ESNext",
