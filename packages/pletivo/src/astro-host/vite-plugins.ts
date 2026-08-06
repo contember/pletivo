@@ -88,6 +88,12 @@ export async function ensureBunPlugin(): Promise<void> {
  * Add a batch of plugins to the host. Returns the list of plugins that
  * were actually added (new ones, de-duped by identity).
  */
+/** Name-based membership test — the only handle a re-run hook's fresh plugin object gives us. */
+export function hasVitePluginNamed(name: string | undefined): boolean {
+  if (!name) return false;
+  return collectedPlugins.some((p) => p?.name === name);
+}
+
 export function addVitePlugins(plugins: ViteLikePlugin[]): ViteLikePlugin[] {
   const added: ViteLikePlugin[] = [];
   for (const p of plugins) {

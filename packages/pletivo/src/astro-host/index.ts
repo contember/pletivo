@@ -1,4 +1,4 @@
-export { initAstroHost, getHost, type AstroHost } from "./runner";
+export { initAstroHost, getHost, type AstroHost, type SetupFailure } from "./runner";
 export { dispatchMiddlewares } from "./connect-bridge";
 export { buildAstroRoutes, type PletivoRouteWithPaths } from "./routes-adapter";
 export { bundleVirtualEntry } from "./vite-plugins";

@@ -13,7 +13,7 @@ import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, getGloba
 import { bumpDevVersion, getDevVersion } from "./dev-cache";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
-import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry } from "./astro-host";
+import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
 import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { parsePreferredLocales } from "./i18n/helpers";
@@ -202,6 +202,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });
+
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureJsImportedCss(projectRoot, config.srcDir);
@@ -211,6 +212,38 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       | undefined;
     configureScss(vite?.css?.preprocessorOptions?.scss);
   }
+
+  // ── Failed astro:config:setup — surface it, then keep trying ──
+  //
+  // A hook that throws leaves its side effect undone (a generated module never
+  // written, a route never injected) and the failure then resurfaces as
+  // something unrelated — typically "Cannot find module" in a page that
+  // imports what the hook was supposed to produce. Two things fix that: the
+  // error rides along on the dev error overlay, and the hook gets re-run on
+  // every file change (and, rate-limited, on requests) until it succeeds, so
+  // fixing the cause heals the server without a restart.
+  const SETUP_RETRY_INTERVAL_MS = 1000;
+  let lastSetupRetry = 0;
+
+  function setupErrors(): SetupFailure[] {
+    return astroHost?.setupErrors ?? [];
+  }
+
+  async function retrySetup(force: boolean): Promise<void> {
+    if (!astroHost || astroHost.setupErrors.length === 0) return;
+    const now = Date.now();
+    if (!force && now - lastSetupRetry < SETUP_RETRY_INTERVAL_MS) return;
+    lastSetupRetry = now;
+    const recovered = await astroHost.retryFailedSetup();
+    if (recovered.length === 0) return;
+    console.log(`  astro:config:setup recovered → ${recovered.join(", ")}`);
+    // Whatever the hook (re)generated is a module some page already tried to
+    // import. Bust the cache so the next render picks it up, and push the
+    // browser off the error page.
+    bumpDevVersion();
+    broadcastHmr(JSON.stringify({ type: "reload" }));
+  }
+
   await initCollections(projectRoot);
   let routes = await scanRoutes(pagesDir);
   // Resolve i18n once per dev-server start; renderPage uses it to set
@@ -428,7 +461,22 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
   function formatDevErrorHtml(e: unknown): string {
     const msg = String(e instanceof Error ? e.stack || e.message : e);
-    return `<html><body><pre data-pletivo-error style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem">${escapeHtmlSimple(msg)}</pre>${hmrClientScript()}</body></html>`;
+    // A pending setup failure is usually the reason this render broke at all,
+    // and its message names the actual file. Show it above the symptom.
+    const pending = setupErrors();
+    const context = pending.length
+      ? `<pre data-pletivo-setup-error style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem 2rem 0">${escapeHtmlSimple(
+          pending
+            .map((f) => {
+              const err = f.error;
+              return `astro:config:setup failed in "${f.name}" — the page error below may be a side effect.\n${
+                err instanceof Error ? err.stack || err.message : String(err)
+              }`;
+            })
+            .join("\n\n"),
+        )}</pre>`
+      : "";
+    return `<html><body>${context}<pre data-pletivo-error style="color:red;white-space:pre-wrap;font-family:monospace;padding:2rem">${escapeHtmlSimple(msg)}</pre>${hmrClientScript()}</body></html>`;
   }
 
   // Raw-error classification. Filtering only kicks in when either `stale` or
@@ -587,6 +635,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     if (route.isEndpoint) {
       return await serveEndpoint(route, params, pathname, req);
     }
+    // Rate-limited: covers a fix landing somewhere no watcher sees.
+    await retrySetup(false);
     const outcome = await renderPage(route, params, pathname, req, localeOverride);
     if (outcome === null) return null;
     const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
@@ -1271,6 +1321,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       astroHost.server.watcher.emit(viteEvent, absPath);
     }
 
+    await retrySetup(true);
     broadcastHmr(JSON.stringify({ type: hmrType }));
   });
 
@@ -1304,6 +1355,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
           const absPath = path.join(rootDir, filename);
           astroHost.server.watcher.emit(fs.existsSync(absPath) ? "change" : "unlink", absPath);
         }
+        await retrySetup(true);
         broadcastHmr(JSON.stringify({ type: "html" }));
       });
       console.log(`  watching ${top}/ for content changes`);
@@ -1314,6 +1366,15 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
   const displayHost = config.host === "0.0.0.0" ? "localhost" : config.host;
   console.log(`\n  pletivo v${PLETIVO_VERSION} dev server running at http://${displayHost}:${config.port}\n`);
+
+  for (const failure of setupErrors()) {
+    const err = failure.error;
+    console.error(
+      `  ⚠ astro:config:setup failed in "${failure.name}" — pages depending on it will error.\n` +
+        `    ${err instanceof Error ? err.message : String(err)}\n` +
+        `    Retrying on every file change; fix the cause and the server recovers without a restart.`,
+    );
+  }
 
   if (astroHost) {
     await astroHost.runServerStart({

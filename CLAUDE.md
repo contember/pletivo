@@ -61,6 +61,7 @@ gh run watch $(gh run list --workflow=release.yml --limit=1 --json databaseId -q
 
 - Island registry tracks islands per render pass — call `resetIslandRegistry()` between page renders or islands leak across pages.
 - Island props must be JSON-serializable.
+- A thrown `astro:config:setup` does not disable the integration for the process. The failure lands in `host.setupErrors`, rides on the dev error overlay, and the hook is re-run on every file change (rate-limited on requests) until it passes. Hooks are therefore re-entrant: the retry context dedupes `injectRoute` / `injectScript` / `updateConfig` so a partially-applied hook does not register its side effects twice.
 
 ## Incremental build — dep tracking limits
 
