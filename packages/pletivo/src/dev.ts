@@ -14,6 +14,8 @@ import { bumpDevVersion, getDevVersion } from "./dev-cache";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
+import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";
+import { describeConfigChange, isSupervisedChild, RESTART_EXIT_CODE } from "./dev-supervisor";
 import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
 import { parsePreferredLocales } from "./i18n/helpers";
@@ -1393,8 +1395,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     console.error("[pletivo] unhandled rejection (dev server kept alive):", reason);
   });
 
-  process.on("SIGINT", async () => {
+  let configWatcher: ConfigWatcher | null = null;
+  let shuttingDown = false;
+  async function shutdown(code: number): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
     watcher.close();
+    configWatcher?.close();
     if (astroHost) {
       try {
         await astroHost.runServerDone();
@@ -1403,9 +1410,28 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         // ignore
       }
     }
-    server.stop();
-    process.exit(0);
+    // A restart wants the port back now; a Ctrl-C can let requests finish.
+    server.stop(code !== 0);
+    process.exit(code);
+  }
+
+  process.on("SIGINT", () => {
+    void shutdown(0);
   });
+
+  // ── Config files: read once per process, so a change needs a new one ──
+  //
+  // Only under the supervisor — without a parent to bring the server back,
+  // exiting on a config edit would just kill it.
+  if (isSupervisedChild()) {
+    const configFiles = await resolveConfigWatchFiles(projectRoot);
+    if (configFiles.length > 0) {
+      configWatcher = watchConfigFiles(configFiles, (file) => {
+        console.log(`\n  ${describeConfigChange(projectRoot, file)} changed → restarting dev server\n`);
+        void shutdown(RESTART_EXIT_CODE);
+      });
+    }
+  }
 }
 
 /**

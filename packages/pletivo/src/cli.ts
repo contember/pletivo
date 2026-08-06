@@ -2,6 +2,7 @@
 
 import { build } from "./build";
 import { dev } from "./dev";
+import { isSupervisedChild, superviseDev } from "./dev-supervisor";
 import { loadConfig } from "./config";
 import { createRequire } from "module";
 
@@ -79,6 +80,11 @@ switch (command) {
   }
 
   case "dev":
+    // The parent supervises, the child serves. `--no-restart` opts out of both,
+    // which also switches the config watcher off — nothing would restart it.
+    if (!isSupervisedChild() && !process.argv.includes("--no-restart")) {
+      process.exit(await superviseDev());
+    }
     await dev(projectRoot, config);
     break;
 
@@ -103,6 +109,8 @@ switch (command) {
     --stale                  Serve last-good snapshot per route on render failure
     --debug-header=<name>    Requests with this header see raw errors + HMR instead of
                              the error-page / snapshot fallback (default: x-pletivo-debug)
+    --no-restart             Do not supervise the dev server: no restart when a config
+                             file changes, no backed-off restart after a crash
     --help                   Show this help
 
   Env vars: PLETIVO_404_PAGE, PLETIVO_ERROR_PAGE, PLETIVO_STALE=1,
