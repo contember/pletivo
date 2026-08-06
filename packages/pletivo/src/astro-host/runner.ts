@@ -54,10 +54,17 @@ import {
   addVitePlugins,
   configureVitePluginHost,
   ensureBunPlugin,
+  hasVitePluginNamed,
   runConfigureServer,
   syncServerPlugins,
 } from "./vite-plugins";
 import { stripTypes } from "../transpile";
+
+/** An integration whose `astro:config:setup` threw, with its latest error. */
+export interface SetupFailure {
+  name: string;
+  error: unknown;
+}
 
 export interface AstroHost {
   config: AstroConfig;
@@ -74,6 +81,22 @@ export interface AstroHost {
   injectedRoutes: InjectedRoute[];
   /** Ran once on startup (setup + server:setup in dev; setup + config:done in build) */
   ready: Promise<void>;
+  /**
+   * Integrations whose `astro:config:setup` threw. A live array — dev reads it
+   * after startup and on every failed render, so the overlay can name the real
+   * cause instead of whatever the missing side effect broke downstream.
+   */
+  setupErrors: SetupFailure[];
+  /**
+   * Re-run `astro:config:setup` for the integrations in `setupErrors`, in
+   * their original order. Returns the names that recovered.
+   *
+   * The retry runs against a deduplicating setup context, so a hook that got
+   * partway through before throwing does not register its routes, scripts or
+   * Vite plugins twice. Calls are serialized — a second caller awaits the
+   * first one's result instead of starting a competing pass.
+   */
+  retryFailedSetup(): Promise<string[]>;
   /** Returns true if an integration with the given name is active after overrides */
   hasIntegration(name: string): boolean;
   runRoutesResolved(routes: AstroRoute[]): Promise<void>;
@@ -133,6 +156,9 @@ export async function initAstroHost(
   const injectedPageSsrScripts: string[] = [];
   const injectedRoutes: InjectedRoute[] = [];
   const setupLog: string[] = [];
+  const setupErrors: SetupFailure[] = [];
+  /** Integrations to re-run, in setup order. Keyed so a repeat failure updates in place. */
+  const failedSetup = new Map<AstroIntegration, SetupFailure>();
 
   const host: AstroHost = {
     config,
@@ -143,6 +169,8 @@ export async function initAstroHost(
     injectedPageSsrScripts,
     injectedRoutes,
     ready: Promise.resolve(),
+    setupErrors,
+    retryFailedSetup: async () => [],
     hasIntegration: (name) => config.integrations.some((i) => i?.name === name),
     runRoutesResolved: async () => {},
     runBuildStart: async () => {},
@@ -165,17 +193,23 @@ export async function initAstroHost(
   const alreadySetup = new WeakSet<AstroIntegration>();
   const queue: AstroIntegration[] = [...rootIntegrations];
 
+  // `dedupe` is on for retries only: the hook already ran once and may have
+  // registered some of its side effects before throwing, so re-registering
+  // them must be a no-op rather than a second copy.
   const makeSetupContext = (
     integration: AstroIntegration,
+    dedupe = false,
   ): AstroConfigSetupContext => {
     const logger = createLogger(integration.name);
     return {
       config,
       command,
+      // Stays false on retries — some integrations skip work when restarting,
+      // and a retry exists precisely to make that work happen.
       isRestart: false,
       logger,
       updateConfig(patch) {
-        applyConfigPatch(config, patch, host, queue, alreadySetup);
+        applyConfigPatch(config, patch, host, queue, alreadySetup, dedupe);
         return config;
       },
       addRenderer() {},
@@ -197,6 +231,7 @@ export async function initAstroHost(
           logger.warn(`injectRoute "${pattern}" skipped (prerender: false not supported in SSG mode)`);
           return;
         }
+        if (dedupe && injectedRoutes.some((x) => x.pattern === pattern && x.entrypoint === entrypoint)) return;
         injectedRoutes.push({ pattern, entrypoint, prerender: true });
       },
       injectScript(stage, content) {
@@ -204,37 +239,87 @@ export async function initAstroHost(
         // transform it). Strip TS once at injection time so dev/build
         // can emit the stored strings directly into <script> tags.
         const transpiled = stripTypes(content);
-        if (stage === "page") {
-          injectedPageScripts.push(transpiled);
-        } else if (stage === "head-inline") {
-          injectedHeadScripts.push(transpiled);
-        } else if (stage === "before-hydration") {
-          injectedBeforeHydrationScripts.push(transpiled);
-        } else if (stage === "page-ssr") {
-          injectedPageSsrScripts.push(transpiled);
-        }
+        const target: Record<InjectScriptStage, string[]> = {
+          "page": injectedPageScripts,
+          "head-inline": injectedHeadScripts,
+          "before-hydration": injectedBeforeHydrationScripts,
+          "page-ssr": injectedPageSsrScripts,
+        };
+        const bucket = target[stage];
+        if (!bucket) return;
+        if (dedupe && bucket.includes(transpiled)) return;
+        bucket.push(transpiled);
       },
     };
   };
 
-  while (queue.length > 0) {
-    const integration = queue.shift()!;
-    if (alreadySetup.has(integration)) continue;
-    alreadySetup.add(integration);
-
+  /**
+   * Run one integration's `astro:config:setup` and record the outcome.
+   * Returns false when the hook threw — the integration then sits in
+   * `failedSetup` until a `retryFailedSetup()` pass gets it through.
+   */
+  const runSetupHook = async (integration: AstroIntegration, dedupe: boolean): Promise<boolean> => {
     const hook = integration.hooks?.["astro:config:setup"];
-    if (typeof hook !== "function") continue;
+    if (typeof hook !== "function") return true;
 
     try {
-      await hook(makeSetupContext(integration));
+      await hook(makeSetupContext(integration, dedupe));
       setupLog.push(`✓ ${integration.name} configured`);
+      failedSetup.delete(integration);
+      return true;
     } catch (e) {
       console.error(
         `[pletivo-astro-host] ${integration.name}.astro:config:setup failed:`,
         (e as Error).stack ?? (e as Error).message,
       );
+      failedSetup.set(integration, { name: integration.name, error: e });
+      return false;
     }
-  }
+  };
+
+  /** Drain the setup queue, including children added through `updateConfig`. */
+  const drainSetupQueue = async (): Promise<void> => {
+    while (queue.length > 0) {
+      const integration = queue.shift()!;
+      if (alreadySetup.has(integration)) continue;
+      alreadySetup.add(integration);
+      await runSetupHook(integration, false);
+    }
+  };
+
+  /** Mirror `failedSetup` into the live array dev reads. */
+  const syncSetupErrors = (): void => {
+    setupErrors.length = 0;
+    setupErrors.push(...failedSetup.values());
+  };
+
+  let retryInFlight: Promise<string[]> | null = null;
+
+  host.retryFailedSetup = async () => {
+    if (retryInFlight) return retryInFlight;
+    if (failedSetup.size === 0) return [];
+
+    retryInFlight = (async () => {
+      const recovered: string[] = [];
+      for (const integration of [...failedSetup.keys()]) {
+        if (await runSetupHook(integration, true)) recovered.push(integration.name);
+      }
+      // A recovered hook may have queued child integrations of its own.
+      await drainSetupQueue();
+      syncSetupErrors();
+      if (recovered.length > 0) syncServerPlugins(server);
+      return recovered;
+    })();
+
+    try {
+      return await retryInFlight;
+    } finally {
+      retryInFlight = null;
+    }
+  };
+
+  await drainSetupQueue();
+  syncSetupErrors();
 
   syncServerPlugins(server);
 
@@ -450,6 +535,10 @@ function applyConfigPatch(
   host: AstroHost,
   queue: AstroIntegration[],
   alreadySetup: WeakSet<AstroIntegration>,
+  // Set on a `retryFailedSetup()` pass. Identity checks are useless there —
+  // a re-run hook builds fresh integration and plugin objects — so fall back
+  // to matching by name.
+  dedupe = false,
 ): void {
   for (const [key, value] of Object.entries(patch)) {
     if (value == null) continue;
@@ -461,6 +550,7 @@ function applyConfigPatch(
       for (const integ of filtered) {
         if (config.integrations.includes(integ)) continue;
         if (alreadySetup.has(integ)) continue;
+        if (dedupe && integ?.name && config.integrations.some((i) => i?.name === integ.name)) continue;
         config.integrations.push(integ);
         queue.push(integ);
       }
@@ -481,7 +571,7 @@ function applyConfigPatch(
           }
         };
         walk(vitePatch.plugins);
-        const added = addVitePlugins(flat);
+        const added = addVitePlugins(dedupe ? flat.filter((p) => !hasVitePluginNamed(p?.name)) : flat);
         if (added.length > 0) {
           syncServerPlugins(host.server);
         }
