@@ -12,9 +12,9 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const BLOG_COUNT = 1000;
-const DOCS_COUNT = 300;
-const NOTES_COUNT = 200;
+const BLOG_COUNT = Number(process.env.BLOG_COUNT ?? 1000);
+const DOCS_COUNT = Number(process.env.DOCS_COUNT ?? 300);
+const NOTES_COUNT = Number(process.env.NOTES_COUNT ?? 200);
 
 const root = path.resolve(import.meta.dir, "..");
 

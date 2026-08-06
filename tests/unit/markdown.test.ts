@@ -192,7 +192,8 @@ describe("block elements", () => {
 
   test("code block escapes HTML", async () => {
     const result = await parseMarkdown("---\ntitle: t\n---\n\n```\n<div>test</div>\n```");
-    expect(result.html).toContain("&#x3C;div>test&#x3C;/div>");
+    // Sätteri serializes with named entities (matching Astro 7 and the rest of pletivo).
+    expect(result.html).toContain("&lt;div&gt;test&lt;/div&gt;");
   });
 
   test("blockquote", async () => {
@@ -263,7 +264,8 @@ describe("inline elements", () => {
 
   test("inline code escapes HTML", async () => {
     const result = await parseMarkdown("---\ntitle: t\n---\n\nUse `<div>` tag.");
-    expect(result.html).toContain("<code>&#x3C;div></code>");
+    // Sätteri serializes with named entities (matching Astro 7 and the rest of pletivo).
+    expect(result.html).toContain("<code>&lt;div&gt;</code>");
   });
 
   test("link", async () => {
