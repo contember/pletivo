@@ -32,6 +32,13 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      # The package tsconfig can only see pletivo's own devDependencies. A real
+      # consumer installs `dependencies` only, so this rebuilds that environment
+      # from the packed tarball and typechecks a page against it — the check
+      # that actually reproduces what a downstream site compiles.
+      - name: Typecheck as a consumer
+        run: bun run tests/consumer-typecheck.ts
+
       - name: Unit & integration tests
         run: bun test tests/unit tests/integration tests/e2e
 
