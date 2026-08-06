@@ -12,6 +12,7 @@ const distDir = path.join(fixtureRoot, "dist");
 const agentsFile = path.join(fixtureRoot, "AGENTS.md");
 
 const config: PletivoConfig = {
+  host: "localhost",
   outDir: "dist",
   port: 3000,
   base: "/",

@@ -2,7 +2,7 @@
   "private": true,
   "workspaces": ["packages/*", "examples/*"],
   "scripts": {
-    "typecheck": "tsc --noEmit -p packages/pletivo/tsconfig.json"
+    "typecheck": "tsc --noEmit -p packages/pletivo/tsconfig.json && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "@astrojs/compiler": "3.0.1",
@@ -12,6 +12,7 @@
     "morphdom": "^2.7.8",
     "pletivo": "workspace:*",
     "preact": "^10",
+    "typescript": "~5.9.3",
     "zod": "^4"
   }
 }

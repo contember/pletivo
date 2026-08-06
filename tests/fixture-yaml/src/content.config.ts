@@ -1,1 +1,1 @@
-export const collections = (globalThis).__yamlTestCollections;
+export const collections = (globalThis as Record<string, any>).__yamlTestCollections;

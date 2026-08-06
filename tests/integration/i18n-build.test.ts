@@ -18,6 +18,7 @@ const fixtureRoot = path.join(import.meta.dir, "../fixture-i18n");
 const distDir = path.join(fixtureRoot, "dist");
 
 const config: PletivoConfig = {
+  host: "localhost",
   outDir: "dist",
   port: 3000,
   base: "/",

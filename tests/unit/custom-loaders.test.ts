@@ -30,7 +30,7 @@ async function writeConfig(collections: Record<string, ReturnType<typeof defineC
 
   await fs.writeFile(
     configPath,
-    `export const collections = (globalThis).__testCollections;\n`,
+    `export const collections = (globalThis as Record<string, any>).__testCollections;\n`,
   );
 }
 

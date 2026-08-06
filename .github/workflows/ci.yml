@@ -29,6 +29,8 @@ jobs:
       # pletivo publishes raw src/ (its exports map points at .ts), so every
       # consumer typechecks these files — a type error here breaks downstream
       # builds even though Bun strips types at runtime. Keep this gated.
+      # Two programs: the package itself, and the repo's own consumers of it
+      # (tests/, examples/basic) which catch drift in the exported types.
       - name: Typecheck
         run: bun run typecheck
 
