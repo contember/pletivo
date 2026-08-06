@@ -140,8 +140,16 @@ function extractStyleChildren(children: unknown): string {
   return "";
 }
 
+/**
+ * A component function as seen by `jsx()`. The parameter is `any` on purpose:
+ * page authors write concretely-typed components (`(props: { name: string })`),
+ * and under `strictFunctionTypes` those are not assignable to a parameter typed
+ * `(props: Props)` — so a `Props` signature here rejects every real component.
+ */
+export type ComponentFn = (props: any) => HtmlString | string | Promise<HtmlString | string>;
+
 export function jsx(
-  tag: string | ((props: Props) => HtmlString | string | Promise<HtmlString | string>),
+  tag: string | ComponentFn,
   props: Props,
 ): HtmlString | Promise<HtmlString> {
   if (typeof tag === "function") {
@@ -241,11 +249,7 @@ function isClientDirectiveKey(key: string): boolean {
  * Render a component as an island with hydration marker.
  * Component name is auto-detected from function.name.
  */
-function renderIsland(
-  tag: (props: Props) => HtmlString | string | Promise<HtmlString | string>,
-  props: Props,
-  hydrate: string,
-): HtmlString {
+function renderIsland(tag: ComponentFn, props: Props, hydrate: string): HtmlString {
   const componentName = tag.name || "anonymous";
 
   // Extract component props (without island-specific ones)
@@ -276,4 +280,43 @@ function renderIsland(
 
   const effectiveHydrate = hydrate === "only" ? "load" : hydrate;
   return createHtml(renderIslandWrapper(componentName, effectiveHydrate, componentProps, innerHtml));
+}
+
+/**
+ * The JSX namespace `jsxImportSource: "pletivo"` resolves against.
+ *
+ * Declared here, in a `.ts` file the typecheck gate compiles, rather than in a
+ * shipped `.d.ts` — `skipLibCheck` would exclude a `.d.ts` from that gate, and
+ * an ambient global declaration inside node_modules is never loaded by a
+ * consumer's program at all. Exporting it from the jsx-runtime module is the
+ * mechanism TS actually looks up for the automatic JSX transform.
+ */
+export namespace JSX {
+  export type Element = HtmlString | Promise<HtmlString>;
+
+  export interface IntrinsicElements {
+    [elemName: string]: Record<string, unknown>;
+  }
+
+  export interface ElementChildrenAttribute {
+    children: {};
+  }
+
+  /**
+   * Hydration directives are accepted on every component in addition to its
+   * own props — `getClientDirective` strips them before the component is
+   * called, so they never appear in the props type. Without this a perfectly
+   * valid `<Counter client="load" initial={0} />` is a type error.
+   */
+  export type LibraryManagedAttributes<_C, P> = P & ClientDirectives;
+}
+
+/** Both accepted island syntaxes: pletivo's `client="load"` and Astro's `client:load`. */
+export interface ClientDirectives {
+  client?: "load" | "idle" | "visible" | "only" | (string & {});
+  "client:load"?: boolean;
+  "client:idle"?: boolean;
+  "client:visible"?: boolean;
+  "client:only"?: boolean;
+  "client:media"?: string;
 }

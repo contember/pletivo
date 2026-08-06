@@ -120,15 +120,15 @@ describe("dangerouslySetInnerHTML", () => {
 describe("Fragment", () => {
   test("renders only children", () => {
     const result = Fragment({ children: [jsx("span", { children: "a" }), jsx("span", { children: "b" })] });
-    expect(result.__html).toBe("<span>a</span><span>b</span>");
+    expect(html(result)).toBe("<span>a</span><span>b</span>");
   });
 
   test("renders text children", () => {
-    expect(Fragment({ children: "hello" }).__html).toBe("hello");
+    expect(html(Fragment({ children: "hello" }))).toBe("hello");
   });
 
   test("renders empty", () => {
-    expect(Fragment({  }).__html).toBe("");
+    expect(html(Fragment({  }))).toBe("");
   });
 });
 
@@ -275,7 +275,7 @@ describe("island detection", () => {
   });
 
   test("client:only skips SSR and renders empty wrapper", () => {
-    function BrowserOnly(props: { label: string }) {
+    function BrowserOnly(props: { label: string }): never {
       // This would crash during SSR if called (uses window)
       throw new Error("should not be called during SSR");
     }
@@ -289,7 +289,7 @@ describe("island detection", () => {
   });
 
   test("client:only registers island in registry", () => {
-    function MapWidget() {
+    function MapWidget(): never {
       throw new Error("should not be called");
     }
     jsx(MapWidget, { "client:only": "preact" });
@@ -298,7 +298,7 @@ describe("island detection", () => {
   });
 
   test("pletivo client='only' syntax skips SSR", () => {
-    function Chart(props: { data: number[] }) {
+    function Chart(props: { data: number[] }): never {
       throw new Error("should not be called during SSR");
     }
     const h = html(jsx(Chart, { client: "only", data: [1, 2, 3] }));
