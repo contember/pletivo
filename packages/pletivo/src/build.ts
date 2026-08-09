@@ -6,7 +6,7 @@ import { initCollections, getValidationFailures } from "./content/collection";
 import { resetIslandRegistry } from "./runtime/island";
 import { runWithRenderTracking, redirectPageHtml, AstroCookies, type AstroResponse } from "./runtime/astro-shim";
 import { hydrationScript } from "./runtime/hydration";
-import { bundleCss } from "./css";
+import { bundleCss, cssHrefsForPage, type CssBundle } from "./css";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { generateSitemap } from "./sitemap";
@@ -23,7 +23,7 @@ import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
 import { setBase } from "./base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
-import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs } from "./js-imported-css";
+import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs, registerCssPageEntry } from "./js-imported-css";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
@@ -42,6 +42,12 @@ interface PageResult {
   file: string;
   label: string;
   outPath: string;
+  /**
+   * Absolute path of the page module this output was rendered from, when
+   * one exists. Used to look up the page's CSS groups; leaving it unset
+   * makes the page link every group (the pre-grouping behaviour).
+   */
+  pageEntry?: string;
   /**
    * Rendered HTML when this page was freshly rendered this build.
    * Empty string for `source === "cached"` pages — they didn't go
@@ -356,6 +362,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   const dynamicRouteCacheable = new Map<string, () => Promise<void>>();
   async function importDynamicRouteModule(fullPath: string): Promise<{ default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }> {
     const mod = await import(fullPath);
+    registerCssPageEntry(fullPath);
     await collectPageModuleCss(fullPath, `page:${fullPath}`);
     return mod;
   }
@@ -507,6 +514,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       // Collect CSS side-effect imports from non-.astro page modules. Runs
       // unconditionally (even for cached pages) so the global stylesheet
       // stays complete — mirrors the astro plugin's onLoad collection.
+      registerCssPageEntry(fullPath);
       await collectPageModuleCss(fullPath, `page:${route.file}`);
 
       // Endpoint routes (robots.txt.ts, rss.xml.ts) emit their GET() body
@@ -519,7 +527,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
           console.warn(`  Skipping ${route.file}: endpoint route without an exported GET()`);
           return null;
         }
-        return { file: route.file, label: route.file, outPath, html: body, raw: true };
+        return { file: route.file, label: route.file, pageEntry: fullPath, outPath, html: body, raw: true };
       }
 
       if (typeof mod.default !== "function") {
@@ -549,7 +557,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
         console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         return null;
       }
-      return { file: route.file, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
+      return { file: route.file, label: route.file, pageEntry: fullPath, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
     }),
   );
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
@@ -652,7 +660,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       if (outcome.source === "rendered" && outcome.html === "") continue;
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
-      results.push({ file: route.file, label, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size });
+      results.push({ file: route.file, label, pageEntry: fullPath, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size });
     }
   }
   phase("dynamic routes", tDynamic);
@@ -723,6 +731,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       results.push({
         file: emission.sourceRoute.file,
         label,
+        pageEntry: srcFullPath,
         outPath,
         html,
         renderedModules,
@@ -738,6 +747,8 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       try {
         const entrypoint = await resolveEntrypoint(injected.entrypoint, projectRoot);
         const mod = await import(entrypoint);
+        registerCssPageEntry(entrypoint);
+        await collectPageModuleCss(entrypoint, `page:${entrypoint}`);
         const pattern = injected.pattern.replace(/^\//, "");
         const outPath = path.join(distDir, pattern);
 
@@ -764,6 +775,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
             results.push({
               file: injected.entrypoint,
               label: `[injected] ${injected.pattern}`,
+              pageEntry: entrypoint,
               outPath,
               html,
               renderedModules,
@@ -791,7 +803,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     }),
   );
   if (result404) {
-    results.push({ file: result404.file, label: result404.file, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles });
+    results.push({ file: result404.file, label: result404.file, pageEntry: result404.entry, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles });
   }
 
   // Deduplicate by output path — later entries win. The main use case
@@ -835,7 +847,8 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   // during page rendering, and hoisted-script CSS imports are collected
   // above, so the bundle needs to be computed here to include them.
   const tCss = performance.now();
-  const cssPath = await bundleCss(projectRoot, config.srcDir, distDir);
+  const cssBundle = await bundleCss(projectRoot, config.srcDir, distDir);
+  const cssSheetCount = (cssBundle.shared ? 1 : 0) + cssBundle.groups.length;
   phase("bundleCss", tCss);
 
   // Write all pages (including 404) — parallel.
@@ -856,7 +869,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   await Promise.all(
     dedupedResults.map(async (result) => {
       if (result.source === "cached") {
-        const size = await refreshCachedHtmlCssLink(result.outPath, base, cssPath);
+        const size = await refreshCachedHtmlCssLink(result.outPath, base, cssHrefsForPage(cssBundle, result.pageEntry));
         totalSize += size;
         cachedCount++;
         if (cache && result.routeKey) {
@@ -876,7 +889,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
         return;
       }
-      const size = await writeHtml(result.outPath, result.html, base, cssPath, publicManifest, result.renderedModules, result.tsxStyles);
+      const size = await writeHtml(result.outPath, result.html, base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, result.renderedModules, result.tsxStyles);
       totalSize += size;
       renderedCount++;
       // Now that we know the final byte count, patch it onto the
@@ -954,7 +967,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   const incrementalSummary = cache
     ? `, ${renderedCount} rendered + ${cachedCount} cached`
     : "";
-  console.log(`\nBuilt ${results.length} pages${incrementalSummary}${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssPath ? ", 1 CSS bundle" : ""} (${formatSize(totalSize)} total)`);
+  console.log(`\nBuilt ${results.length} pages${incrementalSummary}${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssSheetCount > 0 ? `, ${cssSheetCount} CSS bundle${cssSheetCount === 1 ? "" : "s"}` : ""} (${formatSize(totalSize)} total)`);
 
   // Refuse to ship a build that silently dropped entries.
   // Individual errors were already logged at validation time.
@@ -1325,7 +1338,7 @@ async function writeHtml(
   outPath: string,
   html: string,
   base: string,
-  cssPath: string | null,
+  cssHrefs: string[],
   publicManifest: Map<string, string>,
   renderedModules?: Set<string>,
   tsxStyles?: string[],
@@ -1339,8 +1352,8 @@ async function writeHtml(
   // paths from bundleCss) are not double-rewritten.
   html = timeSync("rewriteRefs", () => rewriteRefs(html, publicManifest));
 
-  if (cssPath && html.includes("</head>")) {
-    html = html.replace("</head>", `<link rel="stylesheet" href="${base}${cssPath}">\n</head>`);
+  if (cssHrefs.length > 0 && html.includes("</head>")) {
+    html = html.replace("</head>", `${stylesheetLinks(base, cssHrefs)}</head>`);
   }
 
   // Inject per-page CSS from <style> blocks in .astro components:
@@ -1418,10 +1431,22 @@ async function writeHtml(
   return bytes;
 }
 
+/** `<link>` tags for a page's stylesheets, de-duplicated by href. */
+function stylesheetLinks(base: string, hrefs: string[]): string {
+  const seen = new Set<string>();
+  let out = "";
+  for (const href of hrefs) {
+    if (seen.has(href)) continue;
+    seen.add(href);
+    out += `<link rel="stylesheet" href="${base}${href}">\n`;
+  }
+  return out;
+}
+
 async function refreshCachedHtmlCssLink(
   outPath: string,
   base: string,
-  cssPath: string | null,
+  cssHrefs: string[],
 ): Promise<number> {
   let html: string;
   try {
@@ -1430,12 +1455,20 @@ async function refreshCachedHtmlCssLink(
     return 0;
   }
 
-  const stylesheetRe = /<link rel="stylesheet" href="[^"]*\/assets\/styles\.[a-f0-9]+\.css">\n?/g;
-  const nextLink = cssPath ? `<link rel="stylesheet" href="${base}${cssPath}">\n` : "";
-  let next = html.replace(stylesheetRe, nextLink);
+  // A page can now carry several pletivo stylesheets. Replace the whole
+  // run with the fresh list at the position of the first one, and drop
+  // the rest — appending per-match would multiply the links.
+  const stylesheetRe = /<link rel="stylesheet" href="[^"]*\/assets\/styles\.(?:[a-z0-9-]+\.)?[a-f0-9]{8}\.css">\n?/g;
+  const nextLinks = stylesheetLinks(base, cssHrefs);
+  let replaced = false;
+  let next = html.replace(stylesheetRe, () => {
+    if (replaced) return "";
+    replaced = true;
+    return nextLinks;
+  });
 
-  if (cssPath && next === html && html.includes("</head>")) {
-    next = html.replace("</head>", nextLink + "</head>");
+  if (cssHrefs.length > 0 && !replaced && html.includes("</head>")) {
+    next = html.replace("</head>", nextLinks + "</head>");
   }
 
   if (next !== html) {
@@ -1448,19 +1481,21 @@ async function refreshCachedHtmlCssLink(
 async function render404Page(
   pagesDir: string,
   pageContext: Record<string, unknown>,
-): Promise<{ file: string; html: string; renderedModules: Set<string>; tsxStyles: string[] } | null> {
+): Promise<{ file: string; entry: string; html: string; renderedModules: Set<string>; tsxStyles: string[] } | null> {
   for (const ext of [".tsx", ".jsx", ".astro"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
     if (await file.exists()) {
       const mod = await import(fullPath);
+      registerCssPageEntry(fullPath);
+      await collectPageModuleCss(fullPath, `page:${fullPath}`);
       if (typeof mod.default === "function") {
         resetIslandRegistry();
         const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
           renderComponent(mod.default, pageContext),
         );
         if (html) {
-          return { file: `404${ext}`, html, renderedModules, tsxStyles };
+          return { file: `404${ext}`, entry: fullPath, html, renderedModules, tsxStyles };
         }
       }
       break;

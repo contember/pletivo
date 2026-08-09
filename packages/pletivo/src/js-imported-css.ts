@@ -21,12 +21,79 @@ interface CssImportGroups {
 }
 
 interface CollectCssOptions {
+  /**
+   * `false` switches to *detached* collection: the imports are flattened
+   * onto the key instead of becoming a node in the page module graph, and
+   * external CSS is dropped because the caller bundles it itself.
+   *
+   * Used for hoisted `<script>` blocks, whose `sourceFile` is the .astro
+   * component but whose code is the script body — attaching them would
+   * overwrite the component's own graph node.
+   */
   bundleExternalCss?: boolean;
 }
 
+type CssRefKind = "external" | "source";
+
+/**
+ * One entry of a module's import list, in source order. Keeping CSS and
+ * module edges interleaved is what lets the group walk emit rules in
+ * import order (spec item 4) rather than "all deps, then all CSS".
+ */
+type NodeItem =
+  | { type: "css"; file: string; kind: CssRefKind }
+  | { type: "dep"; file: string };
+
+interface GraphNode {
+  items: NodeItem[];
+  /**
+   * True when the items came from the module's real (compiled) code via
+   * `collectCssSideEffectImports`. Speculative nodes derived by re-reading
+   * a dependency's source must never overwrite one.
+   */
+  authoritative: boolean;
+}
+
+export interface CssGroup {
+  /** Filename fragment derived from the group's first page. */
+  name: string;
+  css: string;
+  /** Absolute paths of the page entries that must link this group. */
+  pages: string[];
+}
+
+export interface CssPlan {
+  /** CSS every page links: unattributed modules plus hoisted-script CSS. */
+  shared: string;
+  groups: CssGroup[];
+  /**
+   * Page entries whose module graph was collected this build. A page
+   * outside this set (cached, or never imported) has no known CSS reach,
+   * so callers must fall back to linking every group.
+   */
+  knownPages: Set<string>;
+}
+
+export interface PlanCssOptions {
+  /**
+   * Source CSS files already emitted by the main pipeline (the Tailwind
+   * entry and its `@import` graph, or every `src/**\/*.css` in concat
+   * mode). Re-emitting them raw ships `@import "tailwindcss"` / `@theme`
+   * to the browser and — being last and unlayered — outranks the
+   * compiled copy.
+   */
+  consumedSourceCss?: Set<string>;
+}
+
 const bundledCssMap = new Map<string, string>();
-const moduleCssMap = new Map<string, string>();
-const moduleSourceCssMap = new Map<string, string[]>();
+/** Module graph, keyed by absolute module path. */
+const fileNodes = new Map<string, GraphNode>();
+/** Collection key → the module file it recorded, for prefix clearing. */
+const keyToFile = new Map<string, string>();
+/** Detached (hoisted-script) source CSS refs, keyed by collection key. */
+const detachedSourceCss = new Map<string, string[]>();
+const pageEntryFiles = new Set<string>();
+const externalCssText = new Map<string, Promise<string>>();
 const cssImportEntries = new Map<string, CssImportEntry>();
 const staticImportCache = new Map<string, Promise<string[]>>();
 
@@ -44,17 +111,145 @@ export function configureJsImportedCss(rootDir: string, srcDir: string): void {
   sourceCssRoot = path.resolve(rootDir, srcDir);
 }
 
-export async function getJsImportedCssOutput(options: { includeSourceCss?: boolean } = {}): Promise<string> {
-  // Sort by map key so the concatenation order is stable across builds.
-  // Both maps are populated during parallel page imports / hoisted bundling,
-  // so insertion order is non-deterministic and would otherwise churn the
-  // stylesheet hash between otherwise-identical builds.
-  const parts = [...sortedByKey(moduleCssMap), ...sortedByKey(bundledCssMap)].filter(Boolean);
-  if (options.includeSourceCss) {
-    const sourceCss = await readSourceCssOutput();
-    if (sourceCss) parts.push(sourceCss);
+/**
+ * Mark an absolute page module path as a top-level entry of the CSS
+ * module graph. Grouping is by *set of page entries that reach a CSS
+ * module*, so a page that is never registered (or never imported, e.g.
+ * restored from the incremental cache) is treated as reaching everything.
+ */
+export function registerCssPageEntry(file: string): void {
+  pageEntryFiles.add(path.resolve(file));
+}
+
+/** All collected CSS in one string — dev server and tests. */
+export async function getJsImportedCssOutput(options: PlanCssOptions = {}): Promise<string> {
+  const plan = await planJsImportedCss(options);
+  return [plan.shared, ...plan.groups.map((g) => g.css)].filter(Boolean).join("\n\n");
+}
+
+export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<CssPlan> {
+  const consumed = options.consumedSourceCss ?? new Set<string>();
+
+  const knownPages = [...pageEntryFiles].filter((file) => fileNodes.has(file)).sort();
+
+  // Walk each page entry. `order` doubles as the set of attributed CSS
+  // modules and as the deterministic emission order: a module is indexed
+  // the first time any page reaches it, which is exactly the position a
+  // single merged post-order walk over the sorted pages would give it.
+  const order = new Map<string, number>();
+  const kinds = new Map<string, CssRefKind>();
+  const pagesFor = new Map<string, Set<string>>();
+  for (const page of knownPages) {
+    walkCssGraph(page, new Set<string>(), (file, kind) => {
+      if (!order.has(file)) {
+        order.set(file, order.size);
+        kinds.set(file, kind);
+      }
+      let pages = pagesFor.get(file);
+      if (!pages) pagesFor.set(file, (pages = new Set<string>()));
+      pages.add(page);
+    });
   }
-  return parts.join("\n\n");
+
+  // Anything the page walk did not reach still has to ship. Rather than
+  // guess, it goes in the shared sheet — the pre-grouping behaviour.
+  const shared = new Set<string>();
+  for (const node of fileNodes.values()) {
+    for (const item of node.items) {
+      if (item.type !== "css" || order.has(item.file)) continue;
+      shared.add(item.file);
+      kinds.set(item.file, item.kind);
+    }
+  }
+  // Hoisted-script CSS is page-agnostic here: the scripts are bundled as
+  // one artifact, so their source CSS cannot be attributed to a page set.
+  for (const files of detachedSourceCss.values()) {
+    for (const file of files) {
+      shared.add(file);
+      kinds.set(file, "source");
+      order.delete(file);
+      pagesFor.delete(file);
+    }
+  }
+
+  const text = async (file: string): Promise<string> =>
+    kinds.get(file) === "source"
+      ? await sourceCssText(file, consumed)
+      : await externalCssBundle(file);
+
+  const sharedParts: string[] = [];
+  for (const file of [...shared].sort()) {
+    const css = await text(file);
+    if (css) sharedParts.push(css);
+  }
+  for (const css of sortedByKey(bundledCssMap)) {
+    if (css) sharedParts.push(css);
+  }
+
+  const buckets = new Map<string, string[]>();
+  for (const file of order.keys()) {
+    const pages = pagesFor.get(file);
+    if (!pages) continue;
+    const signature = [...pages].sort().join("\n");
+    const bucket = buckets.get(signature);
+    if (bucket) bucket.push(file);
+    else buckets.set(signature, [file]);
+  }
+
+  const ranked: Array<{ rank: number; group: CssGroup }> = [];
+  for (const [signature, files] of buckets) {
+    files.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    const parts: string[] = [];
+    for (const file of files) {
+      const css = await text(file);
+      if (css) parts.push(css);
+    }
+    if (parts.length === 0) continue;
+    const pages = signature.split("\n");
+    ranked.push({
+      rank: order.get(files[0]) ?? 0,
+      group: { name: groupName(pages), css: parts.join("\n\n"), pages },
+    });
+  }
+  // Link order follows the same merged walk the single bundle used, so a
+  // group whose rules came first still comes first.
+  ranked.sort((a, b) => a.rank - b.rank);
+
+  return {
+    shared: sharedParts.join("\n\n"),
+    groups: ranked.map((entry) => entry.group),
+    knownPages: new Set(knownPages),
+  };
+}
+
+function walkCssGraph(
+  file: string,
+  visited: Set<string>,
+  emit: (file: string, kind: CssRefKind) => void,
+): void {
+  if (visited.has(file)) return;
+  visited.add(file);
+  const node = fileNodes.get(file);
+  if (!node) return;
+  for (const item of node.items) {
+    if (item.type === "dep") walkCssGraph(item.file, visited, emit);
+    else emit(item.file, item.kind);
+  }
+}
+
+function groupName(pages: string[]): string {
+  const named = pages.find((page) => {
+    const base = path.basename(page, path.extname(page));
+    return base !== "404" && base !== "500";
+  });
+  return prettyName(named ?? pages[0] ?? "chunk");
+}
+
+function prettyName(file: string): string {
+  let base = path.basename(file, path.extname(file));
+  if (base === "index" || base === "") base = path.basename(path.dirname(file));
+  base = base.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase();
+  return base.slice(0, 24) || "chunk";
 }
 
 function sortedByKey(map: Map<string, string>): string[] {
@@ -64,8 +259,11 @@ function sortedByKey(map: Map<string, string>): string[] {
 }
 
 export function clearJsImportedCss(): void {
-  moduleCssMap.clear();
-  moduleSourceCssMap.clear();
+  fileNodes.clear();
+  keyToFile.clear();
+  detachedSourceCss.clear();
+  pageEntryFiles.clear();
+  externalCssText.clear();
   bundledCssMap.clear();
   cssImportEntries.clear();
   staticImportCache.clear();
@@ -76,11 +274,13 @@ export function clearJsImportedCssImportCache(): void {
 }
 
 export function clearCollectedCss(prefix: string): void {
-  for (const key of moduleCssMap.keys()) {
-    if (key.startsWith(prefix)) moduleCssMap.delete(key);
+  for (const [key, file] of keyToFile) {
+    if (!key.startsWith(prefix)) continue;
+    keyToFile.delete(key);
+    fileNodes.delete(file);
   }
-  for (const key of moduleSourceCssMap.keys()) {
-    if (key.startsWith(prefix)) moduleSourceCssMap.delete(key);
+  for (const key of detachedSourceCss.keys()) {
+    if (key.startsWith(prefix)) detachedSourceCss.delete(key);
   }
   clearBundledCss(prefix);
 }
@@ -133,21 +333,88 @@ export async function collectCssSideEffectImports(
   key: string,
   options: CollectCssOptions = {},
 ): Promise<void> {
-  const imports = await collectCssImports(sourceFile, code);
-  if (imports.source.length > 0) {
-    moduleSourceCssMap.set(key, imports.source);
-  } else {
-    moduleSourceCssMap.delete(key);
-  }
-
-  if (imports.external.length === 0 || options.bundleExternalCss === false) {
-    moduleCssMap.delete(key);
+  if (options.bundleExternalCss === false) {
+    // Detached: flatten onto the key, don't touch the module graph.
+    const imports = await collectCssImports(sourceFile, code);
+    if (imports.source.length > 0) detachedSourceCss.set(key, imports.source);
+    else detachedSourceCss.delete(key);
     return;
   }
 
-  const token = Bun.hash(`${sourceFile}\0${key}`).toString(16).padStart(16, "0");
-  cssImportEntries.set(token, { sourceFile, specifiers: imports.external });
+  const file = path.resolve(sourceFile);
+  keyToFile.set(key, file);
+  fileNodes.set(file, {
+    items: nodeItems(file, staticImportsFromCode(file, code)),
+    authoritative: true,
+  });
+  await expandGraph(file, new Set<string>([file]));
+}
 
+/**
+ * Fill in graph nodes for everything reachable from `file`. Nodes recorded
+ * by `collectCssSideEffectImports` are authoritative and left alone —
+ * re-deriving a `.astro` node from its raw source would lose the imports
+ * that only exist in the compiled output.
+ */
+async function expandGraph(file: string, visited: Set<string>): Promise<void> {
+  const node = fileNodes.get(file);
+  if (!node) return;
+  for (const item of node.items) {
+    if (item.type !== "dep") continue;
+    const dep = item.file;
+    if (visited.has(dep)) continue;
+    visited.add(dep);
+    const existing = fileNodes.get(dep);
+    if (!existing?.authoritative) {
+      fileNodes.set(dep, {
+        items: nodeItems(dep, await staticImportsForFile(dep)),
+        authoritative: false,
+      });
+    }
+    await expandGraph(dep, visited);
+  }
+}
+
+function nodeItems(sourceFile: string, imports: string[]): NodeItem[] {
+  const items: NodeItem[] = [];
+  const seen = new Set<string>();
+  for (const specifier of imports) {
+    const clean = stripQuery(specifier);
+    if (!clean || isVirtualOrBuiltin(clean)) continue;
+
+    const cssPath = resolveCssSpecifier(sourceFile, specifier);
+    if (cssPath) {
+      if (seen.has(`css\0${cssPath}`)) continue;
+      seen.add(`css\0${cssPath}`);
+      items.push({ type: "css", file: cssPath, kind: isSourceCss(cssPath) ? "source" : "external" });
+      continue;
+    }
+
+    const modulePath = resolveLocalModule(specifier, sourceFile);
+    if (!modulePath || seen.has(`dep\0${modulePath}`)) continue;
+    seen.add(`dep\0${modulePath}`);
+    items.push({ type: "dep", file: modulePath });
+  }
+  return items;
+}
+
+/**
+ * Bundle one CSS module — `@import`s resolved, `url()` assets handled by
+ * Bun. Memoized per file: the same stylesheet reached from 39 pages is
+ * built once and its text emitted once.
+ */
+async function externalCssBundle(file: string): Promise<string> {
+  let pending = externalCssText.get(file);
+  if (!pending) {
+    pending = buildExternalCss(file);
+    externalCssText.set(file, pending);
+  }
+  return await pending;
+}
+
+async function buildExternalCss(file: string): Promise<string> {
+  const token = Bun.hash(file).toString(16).padStart(16, "0");
+  cssImportEntries.set(token, { sourceFile: file, specifiers: [file] });
   try {
     const result = await Bun.build({
       entrypoints: [CSS_IMPORT_PREFIX + token],
@@ -159,9 +426,8 @@ export async function collectCssSideEffectImports(
 
     if (!result.success) {
       const logs = result.logs.map((log) => String(log)).join("\n");
-      console.error(`[pletivo] CSS side-effect import collection failed for ${sourceFile}:\n${logs}`);
-      moduleCssMap.delete(key);
-      return;
+      console.error(`[pletivo] CSS side-effect import collection failed for ${file}:\n${logs}`);
+      return "";
     }
 
     const css: string[] = [];
@@ -169,14 +435,18 @@ export async function collectCssSideEffectImports(
       if (!isCssOutput(output)) continue;
       css.push(await output.text());
     }
-    if (css.length > 0) {
-      moduleCssMap.set(key, css.join("\n\n"));
-    } else {
-      moduleCssMap.delete(key);
-    }
+    return css.join("\n\n");
   } finally {
     cssImportEntries.delete(token);
   }
+}
+
+async function sourceCssText(file: string, consumed: Set<string>): Promise<string> {
+  if (consumed.has(file)) return "";
+  const content = await readTextFile(file);
+  if (content === null) return "";
+  const label = projectRoot ? path.relative(projectRoot, file) : file;
+  return `/* ${label} */\n${content}`;
 }
 
 export function cssSideEffectBunPlugin(): BunPlugin {
@@ -225,21 +495,6 @@ function cssImportBunPlugin(): BunPlugin {
   };
 }
 
-async function readSourceCssOutput(): Promise<string> {
-  const files = new Set<string>();
-  for (const paths of moduleSourceCssMap.values()) {
-    for (const file of paths) files.add(file);
-  }
-  const parts: string[] = [];
-  for (const file of [...files].sort()) {
-    const content = await readTextFile(file);
-    if (content === null) continue;
-    const label = projectRoot ? path.relative(projectRoot, file) : file;
-    parts.push(`/* ${label} */\n${content}`);
-  }
-  return parts.join("\n\n");
-}
-
 function extractCssSideEffectImports(sourceFile: string, code: string): string[] {
   const specifiers: string[] = [];
   const re = /(?:^|[;\n\r])\s*import\s+["']([^"']+)["']\s*;?/g;
@@ -253,38 +508,16 @@ function extractCssSideEffectImports(sourceFile: string, code: string): string[]
 
 async function collectCssImports(sourceFile: string, code: string): Promise<CssImportGroups> {
   const out = { source: new Set<string>(), external: new Set<string>() };
-  await collectCssSpecifiersFromCode(sourceFile, code, out, new Set<string>());
-  return {
-    source: [...out.source].sort(),
-    external: [...out.external].sort(),
-  };
-}
-
-async function collectCssSpecifiersFromCode(
-  sourceFile: string,
-  code: string,
-  out: { source: Set<string>; external: Set<string> },
-  visited: Set<string>,
-): Promise<void> {
   await collectCssSpecifiersFromImports(
     sourceFile,
     staticImportsFromCode(sourceFile, code),
     out,
-    visited,
+    new Set<string>(),
   );
-}
-
-async function collectCssSpecifiersFromFile(
-  sourceFile: string,
-  out: { source: Set<string>; external: Set<string> },
-  visited: Set<string>,
-): Promise<void> {
-  await collectCssSpecifiersFromImports(
-    sourceFile,
-    await staticImportsForFile(sourceFile),
-    out,
-    visited,
-  );
+  return {
+    source: [...out.source].sort(),
+    external: [...out.external].sort(),
+  };
 }
 
 async function collectCssSpecifiersFromImports(
@@ -310,7 +543,12 @@ async function collectCssSpecifiersFromImports(
     const modulePath = resolveLocalModule(specifier, sourceFile);
     if (!modulePath || visited.has(modulePath)) continue;
     visited.add(modulePath);
-    await collectCssSpecifiersFromFile(modulePath, out, visited);
+    await collectCssSpecifiersFromImports(
+      modulePath,
+      await staticImportsForFile(modulePath),
+      out,
+      visited,
+    );
   }
 }
 
