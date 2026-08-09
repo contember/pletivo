@@ -126,9 +126,11 @@ describe("CSS chunking — no per-importer duplication", () => {
 		const allCss = [...sheets.values()].join("\n");
 
 		// The marker rule, and every rule in the file, must appear once.
+		// Selectors are matched with their opening brace — the emitted CSS
+		// is minified, so there is no whitespace to anchor on.
 		expect(occurrences(allCss, ".shared-marker")).toBe(1);
-		expect(occurrences(allCss, ".shared-rule-0 ")).toBe(1);
-		expect(occurrences(allCss, `.shared-rule-${SHARED_RULES - 1} `)).toBe(1);
+		expect(occurrences(allCss, ".shared-rule-0{")).toBe(1);
+		expect(occurrences(allCss, `.shared-rule-${SHARED_RULES - 1}{`)).toBe(1);
 		expect(occurrences(allCss, ".solo-marker")).toBe(1);
 
 		// Byte account: one copy of shared.css plus slack for solo.css and
@@ -246,6 +248,22 @@ describe("CSS chunking — assets referenced from CSS", () => {
 		expect(allCss).toMatch(/url\(["']?\/assets\/big-font\.[a-f0-9]{8}\.woff2["']?\)/);
 		const assets = await fs.readdir(path.join(projectRoot, "dist", "assets"));
 		expect(assets.some((f) => f.startsWith("small-font."))).toBe(false);
+	});
+});
+
+describe("CSS chunking — the emitted stylesheet is minified", () => {
+	it("strips whitespace and shortens values", async () => {
+		await write("vendor/minify.css", `.minify-marker {\n  color: rgb(255, 0, 0);\n  margin: 0px 0px 0px 0px;\n}\n`);
+		await write(
+			"src/pages/index.astro",
+			`---\nimport "../../vendor/minify.css";\n---\n<html><head><title>Min</title></head><body><h1>Min</h1></body></html>\n`,
+		);
+
+		const result = runBuild();
+		expect(result.status).toBe(0);
+
+		const allCss = [...(await emittedStylesheets()).values()].join("\n");
+		expect(allCss).toContain(".minify-marker{color:red;margin:0}");
 	});
 });
 

@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import { Glob } from "bun";
 import { getScssOutput } from "./scss";
 import { planJsImportedCss } from "./js-imported-css";
+import { minifyCss } from "./css-minify";
 
 /**
  * The stylesheets a build emits. `shared` carries everything that cannot
@@ -52,7 +53,11 @@ export async function bundleCss(
   const plan = await planJsImportedCss({ consumedSourceCss: base.consumedSourceCss });
 
   const assetsDir = path.join(distDir, "assets");
-  const write = async (css: string, name: string): Promise<string> => {
+  const write = async (source: string, name: string): Promise<string> => {
+    // Minify last, on the finished sheet: the pieces arrive from three
+    // pipelines (Tailwind, raw source CSS, Bun-bundled JS imports) and
+    // only one of them has a bundler in front of it.
+    const css = await minifyCss(source);
     const hasher = new Bun.CryptoHasher("md5");
     hasher.update(css);
     const hash = hasher.digest("hex").slice(0, 8);
