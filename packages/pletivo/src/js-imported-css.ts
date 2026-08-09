@@ -2,6 +2,7 @@ import path from "path";
 import { existsSync } from "fs";
 import fs from "fs/promises";
 import type { BunPlugin } from "bun";
+import { cssAssetBunPlugin, stripCssAssetPlaceholders } from "./css-assets";
 
 type BuildCssOutput = {
   path: string;
@@ -298,7 +299,7 @@ export async function recordBuildCssOutputs(
   const css: string[] = [];
   for (const output of outputs) {
     if (!isCssOutput(output)) continue;
-    css.push(await output.text());
+    css.push(stripCssAssetPlaceholders(await output.text()));
   }
 
   if (css.length > 0) {
@@ -421,7 +422,7 @@ async function buildExternalCss(file: string): Promise<string> {
       format: "esm",
       target: "browser",
       minify: false,
-      plugins: [cssSideEffectBunPlugin(), cssImportBunPlugin()],
+      plugins: [cssSideEffectBunPlugin(), cssImportBunPlugin(), cssAssetBunPlugin()],
     });
 
     if (!result.success) {
@@ -433,7 +434,7 @@ async function buildExternalCss(file: string): Promise<string> {
     const css: string[] = [];
     for (const output of result.outputs) {
       if (!isCssOutput(output)) continue;
-      css.push(await output.text());
+      css.push(stripCssAssetPlaceholders(await output.text()));
     }
     return css.join("\n\n");
   } finally {

@@ -24,6 +24,7 @@ import { setBase } from "./base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs, registerCssPageEntry } from "./js-imported-css";
+import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-assets";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
@@ -203,6 +204,14 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     await fs.rm(distDir, { recursive: true, force: true });
   }
   await fs.mkdir(distDir, { recursive: true });
+  // Extract `url()` targets from CSS into files rather than letting Bun
+  // inline them as base64. Configured after the wipe and before the
+  // first CSS-producing build (hoisted scripts), which runs well ahead
+  // of bundleCss().
+  configureCssAssets({
+    outDir: path.join(distDir, "assets"),
+    publicPath: `${base}/assets/`,
+  });
   // Snapshot the current dist filesystem once — runIncrementalRender
   // queries this Set instead of doing per-slug fs.access calls when
   // deciding whether a cached entry's output file is still on disk.
@@ -967,7 +976,11 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   const incrementalSummary = cache
     ? `, ${renderedCount} rendered + ${cachedCount} cached`
     : "";
-  console.log(`\nBuilt ${results.length} pages${incrementalSummary}${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssSheetCount > 0 ? `, ${cssSheetCount} CSS bundle${cssSheetCount === 1 ? "" : "s"}` : ""} (${formatSize(totalSize)} total)`);
+  const cssAssets = emittedCssAssets();
+  const cssAssetSummary = cssAssets.length > 0
+    ? `, ${cssAssets.length} CSS asset${cssAssets.length === 1 ? "" : "s"} (${formatSize(cssAssets.reduce((sum, a) => sum + a.bytes, 0))})`
+    : "";
+  console.log(`\nBuilt ${results.length} pages${incrementalSummary}${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssSheetCount > 0 ? `, ${cssSheetCount} CSS bundle${cssSheetCount === 1 ? "" : "s"}` : ""}${cssAssetSummary} (${formatSize(totalSize)} total)`);
 
   // Refuse to ship a build that silently dropped entries.
   // Individual errors were already logged at validation time.
@@ -1530,7 +1543,7 @@ async function bundleHoistedScripts(
     format: "esm",
     target: "browser",
     minify: true,
-    plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin()],
+    plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin(), cssAssetBunPlugin()],
   });
 
   if (!result.success) {

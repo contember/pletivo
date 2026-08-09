@@ -160,6 +160,95 @@ describe("CSS chunking — no per-importer duplication", () => {
 	});
 });
 
+/**
+ * Assets referenced from CSS. Bun inlines every `url()` target up to
+ * 131,071 B as base64 and has no flag to stop it, so a webfont used to
+ * ship inside the stylesheet at +33.5% base64 overhead — and unusable
+ * under a `font-src 'self'` CSP, which does not cover `data:`.
+ */
+const ASSET_INLINE_LIMIT = 4096;
+
+/** Deterministic incompressible bytes — a realistic font stand-in. */
+function fakeFont(n: number, seed: number): Buffer {
+	const buf = Buffer.alloc(n);
+	let x = seed;
+	for (let i = 0; i < n; i++) {
+		x = (x * 1103515245 + 12345) & 0x7fffffff;
+		buf[i] = x & 0xff;
+	}
+	return buf;
+}
+
+/** `fonts.css` with one `@font-face` per entry, imported by one page. */
+async function setupFontProject(fonts: Array<{ name: string; bytes: number }>): Promise<void> {
+	await fs.mkdir(path.join(projectRoot, "vendor/files"), { recursive: true });
+	let css = "";
+	for (const [i, font] of fonts.entries()) {
+		await fs.writeFile(path.join(projectRoot, "vendor/files", font.name), fakeFont(font.bytes, i + 1));
+		css +=
+			`@font-face {\n` +
+			`  font-family: "Probe${i}";\n` +
+			`  src: url(./files/${font.name});\n` +
+			`}\n`;
+	}
+	await write("vendor/fonts.css", css);
+	await write(
+		"src/pages/index.astro",
+		`---\nimport "../../vendor/fonts.css";\n---\n<html><head><title>Fonts</title></head><body><h1>Fonts</h1></body></html>\n`,
+	);
+}
+
+describe("CSS chunking — assets referenced from CSS", () => {
+	it("emits a webfont as a hashed file instead of a base64 data: URI", async () => {
+		const fontBytes = 40_000;
+		await setupFontProject([{ name: "big-font.woff2", bytes: fontBytes }]);
+
+		const result = runBuild();
+		expect(result.status).toBe(0);
+
+		const sheets = await emittedStylesheets();
+		const allCss = [...sheets.values()].join("\n");
+
+		// The regression this locks: a base64 font in the stylesheet.
+		expect(allCss).not.toContain("data:font");
+		expect(allCss).not.toContain("base64");
+
+		// The font is a file, content-hashed, and the URL resolves.
+		const href = allCss.match(/url\(["']?(\/assets\/big-font\.[a-f0-9]{8}\.woff2)["']?\)/);
+		expect(href).not.toBeNull();
+		const onDisk = path.join(projectRoot, "dist", href![1].replace(/^\//, ""));
+		const written = await fs.readFile(onDisk);
+		const source = await fs.readFile(path.join(projectRoot, "vendor/files/big-font.woff2"));
+		expect(written.byteLength).toBe(fontBytes);
+		expect(written.equals(source)).toBe(true);
+
+		// A stylesheet carrying the font inline would be at least 4/3 of it.
+		const totalCssBytes = [...sheets.values()].reduce(
+			(sum, css) => sum + Buffer.byteLength(css, "utf8"),
+			0,
+		);
+		expect(totalCssBytes).toBeLessThan(fontBytes);
+	});
+
+	it("keeps assets below the 4096-byte inline limit as data: URIs", async () => {
+		await setupFontProject([
+			{ name: "big-font.woff2", bytes: ASSET_INLINE_LIMIT },
+			{ name: "small-font.woff", bytes: ASSET_INLINE_LIMIT - 1 },
+		]);
+
+		const result = runBuild();
+		expect(result.status).toBe(0);
+
+		const allCss = [...(await emittedStylesheets()).values()].join("\n");
+		// Vite's `build.assetsInlineLimit` default, which Astro never
+		// overrides: inline strictly below it, a file at or above it.
+		expect(allCss).toContain("data:font/woff;base64,");
+		expect(allCss).toMatch(/url\(["']?\/assets\/big-font\.[a-f0-9]{8}\.woff2["']?\)/);
+		const assets = await fs.readdir(path.join(projectRoot, "dist", "assets"));
+		expect(assets.some((f) => f.startsWith("small-font."))).toBe(false);
+	});
+});
+
 describe("CSS chunking — the Tailwind entry ships once", () => {
 	it("does not re-emit the Tailwind entry raw alongside its compiled output", async () => {
 		await write("node_modules/@tailwindcss/node/package.json", `{"type":"module","main":"index.js"}`);
