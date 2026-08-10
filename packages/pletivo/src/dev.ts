@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
 import { watch } from "fs";
-import { scanRoutes, matchRoute, type Route, type StaticPath } from "./router";
+import { scanRoutes, matchRoute, type Route, type RouteParams, type StaticPath } from "./router";
 import { createPaginate } from "./paginate";
 import { getContentBaseDirs, initCollections } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
@@ -296,7 +296,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
   async function renderPage(
     route: Route,
-    params: Record<string, string>,
+    params: RouteParams,
     pathname: string = "/",
     request?: Request,
     localeOverride?: string,
@@ -583,7 +583,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
    */
   async function serveEndpoint(
     route: Route,
-    params: Record<string, string>,
+    params: RouteParams,
     pathname: string,
     req: Request,
   ): Promise<Response | null> {
@@ -627,7 +627,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   //   (if stale) → error page (if configured) → raw stack trace as last resort.
   async function resolveRoute(
     route: Route,
-    params: Record<string, string>,
+    params: RouteParams,
     pathname: string,
     req: Request,
     localeOverride?: string,
@@ -868,7 +868,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
   // sources are cached for the server's lifetime. Bounded to stay modest.
   const cdnImageCache = new Map<
     string,
-    { data: Uint8Array; contentType: string; mtimeMs: number }
+    { data: Uint8Array<ArrayBuffer>; contentType: string; mtimeMs: number }
   >();
   const CDN_IMAGE_CACHE_MAX = 256;
   let warnedNoCdnSharp = false;
@@ -923,7 +923,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     }
 
     // Load the source bytes (only on cache miss).
-    let bytes: Uint8Array;
+    let bytes: Uint8Array<ArrayBuffer>;
     let remoteFormat = sourceFormat;
     if (isRemote) {
       const upstream = await fetch(source).catch(() => null);

@@ -146,6 +146,15 @@ describe("routeToOutputPath", () => {
     const route = parseRoute("docs/[...path].tsx");
     expect(routeToOutputPath(route, { path: "guides/intro" })).toBe("docs/guides/intro/index.html");
   });
+
+  // A getStaticPaths() entry with a missing slug used to reach path.join and
+  // abort the build with an unattributable TypeError.
+  test("missing required param names the route", () => {
+    const route = parseRoute("blog/[slug].tsx");
+    expect(() => routeToOutputPath(route, {})).toThrow(/blog\/\[slug\]\.tsx.*slug/s);
+    expect(() => routeToOutputPath(route, { slug: undefined })).toThrow(/slug/);
+    expect(() => routeToOutputPath(route, { slug: "" })).toThrow(/slug/);
+  });
 });
 
 describe("findRoute", () => {

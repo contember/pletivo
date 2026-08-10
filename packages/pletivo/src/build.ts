@@ -32,6 +32,12 @@ import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type 
 import { extractEntryFilePaths } from "./incremental/extract-deps";
 import { phase, timeSync, timeAsync, flushProfile } from "./profile";
 
+/** Shape a dynamic page module is used through: its default export + getStaticPaths. */
+interface DynamicMod {
+  default?: unknown;
+  getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]>;
+}
+
 interface PageResult {
   file: string;
   label: string;
@@ -156,7 +162,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     : options.clean
       ? await CacheStore.forceClean(projectRoot, configHash)
       : await CacheStore.load(projectRoot, configHash);
-  const fragments: FragmentsHelper | null = await resolveFragmentsHelper();
+  const fragments: FragmentsHelper | null = await resolveFragmentsHelper(projectRoot);
   phase("cache load + fragments resolve", tCacheLoad);
 
   const tAstroStart = performance.now();
@@ -245,7 +251,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
 
   function makePageContext(
     pathname: string,
-    params: Record<string, string>,
+    params: RouteParams,
     route: Route,
     localeOverride?: string,
   ) {
@@ -345,7 +351,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   // `getStaticPaths` call per route per build.
   const tDynPaths = performance.now();
   const dynamicParamSets = new Map<string, Array<{ params: Record<string, string | undefined> }>>();
-  const dynamicMods = new Map<string, { default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }>();
+  const dynamicMods = new Map<string, DynamicMod>();
   const dynamicStaticPathsCache = new Map<string, Promise<StaticPath[]>>();
   const dynamicRouteCacheable = new Map<string, () => Promise<void>>();
   async function importDynamicRouteModule(fullPath: string): Promise<{ default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }> {
@@ -431,7 +437,9 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     const fetch = (async () => {
       let mod = dynamicMods.get(routeFile);
       if (!mod) {
-        mod = (await import(fullPath)) as typeof mod;
+        // Cast to the map's value type, not `typeof mod` — the latter is
+        // `DynamicMod | undefined`, which infects the set() and every use below.
+        mod = (await import(fullPath)) as DynamicMod;
         dynamicMods.set(routeFile, mod);
       }
       if (typeof mod.getStaticPaths !== "function") return [] as StaticPath[];

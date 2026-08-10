@@ -57,7 +57,7 @@ config: {debug: true, level: 5}
         schema: z.object({ title: z.string() }).passthrough(),
       }),
     };
-    await fs.writeFile(configPath, `export const collections = (globalThis).__yamlTestCollections;\n`);
+    await fs.writeFile(configPath, `export const collections = (globalThis as Record<string, any>).__yamlTestCollections;\n`);
     await initCollections(fixtureRoot);
   });
 

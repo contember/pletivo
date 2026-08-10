@@ -12,7 +12,7 @@
  * attributes, `unescapeHTML`) are inserted raw.
  */
 
-import { HtmlString, createHtml, isHtmlString } from "./html-string";
+import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-string";
 import { withBase } from "../base";
 import { getHoistedScript, hoistedUrl } from "../astro-plugin";
 export { HtmlString };
@@ -509,7 +509,11 @@ export function createComponent(
     result: AstroResult,
     props: Record<string, unknown>,
     slots: SlotsRecord,
-  ) => HtmlString | Promise<HtmlString>,
+    // `RawHtml`, not `HtmlString`: compiled .astro modules and hand-written
+    // factories return plain `{ __html }` objects, which the shim normalizes
+    // below. Requiring the class here would reject the output pletivo's own
+    // astro compiler emits.
+  ) => RawHtml | Promise<RawHtml>,
   moduleId: string = "",
   _propagation?: unknown,
 ): AstroComponentFactory {
@@ -551,7 +555,14 @@ export function createComponent(
     }
 
     const out = fn(result, props, slots);
-    return out instanceof Promise ? await out : out;
+    const rendered = out instanceof Promise ? await out : out;
+    // Normalize a plain `{ __html }` carrier into an HtmlString. Anything else
+    // passes through untouched — a frontmatter `Astro.redirect()` returns a
+    // Response, which callers detect further up.
+    if (rendered instanceof HtmlString || !isHtmlString(rendered)) {
+      return rendered as HtmlString;
+    }
+    return createHtml(rendered.__html);
   };
   (wrapped as AstroComponentFactory).isAstroComponentFactory = true;
   (wrapped as AstroComponentFactory).moduleId = moduleId;

@@ -127,7 +127,19 @@ export function routeToOutputPath(route: Route, params: RouteParams): string {
     if (seg.type === "static") {
       parts.push(seg.value);
     } else if (seg.type === "param") {
-      parts.push(params[seg.value]);
+      // `matchRoute` always fills a required `[param]`, but `getStaticPaths`
+      // (and the JSON-restored incremental cache) can hand us a missing one.
+      // Dropping it would silently emit a colliding path and `path.join`
+      // would throw an unattributable TypeError — so fail with the route named.
+      const v = params[seg.value];
+      if (!v) {
+        throw new Error(
+          `Route "${route.file}": missing value for required param "${seg.value}". ` +
+            `getStaticPaths() must return a non-empty string for every [param] segment. ` +
+            `Got: ${JSON.stringify(params)}`,
+        );
+      }
+      parts.push(v);
     } else if (seg.type === "rest") {
       // Astro's convention for catch-all routes: `undefined` means
       // "no extra segments" (the catch-all matched nothing). We

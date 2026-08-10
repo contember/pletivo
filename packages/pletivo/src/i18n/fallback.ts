@@ -34,7 +34,7 @@ export interface FallbackEmission {
    * Resolved params for the source route. Empty object for static
    * routes; for dynamic routes, one emission per `getStaticPaths` entry.
    */
-  sourceParams: Record<string, string>;
+  sourceParams: RouteParams;
   /** Resolved props matching `sourceParams`, when provided. */
   sourceProps: Record<string, unknown>;
   /** Relative URL pathname (no leading slash) where this emission renders. */
@@ -206,7 +206,7 @@ function generateLocaleFallbacks(
 
 function makeFallbackEmission(
   sourceRoute: Route,
-  sourceParams: Record<string, string>,
+  sourceParams: RouteParams,
   sourceProps: Record<string, unknown>,
   targetPathname: string,
   targetLocaleCode: string,
@@ -296,7 +296,7 @@ function generateDefaultLocaleRedirects(
 
 function materializeRoute(
   route: Route,
-  params: Record<string, string>,
+  params: RouteParams,
 ): string {
   return rewriteRouteWithPrefix(route, keepOriginalPrefix, params);
 }
@@ -314,7 +314,7 @@ const keepOriginalPrefix = Symbol("keep-original-prefix") as unknown as string;
 function rewriteRouteWithPrefix(
   route: Route,
   newPrefix: string | typeof keepOriginalPrefix,
-  params: Record<string, string>,
+  params: RouteParams,
 ): string {
   const parts: string[] = [];
   if (typeof newPrefix === "string" && newPrefix !== keepOriginalPrefix) {

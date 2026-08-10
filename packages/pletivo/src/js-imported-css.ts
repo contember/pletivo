@@ -1,6 +1,7 @@
 import path from "path";
 import { existsSync } from "fs";
 import fs from "fs/promises";
+import type { BunPlugin } from "bun";
 
 type BuildCssOutput = {
   path: string;
@@ -178,15 +179,10 @@ export async function collectCssSideEffectImports(
   }
 }
 
-export function cssSideEffectBunPlugin() {
+export function cssSideEffectBunPlugin(): BunPlugin {
   return {
     name: "pletivo-css-side-effects",
-    setup(build: {
-      onLoad: (
-        opts: { filter: RegExp },
-        cb: (args: { path: string }) => Promise<{ contents: string; loader: string } | undefined> | { contents: string; loader: string } | undefined,
-      ) => void;
-    }) {
+    setup(build) {
       build.onLoad({ filter: /\.css(\?.*)?$/ }, async (args) => {
         const cleanPath = stripQuery(args.path);
         if (/\.module\.css$/i.test(cleanPath)) return undefined;
@@ -197,22 +193,13 @@ export function cssSideEffectBunPlugin() {
   };
 }
 
-function cssImportBunPlugin() {
+function cssImportBunPlugin(): BunPlugin {
   const resolveFilter = new RegExp(`^${CSS_IMPORT_PREFIX}[a-f0-9]+$`);
   const loadFilter = /\/[a-f0-9]{16}\.js$/;
 
   return {
     name: "pletivo-css-imports",
-    setup(build: {
-      onResolve: (
-        opts: { filter: RegExp },
-        cb: (args: { path: string }) => { path: string } | undefined,
-      ) => void;
-      onLoad: (
-        opts: { filter: RegExp },
-        cb: (args: { path: string }) => { contents: string; loader: string } | undefined,
-      ) => void;
-    }) {
+    setup(build) {
       build.onResolve({ filter: resolveFilter }, (args) => {
         const token = args.path.slice(CSS_IMPORT_PREFIX.length);
         const entry = cssImportEntries.get(token);

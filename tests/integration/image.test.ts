@@ -21,6 +21,7 @@ const fixtureRoot = path.join(import.meta.dir, "../fixture-image");
 const distDir = path.join(fixtureRoot, "dist");
 
 const config: PletivoConfig = {
+  host: "localhost",
   outDir: "dist",
   port: 3000,
   base: "/",
@@ -226,7 +227,7 @@ describe("getImage() image services", () => {
           sourcePath: source,
           outputPath: "_astro/test.copy.png",
           format: "png",
-          processing: "passthrough",
+          processing: "passthrough" as const,
         },
       ],
     ]);

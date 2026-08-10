@@ -119,6 +119,35 @@ async function findTailwindEntry(
   return null;
 }
 
+/**
+ * The slice of Tailwind v4's API we actually touch. Declared here rather than
+ * imported from `@tailwindcss/node` / `@tailwindcss/oxide`: those resolve from
+ * the *consuming* project (see below), so depending on them just to name two
+ * types would drag Tailwind and a dozen platform-specific oxide binaries into
+ * every install of pletivo.
+ */
+interface TailwindSource {
+  base: string;
+  pattern: string;
+  negated: boolean;
+}
+interface TailwindCompileResult {
+  /** Auto-detected content root: `"none"`, `null` (= scan everything), or a glob. */
+  root: "none" | null | { base: string; pattern: string };
+  /** Explicit `@source` directives from the entry stylesheet. */
+  sources: TailwindSource[];
+  build(candidates: string[]): string;
+}
+interface TailwindNode {
+  compile(
+    source: string,
+    opts: { base: string; from?: string; onDependency: (path: string) => void },
+  ): Promise<TailwindCompileResult>;
+}
+interface TailwindOxide {
+  Scanner: new (opts: { sources: TailwindSource[] }) => { scan(): string[] };
+}
+
 async function compileTailwind(
   projectRoot: string,
   entry: { path: string; source: string },
@@ -132,8 +161,8 @@ async function compileTailwind(
     paths: [projectRoot],
   });
 
-  const { compile } = (await import(tailwindNodePath)) as typeof import("@tailwindcss/node");
-  const { Scanner } = (await import(oxidePath)) as typeof import("@tailwindcss/oxide");
+  const { compile } = (await import(tailwindNodePath)) as TailwindNode;
+  const { Scanner } = (await import(oxidePath)) as TailwindOxide;
 
   const base = path.dirname(entry.path);
   const result = await compile(entry.source, {

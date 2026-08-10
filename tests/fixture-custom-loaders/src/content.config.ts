@@ -1,1 +1,1 @@
-export const collections = (globalThis).__testCollections;
+export const collections = (globalThis as Record<string, any>).__testCollections;

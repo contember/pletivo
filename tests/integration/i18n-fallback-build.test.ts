@@ -10,6 +10,7 @@ const prefixRoot = path.join(import.meta.dir, "../fixture-i18n-prefix-always");
 const prefixDist = path.join(prefixRoot, "dist");
 
 const baseConfig: PletivoConfig = {
+  host: "localhost",
   outDir: "dist",
   port: 3000,
   base: "/",

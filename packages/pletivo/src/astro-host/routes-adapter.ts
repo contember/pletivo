@@ -15,7 +15,7 @@
  */
 
 import path from "path";
-import type { Route, StaticPath } from "../router";
+import type { Route, RouteParams, StaticPath } from "../router";
 import { resolveI18nConfig } from "../i18n/config";
 import { detectRouteLocale } from "../i18n/route-expansion";
 import { escapeRegex } from "../escape-regex";
@@ -109,7 +109,7 @@ export function buildAstroRoutes(
  * resolved params. Matches pletivo's own `routeToOutputPath` semantics
  * but emits `""` for the index instead of `index.html`.
  */
-function materializePathname(route: Route, params: Record<string, string>): string {
+function materializePathname(route: Route, params: RouteParams): string {
   const parts: string[] = [];
   for (const seg of route.segments) {
     if (seg.type === "static") {

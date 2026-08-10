@@ -1,8 +1,20 @@
 {
+  // Covers the repo's own consumers of pletivo's src — the test suites and the
+  // pletivo-native example. Everything else owns a config: packages/pletivo,
+  // packages/astro-jsx-pages (React JSX, so it cannot share one program with
+  // pletivo's global JSX namespace), and the Astro examples (`astro check`).
+  "include": ["tests/**/*.ts", "tests/**/*.tsx", "examples/basic/**/*.ts", "examples/basic/**/*.tsx"],
+  "exclude": ["**/node_modules", "**/dist", "tests/astro-e2e"],
   "compilerOptions": {
     "jsx": "react-jsx",
     "jsxImportSource": "pletivo",
     "strict": true,
+    "skipLibCheck": true,
+    // Same pin as packages/pletivo/tsconfig.json — without it TS auto-includes
+    // every @types package it can find by walking up past the repo root, which
+    // pulls in a parent directory's @types/react and replaces pletivo's JSX
+    // namespace with React's. @types/bun brings node's types with it.
+    "types": ["bun"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "target": "ESNext",

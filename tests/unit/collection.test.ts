@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import path from "path";
-import { defineCollection, glob } from "../../packages/pletivo/src/content/collection";
+import { defineCollection, glob, type Loader } from "../../packages/pletivo/src/content/collection";
 import { z } from "zod";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
@@ -36,7 +36,7 @@ describe("defineCollection", () => {
       schema: z.object({ title: z.string() }),
     });
     expect(result.loader).toBeDefined();
-    expect(result.loader!.load).toBeTypeOf("function");
+    expect((result.loader as Loader).load).toBeTypeOf("function");
   });
 
   test("glob stamps __globBase (used to watch content outside src/)", () => {
