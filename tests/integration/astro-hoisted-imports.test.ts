@@ -31,9 +31,15 @@ describe("astro hoisted <script> with relative import", () => {
     expect(m).not.toBeNull();
     bundlePath = path.join(distDir, "_astro", `hoisted-${m![1]}.js`);
     bundle = await Bun.file(bundlePath).text();
-    const cssHref = html.match(/href="([^"]*\/assets\/styles\.[a-f0-9]+\.css)"/);
-    expect(cssHref).not.toBeNull();
-    css = await Bun.file(path.join(distDir, cssHref![1])).text();
+    // The page links the shared sheet plus every CSS group it reaches;
+    // read all of them so the assertions cover the page's whole cascade.
+    const cssHrefs = [...html.matchAll(/href="([^"]*\/assets\/styles\.(?:[a-z0-9-]+\.)?[a-f0-9]{8}\.css)"/g)];
+    expect(cssHrefs.length).toBeGreaterThan(0);
+    const sheets: string[] = [];
+    for (const match of cssHrefs) {
+      sheets.push(await Bun.file(path.join(distDir, match[1])).text());
+    }
+    css = sheets.join("\n\n");
   });
 
   afterAll(async () => {

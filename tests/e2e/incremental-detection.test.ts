@@ -65,13 +65,18 @@ function runBuild(args: string[] = []): { stdout: string; stderr: string; status
 	return { stdout: result.stdout, stderr: result.stderr, status: result.status ?? -1 };
 }
 
+// A page links the shared sheet plus every CSS group it reaches, so
+// "what this page gets" is the concatenation of all of them. `href` is
+// the shared sheet — the one whose content hash these tests compare.
 async function readCssBundleFor(pageRel: string): Promise<{ href: string; css: string }> {
 	const html = await fs.readFile(path.join(projectRoot, "dist", pageRel), "utf8");
-	const href = /\/assets\/styles\.[a-f0-9]+\.css/.exec(html)?.[0];
-	expect(href).toBeDefined();
-	if (!href) throw new Error(`Missing CSS bundle link in ${pageRel}`);
-	const css = await fs.readFile(path.join(projectRoot, "dist", href.replace(/^\//, "")), "utf8");
-	return { href, css };
+	const hrefs = [...html.matchAll(/\/assets\/styles\.(?:[a-z0-9-]+\.)?[a-f0-9]{8}\.css/g)].map((m) => m[0]);
+	expect(hrefs.length).toBeGreaterThan(0);
+	const parts: string[] = [];
+	for (const href of hrefs) {
+		parts.push(await fs.readFile(path.join(projectRoot, "dist", href.replace(/^\//, "")), "utf8"));
+	}
+	return { href: hrefs[0], css: parts.join("\n\n") };
 }
 
 async function setupSharedCollection(): Promise<void> {

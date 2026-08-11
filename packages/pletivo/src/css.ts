@@ -2,7 +2,36 @@ import path from "path";
 import fs from "fs/promises";
 import { Glob } from "bun";
 import { getScssOutput } from "./scss";
-import { getJsImportedCssOutput } from "./js-imported-css";
+import { planJsImportedCss } from "./js-imported-css";
+import { minifyCss } from "./css-minify";
+
+/**
+ * The stylesheets a build emits. `shared` carries everything that cannot
+ * be attributed to a subset of pages (Tailwind/source CSS, SCSS, hoisted
+ * script CSS); each group carries the CSS modules reachable from exactly
+ * the same set of page entries.
+ */
+export interface CssBundle {
+  shared: string | null;
+  groups: Array<{ href: string; pages: Set<string> }>;
+  /**
+   * Page entries whose CSS reach is known. Anything outside this set —
+   * a page restored from the incremental cache, an injected route — links
+   * every group, which is what the single-bundle build did for everyone.
+   */
+  knownPages: Set<string>;
+}
+
+/** Stylesheet hrefs for one page, in cascade order. */
+export function cssHrefsForPage(bundle: CssBundle, pageEntry: string | undefined): string[] {
+  const hrefs: string[] = [];
+  if (bundle.shared) hrefs.push(bundle.shared);
+  const known = pageEntry !== undefined && bundle.knownPages.has(pageEntry);
+  for (const group of bundle.groups) {
+    if (!known || group.pages.has(pageEntry)) hrefs.push(group.href);
+  }
+  return hrefs;
+}
 
 /**
  * Collect and bundle CSS from src/.
@@ -18,48 +47,58 @@ export async function bundleCss(
   projectRoot: string,
   srcDir: string,
   distDir: string,
-): Promise<string | null> {
+): Promise<CssBundle> {
   const base = await buildCss(projectRoot, srcDir);
   const scss = getScssOutput();
-  const jsImported = await getJsImportedCssOutput({
-    includeSourceCss: !base.includesAllSourceCss,
-  });
-  const combined =
-    base.css === null && !scss && !jsImported
-      ? null
-      : [base.css, scss, jsImported].filter(Boolean).join("\n\n");
-  if (combined === null) return null;
-
-  const hasher = new Bun.CryptoHasher("md5");
-  hasher.update(combined);
-  const hash = hasher.digest("hex").slice(0, 8);
+  const plan = await planJsImportedCss({ consumedSourceCss: base.consumedSourceCss });
 
   const assetsDir = path.join(distDir, "assets");
-  await fs.mkdir(assetsDir, { recursive: true });
+  const write = async (source: string, name: string): Promise<string> => {
+    // Minify last, on the finished sheet: the pieces arrive from three
+    // pipelines (Tailwind, raw source CSS, Bun-bundled JS imports) and
+    // only one of them has a bundler in front of it.
+    const css = await minifyCss(source);
+    const hasher = new Bun.CryptoHasher("md5");
+    hasher.update(css);
+    const hash = hasher.digest("hex").slice(0, 8);
+    await fs.mkdir(assetsDir, { recursive: true });
+    const outFile = name ? `styles.${name}.${hash}.css` : `styles.${hash}.css`;
+    await fs.writeFile(path.join(assetsDir, outFile), css);
+    return `/assets/${outFile}`;
+  };
 
-  const outFile = `styles.${hash}.css`;
-  await fs.writeFile(path.join(assetsDir, outFile), combined);
+  const sharedCss = [base.css, scss, plan.shared].filter(Boolean).join("\n\n");
+  const shared = sharedCss ? await write(sharedCss, "") : null;
 
-  return `/assets/${outFile}`;
+  const groups: CssBundle["groups"] = [];
+  for (const group of plan.groups) {
+    groups.push({ href: await write(group.css, group.name), pages: new Set(group.pages) });
+  }
+
+  return { shared, groups, knownPages: plan.knownPages };
 }
 
 /**
  * Dev-mode CSS: same pipeline as build, served on every /__styles.css
  * request. For large projects Tailwind compile is fast enough to not cache;
  * add caching tied to the file watcher if it becomes a bottleneck.
+ *
+ * Dev serves one sheet to every page — grouping only pays off across
+ * separately-cacheable files — but it goes through the same planner, so
+ * each CSS module still appears exactly once.
  */
 export async function devCss(projectRoot: string, srcDir: string): Promise<string> {
   const out = await buildCss(projectRoot, srcDir);
   const scss = getScssOutput();
-  const jsImported = await getJsImportedCssOutput({
-    includeSourceCss: !out.includesAllSourceCss,
-  });
+  const plan = await planJsImportedCss({ consumedSourceCss: out.consumedSourceCss });
+  const jsImported = [plan.shared, ...plan.groups.map((g) => g.css)].filter(Boolean).join("\n\n");
   return [out.css, scss, jsImported].filter(Boolean).join("\n\n");
 }
 
 async function buildCss(projectRoot: string, srcDir: string): Promise<{
   css: string | null;
-  includesAllSourceCss: boolean;
+  /** Source CSS files whose content is already in `css`. */
+  consumedSourceCss: Set<string>;
 }> {
   const srcPath = path.join(projectRoot, srcDir);
   const cssFiles: string[] = [];
@@ -69,16 +108,21 @@ async function buildCss(projectRoot: string, srcDir: string): Promise<{
     if (file.endsWith(".module.css")) continue;
     cssFiles.push(file);
   }
-  if (cssFiles.length === 0) return { css: null, includesAllSourceCss: true };
+  if (cssFiles.length === 0) return { css: null, consumedSourceCss: new Set() };
 
   // Look for a Tailwind entry — a CSS file that imports tailwindcss
   const entry = await findTailwindEntry(srcPath, cssFiles);
   if (entry) {
     try {
-      return {
-        css: await compileTailwind(projectRoot, entry),
-        includesAllSourceCss: false,
-      };
+      // Tailwind only compiles the entry and its `@import` graph, so only
+      // those files must be kept out of the raw source-CSS re-emit — the
+      // entry itself included, or it ships twice, the second copy raw and
+      // unlayered (and therefore winning the cascade).
+      const consumedSourceCss = new Set<string>([path.resolve(entry.path)]);
+      const css = await compileTailwind(projectRoot, entry, (dep) =>
+        consumedSourceCss.add(path.resolve(dep)),
+      );
+      return { css, consumedSourceCss };
     } catch (e) {
       console.error(`  Tailwind compile failed: ${(e as Error).message}`);
       console.error(`  Falling back to raw CSS concat.`);
@@ -87,11 +131,14 @@ async function buildCss(projectRoot: string, srcDir: string): Promise<{
 
   // Fallback: concat everything
   const parts: string[] = [];
+  const consumedSourceCss = new Set<string>();
   for (const file of cssFiles.sort()) {
-    const content = await Bun.file(path.join(srcPath, file)).text();
+    const full = path.join(srcPath, file);
+    const content = await Bun.file(full).text();
+    consumedSourceCss.add(path.resolve(full));
     parts.push(`/* ${file} */\n${content}`);
   }
-  return { css: parts.join("\n\n"), includesAllSourceCss: true };
+  return { css: parts.join("\n\n"), consumedSourceCss };
 }
 
 async function findTailwindEntry(
@@ -151,6 +198,7 @@ interface TailwindOxide {
 async function compileTailwind(
   projectRoot: string,
   entry: { path: string; source: string },
+  onDependency: (file: string) => void,
 ): Promise<string> {
   // Resolve Tailwind packages from the project's node_modules, not pletivo's.
   // The user's site owns the Tailwind version; pletivo stays version-agnostic.
@@ -168,7 +216,7 @@ async function compileTailwind(
   const result = await compile(entry.source, {
     base,
     from: entry.path,
-    onDependency: () => {},
+    onDependency,
   });
 
   // Combine `root` (auto-detected content root) with explicit @source
