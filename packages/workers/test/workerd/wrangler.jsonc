@@ -1,0 +1,14 @@
+{
+  "name": "pletivo-workerd-qualification",
+  "main": "entry.ts",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "durable_objects": {
+    "bindings": [{ "name": "QUALIFIER", "class_name": "QualificationDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QualificationDO"] }],
+  "rules": [
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
+  ]
+}
