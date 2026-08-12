@@ -83,6 +83,19 @@ const ENTRIES: Record<string, Entry> = {
     target: "browser",
     conditions: ["workerd"],
   },
+  /**
+   * The image pipeline: the dimension reader, the output-path naming, `getImage()`
+   * and the image services.
+   *
+   * In the isolate for the same reason the collection runtime is: `getImage()` is
+   * called from a page's frontmatter, and `astro:assets` is a module that page
+   * imports. It is a few kilobytes of string and arithmetic — no filesystem, no
+   * digest beyond the portable MD5 — which is exactly why it can be here at all.
+   */
+  "pletivo-image.js": {
+    specifier: "@pletivo/core/image",
+    target: "browser",
+  },
 };
 
 /** Of those, the ones `compileProject` adds to every bundle. */
@@ -147,6 +160,9 @@ export async function generateRuntimeModules(): Promise<string> {
     "",
     "/** The module a project's content API resolves to. Added only when it is reached for. */",
     'export const CONTENT_MODULE_NAME = "pletivo-content.js";',
+    "",
+    "/** The module `astro:assets` and an `image()` schema resolve through. Added only when reached for. */",
+    'export const IMAGE_MODULE_NAME = "pletivo-image.js";',
     "",
   ].join("\n");
 }

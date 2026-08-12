@@ -515,6 +515,63 @@ describe("renderPage, the project stylesheet", () => {
   });
 });
 
+describe("renderPage, Vite's import suffixes", () => {
+  // The two the Bun host answers: `?raw`/`?inline` for the text, `?url` for the URL
+  // of an emitted file. A real site reaches for both — see docs/todos/022.
+  const queried = new Map<string, string>([
+    [
+      "src/pages/index.astro",
+      "---\n" +
+        'import icon from "../assets/mark.svg?raw";\n' +
+        'import inlined from "../assets/mark.svg?inline";\n' +
+        'import formUrl from "../scripts/form.js?url";\n' +
+        "---\n" +
+        "<html><head><title>t</title></head><body>\n" +
+        "<div set:html={icon} />\n" +
+        "<p>{inlined.length}</p>\n" +
+        "<script src={formUrl}></script>\n" +
+        "</body></html>\n",
+    ],
+    ["src/assets/mark.svg", '<svg viewBox="0 0 1 1"><title>mark</title></svg>'],
+    ["src/scripts/form.js", "console.log('form');\n"],
+  ]);
+  const renderQueried = () => renderPage({ files: queried, pathname: "/", loader, compiler });
+
+  test("?raw and ?inline both give the file's text", async () => {
+    const { html } = await renderQueried();
+    expect(html).toContain('<svg viewBox="0 0 1 1"><title>mark</title></svg>');
+    expect(html).toContain("<p>48</p>");
+  });
+
+  test("?url gives a content-hashed href, and the file to serve it from", async () => {
+    const page = await renderQueried();
+    const asset = page.assets.find((candidate) => candidate.path.endsWith(".js"));
+    expect(asset?.path).toMatch(/^\/_astro\/form\.[0-9a-f]{8}\.js$/);
+    expect(asset?.contentType).toBe("text/javascript; charset=utf-8");
+    expect(asset?.body).toBe("console.log('form');\n");
+    expect(page.html).toContain(`<script src="${asset?.path}">`);
+  });
+
+  test("the ?url href is the file's content hash, so it survives a rename of nothing", async () => {
+    const first = await renderQueried();
+    const moved = new Map(queried);
+    moved.set("src/scripts/form.js", "console.log('changed');\n");
+    const second = await renderPage({ files: moved, pathname: "/", loader, compiler });
+    const hrefOf = (page: Awaited<ReturnType<typeof renderQueried>>) =>
+      page.assets.find((candidate) => candidate.path.endsWith(".js"))?.path;
+    expect(hrefOf(first)).not.toBe(hrefOf(second));
+  });
+
+  test("a suffix naming no file leaves the import alone rather than inventing one", async () => {
+    const missing = new Map(queried);
+    missing.set(
+      "src/pages/index.astro",
+      '---\nimport gone from "../assets/gone.svg?raw";\n---\n<html><body><p>{gone}</p></body></html>\n',
+    );
+    expect(renderPage({ files: missing, pathname: "/", loader, compiler })).rejects.toThrow();
+  });
+});
+
 describe("renderPage, refusals", () => {
   test("reports an unmatched pathname", () => {
     expect(render("/nope")).rejects.toBeInstanceOf(RouteNotFoundError);

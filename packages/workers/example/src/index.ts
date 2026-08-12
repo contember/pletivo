@@ -25,7 +25,14 @@ import {
   type RenderedAsset,
   type WorkerLoaderBinding,
 } from "../../src/render.ts";
-import { ContentFiles, type ContentBinding, type ContentFileRef } from "../../src/content-files.ts";
+import {
+  ContentFiles,
+  type ContentBinding,
+  type ContentFileRef,
+  type ImageInfo,
+  type ProjectAssets,
+} from "../../src/content-files.ts";
+import { serveImage } from "../../src/images.ts";
 import type { OutboundBinding } from "../../src/outbound.ts";
 import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
 import type { ProjectEnv } from "../../src/env.ts";
@@ -74,6 +81,9 @@ export class PletivoContent extends WorkerEntrypoint {
   read(ref: string, path: string): string | null {
     return CONTENT.read(ref, path);
   }
+  image(ref: string, path: string): ImageInfo | null {
+    return CONTENT.image(ref, path);
+  }
 }
 
 /**
@@ -110,8 +120,24 @@ export class PletivoOutbound extends WorkerEntrypoint {
 const assets = new Map<string, RenderedAsset>();
 const ASSET_LIMIT = 32;
 
+/**
+ * The images the last render was handed, so the browser's follow-up request for one
+ * finds bytes.
+ *
+ * A single-site worker would hold these next to its sources; a preview server handed
+ * a different project per request keeps the last one, which is exactly as much state
+ * as `assets` above keeps and for the same reason.
+ */
+let images: ProjectAssets = new Map();
+
 interface RenderRequest {
   files: Record<string, string>;
+  /**
+   * The project's binaries: base64 for the file itself, or the four fields a host
+   * that keeps its files elsewhere already knows about it. Both are real shapes — a
+   * site with 200 MiB of photographs cannot put them in a Worker's heap.
+   */
+  assets?: Record<string, string | ImageInfo>;
   pathname?: string;
   pagesDir?: string;
   site?: string;
@@ -130,6 +156,7 @@ interface RenderRequest {
 /** One render, as this worker performs it. */
 interface ParsedRender {
   files: ReadonlyMap<string, string>;
+  assets: ProjectAssets;
   pathname: string;
   pagesDir?: string;
   site?: string;
@@ -141,7 +168,30 @@ function isRenderRequest(value: unknown): value is RenderRequest {
   if (typeof value !== "object" || value === null) return false;
   const files: unknown = Reflect.get(value, "files");
   if (typeof files !== "object" || files === null) return false;
-  return Object.values(files).every((source) => typeof source === "string");
+  if (!Object.values(files).every((source) => typeof source === "string")) return false;
+  const assets: unknown = Reflect.get(value, "assets");
+  if (assets === undefined) return true;
+  if (typeof assets !== "object" || assets === null) return false;
+  return Object.values(assets).every(isAsset);
+}
+
+function isAsset(value: unknown): value is string | ImageInfo {
+  if (typeof value === "string") return true;
+  if (typeof value !== "object" || value === null) return false;
+  return (
+    typeof Reflect.get(value, "width") === "number" &&
+    typeof Reflect.get(value, "height") === "number" &&
+    typeof Reflect.get(value, "format") === "string" &&
+    typeof Reflect.get(value, "hash") === "string"
+  );
+}
+
+/** Base64 back to bytes. `atob` is the only decoder a Worker has. */
+function decodeBase64(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 export default {
@@ -151,6 +201,14 @@ export default {
     if (asset) {
       return new Response(asset.body, { headers: { "content-type": asset.contentType } });
     }
+    // `/_astro/<name>.<hash>.<ext>` and the `/cdn-cgi/image/` form a rendered page
+    // links to. Content-hashed, so it can be cached forever.
+    const image = serveImage(url.pathname, images);
+    if (image?.bytes) {
+      return new Response(image.bytes, {
+        headers: { "content-type": image.contentType, "cache-control": "public, max-age=31536000, immutable" },
+      });
+    }
 
     // Made per request, but it is only *used* the first time an isolate is created —
     // `env.LOADER.get` runs its code factory on a cache miss and never again. That is
@@ -159,17 +217,20 @@ export default {
 
     try {
       if (url.pathname === "/__paths") {
-        const { files, pagesDir, artifact } = await readRenderRequest(request);
+        const { files, assets, pagesDir, artifact } = await readRenderRequest(request);
         return Response.json(
-          await projectPaths({ files, pagesDir, artifact, loader: env.LOADER, content }),
+          await projectPaths({ files, assets, pagesDir, artifact, loader: env.LOADER, content }),
         );
       }
 
       const parsed: ParsedRender =
         url.pathname === "/__render"
           ? await readRenderRequest(request)
-          : { files: SITE, pathname: url.pathname, proxyOutbound: false };
+          : { files: SITE, assets: images, pathname: url.pathname, proxyOutbound: false };
       const { proxyOutbound, ...render } = parsed;
+      // What the *next* GET for an image URL will be answered from. A real host holds
+      // its own files; this one is handed them with the render that named them.
+      images = render.assets;
 
       const page = await renderPage({
         ...render,
@@ -224,6 +285,12 @@ async function readRenderRequest(request: Request): Promise<ParsedRender> {
   }
   return {
     files: new Map(Object.entries(body.files)),
+    assets: new Map(
+      Object.entries(body.assets ?? {}).map(([path, asset]) => [
+        path,
+        typeof asset === "string" ? decodeBase64(asset) : asset,
+      ]),
+    ),
     pathname: body.pathname ?? "/",
     pagesDir: body.pagesDir,
     site: body.site,

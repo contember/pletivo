@@ -17,12 +17,21 @@
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import type { PreparedSite } from "@pletivo/core/artifact";
+import { imageOutputPath } from "@pletivo/core/image";
 import { compileAstro, parseAstro, type AstroCompiler } from "./astro-compiler.ts";
 import { artifactBinder } from "./artifact.ts";
+import {
+  ASSETS_DIR,
+  ASSETS_SOURCES,
+  ASSETS_SPECIFIER,
+  IMAGE_RUNTIME_SPECIFIER,
+} from "./astro-assets.ts";
+import { assetInfo, type ImageInfo, type ProjectAssets, type ProjectAsset } from "./content-files.ts";
 import {
   ENV_CLIENT_SPECIFIER,
   ENV_MODULES,
   ENV_SERVER_SPECIFIER,
+  IMPORT_META_ENV_GLOBAL,
   type ProjectEnvUse,
 } from "./env.ts";
 import {
@@ -34,10 +43,12 @@ import {
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  IMAGE_MODULE_NAME,
   JSX_RUNTIME_MODULE_NAME,
   RUNTIME_MODULES,
   RUNTIME_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
+import { md5Hex } from "./md5.ts";
 import { isCollectableCss } from "./project-css.ts";
 import { JSX_IMPORT_SPECIFIER, stripTypes, TranspileError } from "./transpile.ts";
 
@@ -85,6 +96,17 @@ export interface CompiledProject {
    */
   content: ProjectContent | null;
   /**
+   * Whether the bundle carries the image runtime — because a page imports
+   * `astro:assets`, or because a collection may resolve an `image()` schema through
+   * the content binding. `render.ts` reads it to decide what its prelude installs.
+   */
+  images: boolean;
+  /**
+   * Whether any module read `import.meta.env`, and therefore whether the entry has to
+   * install the global it was rewritten to. See `substituteImportMetaEnv`.
+   */
+  importMetaEnv: boolean;
+  /**
    * Set when something in the project imports `astro:env`, with the names it takes
    * from each half. `null` otherwise, and then the bundle carries neither module.
    *
@@ -93,6 +115,16 @@ export interface CompiledProject {
    * `env.ts`.
    */
   env: ProjectEnvUse | null;
+  /**
+   * Files a `?url` import named, keyed by the URL path the HTML will spell.
+   *
+   * `import href from "./form.js?url"` resolves to a *string*, and the file it names
+   * has to be served from that string or the `<script src={href}>` written with it
+   * 404s. The Bun host content-hashes it under `_astro/` (`url-asset.ts`) and copies
+   * it into `dist`; here it comes back with the render, the same way the project
+   * stylesheet does, because a Worker has nowhere to put a file.
+   */
+  urlAssets: ReadonlyMap<string, string>;
 }
 
 export interface ProjectContent {
@@ -222,6 +254,47 @@ const IMPLIED_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".astro", ".mt
  * Every caller that walks the graph goes through here, so the module rewriting, the
  * import edges and the CSS cascade order all agree on which file was meant.
  */
+/**
+ * Vite's import suffixes, of which pletivo answers two.
+ *
+ * `?raw` and `?inline` both mean the file's text here, because that is what the Bun
+ * host's loader makes of them (`astro-plugin.ts:571`) and the two hosts have to agree.
+ * (Vite's `?inline` is a data: URI — a divergence pletivo already carries.) `?url`
+ * means the URL of the emitted file, which is a different thing entirely: a string
+ * the HTML spells, and a file somebody then has to serve.
+ */
+export function importQuery(resolved: string): { file: string; kind: "text" | "url" } | null {
+  const mark = resolved.indexOf("?");
+  if (mark === -1) return null;
+  const query = resolved.slice(mark + 1);
+  const file = resolved.slice(0, mark);
+  if (/(^|&)(raw|inline)(&|=|$)/.test(query)) return { file, kind: "text" };
+  if (/(^|&)url(&|=|$)/.test(query)) return { file, kind: "url" };
+  return null;
+}
+
+/**
+ * The URL a `?url` import resolves to, and the file registered under it.
+ *
+ * `_astro/<base>.<md5-8><ext>`, which is what the Bun host emits (`url-asset.ts`), so
+ * a project's markup spells the same href on either host. Content-hashed, so a host
+ * can cache it forever and two renders of the same project agree on the name.
+ */
+function urlAssetHref(
+  file: string,
+  source: string,
+  urlAssets: Map<string, string>,
+): string {
+  const slash = file.lastIndexOf("/");
+  const name = file.slice(slash + 1);
+  const dot = name.lastIndexOf(".");
+  const base = dot === -1 ? name : name.slice(0, dot);
+  const extension = dot === -1 ? "" : name.slice(dot);
+  const href = `/_astro/${base}.${md5Hex(source).slice(0, 8)}${extension}`;
+  urlAssets.set(href, source);
+  return href;
+}
+
 export function resolveInFiles(
   resolved: string,
   files: ReadonlyMap<string, string>,
@@ -349,9 +422,26 @@ export async function compileProject(
   files: ReadonlyMap<string, string>,
   compiler: AstroCompiler = bundled,
   prepared: PreparedSite | null = null,
+  /**
+   * The project's binary files. An image *something imports* becomes a metadata
+   * module, so `import hero from "./hero.png"` resolves to the same `{src, width,
+   * height, format}` the Bun host's loader produces — built here, in the host worker,
+   * because an ESM default export is a value and the isolate cannot go and fetch one.
+   *
+   * Only what is imported, not everything in the map: a photo site can hold thousands
+   * of images and a page reaches a handful. The rest are named by the collections that
+   * carry them, over the binding, one entry at a time.
+   */
+  assets: ProjectAssets = new Map(),
 ): Promise<CompiledProject> {
   const artifact = artifactBinder(prepared);
-  files = artifact.sources(files);
+  files = withAssetSources(artifact.sources(files));
+  /** Image path -> its metadata module, filled as `resolve` reaches each one. */
+  const images = new Map<string, string>();
+  /** `<file>?raw` / `<file>?url` -> the module that default-exports its value, same. */
+  const queried = new Map<string, string>();
+  /** URL path -> the file's text, for every `?url` import the project made. */
+  const urlAssets = new Map<string, string>();
   const modules: Record<string, string> = { ...RUNTIME_MODULES };
   const moduleNames = new Map<string, string>();
   const styles = new Map<string, AstroStyles>();
@@ -383,9 +473,17 @@ export async function compileProject(
       moduleNames.set(file, bundleName(file, takenNames));
     }
   }
-
   let usesContent = false;
+  let usesImages = false;
+  let usesImportMetaEnv = false;
   const usedEnv = new Set<string>();
+
+  /** `import.meta.env` -> the global the entry installs, recorded so the entry knows to. */
+  const withImportMetaEnv = (code: string): string => {
+    const substituted = substituteImportMetaEnv(code);
+    if (substituted.used) usesImportMetaEnv = true;
+    return substituted.code;
+  };
 
   const resolve = (resolved: string): string | null => {
     // The one bare specifier the bundle answers to on its own: sucrase writes it into
@@ -398,6 +496,34 @@ export async function compileProject(
       usesContent = true;
       return `./${CONTENT_MODULE_NAME}`;
     }
+    // `astro:assets` is Astro's own specifier and the Bun host answers it too. Here it
+    // lands on generated sources the host worker compiles — `.astro` components cannot
+    // be pre-built, since only the host worker has the compiler. See `astro-assets.ts`.
+    if (resolved === ASSETS_SPECIFIER) {
+      usesImages = true;
+      const name = moduleNames.get(`${ASSETS_DIR}/index.ts`);
+      return name === undefined ? null : `./${name}`;
+    }
+    if (resolved === IMAGE_RUNTIME_SPECIFIER) {
+      usesImages = true;
+      return `./${IMAGE_MODULE_NAME}`;
+    }
+    // An ESM-imported image: a module the host worker writes from what it knows about
+    // the file. Built on demand, so nothing in `assets` is read until it is imported.
+    const asset = assets.get(resolved);
+    if (asset !== undefined) {
+      let name = moduleNames.get(resolved);
+      if (name === undefined) {
+        const module = imageModule(resolved, asset);
+        // Unreadable header: left out, so the import fails at the Loader by name
+        // rather than resolving to a module with made-up dimensions in it.
+        if (module === null) return null;
+        name = bundleName(resolved, takenNames);
+        moduleNames.set(resolved, name);
+        images.set(resolved, module);
+      }
+      return `./${name}`;
+    }
     // `astro:env` is Astro's own specifier and the Bun host answers to it too, so a
     // project that reads its configuration renders on either host unchanged. The
     // module it lands on is generated per render, because only the caller knows the
@@ -406,6 +532,21 @@ export async function compileProject(
     if (envModule !== undefined) {
       usedEnv.add(resolved);
       return `./${envModule}`;
+    }
+    const query = importQuery(resolved);
+    if (query !== null) {
+      let name = queried.get(resolved);
+      if (name === undefined) {
+        const target = resolveInFiles(query.file, files);
+        const source = target === null ? undefined : files.get(target);
+        if (source === undefined || target === null) return null;
+        name = bundleName(resolved, takenNames);
+        queried.set(resolved, name);
+        moduleNames.set(resolved, name);
+        const value = query.kind === "text" ? source : urlAssetHref(target, source, urlAssets);
+        modules[name] = `export default ${JSON.stringify(value)};\n`;
+      }
+      return `./${name}`;
     }
     const file = resolveInFiles(resolved, files);
     const name = file === null ? undefined : moduleNames.get(file);
@@ -426,7 +567,7 @@ export async function compileProject(
     }
 
     if (VERBATIM.includes(extension)) {
-      modules[name] = rewriteImports(source, { importer: file, resolve });
+      modules[name] = rewriteImports(withImportMetaEnv(source), { importer: file, resolve });
       recordImports(file, source);
       continue;
     }
@@ -436,7 +577,7 @@ export async function compileProject(
       // The JSX import sucrase prepends is not a project edge, and `resolveEdges`
       // drops it for the same reason it drops any specifier outside the file map.
       recordImports(file, code);
-      modules[name] = rewriteImports(code, { importer: file, resolve });
+      modules[name] = rewriteImports(withImportMetaEnv(code), { importer: file, resolve });
       continue;
     }
 
@@ -463,7 +604,12 @@ export async function compileProject(
     // `keepUnusedImports` nothing else in the prologue moves.
     const code = transpile(stripStyleImports(result.code), { file });
     recordImports(file, code);
-    modules[name] = rewriteImports(code, { importer: file, resolve });
+    modules[name] = rewriteImports(withImportMetaEnv(code), { importer: file, resolve });
+  }
+
+  for (const [file, code] of images) {
+    const name = moduleNames.get(file);
+    if (name !== undefined) modules[name] = code;
   }
 
   let content: ProjectContent | null = null;
@@ -472,13 +618,97 @@ export async function compileProject(
     const configFile = findContentConfig(files);
     content = { configModule: configFile === null ? null : (moduleNames.get(configFile) ?? null) };
   }
+  // The content runtime needs it too: an `image()` schema names the output file, and
+  // `imageOutputPath` is what names it on both hosts.
+  if (usesImages || usesContent) modules[IMAGE_MODULE_NAME] = GENERATED_MODULES[IMAGE_MODULE_NAME];
 
   // After the walk, so only the modules something actually imported are carried —
   // and transitively, since one artifact module may name another.
   Object.assign(modules, artifact.modules());
 
   const env = envUse(usedEnv, envNames);
-  return { modules, sources: files, moduleNames, styles, imports, cssImports, content, env };
+  return {
+    modules,
+    sources: files,
+    moduleNames,
+    styles,
+    imports,
+    cssImports,
+    content,
+    images: usesImages || usesContent,
+    importMetaEnv: usesImportMetaEnv,
+    env,
+    urlAssets,
+  };
+}
+
+/**
+ * `import.meta.env`, which a Worker Loader module does not have.
+ *
+ * Vite gives every module one; V8 hands `import.meta` to the *host*, so nothing a
+ * generated module could assign would be visible to another module's `import.meta`.
+ * The only way to answer it is the way Vite does — substitution — and this is it, with
+ * the values behind a global so a rotated secret does not recompile the project.
+ *
+ * A textual replacement, and it says so: the same three tokens inside a string literal
+ * are rewritten too. That is Vite's own failure mode with `define`, and the shape of
+ * the mistake is visible in the output rather than silent. It runs after sucrase, on
+ * generated JavaScript, so `.astro` frontmatter and `.tsx` are covered by one pass.
+ */
+const IMPORT_META_ENV = /\bimport\s*\.\s*meta\s*\.\s*env\b/g;
+
+function substituteImportMetaEnv(code: string): { code: string; used: boolean } {
+  if (!IMPORT_META_ENV.test(code)) return { code, used: false };
+  IMPORT_META_ENV.lastIndex = 0;
+  return { code: code.replace(IMPORT_META_ENV, `globalThis.${IMPORT_META_ENV_GLOBAL}`), used: true };
+}
+
+/**
+ * One image's module, holding what the Bun host's loader puts in the same place.
+ *
+ * `fsPath` is the file-map key rather than a filesystem path — it is what `getImage()`
+ * tests to tell an ESM-imported image from a bare string, and what a host resolves
+ * back to bytes when the browser asks for the URL. Non-enumerable, exactly as on the
+ * Bun host, so it cannot leak through `JSON.stringify`.
+ *
+ * `null` when the file's header cannot be read: better an import that fails by name
+ * than a component rendering made-up dimensions.
+ */
+function imageModule(file: string, asset: ProjectAsset): string | null {
+  let info: ImageInfo;
+  try {
+    info = assetInfo(asset, file);
+  } catch {
+    return null;
+  }
+  const visible = {
+    src: `/${imageOutputPath(file, info.hash)}`,
+    width: info.width,
+    height: info.height,
+    format: info.format,
+  };
+  return (
+    `const meta = ${JSON.stringify(visible)};\n` +
+    `Object.defineProperty(meta, "fsPath", { value: ${JSON.stringify(file)}, enumerable: false });\n` +
+    "export default meta;\n"
+  );
+}
+
+/**
+ * The `astro:assets` sources, added only for a project that names the specifier.
+ *
+ * A substring test rather than a parse, and deliberately generous: it runs before any
+ * module has been read, and the cost of a false positive is three unreferenced modules
+ * that nothing imports, while the cost of a false negative is a page that cannot
+ * resolve `astro:assets` at all.
+ */
+function withAssetSources(files: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
+  for (const source of files.values()) {
+    if (source.includes(ASSETS_SPECIFIER)) {
+      return new Map([...Object.entries(ASSETS_SOURCES), ...files]);
+    }
+  }
+  return files;
 }
 
 /**

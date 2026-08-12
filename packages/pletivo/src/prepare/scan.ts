@@ -134,7 +134,7 @@ export function extensionOf(file: string): string {
   return at === -1 || at < slash ? "" : file.slice(at).toLowerCase();
 }
 
-/** What the Workers host answers on its own — `compile-project.ts` names all three. */
+/** What the Workers host answers on its own — `compile-project.ts` names every one. */
 const HOST_SPECIFIERS = new Set([
   "astro:content",
   "astro/loaders",
@@ -143,18 +143,13 @@ const HOST_SPECIFIERS = new Set([
   "pletivo/jsx-dev-runtime",
   "astro:env/client",
   "astro:env/server",
+  // `getImage()` needs an image's dimensions, and the host worker reads them off the
+  // bytes it holds. See `packages/workers/src/astro-assets.ts`.
+  "astro:assets",
 ]);
 
-/**
- * Astro virtual modules that only exist where a build pipeline does.
- *
- * `astro:assets` is the one that matters: `getImage()` probes an image file for its
- * dimensions and registers an output path, and an isolate has neither the bytes nor
- * anywhere to write. Vendoring the module body would produce a component that renders
- * a broken `src` instead of failing, which is strictly worse.
- */
+/** Astro virtual modules that only exist where a build pipeline does. */
 const UNSUPPORTED_SPECIFIERS = new Set([
-  "astro:assets",
   "astro:transitions",
   "astro:transitions/client",
   "astro:middleware",

@@ -12,16 +12,17 @@ import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
 import { parsePreparedSite } from "@pletivo/core/artifact";
+import { serveImage } from "../src/images.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles } from "../src/content-files.ts";
 import { projectPaths, renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { builtPathname } from "./built-pathname.ts";
 import { FileLoader } from "./file-loader.ts";
+import { imageUrls, readSources, sameBytes } from "./sources.ts";
 import { tailwindStylesheets } from "./tailwind-sources.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
-const SKIPPED = new Set(["node_modules", "dist", "tmp", ".astro", ".wrangler"]);
 
 const fixture = process.argv[2];
 if (!fixture) {
@@ -48,11 +49,9 @@ if ((await build.exited) !== 0) {
   process.exit(1);
 }
 
-const files = new Map<string, string>();
-for await (const rel of new Glob("**/*").scan({ cwd: root, dot: false })) {
-  if (rel.split("/").some((segment) => SKIPPED.has(segment))) continue;
-  files.set(`${prefix}/${rel}`, await Bun.file(path.join(root, rel)).text());
-}
+const sources = await readSources(root);
+const files = new Map([...sources.text].map(([rel, text]) => [`${prefix}/${rel}`, text]));
+const assets = new Map([...sources.binary].map(([rel, bytes]) => [`${prefix}/${rel}`, bytes]));
 
 const artifact = parsePreparedSite(JSON.parse(await Bun.file(artifactPath).text()));
 if (artifact === null) {
@@ -71,6 +70,8 @@ let identical = 0;
 let pages = 0;
 const problems: string[] = [];
 const builtPathnames = new Set<string>();
+/** Every image URL the rendered pages linked to, checked against dist afterwards. */
+const linkedImages = new Set<string>();
 
 for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   pages++;
@@ -81,6 +82,7 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   try {
     page = await renderPage({
       files,
+      assets,
       pathname,
       loader,
       compiler,
@@ -100,6 +102,8 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     problems.push(`  ! ${rel}\n${firstDifference(expected, page.html)}`);
   }
 
+  for (const url of imageUrls(page.html)) linkedImages.add(url);
+
   for (const asset of page.assets) {
     const built = path.join(outDir, asset.path.replace(/^\//, ""));
     const expectedAsset = await Bun.file(built).text().catch(() => null);
@@ -113,10 +117,30 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   }
 }
 
+// A URL that 404s is worse than no image, so every one a page linked to is resolved
+// back to bytes and compared with the file `pletivo build` wrote. A `/cdn-cgi/image/`
+// URL names a transform of a file; the file is what the build wrote, and serving the
+// original is this host saying it cannot perform the transform itself.
+for (const url of [...linkedImages].sort()) {
+  const served = serveImage(url, assets);
+  if (!served?.bytes) {
+    problems.push(`  ! ${url} — a page links to it and this host serves nothing`);
+    continue;
+  }
+  const built = await Bun.file(path.join(outDir, served.path.replace(/^\//, ""))).bytes().catch(() => null);
+  if (built === null) {
+    problems.push(`  ! ${url} — the Bun host emitted no such file`);
+  } else if (!sameBytes(served.bytes, built)) {
+    problems.push(`  ! ${url} — ${served.bytes.length} B served, ${built.length} B built`);
+  } else {
+    console.log(`  = ${url} (${served.bytes.length} B)`);
+  }
+}
+
 // The other half of the dynamic-route API, against the only reference it has: the
 // pages `pletivo build` wrote *are* the pages the project can enumerate.
 const enumerated = new Set(
-  (await projectPaths({ files, loader, compiler, pagesDir, content, artifact })).map(
+  (await projectPaths({ files, assets, loader, compiler, pagesDir, content, artifact })).map(
     (path) => path.pathname,
   ),
 );

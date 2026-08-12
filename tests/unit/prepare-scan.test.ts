@@ -47,6 +47,8 @@ describe("classifySpecifier", () => {
     expect(classifySpecifier("astro:content")).toBe("host");
     expect(classifySpecifier("astro/loaders")).toBe("host");
     expect(classifySpecifier("astro:env/server")).toBe("host");
+    // The host worker holds the bytes, so it can read an image's dimensions itself.
+    expect(classifySpecifier("astro:assets")).toBe("host");
   });
 
   test("leaves alone what nodejs_compat answers inside the isolate", () => {
@@ -55,8 +57,7 @@ describe("classifySpecifier", () => {
   });
 
   test("names the Astro virtual modules no Worker can serve", () => {
-    // `astro:assets` probes an image file for its dimensions; there is no file.
-    expect(classifySpecifier("astro:assets")).toBe("unsupported");
+    expect(classifySpecifier("astro:transitions")).toBe("unsupported");
     expect(classifySpecifier("astro:middleware")).toBe("unsupported");
   });
 

@@ -24,7 +24,10 @@ import { glob } from "astro/loaders";
 
 export const collections = {
   notes: defineCollection({
-    loader: glob({ base: "src/content/notes" }),
+    // \`./\` on purpose: \`path.resolve\` drops it on the Bun host, and a scan that
+    // joined it verbatim would look under a prefix no file-map key starts with —
+    // an empty collection and a page that renders fine and is wrong.
+    loader: glob({ base: "./src/content/notes" }),
     schema: z.object({ title: z.string() }),
   }),
 };
