@@ -1,0 +1,18 @@
+{
+  "name": "@pletivo/core",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/contember/pletivo.git",
+    "directory": "packages/core"
+  },
+  "//": "No build step, by design — see the note in @pletivo/runtime.",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@pletivo/runtime": "workspace:*"
+  }
+}

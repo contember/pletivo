@@ -1,0 +1,35 @@
+# pletivo conformance snapshot
+# case:    base-path
+# project: tests/fixture-base-path
+# covers:
+#   - astro.config base: '/sub-app' prefixed onto emitted asset URLs
+#   - filesystem output paths staying un-prefixed
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=base-path bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+_astro/hoisted-[bundle:1].js
+index.html
+sitemap.xml
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html>
+  <head><title>Base Path</title></head>
+  <body>
+    <h1>Base Path</h1>
+  <script type="module" src="/sub-app/_astro/hoisted-[bundle:1].js"></script></body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+</urlset>
+

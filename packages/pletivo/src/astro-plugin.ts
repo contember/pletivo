@@ -27,6 +27,7 @@ import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
 import { stripTypes } from "./transpile";
 import { collectCssSideEffectImports } from "./js-imported-css";
 import { materializeViteVirtualImports } from "./astro-host/vite-plugins";
+import { setScriptUrlResolver } from "./runtime/script-registry";
 
 let registered = false;
 
@@ -295,6 +296,13 @@ export async function classifyCompilerCss(
 export async function registerAstroPlugin(): Promise<void> {
   if (registered) return;
   registered = true;
+
+  // The shim resolves hoisted-script ids through this, rather than importing
+  // the map from here — see runtime/script-registry.ts.
+  setScriptUrlResolver((id) => {
+    const entry = getHoistedScript(id);
+    return entry ? hoistedUrl(entry.hash) : null;
+  });
 
   const pletivoSrcDir = path.dirname(fileURLToPath(import.meta.url));
   const shimPath = path.resolve(pletivoSrcDir, "runtime/astro-shim.ts");

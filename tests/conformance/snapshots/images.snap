@@ -1,0 +1,33 @@
+# pletivo conformance snapshot
+# case:    images
+# project: tests/fixture-image
+# covers:
+#   - ESM image imports resolving to {src,width,height,format}
+#   - images emitted into _astro/ with a content hash
+#   - case-preserving extensions (.JPG)
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=images bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+_astro/UPPER.[hash:1].JPG
+_astro/test.[hash:1].png
+index.html
+sitemap.xml
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><title>Image Test</title></head><body><h1>Image Test</h1><img src="/_astro/test.[hash:1].png" width="4" height="4" alt="test"><img src="/_astro/UPPER.[hash:1].JPG" width="4" height="4" alt="uppercase"><script type="application/json" id="image-meta">{"src":"/_astro/test.[hash:1].png","width":4,"height":4,"format":"png"}</script><script type="application/json" id="uppercase-image-meta">{"src":"/_astro/UPPER.[hash:1].JPG","width":4,"height":4,"format":"png"}</script></body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+</urlset>
+

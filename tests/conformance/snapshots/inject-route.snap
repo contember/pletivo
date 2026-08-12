@@ -1,0 +1,50 @@
+# pletivo conformance snapshot
+# case:    inject-route
+# project: tests/fixture-inject-route
+# covers:
+#   - integration injectRoute() for endpoints outside src/pages
+#   - site URL reaching an injected route's context
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=inject-route bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+feed.xml
+index.html
+robots.txt
+sitemap.xml
+
+--- pletivo:conformance feed.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Feed</title>
+    <link>https://example.com</link>
+    <item>
+      <title>First Post</title>
+      <link>https://example.com/blog/first</link>
+    </item>
+  </channel>
+</rss>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html><head><title>Home</title></head><body><h1>Home Page</h1></body></html>
+
+--- pletivo:conformance robots.txt ---
+User-agent: *
+Allow: /
+Sitemap: https://example.com/sitemap.xml
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+</urlset>
+

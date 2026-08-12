@@ -1,0 +1,39 @@
+# pletivo conformance snapshot
+# case:    astro-hoisted-imports
+# project: tests/fixture-astro-hoisted-imports
+# covers:
+#   - hoisted <script> that imports a local module
+#   - CSS imported from .astro frontmatter, emitted as a hashed bundle
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=astro-hoisted-imports bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+_astro/hoisted-[bundle:1].js
+assets/styles.[hash:1].css
+assets/styles.pages.[hash:2].css
+index.html
+sitemap.xml
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html>
+  <head><title>Hoisted Imports</title><link rel="stylesheet" href="/assets/styles.[hash:1].css">
+<link rel="stylesheet" href="/assets/styles.pages.[hash:2].css">
+</head>
+  <body>
+    <h1>Hoisted Imports</h1>
+  <script type="module" src="/_astro/hoisted-[bundle:1].js"></script></body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+</urlset>
+

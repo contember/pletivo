@@ -1,0 +1,93 @@
+# pletivo conformance snapshot
+# case:    astro-scoped-styles
+# project: tests/fixture-astro-styles
+# covers:
+#   - .astro scoped CSS with :where(.astro-XXXX) selectors
+#   - scope classes on elements, including on <html>/<body> from a layout
+#   - <style is:global> from a component that renders no DOM
+#   - :global() inside a scoped block
+#   - CSS injected into a page that has no <head>
+#   - no cross-page leakage of scoped or global CSS
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=astro-scoped-styles bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+global-only/index.html
+index.html
+no-head/index.html
+sitemap.xml
+standalone/index.html
+
+--- pletivo:conformance global-only/index.html ---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>is:global test</title>
+  <style>  .is-global-marker { color: seagreen; }
+.mixed-global-marker { letter-spacing: 0.05em; }
+.mixed-scoped:where(.astro-[scope:1]){font-weight:bold}.global-wrapper-target{text-decoration:underline}
+body { background: papayawhip; }</style>
+</head>
+  <body>
+    <h1>Global-only page</h1>
+    
+    <div class="mixed-scoped astro-[scope:1]">Mixed scoped content</div>
+<p class="global-wrapper-target astro-[scope:1]">Has a :global() rule applied from a scoped block</p>
+  </body></html>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html lang="en" class="astro-[scope:2]">
+  <head>
+    <meta charset="utf-8">
+    <title>Scoped Styles Test</title>
+  <style>.card:where(.astro-[scope:3]){padding:1rem;border:1px solid #ccc;border-radius:8px}.card:where(.astro-[scope:3]) h2:where(.astro-[scope:3]){color:navy}
+body{margin:0;font-family:system-ui,sans-serif}</style>
+</head>
+  <body class="astro-[scope:2]">
+    
+  <h1>Hello</h1>
+  <div class="card astro-[scope:3]">
+  <h2 class="astro-[scope:3]">First Card</h2>
+  
+    <p>Card content</p>
+  
+</div>
+</body></html>
+
+--- pletivo:conformance no-head/index.html ---
+<style>.box:where(.astro-[scope:4]){background:salmon;padding:2rem}</style>
+<div class="box astro-[scope:4]">No head tag</div>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+  <url>
+    <loc>/global-only</loc>
+  </url>
+  <url>
+    <loc>/no-head</loc>
+  </url>
+  <url>
+    <loc>/standalone</loc>
+  </url>
+</urlset>
+
+
+--- pletivo:conformance standalone/index.html ---
+<!DOCTYPE html>
+<html lang="en" class="astro-[scope:5]">
+  <head>
+    <title>Standalone</title>
+  <style>.hero:where(.astro-[scope:5]){font-size:3rem;color:rebeccapurple}</style>
+</head>
+  <body class="astro-[scope:5]">
+    <h1 class="hero astro-[scope:5]">Standalone</h1></body></html>

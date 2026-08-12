@@ -13,9 +13,9 @@
     "moduleResolution": "bundler",
     "target": "ESNext",
     "paths": {
-      "pletivo/jsx-runtime": ["./src/runtime/jsx-runtime.ts"],
-      "pletivo/hooks": ["./src/runtime/hooks.ts"],
-      "preact/hooks": ["./src/runtime/hooks.ts"]
+      "pletivo/jsx-runtime": ["../runtime/src/jsx-runtime.ts"],
+      "pletivo/hooks": ["../runtime/src/hooks.ts"],
+      "preact/hooks": ["../runtime/src/hooks.ts"]
     }
   }
 }

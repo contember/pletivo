@@ -211,7 +211,16 @@ export function glob(options: GlobOptions): Loader {
       const baseUrl = pathToFileURL(dir + path.sep);
       const entries: RawEntry[] = [];
 
-      for await (const file of globPattern.scan(dir)) {
+      // Sort the scan. `Bun.Glob.scan()` yields in filesystem order, which on
+      // ext4 is a per-volume filename hash — so an unsorted `getCollection()`
+      // returns entries in a different order on a different machine, and any
+      // page listing a collection renders differently. Sorting also lets a
+      // second runtime enumerating from a bundled manifest agree with Bun.
+      const files: string[] = [];
+      for await (const f of globPattern.scan(dir)) files.push(f);
+      files.sort();
+
+      for (const file of files) {
         const fullPath = path.join(dir, file);
         const content = await Bun.file(fullPath).text();
         const ext = path.extname(file).toLowerCase();

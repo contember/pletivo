@@ -1,0 +1,146 @@
+# pletivo conformance snapshot
+# case:    tsx-pages
+# project: tests/fixture
+# covers:
+#   - TSX pages, layouts, dynamic `[slug]` routes via getStaticPaths
+#   - islands: client:load with SSR content, client:only with an empty wrapper
+#   - inline hydration script injected only on pages that have an island
+#   - markdown content collection + entry.render()
+#   - literal <style> blocks in TSX hoisted into <head>, not leaked cross-page
+#   - public asset content hashing and href rewriting
+#   - 404.html and sitemap.xml emission
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=tsx-pages bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+404.html
+_islands/BrowserWidget.js
+_islands/Counter.js
+about/index.html
+blog/index.html
+blog/post-one/index.html
+blog/post-two/index.html
+index.html
+sitemap.xml
+style.[hash:1].css
+styled/index.html
+test.[hash:2].png
+
+--- pletivo:conformance 404.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Not Found</title></head><body><main><h1>404 - Page Not Found</h1><p>The page you're looking for doesn't exist.</p></main></body></html>
+
+--- pletivo:conformance about/index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>About</title></head><body><main><h1>About Page</h1></main></body></html>
+
+--- pletivo:conformance blog/index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Blog</title></head><body><main><h1>Blog</h1><ul><li><a href="/blog/post-one">First Post</a></li><li><a href="/blog/post-two">Second Post</a></li></ul></main></body></html>
+
+--- pletivo:conformance blog/post-one/index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>First Post</title></head><body><main><article><h1>First Post</h1><div><h1 id="first-post">First Post</h1>
+<p>This is the <strong>first</strong> post.</p></div></article></main></body></html>
+
+--- pletivo:conformance blog/post-two/index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Second Post</title></head><body><main><article><h1>Second Post</h1><div><h1 id="second-post">Second Post</h1>
+<p>This is the <strong>second</strong> post with a <a href="https://example.com">link</a>.</p></div></article></main></body></html>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Home</title>
+<script type="module">
+window.__pletivoHydrate = hydrateIslands;
+hydrateIslands();
+
+async function hydrateIsland(el) {
+  const name = el.dataset.component;
+  const props = JSON.parse(el.dataset.props);
+  try {
+    const mod = await import("/_islands/" + name + ".js");
+    if (typeof mod.mount === "function") {
+      mod.mount(el, props);
+      el.dataset.hydrated = "1";
+    }
+  } catch (e) {
+    console.error("[pletivo] Failed to hydrate island " + name + ":", e);
+  }
+}
+
+function hydrateIslands() {
+  const islands = document.querySelectorAll('pletivo-island:not([data-hydrated])');
+  islands.forEach(el => {
+    const strategy = el.dataset.hydrate;
+
+    if (strategy === "load") {
+      hydrateIsland(el);
+    } else if (strategy === "idle") {
+      if ("requestIdleCallback" in window) {
+        requestIdleCallback(() => hydrateIsland(el));
+      } else {
+        setTimeout(() => hydrateIsland(el), 200);
+      }
+    } else if (strategy === "visible") {
+      const observer = new IntersectionObserver((entries, obs) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            hydrateIsland(el);
+            obs.disconnect();
+          }
+        }
+      });
+      observer.observe(el);
+    } else if (strategy.startsWith("media(")) {
+      const query = strategy.slice(6, -1);
+      const mql = window.matchMedia(query);
+      if (mql.matches) {
+        hydrateIsland(el);
+      } else {
+        mql.addEventListener("change", (e) => {
+          if (e.matches) hydrateIsland(el);
+        }, { once: true });
+      }
+    }
+  });
+}
+</script>
+</head><body><main><h1>Home Page</h1><pletivo-island data-component="Counter" data-props='{"initial":5}' data-hydrate="load"><button>Count: 5</button></pletivo-island><pletivo-island data-component="BrowserWidget" data-props='{"label":"viewport"}' data-hydrate="load"></pletivo-island></main></body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+  <url>
+    <loc>/about</loc>
+  </url>
+  <url>
+    <loc>/blog/post-one</loc>
+  </url>
+  <url>
+    <loc>/blog/post-two</loc>
+  </url>
+  <url>
+    <loc>/blog</loc>
+  </url>
+  <url>
+    <loc>/styled</loc>
+  </url>
+</urlset>
+
+
+--- pletivo:conformance styled/index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Styled</title><style>
+        .hero { color: tomato; padding: 1rem; }
+      
+.footer-from-second-block { border-top: 1px solid salmon; }</style>
+</head><body><main><h1 class="hero">Styled Page</h1><p class="footer-from-second-block">multiple style blocks supported</p></main></body></html>

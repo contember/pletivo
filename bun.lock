@@ -62,6 +62,13 @@
         "astro": "^5.0.0 || ^6.0.0",
       },
     },
+    "packages/core": {
+      "name": "@pletivo/core",
+      "version": "0.1.0",
+      "dependencies": {
+        "@pletivo/runtime": "workspace:*",
+      },
+    },
     "packages/pletivo": {
       "name": "pletivo",
       "version": "0.1.0",
@@ -71,6 +78,8 @@
       "dependencies": {
         "@astrojs/compiler": "^2 || ^3",
         "@mdx-js/mdx": "^3.1.0",
+        "@pletivo/core": "workspace:*",
+        "@pletivo/runtime": "workspace:*",
         "@types/bun": "^1.3.14",
         "@types/js-yaml": "^4.0.9",
         "js-yaml": "^4.1.1",
@@ -93,6 +102,10 @@
       "optionalPeers": [
         "typescript",
       ],
+    },
+    "packages/runtime": {
+      "name": "@pletivo/runtime",
+      "version": "0.1.0",
     },
   },
   "packages": {
@@ -277,6 +290,10 @@
     "@pletivo-examples/basic-astro-native": ["@pletivo-examples/basic-astro-native@workspace:examples/basic-astro-native"],
 
     "@pletivo/astro-jsx-pages": ["@pletivo/astro-jsx-pages@workspace:packages/astro-jsx-pages"],
+
+    "@pletivo/core": ["@pletivo/core@workspace:packages/core"],
+
+    "@pletivo/runtime": ["@pletivo/runtime@workspace:packages/runtime"],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-beta.27", "", {}, "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA=="],
 

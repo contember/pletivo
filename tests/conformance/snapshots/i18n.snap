@@ -1,0 +1,82 @@
+# pletivo conformance snapshot
+# case:    i18n
+# project: tests/fixture-i18n
+# covers:
+#   - default locale at root, locale subdirectories, aliased locale path
+#   - astro:i18n virtual module and Astro.currentLocale
+#   - hreflang link generation
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=i18n bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+hreflang-demo/index.html
+index.html
+pt/about/index.html
+sitemap.xml
+spanish/about/index.html
+
+--- pletivo:conformance hreflang-demo/index.html ---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>hreflang demo</title>
+<link rel="alternate" hreflang="en" href="https://example.com/about"><link rel="alternate" hreflang="pt" href="https://example.com/pt/about"><link rel="alternate" hreflang="es" href="https://example.com/spanish/about">
+</head>
+<body>
+<h1>hreflang demo</h1>
+</body></html>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Home</title></head>
+<body>
+<h1>Home</h1>
+<p data-test="current-locale">currentLocale=en</p>
+<p data-test="about-pt">aboutPt=/pt/about</p>
+<p data-test="about-es">aboutEs=/spanish/about</p>
+<p data-test="about-abs-pt">aboutAbsPt=https://example.com/pt/about</p>
+<p data-test="spain-path">spainPath=spanish</p>
+<p data-test="spanish-locale">spanishLocale=es</p>
+</body></html>
+
+--- pletivo:conformance pt/about/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Sobre</title></head>
+<body>
+<h1>Sobre</h1>
+<p data-test="current-locale">pt</p>
+</body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+  <url>
+    <loc>/hreflang-demo</loc>
+  </url>
+  <url>
+    <loc>/pt/about</loc>
+  </url>
+  <url>
+    <loc>/spanish/about</loc>
+  </url>
+</urlset>
+
+
+--- pletivo:conformance spanish/about/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Acerca</title></head>
+<body>
+<h1>Acerca</h1>
+<p data-test="current-locale">es</p>
+</body></html>
