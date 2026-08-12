@@ -1,7 +1,7 @@
 # 023 — The live workspace: SQLite FS, lazy compile, inline CSS
 
 **Priority:** S-tier
-**Status:** In progress — the store and the Durable Object exist and serve a live workspace, CSS comes from the rendered HTML, and the compile is pruned to the requested page's import graph (§10). The one remaining thing that makes a render cheap — the per-file compile cache — does not.
+**Status:** In progress — the store and the Durable Object serve a live workspace; compilation, CSS, assets, and Loader identity now use the explicit host seams described in §10.
 **Area:** Workers host / architecture
 
 Where `@pletivo/workers` goes once the project stops being a snapshot handed in with
@@ -171,7 +171,7 @@ is the part that cannot run in an isolate.
 ## 7. config: re-run it, do not freeze it
 
 Run `astro.config.*` and the integration hooks in a dynamic Worker, cache the resulting
-`ArtifactConfig` keyed by the config files and `package.json`, invalidate on write.
+Artifact V2 prepared site keyed by the config files and `package.json`, and invalidate on write.
 
 `pletivo dev` already solves this problem and its solution says why this is cheap here:
 the child process exits with `RESTART_EXIT_CODE` (75) when the config changes, because
@@ -235,11 +235,11 @@ of it needs a Durable Object under it to be tested:
 
 | | |
 |---|---|
-| `src/project-store.ts` | `ProjectStore` — where the project is read from, and a revision that says whether it moved |
+| `src/project-store.ts` | `ProjectStore` — one revision-coherent snapshot of source text and its demand-driven `ProjectAssetsView` |
 | `src/project-host.ts` | `createProjectHost` — route, render, serve the generated assets, turn the throws into status codes |
+| `src/asset-port.ts` | `ProjectAssetsView` — `info(source)` and `resolveOutput(path)` without an eager project-wide asset scan |
 | `src/workspace-store.ts` | `createWorkspaceProjectStore` over `@cloudflare/computer`'s SQLite VFS, typed structurally so this package depends on none of it |
-| `example-workspace/` | the Durable Object, in twenty lines: `PUT` a component, `GET` the page, see the edit |
-| `example-playground/` | the same thing deployed, with an editor in front of it |
+| `example-playground/` | the production-correct Durable Object workspace, with an editor in front of it |
 
 Verified under `wrangler dev` against a real workspace: a component written into SQLite
 changes the next render, scoped CSS included, with no build step between the two. The
@@ -268,24 +268,23 @@ itself, which `content-files.ts` already names as a valid implementation. The ca
 re-entrant (the DO is awaiting the render that makes them) and that is fine: they touch
 no storage, and a DO accepts events while it awaits I/O.
 
-`example/`'s preview server has the same shape between its **default** entrypoint and its
-`PletivoContent`, and has never been deployed. Assume it is broken the same way until
-someone measures it.
+`example/` deliberately does not expose content collections. It is request-scoped and
+has no owner that can keep a content handle alive across the Loader callback. The
+playground's DO-self binding is the sole reference topology for content.
 
 ### 10.2 The Loader cache outlives a deploy
 
-`env.LOADER.get(id, factory)` runs the factory on a cache miss, and `id` is a hash of the
-*project* bundle. Nothing in it depends on the host worker's version — so after deploying
-the fix above, every page still failed: the cached isolates were the old ones, still
-holding the old stub in their `env`. Changing one byte of a page changed the bundle hash,
-minted a fresh isolate, and it worked.
+`env.LOADER.get(id, factory)` runs the factory on a cache miss. The executable program has
+its own `ProgramHash`; the Loader key additionally covers the host ABI, compatibility
+settings, tenant, capability generation and immutable factory policy. Before those were
+separate identities, a deploy could leave old isolates holding the old binding object.
 
 **Anything the host puts in a dynamic Worker's `env` is pinned at isolate creation.**
-Changing it requires the isolate id to change; a deploy alone does not do it. `isolateId`
-already varies on non-default outbound and env, so the lever exists — it just has to be
-used deliberately when the host's own wiring moves.
+Changing it requires the caller's `capabilityGeneration` or the host ABI to change; a
+deploy alone is not a capability identity. The playground derives the tenant from the
+stable Durable Object id and names its DO-self binding generation explicitly.
 
-**What this does not yet do**, and the order it matters in:
+**What has landed and what remains**, in dependency order:
 
 1. ~~**Prune the compile to the page** (§4)~~ — **done.** `compileProject` takes
    `entries` and compiles only what their import graphs reach; `renderPage` passes the
@@ -324,20 +323,19 @@ used deliberately when the host's own wiring moves.
    not improve is a shared layout — 38 pages hold it in 38 module maps, and editing it
    cools all 38 exactly as before. A fresh isolate is 33 ms (§7), so the trade is a
    ~4–8× smaller compile against occasionally paying that once more.
-2. **Cache compiled modules per file** (§3). The gate that makes it nearly free is in
-   place; nothing reads it yet. It is what makes the shared-layout case above cheap,
-   since the 38 maps are 38 assemblies of the *same* compiled modules.
-3. ~~**CSS from the rendered HTML** (§5)~~ — **done.** `pageStylesheet` builds the CSS
-   of the page just rendered and `finalizeHtml` inlines it; nothing links a stylesheet
-   and `renderPage` returns no CSS asset. Tailwind's candidates are
-   `extractCandidates(html)`. A `.md` page no longer compiles the project at all — that
-   call existed only to feed the shared sheet, so the wasm compiler is out of every
-   markdown render. The one input that stayed project-wide is every `.css` under
-   `src/`, on purpose: it needs a key scan and no graph, and narrowing it would drop the
-   `global.css` that nothing imports. Nothing in the CSS pipeline needs a whole-project
-   graph any more, so item 1 is unblocked. The two hosts' HTML forks here permanently;
-   `docs/todos/016 §7` records what the replacement parity test proves and what it does
-   not.
+2. ~~**Cache compiled modules per file** (§3)~~ — **done.** `ProjectHost` owns one
+   bounded compile cache. Entries key by logical file and compare source plus module
+   kind; resolution and file-set effects are replayed on every assembly. This makes the
+   shared-layout case above cheap without letting cached resolution outlive an artifact
+   or workspace revision.
+3. ~~**CSS from the rendered HTML** (§5)~~ — **done.** `pageStylesheet` uses the
+   compiler's canonical resolved style graph, inserts Tailwind at its consumed closure's
+   cascade position, and emits every stylesheet at most once. Tailwind candidates come
+   from decoded HTML class attributes plus injected script bodies. `finalizeHtml` inlines
+   the result safely; nothing links a stylesheet and `renderPage` returns no CSS asset.
+   A `.md` page no longer compiles the project at all. The two hosts' HTML forks here
+   permanently; `docs/todos/016 §7` records what the replacement parity test proves and
+   what it does not.
 4. **npm on a container, into the workspace** (§6), and **config re-run in a dynamic
    Worker** (§7). Until then a project with npm dependencies still needs an artifact —
    `artifactPath` reads one out of the workspace, which is a file an agent can replace,

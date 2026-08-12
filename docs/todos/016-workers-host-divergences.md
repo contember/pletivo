@@ -10,6 +10,32 @@ The compiler and the CSS engine had to be re-hosted, and re-hosting is where
 divergence hides. These are the places the two hosts can disagree. Each was
 measured, not estimated.
 
+## Current host contracts
+
+These contracts landed after the measurements below. They are the current baseline:
+
+- Prepared sites use Artifact V2: a closed module graph with importer-aware
+  resolutions. The parser rejects malformed, duplicate, dangling, unknown-version,
+  and unsupported inputs. Fatal prepare diagnostics prevent emission; diagnostics
+  stay outside the executable artifact and its canonical identity.
+- `ProgramHash` identifies the exact executable module set. `IsolateKey` separately
+  includes tenant, capability generation, host ABI, compatibility date and flags,
+  outbound policy, and immutable environment inputs. Request data is not isolate identity.
+- Content state belongs to an explicit `ContentRuntime`. Bun enters its long-lived
+  runtime with `runWithBunContentRuntime()`; each Loader request enters the Worker
+  runtime scope. Hosts do not install or mutate a process-global content host.
+- Assets belong to the outer host through `ProjectAssetsView`. `info(source)` and
+  `resolveOutput(path)` are demand-driven; an unrelated request does not scan or hash
+  the project asset set.
+- This is a static host. A page that exports `prerender = false` is rejected explicitly;
+  the host does not pretend that an HTML-only return value implements HTTP SSR.
+- Only `pletivo` is published. Release builds a self-contained staged tarball containing
+  its private core/runtime source copies. `@pletivo/workers` remains private source for
+  applications to bundle.
+- `example-playground/` is the sole live-workspace reference: the Durable Object owns
+  the workspace, `ContentFiles`, and DO-self content binding. `example/` is an
+  intentionally request-scoped, content-free preview.
+
 ## 1. The Tailwind candidate scanner is a re-implementation
 
 `@tailwindcss/oxide` is a native scanner that walks the filesystem — it cannot
@@ -31,9 +57,10 @@ that resolve); under-extraction is the risk.
 
 ## 2. `@source` globs are not applied
 
-The whole virtual file map is scanned. A project that narrows scanning with
-`@source` gets a superset of its candidates — extra utilities in the output,
-never missing ones.
+The current page pipeline supplies candidates from rendered class attributes and
+injected scripts; it does not evaluate filesystem globs. `@source` therefore cannot add
+or remove candidate files. This is an explicit unsupported difference, not a guaranteed
+superset: a class named only in an `@source` file would be missing.
 
 ## 3. Tailwind JS plugins and configs are refused
 
@@ -173,32 +200,26 @@ pages through this host:
 | `src/` scan (the old model) | 22 657 | 83.8 kB | 190 ms |
 | the rendered page | 961–1 275 | 39.5–50.1 kB | 19–30 ms |
 
-Tailwind's content is the rendered HTML, the way the Tailwind CDN works.
-`compileTailwind` takes the candidates as an argument and `pageStylesheet` hands
-it `extractCandidates(html)`. Two consequences worth naming:
+Tailwind's primary content is the rendered HTML, the way the Tailwind CDN works.
+`pageStylesheet` extracts candidates only from decoded `class` attributes, then adds
+candidates from both injected-script categories because those scripts can create
+classes. Two consequences worth naming:
 
 - The scoped `<style>` blocks are **not** scanned — `finalizeHtml` injects them
   after the render, so they are not in the HTML that is read. That sidesteps
   `border`, one of the two false candidates in §1, which comes from CSS text
   inside a `<style>`.
-- **The known hole:** a class that only appears once client JS runs
-  (`classList.add('hidden')`, a `class:list` branch this render did not take) is
-  not in the HTML, while a source scan finds the string literal. It is theoretical
-  on this host *today*, and only because this host ships **no client bundles at
-  all** — islands render as inert `<pletivo-island>` markup and no hydration
-  script is emitted (see "What is left" below). When islands land, the candidate
-  source becomes the rendered HTML ∪ the client bundles that page ships.
+- **The remaining hole:** a class that appears only in a future client bundle, not in
+  rendered HTML or an injected script, is absent. It is theoretical today because this
+  host ships **no client bundles at all**. When islands land, their shipped bundle text
+  must join the candidate source.
 
-Three inputs still feed the sheet, and only two of them narrowed. **Every `.css`
-file under `src/` stays project-wide**, deliberately: it needs a key scan plus the
-file bytes — no module graph, no compile — so it forces nothing, and narrowing it
-would silently break the very common project whose `global.css` is picked up by
-the Bun host's `**/*.css` glob and never `import`ed from any module. The two that
-did narrow — collected out-of-tree CSS, and the source-CSS re-emit in Tailwind
-mode — are now rooted at the rendering page and ordered by `moduleOrder`, the same
-depth-first post-order the scoped blocks already cascade in ([014](014-astro-css-cascade-order.md)).
-Following `.astro` children is part of that: with one root per page a skipped
-layout would take its `import "../styles/fonts.css"` with it.
+Stylesheet ownership is now the compiler's `ResolvedStyleGraph`, shared with executable
+resolution. Project and Artifact V2 package CSS use the same logical module edges; the
+CSS pipeline does not resolve imports independently or scan every source stylesheet.
+Assembly follows canonical graph order, substitutes one Tailwind result at the consumed
+`@import` closure's position, and emits every stylesheet at most once. This preserves
+equal-specificity cascade order before and after the Tailwind entry.
 
 **What the fork cost, and what replaced it.** `fixture-tailwind` used to be the
 only assertion anywhere that this host's JS candidate scanner plus Tailwind over a
@@ -268,7 +289,7 @@ and its comments explain why it matters:
 | kind | behaviour | reference for parity |
 |---|---|---|
 | `getStaticPaths()` | only the paths it returns; anything else 404s | `pletivo build` |
-| `export const prerender = false` | params come from the URL, no path list | **none exists** |
+| `export const prerender = false` | rejected: the host has no HTTP SSR response contract | **none exists** |
 | neither | stays a 404 | — |
 
 **One constraint decided the shape.** `build.ts:355-385` calls
@@ -296,25 +317,18 @@ Isolate reuse survives: route and params ride in the request, never in the modul
 map, and a test asserts one bundle across a static route, three dynamic ones and
 an enumeration call.
 
-**`prerender = false` has no cross-host byte comparison.** `pletivo build` emits
-nothing for it and the dev server injects HMR markup, so neither side is
-comparable. It is verified directly instead — unit tests plus a workerd run over
-`tests/fixture-on-demand-routes` reproducing what `tests/e2e/on-demand-routes.test.ts`
-asserts. Weaker evidence than the rest of this document; treat it that way.
-
-Gap: `Astro.response` / `Astro.cookies` written by a `prerender = false` page are
-dropped, because `renderPage` returns HTML only. That matches `build.ts`, which
-warns, rather than the dev server, which merges them into the HTTP response — and
-a preview server is dev-shaped, so this will want plumbing. `paginate` also
-assumes `base: "/"`; the Workers host has no `base` option yet.
+**Current decision:** `prerender = false` is rejected before rendering or path
+enumeration. Supporting it would require a versioned request/response protocol for
+status, headers, cookies, body, and request context. The current static protocol has
+none of those semantics, so returning HTML would be a false success.
 
 ### Content collections
 
 `content/collection.ts` was 817 lines in the Bun host. The host-agnostic 859 —
 types, the loader protocol, `glob()`, `defineCollection`, `initCollections`,
 `getCollection`/`getEntry`/`render`/`reference`, schema validation, the store —
-now live in `@pletivo/core/content/collection` behind a `ContentHost` seam
-installed by `setContentHost()`. 167 lines stayed on the Bun side: `Bun.Glob`,
+now live in `@pletivo/core/content/collection` behind an explicit `ContentRuntime`
+created from a `ContentHost`. 167 lines stayed on the Bun side: `Bun.Glob`,
 `Bun.file`, `fs`, the config-file lookup, the `image()` probe, the `.mdx` import.
 One implementation, two hosts.
 
@@ -332,10 +346,10 @@ accepts the same three. Nothing new is forced on a project written for Bun.
 cut off from the network while `env.PLETIVO_CONTENT` answers `scan`/`read`.
 
 That choice buys isolate reuse and invites exactly one failure, so both are
-tested. Editing content re-renders under the **same `bundleId`** with new output —
-which is the point, and also why nothing else would catch a stale store. The
-collection store therefore cannot outlive a request; `initCollections` runs per
-render.
+tested. Editing content can re-render with the same `ProgramHash`; request-local
+content bytes do not identify executable code. The collection state is owned by
+the request's `ContentRuntime`, while the host-controlled capability generation
+invalidates isolates when the binding authority changes.
 
 And every binding call carries a per-render ref rather than reading a "current
 project", closed in a `finally`. Not defensive coding: measured in workerd, a
@@ -344,7 +358,7 @@ one's bytes.
 
 ### What is left
 
-Endpoints, islands, and hoisted-script bundling. **Islands specifically: this host
+Endpoints, islands, hoisted-script bundling, and real HTTP SSR. **Islands specifically: this host
 ships no client bundle and emits no hydration script.** A `client:*` directive
 renders the `<pletivo-island>` wrapper and its serialized props and stops there —
 the runtime bundle does not even export the island registry, so the host cannot
@@ -368,8 +382,7 @@ differently than `Bun.Glob`. `generateId`'s `base` URL is rooted at the file map
 rather than at the machine.
 
 Still missing from CSS specifically: the out-of-`src/` reprint above,
-hoisted-script CSS, `.scss`/`.sass`, CSS modules, and CSS-level `@import`
-following inside an external stylesheet. And the browser cache a linked stylesheet
+hoisted-script CSS, `.scss`/`.sass`, and CSS modules. And the browser cache a linked stylesheet
 would have given across pages — given up knowingly, because in a workspace an agent
 writes to continuously that cache is invalidated on every write anyway
 ([023 §5](023-live-workspace-architecture.md)).
