@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
-import { RESTART_EXIT_CODE, superviseDev } from "../../packages/pletivo/src/dev-supervisor";
+import {
+  BUN_ARGS_ENV,
+  childRuntimeFlags,
+  RESTART_EXIT_CODE,
+  superviseDev,
+} from "../../packages/pletivo/src/dev-supervisor";
 
 const fixtureRoot = path.join(import.meta.dir, "__dev-supervisor-fixture__");
 const runsPath = path.join(fixtureRoot, "runs.txt");
@@ -18,6 +23,16 @@ process.exit(codes[Math.min(runs, codes.length - 1)])
 `;
 
 const childPath = path.join(fixtureRoot, "child.mjs");
+
+/** Reports the runtime flags it was actually started with, then exits cleanly. */
+const FLAG_CHILD = `
+import fs from 'node:fs'
+fs.writeFileSync(process.argv[2], JSON.stringify(process.execArgv))
+process.exit(0)
+`;
+
+const flagChildPath = path.join(fixtureRoot, "flag-child.mjs");
+const flagsPath = path.join(fixtureRoot, "flags.json");
 
 async function runs(): Promise<number> {
   return Number(await fs.readFile(runsPath, "utf8"));
@@ -37,6 +52,7 @@ describe("dev supervisor", () => {
   beforeAll(async () => {
     await fs.mkdir(fixtureRoot, { recursive: true });
     await fs.writeFile(childPath, CHILD);
+    await fs.writeFile(flagChildPath, FLAG_CHILD);
   });
 
   afterAll(async () => {
@@ -70,5 +86,45 @@ describe("dev supervisor", () => {
     const code = RESTART_EXIT_CODE;
     expect(await supervise([code, code, code, code, 1])).toBe(1);
     expect(await runs()).toBe(7);
+  });
+
+  // Rebuilding the child's command line from `process.argv` alone dropped every bun runtime
+  // flag, because bun keeps them in `process.execArgv`. The serving process — the one worth
+  // tuning or profiling — could therefore never receive `--smol`, `--inspect` or `--heap-prof`.
+  test("runtime flags reach the child that actually serves", async () => {
+    await fs.rm(flagsPath, { force: true });
+    expect(
+      await superviseDev({
+        argv: [flagChildPath, flagsPath],
+        runtimeFlags: ["--smol"],
+        respawnDelayMs: 1,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(await fs.readFile(flagsPath, "utf8"))).toEqual(["--smol"]);
+  });
+
+  describe("childRuntimeFlags", () => {
+    test("passes this process's own runtime flags through", () => {
+      expect(childRuntimeFlags({})).toEqual(process.execArgv);
+    });
+
+    // `bunx pkg` execs the package bin as a fresh `bun <bin>`, so a flag on the outer
+    // `bun --smol x pletivo@latest` is gone before the supervisor starts. Env is the only
+    // channel that survives, and bunx is how the redo agent launches the dev server.
+    test("accepts flags over the env channel, which survives bunx", () => {
+      expect(childRuntimeFlags({ [BUN_ARGS_ENV]: "--smol" })).toContain("--smol");
+    });
+
+    test("tolerates surrounding and repeated whitespace", () => {
+      expect(childRuntimeFlags({ [BUN_ARGS_ENV]: "  --smol   --inspect " })).toEqual([
+        ...process.execArgv,
+        "--smol",
+        "--inspect",
+      ]);
+    });
+
+    test("an empty value adds nothing", () => {
+      expect(childRuntimeFlags({ [BUN_ARGS_ENV]: "" })).toEqual(process.execArgv);
+    });
   });
 });
