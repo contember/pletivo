@@ -6,7 +6,8 @@
 
 **Status:** design only, no code written.
 **Scope:** how `@pletivo/workers` gets what `astro:config:setup` produces, for the two
-sites in `docs/todos/017` (the static dogfood site) and `docs/todos/018` (the SSR dogfood site / nua).
+sites in `docs/todos/017` (the static dogfood site) and `docs/todos/018` (the SSR
+dogfood site, built on nua).
 
 
 > **Verified independently before adopting:** bare specifiers pass through
@@ -78,7 +79,7 @@ not `image()`, is what 404'd 183 pages in the earlier probe.
 Worker resolves npm through it. **6/6 parity fixtures byte-identical in real
 workerd**, including a new one whose components come from npm.
 
-the static dogfood site's npm cost: 7 bare specifiers → 4 packages, **97.2 kB of modules** plus
+The static dogfood site's npm cost: 7 bare specifiers → 4 packages, **97.2 kB of modules** plus
 11.3 kB of carried sources. A 62-component site is ~0.17% of the 64 MiB limit,
 so the module map is not the constraint anyone feared.
 
@@ -103,7 +104,7 @@ answer. `import.meta.env` is also `undefined` in the isolate, which
 
 None were in the design's scope; all are fixed.
 
-1. **`extractCandidates` was super-linear on a distant `]`.** the static dogfood site ships a
+1. **`extractCandidates` was super-linear on a distant `]`.** The static dogfood site ships a
    626 kB `scripts/asset-manifest.json`; scanning it took 449 s, and
    `projectStylesheet` **509 s per render**. Bounded at 2 KiB → 185 ms. This
    alone made the target unmeasurable, and it would have hit any site with a
@@ -113,7 +114,7 @@ None were in the design's scope; all are fixed.
    generated `export { … } from` entry, which has to live *outside* node_modules
    or it is tree-shaken identically.
 3. **Extensionless imports and `./x.js` naming `x.ts`** (`016 §7`) blocked every
-   the static dogfood site page through its layout.
+   page on the static dogfood site through its layout.
 
 ---
 
@@ -160,7 +161,8 @@ a filesystem and npm to have chosen and bundled them.
 
 **Two blockers, not one.** Integrations are the stated problem, but for both target
 sites the *first* blocker is plainer: their `.astro` files import npm packages —
-`astro-icon/components` in 20 the static dogfood site files, `@nuasite/components/Image.astro` in 13
+`astro-icon/components` in 20 files on the static dogfood site,
+`@nuasite/components/Image.astro` in 13
 nua files — and the Workers host has no notion of node_modules at all
 (`packages/workers/test/*` all skip it explicitly). Any design that ships integrations
 must ship a vendor module set too, and the same prepare-time step produces both. This
@@ -214,7 +216,7 @@ is the artifact format below.
 
 ## 3. What the two sites actually use
 
-### 3.1 the static dogfood site — `<static-site>`
+### 3.1 Static dogfood site — `<static-site>`
 
 Astro 4.16.19, `output: 'static'`, 62 `.astro` files, 40 route files, 9 collections
 (all `glob()`), 2 endpoints, no i18n, no middleware, no adapter.
@@ -239,11 +241,11 @@ Beyond integrations, the static dogfood site needs:
   and a `.ts` import in `astro.config.mjs` — **cannot run in an isolate**, must run at
   prepare time on Bun.
 
-**Verdict: a frozen artifact serves every the static dogfood site page.** The whole config:setup
+**Verdict: a frozen artifact serves every page on the static dogfood site.** The whole config:setup
 surface is one JSON-literal virtual module. The only non-freezable piece is the rehype
 plugin, and it is project source that bundles cleanly.
 
-### 3.2 the SSR dogfood site — `<ssr-site>`
+### 3.2 SSR dogfood site — `<ssr-site>`
 
 Astro 6.3.1, `output: 'server'` + `@astrojs/cloudflare`, 72 `.astro`, 47 route files
 (8 endpoints), 11 collections / 1529 markdown files, `@nuasite/*` 0.47.5 (real
@@ -487,7 +489,7 @@ does not carry. Two mechanisms, in order:
 1. **Static, for plugins named in `astro.config.*`.** Scan the config source with
    `Bun.Transpiler.scanImports`; a `markdown.rehypePlugins` element that is a bare
    identifier bound to a top-level import, or `[identifier, jsonOptions]`, resolves
-   directly. Covers **all of the static dogfood site** (`rehypeTechLinks`) and **all three of nua's
+   directly. Covers **the entire static dogfood site** (`rehypeTechLinks`) and **all three of nua's
    local `.mjs` rehype plugins**.
 2. **By export identity, for plugins an integration contributed.** Walk the ESM graph
    of `astro.config.*` and of every integration package entry (`scanImports` +
