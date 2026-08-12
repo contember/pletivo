@@ -10,6 +10,10 @@
  *                     Object holding an agent's edits would do
  *   POST /__paths     the same body, minus the pathname — every page the project can
  *                     enumerate, which is what a preview index would list
+ *
+ * `/__render` also takes `"outbound": "proxy"`, which is the only way to get a page's
+ * `fetch()` out of the isolate here. Without it the isolate reaches nothing, which is
+ * what every other route gets; `test/outbound.ts` drives both sides of that.
  */
 
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -22,11 +26,21 @@ import {
   type WorkerLoaderBinding,
 } from "../../src/render.ts";
 import { ContentFiles, type ContentBinding, type ContentFileRef } from "../../src/content-files.ts";
+import type { OutboundAccess, OutboundBinding } from "../../src/outbound.ts";
+import type { ProjectEnv } from "../../src/env.ts";
 import { SITE } from "./site.ts";
 import { TAILWIND } from "./tailwind.ts";
+import { API_ORIGIN, apiResponse } from "./api.ts";
 
 interface Env {
   LOADER: WorkerLoaderBinding;
+  /**
+   * What a rendered page reads through `astro:env/server`. Plain `vars` here because
+   * the example has nothing worth hiding; on a real host the token would be a secret,
+   * and it would reach the isolate by exactly this path either way.
+   */
+  PLETIVO_API_BASE?: string;
+  PLETIVO_API_TOKEN?: string;
 }
 
 /**
@@ -38,7 +52,10 @@ interface Env {
  * and `ctx.exports.X` uncalled is not serializable into a dynamic Worker's `env`.
  */
 interface RenderContext {
-  exports: { PletivoContent: (options: { props?: unknown }) => ContentBinding };
+  exports: {
+    PletivoContent: (options: { props?: unknown }) => ContentBinding;
+    PletivoOutbound: (options: { props?: unknown }) => OutboundBinding;
+  };
 }
 
 /** Content files the renders in flight are reading. */
@@ -59,6 +76,29 @@ export class PletivoContent extends WorkerEntrypoint {
 }
 
 /**
+ * Everything a rendering page's `fetch()` is allowed to reach, when a render asks for
+ * one at all.
+ *
+ * This is what `globalOutbound` takes instead of `null`: the isolate's whole network
+ * comes through here, so an origin this method does not name does not exist as far as
+ * a page is concerned. A real host would `return fetch(request)` for the origins it
+ * permits; this one answers out of `api.ts`, so the example — and the test that drives
+ * it — needs no Internet at all.
+ */
+export class PletivoOutbound extends WorkerEntrypoint {
+  fetch(request: Request): Response {
+    const url = new URL(request.url);
+    if (url.origin !== API_ORIGIN) {
+      return new Response(`[example] the render isolate may not reach ${url.origin}`, {
+        status: 403,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+    return apiResponse(url.pathname, request.headers.get("authorization"));
+  }
+}
+
+/**
  * What the last renders linked to, so the browser's follow-up request for
  * `/assets/styles.<hash>.css` finds bytes.
  *
@@ -74,6 +114,17 @@ interface RenderRequest {
   pathname?: string;
   pagesDir?: string;
   site?: string;
+  /** `"proxy"` puts `PletivoOutbound` in front of the isolate. Anything else: no network. */
+  outbound?: string;
+}
+
+/** One render, as this worker performs it. */
+interface ParsedRender {
+  files: ReadonlyMap<string, string>;
+  pathname: string;
+  pagesDir?: string;
+  site?: string;
+  proxyOutbound: boolean;
 }
 
 function isRenderRequest(value: unknown): value is RenderRequest {
@@ -104,16 +155,24 @@ export default {
         );
       }
 
-      const render =
+      const parsed: ParsedRender =
         url.pathname === "/__render"
           ? await readRenderRequest(request)
-          : { files: SITE, pathname: url.pathname };
+          : { files: SITE, pathname: url.pathname, proxyOutbound: false };
+      const { proxyOutbound, ...render } = parsed;
 
       const page = await renderPage({
         ...render,
         loader: env.LOADER,
         content,
         tailwind: TAILWIND,
+        env: siteEnv(env),
+        // Cut off unless this render asked for the proxy. Saying it as a ternary
+        // rather than leaving the option out on one branch is the point of the
+        // option's shape: there is no path here that reaches the open Internet.
+        outbound: proxyOutbound
+          ? { kind: "proxy", binding: ctx.exports.PletivoOutbound({}) }
+          : { kind: "blocked" },
       });
       if (assets.size >= ASSET_LIMIT) assets.clear();
       for (const generated of page.assets) assets.set(generated.path, generated);
@@ -141,12 +200,7 @@ export default {
   },
 };
 
-async function readRenderRequest(request: Request): Promise<{
-  files: Map<string, string>;
-  pathname: string;
-  pagesDir: string | undefined;
-  site: string | undefined;
-}> {
+async function readRenderRequest(request: Request): Promise<ParsedRender> {
   const body: unknown = await request.json();
   if (!isRenderRequest(body)) {
     throw new Error('POST /__render wants {"files": {path: source}, "pathname": "/"}');
@@ -156,5 +210,22 @@ async function readRenderRequest(request: Request): Promise<{
     pathname: body.pathname ?? "/",
     pagesDir: body.pagesDir,
     site: body.site,
+    // An exact match, so a typo asks for nothing rather than for the network.
+    proxyOutbound: body.outbound === "proxy",
   };
+}
+
+/**
+ * What a rendered page reads through `astro:env/server`.
+ *
+ * The worker's own configuration, not the project's: nothing here evaluates
+ * `astro.config.*`, so the schema this host answers to is whatever it puts in this
+ * object. Unset vars are left out rather than sent as empty strings, so a page sees
+ * `undefined` — what the Bun host gives for an unset `process.env` entry.
+ */
+function siteEnv(env: Env): ProjectEnv {
+  const server: Record<string, string> = {};
+  if (env.PLETIVO_API_BASE) server.API_BASE = env.PLETIVO_API_BASE;
+  if (env.PLETIVO_API_TOKEN) server.API_TOKEN = env.PLETIVO_API_TOKEN;
+  return { server };
 }

@@ -38,8 +38,8 @@ Bun workspace monorepo. The engine is split by *what host it can run on*, so a
 second host (a Cloudflare Worker isolate) can reuse everything that is not Bun:
 
 - **`packages/runtime`** — `@pletivo/runtime`. What ships into the output and runs at render time: JSX runtime (SSR), astro shim, islands, hydration, base-path. Zero host dependencies; the only import outside itself is `node:async_hooks`.
-- **`packages/core`** — `@pletivo/core`. Host-agnostic logic: router, i18n, markdown pipeline, astro-host types, routes adapter, paginate, image service. May use `node:path`/`url`/`events`/`crypto` and pure-JS npm deps, but never `Bun.*`, `node:fs`, or `node:child_process`.
-- **`packages/pletivo`** — the Bun host, and the only package published to npm: CLI, build, dev server with HMR, Bun loader plugins, CSS pipeline (Tailwind v4), content collections, incremental cache, astro-host runner.
+- **`packages/core`** — `@pletivo/core`. Host-agnostic logic: router, i18n, markdown pipeline, content collections, astro-host types, routes adapter, paginate, image service. May use `node:path`/`url`/`events`/`crypto` and pure-JS npm deps, but never `Bun.*`, `node:fs`, or `node:child_process`.
+- **`packages/pletivo`** — the Bun host, and the only package published to npm: CLI, build, dev server with HMR, Bun loader plugins, CSS pipeline (Tailwind v4), incremental cache, astro-host runner, and the Bun half of content collections (`Bun.Glob`/`Bun.file` behind `setContentHost()`).
 - **`packages/workers`** — `@pletivo/workers`. The Cloudflare Worker host: `@astrojs/compiler` as Go wasm in-isolate, import rewriting against a virtual module graph, Tailwind v4 from a virtual file map. See `docs/todos/016` for where it diverges from Bun.
 - **`packages/astro-jsx-pages`** — Babel+Vite plugin enabling TSX pages inside Astro. Built with tsc.
 - **`examples/`** — `basic` (pletivo-native), `basic-astro`, `basic-astro-native`.
