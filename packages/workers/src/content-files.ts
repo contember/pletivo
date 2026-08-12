@@ -22,6 +22,8 @@
  * concurrent renders cannot see each other.
  */
 
+import { imageContentHash, readImageDimensions } from "@pletivo/core/image";
+
 /**
  * The RPC surface the isolate calls. Structural rather than imported from
  * `@cloudflare/workers-types`, the same way `WorkerLoaderBinding` is: whatever the
@@ -33,7 +35,65 @@ export interface ContentBinding {
   scan(ref: string, dir: string, pattern: string): Promise<ContentFileRef[]> | ContentFileRef[];
   /** A file's text, or `null` when the project has no such file. */
   read(ref: string, path: string): Promise<string | null> | string | null;
+  /**
+   * What a binary asset is, as far as anything downstream of it needs to know.
+   * `null` when the project has no such file. Optional, so a host that carries no
+   * binaries stays a valid binding and an `image()` schema fails by name instead.
+   */
+  image?(ref: string, path: string): Promise<ImageInfo | null> | ImageInfo | null;
 }
+
+/**
+ * Everything a render learns about an image it cannot see.
+ *
+ * ## Why the bytes do not cross
+ *
+ * The obvious shape for this method is `bytes(ref, path): ArrayBuffer` — read the
+ * image the way the isolate reads a markdown file. It is also the expensive one:
+ * nothing inside the isolate consumes image *bytes*. `image()` in a collection schema
+ * wants width, height and format; `getImage()` wants a URL, which is the source path
+ * and a content hash. All four are derived, and all four are 40-odd bytes.
+ *
+ * Carrying the bytes instead would put a whole file across the RPC boundary for every
+ * entry of every collection, on every render — a 200-entry collection of 300 kB photos
+ * is 60 MB per page — and then hash it in JavaScript inside the isolate, which is the
+ * one place with no native digest. Deriving it on the host costs the same read once,
+ * where the file already is.
+ *
+ * ## Where the caching belongs
+ *
+ * On the host, and keyed by the bytes rather than by the path. The isolate is
+ * content-addressed by its module map, so it survives content edits by design — an
+ * isolate-side cache keyed by path would answer with a stale size after an image was
+ * replaced, and would have to read the bytes to find out. `ContentFiles` below caches
+ * against the `Uint8Array` it was handed, which is exactly as long-lived as the bytes
+ * are: a host that keeps its asset map (a Durable Object, a preview server) probes
+ * each image once for the life of the map, and one that rebuilds the array per render
+ * pays per render and is never wrong.
+ */
+export interface ImageInfo {
+  width: number;
+  height: number;
+  /** `png` / `jpeg` / `gif` / `webp` / `svg`, as the file's own header says. */
+  format: string;
+  /** `md5(bytes)`, first 8 hex characters — what names `_astro/<name>.<hash>.<ext>`. */
+  hash: string;
+}
+
+/**
+ * One binary file, as the host holds it.
+ *
+ * Bytes, or what the host already knows about them. The second form is not a
+ * convenience: a site with 200 MiB of photos cannot put them in a Worker's 128 MiB
+ * heap, so a real host keeps the files in R2 and a row per file — width, height,
+ * format, hash, computed once when the file was uploaded — and hands *that* to a
+ * render. Everything downstream needs the four fields and nothing else, which is what
+ * makes the substitution possible at all.
+ */
+export type ProjectAsset = Uint8Array | ImageInfo;
+
+/** The project's binary files, keyed like its sources. */
+export type ProjectAssets = ReadonlyMap<string, ProjectAsset>;
 
 /** One file a scan found: its path relative to the scan directory, and its full key. */
 export interface ContentFileRef {
@@ -49,7 +109,13 @@ export interface ContentHandle {
 
 /** Where the bytes come from, for the length of one render. */
 export interface ContentStore {
-  open(files: ReadonlyMap<string, string>): ContentHandle;
+  /**
+   * `files` is the text map; `assets` is everything that is not text — images today.
+   * They are two maps rather than one because a Worker's sources arrive as text and
+   * its binaries do not, and merging them would force every caller to decide which
+   * an unknown extension is.
+   */
+  open(files: ReadonlyMap<string, string>, assets?: ProjectAssets): ContentHandle;
 }
 
 /**
@@ -73,6 +139,7 @@ export interface ContentStore {
  */
 export class ContentFiles implements ContentBinding, ContentStore {
   readonly #open = new Map<string, ReadonlyMap<string, string>>();
+  readonly #openAssets = new Map<string, ProjectAssets>();
   #next = 0;
 
   /** How many renders currently hold a handle. A leak shows up here. */
@@ -80,10 +147,17 @@ export class ContentFiles implements ContentBinding, ContentStore {
     return this.#open.size;
   }
 
-  open(files: ReadonlyMap<string, string>): ContentHandle {
+  open(files: ReadonlyMap<string, string>, assets?: ProjectAssets): ContentHandle {
     const ref = `r${++this.#next}`;
     this.#open.set(ref, files);
-    return { ref, close: () => void this.#open.delete(ref) };
+    if (assets) this.#openAssets.set(ref, assets);
+    return {
+      ref,
+      close: () => {
+        this.#open.delete(ref);
+        this.#openAssets.delete(ref);
+      },
+    };
   }
 
   scan(ref: string, dir: string, pattern: string): ContentFileRef[] {
@@ -107,6 +181,15 @@ export class ContentFiles implements ContentBinding, ContentStore {
     return this.#files(ref).get(path) ?? null;
   }
 
+  image(ref: string, path: string): ImageInfo | null {
+    // `#files` first, so a call against a finished render is the same loud error here
+    // as it is for `read` — an asset map is allowed to be absent, a ref is not.
+    this.#files(ref);
+    const asset = this.#openAssets.get(ref)?.get(path);
+    if (!asset) return null;
+    return assetInfo(asset, path);
+  }
+
   #files(ref: string): ReadonlyMap<string, string> {
     const files = this.#open.get(ref);
     if (!files) {
@@ -117,6 +200,35 @@ export class ContentFiles implements ContentBinding, ContentStore {
     }
     return files;
   }
+}
+
+/**
+ * Probed images, keyed by the bytes themselves.
+ *
+ * Weak, so it cannot outlive the map the caller holds, and keyed by identity, so it
+ * can never answer for other bytes — see `ImageInfo` for why the cache lives out here
+ * rather than in the isolate. Module-level because both readers want the same answer
+ * and both run per render: the binding, for an `image()` schema, and `compileProject`,
+ * for an ESM-imported one. Without it a project with 200 images would re-read and
+ * re-hash all 200 on every page.
+ */
+const probed = new WeakMap<Uint8Array, ImageInfo>();
+
+/** What one asset is, whether the host handed bytes or the answer itself. */
+export function assetInfo(asset: ProjectAsset, path: string): ImageInfo {
+  return asset instanceof Uint8Array ? probeImage(asset, path) : asset;
+}
+
+/** Dimensions and content hash of one image, read once per distinct `Uint8Array`. */
+export function probeImage(bytes: Uint8Array, path: string): ImageInfo {
+  const cached = probed.get(bytes);
+  if (cached) return cached;
+  const info: ImageInfo = {
+    ...readImageDimensions(bytes, path),
+    hash: imageContentHash(bytes),
+  };
+  probed.set(bytes, info);
+  return info;
 }
 
 /**

@@ -175,3 +175,64 @@ describe("the 1 MiB cap on a dynamic Worker's env", () => {
     expect(error).toBeInstanceOf(EnvNameError);
   });
 });
+
+describe("import.meta.env", () => {
+  test("a module that reads it gets what the host supplied", async () => {
+    const html = await renderWith(
+      new Map([
+        [
+          "src/pages/index.astro",
+          `---
+const site = import.meta.env.SITE ?? "fallback";
+---
+<p>{site}</p><b>{String(import.meta.env.MISSING)}</b>
+`,
+        ],
+      ]),
+      { SITE: "https://example.com" },
+    );
+    expect(html).toContain("<p>https://example.com</p>");
+    // A name the host does not carry is `undefined`, not "" — what Bun gives the
+    // other host for an unset `process.env` entry, so the fallback still fires.
+    expect(html).toContain("<b>undefined</b>");
+  });
+
+  test("with no values it is an empty object, not undefined", async () => {
+    const html = await renderWith(
+      new Map([["src/pages/index.astro", '<p>{import.meta.env.SITE ?? "none"}</p>\n']]),
+      undefined,
+    );
+    expect(html).toContain("<p>none</p>");
+  });
+
+  test("the values are not in the module map, so rotating one keeps the bundle", async () => {
+    const files = new Map([["src/pages/index.astro", "<p>{import.meta.env.TOKEN}</p>\n"]]);
+    const first = await renderPage({
+      files,
+      pathname: "/",
+      loader,
+      compiler,
+      importMetaEnv: { TOKEN: "a" },
+    });
+    const second = await renderPage({
+      files,
+      pathname: "/",
+      loader,
+      compiler,
+      importMetaEnv: { TOKEN: "b" },
+    });
+    expect(first.html).toContain("<p>a</p>");
+    expect(second.html).toContain("<p>b</p>");
+    // Same sources, same bundle — the values ride in `env`, which the isolate id
+    // covers separately.
+    expect(second.bundleId).toBe(first.bundleId);
+  });
+});
+
+async function renderWith(
+  files: Map<string, string>,
+  importMetaEnv: Record<string, string> | undefined,
+): Promise<string> {
+  const page = await renderPage({ files, pathname: "/", loader, compiler, importMetaEnv });
+  return page.html;
+}

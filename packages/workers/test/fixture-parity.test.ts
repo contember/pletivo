@@ -87,6 +87,23 @@ describe("byte parity with pletivo build", () => {
     60_000,
   );
 
+  test(
+    "the image fixture names every file the same way, and serves what it names",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-images");
+      // Two pages: one whose images are ESM imports, one whose images come out of an
+      // `image()` collection schema by way of the content binding.
+      expect(output).toContain("2/2 byte-identical");
+      // And each URL those pages emit resolves to the same bytes `pletivo build`
+      // wrote under `_astro/` — a URL that 404s is worse than no image.
+      expect(output).toContain("= /_astro/hero.");
+      expect(output).toContain("= /_astro/badge.");
+      expect(output).toContain("= /_astro/thumb.");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
   test.skipIf(!HAS_TAILWIND)(
     "the Tailwind fixture renders the same HTML and the same stylesheet on both hosts",
     async () => {

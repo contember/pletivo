@@ -120,6 +120,57 @@ export function reference(collectionName: string): z.ZodType<Reference> {
 }
 
 /**
+ * The `image()` schema itself, which is the same on every host.
+ *
+ * What differs is only how a path becomes bytes: the Bun host opens the file, the
+ * Workers host asks the content binding. Everything a *schema author* can get wrong —
+ * a remote URL, a root-absolute path, an entry with no file behind it — is decided
+ * here, so both hosts refuse the same frontmatter with the same words. `resolve`
+ * throwing is the "could not read it" case; its message becomes the issue's.
+ *
+ * Accepted path forms:
+ *  - Relative (`./logo.png`, `../assets/foo.png`) — against the entry file's directory.
+ *  - Root-absolute (`/uploads/foo.png`) — rejected; use plain `z.string()`.
+ *  - Remote URLs (`https://...`) — rejected; use `z.string().url()`.
+ */
+export function imageSchemaFor(
+  /** Null for an entry with no source file (a function loader): `image()` then fails. */
+  entryDir: string | null,
+  resolve: (entryDir: string, relativePath: string) => Promise<ImageMetadata>,
+): z.ZodType<ImageMetadata, unknown> {
+  return z.string().transform(async (relPath: string, ctx: z.RefinementCtx) => {
+    const fail = (message: string) => {
+      ctx.addIssue({ code: "custom", message });
+      return z.NEVER;
+    };
+
+    if (!entryDir) {
+      return fail(
+        "image() schema can only be used with file-backed entries (e.g. glob() loader)",
+      );
+    }
+    if (/^https?:\/\//i.test(relPath)) {
+      return fail(
+        `image() does not support remote URLs (got "${relPath}"). ` +
+          `Use z.string().url() for remote images.`,
+      );
+    }
+    if (relPath.startsWith("/")) {
+      return fail(
+        `image() resolves paths relative to the entry file (got "${relPath}"). ` +
+          `For files in public/, use plain z.string() and reference them by absolute URL.`,
+      );
+    }
+
+    try {
+      return await resolve(entryDir, relPath);
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+  });
+}
+
+/**
  * Schema-context helpers passed to the function form of `schema`. Mirrors
  * Astro's API: `schema: ({ image }) => z.object({ logo: image() })`.
  *

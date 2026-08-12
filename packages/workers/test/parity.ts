@@ -18,11 +18,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
+import { withoutCdnCgi } from "../src/images.ts";
 import { builtPathname } from "./built-pathname.ts";
+import { imageUrls, readSources, sameBytes, SKIPPED } from "./sources.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
-/** Directories that hold build products or dependencies, not sources. */
-const SKIPPED = new Set(["node_modules", "dist", "tmp", ".astro", ".wrangler"]);
 
 // ── Child mode: one `pletivo build`, into a directory outside the fixture ──
 
@@ -48,6 +48,10 @@ if (process.argv[2] === "--build") {
     base: "/",
     srcDir: "src",
     publicDir: "public",
+    // The Workers host has no other choice — an isolate cannot resize or re-encode —
+    // so a reference built with sharp would be comparing two image services rather
+    // than two hosts. Fixtures with no images are unaffected either way.
+    image: { service: "cloudflare" },
   });
   process.exit(0);
 }
@@ -92,26 +96,32 @@ if ((await child.exited) !== 0) {
  * this prefix is empty.
  */
 const artifact: unknown = JSON.parse(await Bun.file(artifactPath).text());
-const files = new Map(
-  [...(await readSources(root))].map(([rel, source]) => [`${prefix}/${rel}`, source]),
+const sources = await readSources(root);
+const files = new Map([...sources.text].map(([rel, source]) => [`${prefix}/${rel}`, source]));
+/** The fixture's binaries, base64 so they survive the JSON body. */
+const assets = Object.fromEntries(
+  [...sources.binary].map(([rel, bytes]) => [`${prefix}/${rel}`, Buffer.from(bytes).toString("base64")]),
 );
 const pagesDir = `${prefix}/src/pages`;
 const bunPages = await readBuiltHtml(outDir);
 
 let identical = 0;
 const divergent: { page: string; detail: string }[] = [];
+/** Every image URL the rendered pages linked to, so each can be fetched afterwards. */
+const linkedImages = new Set<string>();
 
 for (const [outputPath, expected] of bunPages) {
   const pathname = builtPathname(outputPath);
   const response = await fetch(`${workerUrl}/__render`, {
     method: "POST",
-    body: JSON.stringify({ files: Object.fromEntries(files), pathname, pagesDir, artifact }),
+    body: JSON.stringify({ files: Object.fromEntries(files), assets, pathname, pagesDir, artifact }),
   });
   const actual = await response.text();
   if (!response.ok) {
     divergent.push({ page: outputPath, detail: `HTTP ${response.status}: ${firstLine(actual)}` });
     continue;
   }
+  for (const url of imageUrls(actual)) linkedImages.add(url);
   if (actual === expected) {
     identical++;
     console.log(`  = ${outputPath}`);
@@ -120,11 +130,34 @@ for (const [outputPath, expected] of bunPages) {
   divergent.push({ page: outputPath, detail: firstDifference(expected, actual) });
 }
 
+// A URL that 404s is worse than no image, so every one a page linked to is fetched
+// from the worker and compared with the file `pletivo build` wrote.
+for (const url of [...linkedImages].sort()) {
+  const response = await fetch(`${workerUrl}${url}`);
+  if (!response.ok) {
+    divergent.push({ page: url, detail: `    HTTP ${response.status} — the page links to it` });
+    continue;
+  }
+  const served = new Uint8Array(await response.arrayBuffer());
+  // A `/cdn-cgi/image/` URL names a transform of a file, and the file is what the
+  // build wrote — the transform is the origin's to perform, and this host says so by
+  // serving the original.
+  const source = withoutCdnCgi(url).replace(/^\//, "");
+  const built = await Bun.file(path.join(outDir, source)).bytes().catch(() => null);
+  if (built === null) {
+    divergent.push({ page: url, detail: "    the Bun host emitted no such file" });
+  } else if (!sameBytes(served, built)) {
+    divergent.push({ page: url, detail: `    ${served.length} B served, ${built.length} B built` });
+  } else {
+    console.log(`  = ${url} (${served.length} B)`);
+  }
+}
+
 // Route enumeration, against the only reference it has: the pages `pletivo build`
 // wrote *are* the pages the project can enumerate.
 const listed = await fetch(`${workerUrl}/__paths`, {
   method: "POST",
-  body: JSON.stringify({ files: Object.fromEntries(files), pagesDir, artifact }),
+  body: JSON.stringify({ files: Object.fromEntries(files), assets, pagesDir, artifact }),
 });
 const enumerated = listed.ok ? pathnamesOf(await listed.json()) : null;
 if (enumerated === null) {
@@ -163,16 +196,6 @@ function pathnamesOf(body: unknown): Set<string> {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-/** The fixture's sources, keyed the way the Workers host keys a virtual file map. */
-async function readSources(dir: string): Promise<Map<string, string>> {
-  const sources = new Map<string, string>();
-  for await (const rel of new Glob("**/*").scan({ cwd: dir, dot: false })) {
-    if (rel.split("/").some((segment) => SKIPPED.has(segment))) continue;
-    sources.set(rel, await Bun.file(path.join(dir, rel)).text());
-  }
-  return sources;
-}
 
 /** Every HTML file `pletivo build` emitted, keyed by output path. */
 async function readBuiltHtml(dir: string): Promise<Map<string, string>> {

@@ -54,7 +54,7 @@ import {
   type ProjectStylesheet,
 } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
-import type { ContentBinding, ContentStore } from "./content-files.ts";
+import type { ContentBinding, ContentStore, ProjectAssets } from "./content-files.ts";
 import {
   assertEnvFits,
   envModules,
@@ -63,6 +63,9 @@ import {
   ENV_CLIENT_MODULE_NAME,
   ENV_INSTALL,
   ENV_SERVER_MODULE_NAME,
+  importMetaEnvPayload,
+  IMPORT_META_ENV_BINDING,
+  IMPORT_META_ENV_GLOBAL,
   type EnvPayload,
   type ProjectEnv,
 } from "./env.ts";
@@ -75,6 +78,7 @@ import {
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  IMAGE_MODULE_NAME,
   RUNTIME_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
 
@@ -131,6 +135,17 @@ export interface ContentAccess {
 export interface ProjectOptions {
   /** The project: path (no leading slash, `/` separators) -> source text. */
   files: ReadonlyMap<string, string>;
+  /**
+   * The project's binary files, keyed the same way — images today.
+   *
+   * Kept apart from `files` because a Worker's sources arrive as text and its
+   * binaries do not. What a render does with them is read four numbers: an ESM
+   * `import hero from "./hero.png"` becomes a metadata module in the bundle, and an
+   * `image()` schema asks the content binding per entry. The bytes themselves never
+   * enter the isolate, and a host that already knows an image's size may hand that
+   * instead of the file — see `ProjectAsset` in `content-files.ts`.
+   */
+  assets?: ProjectAssets;
   loader: WorkerLoaderBinding;
   /** Where pages live in `files`. */
   pagesDir?: string;
@@ -165,6 +180,15 @@ export interface ProjectOptions {
    * `process.env` entry. Capped at 1 MiB; see `env.ts`.
    */
   env?: ProjectEnv;
+  /**
+   * What `import.meta.env` is inside the isolate.
+   *
+   * Vite gives every module one and a Worker Loader module has none, so a page that
+   * reads `import.meta.env.SITE` throws before it renders a byte. The host supplies
+   * the values; a name it does not carry reads as `undefined`, which is what Bun gives
+   * the other host for an unset `process.env` entry. See `env.ts`.
+   */
+  importMetaEnv?: Readonly<Record<string, string>>;
   /**
    * What `pletivo prepare` froze out of `astro:config:setup` — vendored npm packages,
    * frozen virtual modules, `node_modules` sources, the config fields a render reads,
@@ -455,7 +479,7 @@ async function isolatePaths(
   prefix: string,
   options: ProjectOptions,
 ): Promise<Map<string, RouteParams[]>> {
-  const project = await compileProject(options.files, options.compiler, options.artifact ?? null);
+  const project = await compileProject(options.files, options.compiler, options.artifact ?? null, options.assets);
   const { payload } = await callIsolate({
     project,
     options,
@@ -504,25 +528,28 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     // other page does — which costs it the project compile it otherwise never needs.
     // Only when the project has a stylesheet at all: the common CSS-free markdown site
     // still renders without ever touching the wasm compiler.
-    const stylesheet = hasStylesheet(files)
-      ? await siteStylesheet(
-          await compileProject(files, options.compiler, options.artifact ?? null),
-          options,
-        )
+    const compiled = hasStylesheet(files)
+      ? await compileProject(files, options.compiler, options.artifact ?? null, options.assets)
       : null;
+    const stylesheet = compiled === null ? null : await siteStylesheet(compiled, options);
     const html = finalizeHtml(
       await renderMarkdownPage(source),
       "",
       stylesheet?.href ?? null,
       scripts,
     );
-    return { html, file, bundleId: "", assets: assetsOf(stylesheet) };
+    return { html, file, bundleId: "", assets: assetsOf(stylesheet, compiled?.urlAssets) };
   }
   if (!isExecutableModule(file)) {
     throw new UnsupportedRouteError(file, "only .astro, .tsx and .md pages render here");
   }
 
-  const project = await compileProject(files, options.compiler, options.artifact ?? null);
+  const project = await compileProject(
+    files,
+    options.compiler,
+    options.artifact ?? null,
+    options.assets,
+  );
   const stylesheet = await siteStylesheet(project, options);
   const rendered = await renderModule({
     project,
@@ -549,7 +576,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     html: finalizeHtml(rendered.html, styles, stylesheet?.href ?? null, scripts),
     file,
     bundleId: rendered.bundleId,
-    assets: assetsOf(stylesheet),
+    assets: assetsOf(stylesheet, project.urlAssets),
   };
 }
 
@@ -589,9 +616,44 @@ async function siteStylesheet(
   });
 }
 
-function assetsOf(stylesheet: ProjectStylesheet | null): RenderedAsset[] {
-  if (!stylesheet) return [];
-  return [{ path: stylesheet.href, contentType: "text/css; charset=utf-8", body: stylesheet.css }];
+function assetsOf(
+  stylesheet: ProjectStylesheet | null,
+  urlAssets: ReadonlyMap<string, string> = new Map(),
+): RenderedAsset[] {
+  const assets: RenderedAsset[] = [];
+  if (stylesheet) {
+    assets.push({
+      path: stylesheet.href,
+      contentType: "text/css; charset=utf-8",
+      body: stylesheet.css,
+    });
+  }
+  for (const [path, body] of urlAssets) {
+    assets.push({ path, contentType: urlAssetContentType(path), body });
+  }
+  return assets;
+}
+
+/**
+ * What a `?url`-emitted file is served as.
+ *
+ * Only the handful of text types a project imports this way; anything else is an
+ * octet stream rather than a guess, because a wrong `content-type` on a script is a
+ * page that silently does not run.
+ */
+function urlAssetContentType(path: string): string {
+  const dot = path.lastIndexOf(".");
+  const extension = dot === -1 ? "" : path.slice(dot).toLowerCase();
+  const known: Record<string, string> = {
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".txt": "text/plain; charset=utf-8",
+    ".xml": "application/xml; charset=utf-8",
+  };
+  return known[extension] ?? "application/octet-stream";
 }
 
 /**
@@ -715,7 +777,10 @@ async function callIsolate(input: {
   // forced: ESM decides its exports statically. Rotating a secret leaves the bundle,
   // and therefore the warm isolate, exactly where it was.
   const env = project.env === null ? null : envPayload(options.env);
-  assertEnvFits(env);
+  // Only for a project that reads it: an isolate that never had `import.meta.env`
+  // rewritten keeps the bundle, and therefore the warm isolate, it always had.
+  const importMetaEnv = project.importMetaEnv ? importMetaEnvPayload(options.importMetaEnv) : null;
+  assertEnvFits(env, importMetaEnv);
   const modules = {
     ...project.modules,
     ...(project.env === null ? {} : envModules(project.env, env)),
@@ -729,9 +794,10 @@ async function callIsolate(input: {
   const isolateEnv = {
     ...(content ? { [CONTENT_BINDING]: content.binding } : {}),
     ...(env ? { [ENV_BINDING]: env } : {}),
+    ...(importMetaEnv ? { [IMPORT_META_ENV_BINDING]: importMetaEnv } : {}),
   };
 
-  const stub = options.loader.get(await isolateId(bundleId, options, env), () => ({
+  const stub = options.loader.get(await isolateId(bundleId, options, env, importMetaEnv), () => ({
     compatibilityDate: options.compatibilityDate ?? DEFAULT_COMPATIBILITY_DATE,
     compatibilityFlags: ["nodejs_compat"],
     mainModule: ENTRY_MODULE,
@@ -745,7 +811,7 @@ async function callIsolate(input: {
 
   // Opened per render, not per isolate: the isolate outlives the request that made
   // it, so the sources have to be named by something that travels with the request.
-  const handle = content ? content.store.open(options.files) : null;
+  const handle = content ? content.store.open(options.files, options.assets) : null;
   const request = new Request("http://pletivo.invalid/render", {
     method: "POST",
     body: JSON.stringify(
@@ -845,7 +911,7 @@ function entryModule(project: CompiledProject): string {
     .join("\n");
 
   return `import { createPaginate, isAstroComponent, redirectPageHtml, renderAstroPage, runWithRenderTracking } from ${JSON.stringify(`./${RUNTIME_MODULE_NAME}`)};
-${contentPrelude(project)}${envPrelude(project)}
+${contentPrelude(project)}${envPrelude(project)}${importMetaEnvPrelude(project)}
 const PAGES = {
 ${pages}
 };
@@ -957,6 +1023,7 @@ export default {
     // \`await\` on both branches, or the rejection leaves the try block unseen.
     try {
       const body = await request.json();
+      openImportMetaEnv(env);
       openEnv(env);
       await openContent(env, body);
       return body.op === "paths" ? await listPaths(body.routes) : await render(body);
@@ -1002,6 +1069,24 @@ ${installs.join("\n")}
 }
 
 /**
+ * What `import.meta.env` was rewritten to, installed before any page is imported.
+ *
+ * A page reads its configuration in frontmatter, which runs the moment the module is
+ * imported — and pages are imported from `fetch`, so this runs first. Module state is
+ * safe here for the same reason it is for `astro:env`: the values come out of the
+ * isolate's own `env`, which is fixed when the isolate is created and covered by its
+ * id, so every request in that isolate installs the identical object.
+ */
+function importMetaEnvPrelude(project: CompiledProject): string {
+  if (!project.importMetaEnv) return "\nfunction openImportMetaEnv() {}\n";
+  return `
+function openImportMetaEnv(env) {
+  globalThis.${IMPORT_META_ENV_GLOBAL} = (env && env[${JSON.stringify(IMPORT_META_ENV_BINDING)}]) || {};
+}
+`;
+}
+
+/**
  * The isolate's content wiring, emitted only for a project that reaches for the API.
  *
  * Two things have to happen on **every** request, and both are consequences of the
@@ -1023,14 +1108,28 @@ function contentPrelude(project: CompiledProject): string {
     return "\nasync function openContent() {}\n";
   }
   const { configModule } = project.content;
-  return `import { initCollections, setContentHost } from ${JSON.stringify(`./${CONTENT_MODULE_NAME}`)};
+  return `import { imageSchemaFor, initCollections, setContentHost } from ${JSON.stringify(`./${CONTENT_MODULE_NAME}`)};
+import { imageOutputPath, makeImageMetadata } from ${JSON.stringify(`./${IMAGE_MODULE_NAME}`)};
 
 const CONTENT_CONFIG = ${configModule === null ? "null" : `() => import(${JSON.stringify(`./${configModule}`)})`};
 
-/** Project paths are \`/\`-joined keys of a virtual file map, never filesystem paths. */
-function joinPath(dir, name) {
-  if (!dir) return name;
-  return name ? dir + "/" + name : dir;
+/**
+ * A path against a directory, as a file-map key.
+ *
+ * Normalising rather than joining, and that is not tidiness: \`glob({ base:
+ * "./content/product" })\` is ordinary in a real project, and \`path.resolve\` on the
+ * Bun host makes the leading \`./\` disappear. Joined verbatim it becomes a prefix no
+ * key starts with, the scan finds nothing, and the collection is silently empty — a
+ * page that renders fine and is wrong.
+ */
+function resolveFrom(dir, relative) {
+  const out = [];
+  for (const segment of (dir ? dir.split("/") : []).concat(relative ? relative.split("/") : [])) {
+    if (segment === "." || segment === "") continue;
+    if (segment === "..") out.pop();
+    else out.push(segment);
+  }
+  return out.join("/");
 }
 
 async function openContent(env, body) {
@@ -1039,7 +1138,7 @@ async function openContent(env, body) {
   const ref = body.contentRef;
   setContentHost({
     async scan(projectRoot, base, pattern) {
-      const dir = joinPath(projectRoot, base);
+      const dir = resolveFrom(projectRoot, base);
       return {
         root: dir,
         // A virtual key is not a filesystem path, so this URL is rooted at the file
@@ -1058,7 +1157,26 @@ async function openContent(env, body) {
       const at = path.lastIndexOf("/");
       return at === -1 ? "" : path.slice(0, at);
     },
-    resolveDir: joinPath,
+    resolveDir: resolveFrom,
+    /**
+     * \`image()\` in a collection schema. The binding answers with the four fields a
+     * schema needs — never with the file — so what crosses per entry is 40 bytes;
+     * see ImageInfo in content-files.ts.
+     */
+    image(entryDir) {
+      return imageSchemaFor(entryDir, async (dir, relative) => {
+        const path = resolveFrom(dir, relative);
+        const info = files.image ? await files.image(ref, path) : null;
+        if (!info) throw new Error("image not found: " + relative + " (resolved to " + path + ")");
+        return makeImageMetadata({
+          src: "/" + imageOutputPath(path, info.hash),
+          width: info.width,
+          height: info.height,
+          format: info.format,
+          fsPath: path,
+        });
+      });
+    },
     async loadConfig() {
       if (!CONTENT_CONFIG) return {};
       const module = await CONTENT_CONFIG();
@@ -1077,8 +1195,8 @@ async function openContent(env, body) {
 export async function bundleHash(modules: Record<string, string>): Promise<string> {
   const text = Object.keys(modules)
     .sort()
-    .map((name) => `${name} ${modules[name]}`)
-    .join(" ");
+    .map((name) => `${name}\0${modules[name]}`)
+    .join("\0");
   return digestHex(text, 16);
 }
 
@@ -1114,8 +1232,9 @@ async function isolateId(
   bundleId: string,
   options: ProjectOptions,
   env: EnvPayload | null,
+  importMetaEnv: Record<string, string> | null,
 ): Promise<string> {
   const outbound = outboundKind(options.outbound);
-  if (outbound === "blocked" && env === null) return bundleId;
-  return `${bundleId}.${await digestHex(JSON.stringify({ outbound, env }), 8)}`;
+  if (outbound === "blocked" && env === null && importMetaEnv === null) return bundleId;
+  return `${bundleId}.${await digestHex(JSON.stringify({ outbound, env, importMetaEnv }), 8)}`;
 }

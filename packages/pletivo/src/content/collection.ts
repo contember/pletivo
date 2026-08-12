@@ -16,6 +16,7 @@ import { pathToFileURL } from "url";
 import { Glob } from "bun";
 import { z } from "zod";
 import {
+  imageSchemaFor,
   setContentHost,
   type ContentHost,
   type ContentScan,
@@ -48,44 +49,14 @@ async function findContentConfigPath(projectRoot: string): Promise<string | null
 }
 
 /**
- * Build an `image()` factory bound to a specific entry directory.
+ * The Bun host's half of `image()`: a path becomes bytes by opening the file.
  *
- * Accepted path forms:
- *  - Relative (`./logo.png`, `../assets/foo.png`) — resolved against the
- *    entry file's directory.
- *  - Root-absolute (`/uploads/foo.png`) — rejected; use plain `z.string()`
- *    for public/ assets.
- *  - Remote URLs (`https://...`) — rejected; use `z.string().url()`.
- *
- * `entryDir` is null for entries with no on-disk source file (function
- * loaders, etc.); image() issues a validation error in that case.
+ * Everything a schema author can get wrong is decided by `imageSchemaFor` in
+ * `@pletivo/core`, so both hosts refuse the same frontmatter with the same words.
  */
 function makeImageSchema(entryDir: string | null): z.ZodType<ImageMetadata, unknown> {
-  return z.string().transform(async (relPath: string, ctx: z.RefinementCtx) => {
-    const fail = (message: string) => {
-      ctx.addIssue({ code: "custom", message });
-      return z.NEVER;
-    };
-
-    if (!entryDir) {
-      return fail(
-        "image() schema can only be used with file-backed entries (e.g. glob() loader)",
-      );
-    }
-    if (/^https?:\/\//i.test(relPath)) {
-      return fail(
-        `image() does not support remote URLs (got "${relPath}"). ` +
-          `Use z.string().url() for remote images.`,
-      );
-    }
-    if (relPath.startsWith("/")) {
-      return fail(
-        `image() resolves paths relative to the entry file (got "${relPath}"). ` +
-          `For files in public/, use plain z.string() and reference them by absolute URL.`,
-      );
-    }
-
-    const fsPath = path.resolve(entryDir, relPath);
+  return imageSchemaFor(entryDir, async (dir, relPath) => {
+    const fsPath = path.resolve(dir, relPath);
     try {
       const probe = await probeAndRegisterImage(fsPath);
       return makeImageMetadata({
@@ -97,10 +68,11 @@ function makeImageSchema(entryDir: string | null): z.ZodType<ImageMetadata, unkn
       });
     } catch (e) {
       const err = e as NodeJS.ErrnoException;
-      if (err.code === "ENOENT") {
-        return fail(`image not found: ${relPath} (resolved to ${fsPath})`);
-      }
-      return fail(`could not read image ${relPath}: ${err.message}`);
+      throw new Error(
+        err.code === "ENOENT"
+          ? `image not found: ${relPath} (resolved to ${fsPath})`
+          : `could not read image ${relPath}: ${err.message}`,
+      );
     }
   });
 }

@@ -39,6 +39,41 @@
 /** What the values are called in the isolate's `env`. */
 export const ENV_BINDING = "PLETIVO_ENV";
 
+/**
+ * `import.meta.env`, which is a different thing from `astro:env` and arrives the same
+ * way.
+ *
+ * Vite gives every module an `import.meta.env`; a Worker Loader module has an
+ * `import.meta` with nothing on it, so `import.meta.env.SITE` throws before a page
+ * renders a byte. Bun gives the Bun host `process.env` under that name, so the
+ * faithful thing for this host to serve is whatever its operator hands it — and
+ * nothing, for an operator who hands nothing, which is what an unset `process.env`
+ * entry reads as too.
+ *
+ * In `env` rather than in the module map for the same reason the `astro:env` values
+ * are: a page's frontmatter may read a secret through it, and the map is what the
+ * isolate is content-addressed — and therefore named, logged and cached — by.
+ */
+export const IMPORT_META_ENV_BINDING = "PLETIVO_IMPORT_META_ENV";
+
+/**
+ * The global the rewritten `import.meta.env` reads.
+ *
+ * A global, because `import.meta` is per-module and V8 hands it to the host, not to
+ * the program: there is no assignment any generated module could make that another
+ * module's `import.meta` would see.
+ */
+export const IMPORT_META_ENV_GLOBAL = "__pletivoImportMetaEnv";
+
+/** The `import.meta.env` values, or `null` when the host supplied none. */
+export function importMetaEnvPayload(
+  values: Readonly<Record<string, string>> | undefined,
+): Record<string, string> | null {
+  if (values === undefined) return null;
+  const copy = { ...values };
+  return Object.keys(copy).length === 0 ? null : copy;
+}
+
 /** The installer the generated entry module calls. Not part of the `astro:env` API. */
 export const ENV_INSTALL = "__pletivoInstallEnv";
 
@@ -149,10 +184,20 @@ export function envPayload(env: ProjectEnv | undefined): EnvPayload | null {
   return { client, server };
 }
 
-/** Throws when the payload would not fit a dynamic Worker's `env`. */
-export function assertEnvFits(payload: EnvPayload | null): void {
-  if (payload === null) return;
-  const bytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
+/**
+ * Throws when what is about to be put in the isolate's `env` would not fit.
+ *
+ * Both payloads together, because the cap is on `env` as a whole rather than on
+ * either of them.
+ */
+export function assertEnvFits(
+  payload: EnvPayload | null,
+  importMetaEnv: Record<string, string> | null = null,
+): void {
+  if (payload === null && importMetaEnv === null) return;
+  const bytes = new TextEncoder().encode(
+    JSON.stringify([payload, importMetaEnv]),
+  ).byteLength;
   if (bytes > MAX_ENV_BYTES) throw new EnvTooLargeError(bytes);
 }
 

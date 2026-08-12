@@ -1,7 +1,7 @@
 # 020 — Astro integrations in the Workers host
 
 **Priority:** S-tier
-**Status:** Steps 1–3 implemented; the target site still renders 0 of 211 pages
+**Status:** Steps 1–3 plus images implemented; the target site renders **211 of 211**
 **Area:** `@pletivo/workers`
 
 **Status:** design only, no code written.
@@ -15,6 +15,62 @@ sites in `docs/todos/017` (the static dogfood site) and `docs/todos/018` (the SS
 > **37** files import `astro-icon/components` in the static dogfood site (not 20), 13 import
 > `@nuasite/components` in the nua site.
 
+
+## Outcome: 211 of 211 render
+
+Independently verified through `wrangler dev`, not taken from a report:
+**211/211 pages render**, and **5210 of 5210 distinct image URLs resolve** to a
+file the reference build wrote. Zero 404s.
+
+Byte-parity is not reached, and after checking a page line by line the remaining
+divergences are two known classes, neither image-related:
+
+- `public/` content hashing (`017 §2`) — the Bun build hashes `favicon.png`,
+  `apple-touch-icon.png` and `logo-dark.svg`; the Worker does not
+- the project stylesheet's name (`019`) — the CSS fix lives in PR #23 against
+  `main`, not on this branch
+
+Normalise those two away and the page is identical.
+
+Two more classes appear across the site: hoisted `<script>` bundling is absent
+(`016 §7`), and `markdown.rehypePlugins` are not carried, so a site's rehype
+plugin never runs (`020` step 5 — `prepare` already emits the diagnostic).
+
+### How images reach the isolate: they do not
+
+The content binding gained `image(ref, path)` returning
+`{width, height, format, hash}` — about 40 bytes. The target site makes ~1126 of
+those calls per render, roughly **45 kB, against 210 MB if the files crossed**,
+which would not fit a Worker's 128 MiB heap at all. The probe is memoised
+host-side and a host may hand `ImageInfo` straight over instead of bytes; for
+this site the whole manifest is 122 kB.
+
+URL scheme: `/cdn-cgi/image/onerror=redirect,width=…,format=auto/_astro/<name>.<md5-8>.<ext>`.
+Sharp's `_astro/<name>.<hash>.webp` would name a file no isolate can write. This
+names the *transform* and leaves the bytes real, and `cloudflareImageService` is
+the only service that emits a `srcset`. A Bun build with
+`PLETIVO_IMAGE_SERVICE=cloudflare` therefore stays byte-comparable — which is how
+the reference was built.
+
+### Two traps in the measurement itself
+
+Both cost me a wrong conclusion before I checked:
+
+1. **The dogfood harness under-reports.** Its "identical once hoisted `<script>`
+   tags are dropped" normalisation removes the tag but leaves the line, so the
+   two sides shift by one and every page reports a first difference at
+   `<main class="flex-1">` — which the Worker does emit. Its normalised counters
+   read 0/211 for that reason alone.
+2. **The pathname must carry the trailing slash.** Asking for `/cookies` rather
+   than `/cookies/` makes `Astro.url.pathname` differ, and a site that builds its
+   own `canonical` and `og:url` from it diverges on every page. Nothing to do
+   with `trailingSlash: 'ignore'`; the artifact carries that correctly.
+
+### One bug the image work uncovered
+
+`glob({ base: './content/product' })` — the isolate joined the `./` verbatim,
+matched no file-map key, and left all nine collections **silently empty**. That,
+not `image()`, is what 404'd 183 pages in the earlier probe.
 
 ## Outcome of steps 1–3
 
