@@ -2,6 +2,22 @@ import { withBase } from "@pletivo/runtime/base";
 
 export type ImageProcessing = "transform" | "passthrough";
 
+/**
+ * A resolved image asset, as a page or a content schema sees it.
+ *
+ * Lives here rather than in the Bun host because a content collection's
+ * `image()` schema produces one, and content collections run on both hosts.
+ * Producing it needs a filesystem; naming it does not.
+ */
+export interface ImageMetadata {
+  src: string;
+  width: number;
+  height: number;
+  format: string;
+  /** Absolute filesystem path — non-enumerable, for build-time use only. */
+  fsPath: string;
+}
+
 export interface ImageServiceUrlOptions {
   src: string;
   outputPath: string;

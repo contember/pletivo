@@ -1,0 +1,44 @@
+---
+// The listing page, and the one that pins enumeration order: `getCollection` is
+// rendered in the order it returns, not sorted here, so the two hosts have to walk
+// the content directory the same way to produce the same bytes.
+import { getCollection } from "astro:content";
+
+const posts = await getCollection("posts");
+const published = await getCollection("posts", (post) => !post.data.draft);
+const authors = await getCollection("authors");
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Content collections</title>
+  </head>
+  <body>
+    <h1>Posts</h1>
+    <ul id="all">
+      {posts.map((post) => <li>{post.id}</li>)}
+    </ul>
+    <ul id="published">
+      {
+        published.map((post) => (
+          <li>
+            <a href={`/posts/${post.id}/`}>{post.data.title}</a>
+            <time datetime={post.data.date.toISOString()}>{post.data.date.getUTCFullYear()}</time>
+            <span class="tags">{post.data.tags.join(",")}</span>
+          </li>
+        ))
+      }
+    </ul>
+    <ul id="authors">
+      {authors.map((author) => <li><a href={`/authors/${author.id}/`}>{author.data.name}</a></li>)}
+    </ul>
+  </body>
+</html>
+
+<style>
+  .tags {
+    color: rgb(7, 8, 9);
+  }
+</style>

@@ -15,6 +15,7 @@ import { withBase } from "@pletivo/runtime/base";
 import { recordRuntimeDep } from "./incremental/dep-tracker";
 import {
   resolveImageService,
+  type ImageMetadata,
   type ImageProcessing,
   type ImageService,
   type ImageServiceConfig,
@@ -29,14 +30,7 @@ export {
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-export interface ImageMetadata {
-  src: string;
-  width: number;
-  height: number;
-  format: string;
-  /** Absolute filesystem path — non-enumerable, for build-time use only. */
-  fsPath: string;
-}
+export type { ImageMetadata };
 
 export interface GetImageResult {
   rawOptions: Record<string, unknown>;

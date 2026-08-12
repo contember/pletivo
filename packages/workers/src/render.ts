@@ -18,9 +18,28 @@
  * Nothing about a page's own render is host-specific, so the isolate only reports
  * two things back: the HTML, and which component modules ran. The CSS ordering that
  * needs the import graph stays out here, where the graph is.
+ *
+ * ## Dynamic routes are one call, and that is forced
+ *
+ * `build.ts` calls `getStaticPaths({ paginate })` on the imported page module, and
+ * its own comment explains why it only ever carries the *params* across a cache
+ * boundary: a collection-backed route's props hold `render()` methods. Props are not
+ * serializable, so they can never leave the isolate. Asking the isolate for a path
+ * list and then rendering out here would break on the first such route.
+ *
+ * So the host asks for *pathname X of route file Y* and the isolate does the whole
+ * thing internally — import, `getStaticPaths`, match, render. `projectPaths` is the
+ * other half, for a preview index or a sitemap: it returns params and nothing else,
+ * which is exactly the part that is JSON-safe.
  */
 
-import { findRoute, parseRoute, type Route, type RouteParams } from "@pletivo/core/router";
+import {
+  findRoute,
+  parseRoute,
+  routeToOutputPath,
+  type Route,
+  type RouteParams,
+} from "@pletivo/core/router";
 import { parseMarkdown } from "@pletivo/core/content/markdown";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
@@ -33,7 +52,12 @@ import {
   type ProjectStylesheet,
 } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
-import { RUNTIME_MODULE_NAME } from "./generated/runtime-modules.ts";
+import type { ContentBinding, ContentStore } from "./content-files.ts";
+import {
+  CONTENT_MODULE_NAME,
+  GENERATED_MODULES,
+  RUNTIME_MODULE_NAME,
+} from "./generated/runtime-modules.ts";
 
 // ── The Worker Loader binding ───────────────────────────────────────
 //
@@ -48,6 +72,12 @@ export interface DynamicWorkerCode {
   modules: Record<string, string>;
   /** `null` cuts the isolate off from the network. Rendering never needs it. */
   globalOutbound?: null;
+  /**
+   * Bindings the isolate gets, independent of `globalOutbound` — a capability is not
+   * the network. Set once, when the isolate is created: `get()` only calls the code
+   * factory on a cache miss, so nothing per-request can ride here.
+   */
+  env?: Record<string, unknown>;
 }
 
 export interface DynamicWorkerStub {
@@ -60,11 +90,24 @@ export interface WorkerLoaderBinding {
 
 // ── Options and results ─────────────────────────────────────────────
 
-export interface RenderPageOptions {
+/**
+ * How the isolate reads content files, for a project that has collections.
+ *
+ * Two halves because only the app has `ctx.exports`: it owns the store and wraps it
+ * in a `WorkerEntrypoint`, and hands back the loopback stub. See `content-files.ts`
+ * for the shape, and for why every call carries a ref.
+ */
+export interface ContentAccess {
+  /** The loopback stub the isolate calls, e.g. `ctx.exports.PletivoContent({})`. */
+  binding: ContentBinding;
+  /** Where the bytes come from. A handle is opened per render and closed after it. */
+  store: ContentStore;
+}
+
+/** What every entrypoint here needs: the project, and somewhere to run it. */
+export interface ProjectOptions {
   /** The project: path (no leading slash, `/` separators) -> source text. */
   files: ReadonlyMap<string, string>;
-  /** URL pathname to render, e.g. `/` or `/blog/hello`. */
-  pathname: string;
   loader: WorkerLoaderBinding;
   /** Where pages live in `files`. */
   pagesDir?: string;
@@ -72,10 +115,25 @@ export interface RenderPageOptions {
   srcDir?: string;
   /** Where the project root starts in `files`. Defaults to the parent of `srcDir`. */
   rootDir?: string;
-  /** `site` from the project config. Sets the origin of `Astro.url`. */
-  site?: string;
   /** `compatibility_date` for the render isolate. */
   compatibilityDate?: string;
+  /**
+   * Overrides the compiler bound to the bundled `astro.wasm`. Only a test outside
+   * a Worker needs this — see `compileProject`.
+   */
+  compiler?: AstroCompiler;
+  /**
+   * Required only when the project has content collections. Without it such a project
+   * throws `ContentUnavailableError` rather than rendering a page with empty ones.
+   */
+  content?: ContentAccess;
+}
+
+export interface RenderPageOptions extends ProjectOptions {
+  /** URL pathname to render, e.g. `/` or `/blog/hello`. */
+  pathname: string;
+  /** `site` from the project config. Sets the origin of `Astro.url`. */
+  site?: string;
   /**
    * Tailwind's own stylesheets, as text. Needed only when a project stylesheet does
    * `@import "tailwindcss"`; without them that project throws rather than rendering
@@ -83,11 +141,6 @@ export interface RenderPageOptions {
    * to embed them — see `packages/workers/example/src/index.ts`.
    */
   tailwind?: TailwindStylesheets;
-  /**
-   * Overrides the compiler bound to the bundled `astro.wasm`. Only a test outside
-   * a Worker needs this — see `compileProject`.
-   */
-  compiler?: AstroCompiler;
 }
 
 /** A file the rendered HTML references, which the host has to serve for the page to work. */
@@ -117,9 +170,64 @@ export interface RenderedPage {
 
 /** No route in the project matches the pathname. */
 export class RouteNotFoundError extends Error {
-  constructor(readonly pathname: string) {
-    super(`[pletivo-workers] no route matches ${JSON.stringify(pathname)}`);
+  constructor(
+    readonly pathname: string,
+    message = `[pletivo-workers] no route matches ${JSON.stringify(pathname)}`,
+  ) {
+    super(message);
     this.name = "RouteNotFoundError";
+  }
+}
+
+/** Why a dynamic route that matched the pathname still renders no page. */
+export type UnresolvedReason = "no-static-path" | "not-enumerable";
+
+const UNRESOLVED_REASONS: Readonly<Record<UnresolvedReason, string>> = {
+  "no-static-path": "getStaticPaths() returned no entry for these params",
+  "not-enumerable":
+    "the route declares neither getStaticPaths() nor `prerender = false`, so nothing " +
+    "says what its paths are",
+};
+
+/**
+ * A dynamic route matched the pathname and then produced no page.
+ *
+ * Still a `RouteNotFoundError`, because to whoever asked for the URL it is the same
+ * 404 the Bun dev server gives. The reason is worth carrying anyway: `no-static-path`
+ * means the author's own path list does not hold this one, while `not-enumerable`
+ * means the route never said what its paths are — which a preview server may want to
+ * surface rather than swallow.
+ */
+export class RoutePathNotFoundError extends RouteNotFoundError {
+  constructor(
+    pathname: string,
+    readonly file: string,
+    readonly reason: UnresolvedReason,
+  ) {
+    super(
+      pathname,
+      `[pletivo-workers] ${JSON.stringify(file)} matched ${JSON.stringify(pathname)} ` +
+        `but renders no page: ${UNRESOLVED_REASONS[reason]}`,
+    );
+    this.name = "RoutePathNotFoundError";
+  }
+}
+
+/**
+ * The project has content collections and nothing was given to read them with.
+ *
+ * Loud rather than lenient: without a binding `getCollection()` inside the isolate
+ * would have no sources at all, and a blog index would render as an empty list — a
+ * page that looks fine and is wrong.
+ */
+export class ContentUnavailableError extends Error {
+  constructor() {
+    super(
+      "[pletivo-workers] this project imports the content API, so the render isolate " +
+        "needs a binding to read content files with. Pass `content: { binding, store }` " +
+        "— see ContentFiles in content-files.ts.",
+    );
+    this.name = "ContentUnavailableError";
   }
 }
 
@@ -147,9 +255,18 @@ const TYPESCRIPT_SYNTAX = [
   /^\s*(?:export\s+)?(?:const\s+)?enum\s+[A-Za-z_$]/m,
 ];
 
-/** Generated modules carrying TypeScript the isolate cannot run. */
+/**
+ * Generated modules carrying TypeScript the isolate cannot run.
+ *
+ * The pre-bundled modules are skipped, and not as an optimisation: they are Bun's own
+ * output, so they cannot hold TypeScript — but `pletivo-content.js` carries a
+ * megabyte of vendored JavaScript, and somewhere in it a line begins `type … =`. Left
+ * in, it made every isolate failure in a content project blame a file with nothing
+ * wrong with it, which is the exact mistake `1101194` was about.
+ */
 export function typescriptSuspects(modules: Record<string, string>): string[] {
   return Object.keys(modules)
+    .filter((name) => !(name in GENERATED_MODULES))
     .filter((name) => TYPESCRIPT_SYNTAX.some((pattern) => pattern.test(modules[name] ?? "")))
     .sort();
 }
@@ -213,6 +330,91 @@ export function projectRoutes(
   return routes;
 }
 
+/** One page the project can render, named the way `renderPage` wants to be asked. */
+export interface RoutePath {
+  /** Project path of the page file. */
+  file: string;
+  /** URL pathname — pass this straight back to `renderPage`. */
+  pathname: string;
+  params: RouteParams;
+}
+
+/**
+ * Every page the project can enumerate: the static routes, plus one entry per param
+ * set each `getStaticPaths()` returns.
+ *
+ * The JSON-safe half of the dynamic-route problem, and the only half there is out
+ * here — props stay in the isolate, so this is params and nothing else. What is
+ * deliberately absent: `prerender = false` routes (there is no path list to
+ * enumerate, which is the point of them), routes that declare neither, and endpoints.
+ * `renderPage` still serves an on-demand route when asked for a concrete pathname.
+ *
+ * The isolate is only started when the project has a dynamic route at all.
+ */
+export async function projectPaths(options: ProjectOptions): Promise<RoutePath[]> {
+  const pagesDir = options.pagesDir ?? DEFAULT_PAGES_DIR;
+  const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
+  const routes = projectRoutes(options.files, pagesDir).filter((route) => !route.isEndpoint);
+  const enumerable = routes.filter(
+    (route) => route.isDynamic && isExecutableModule(prefix + route.file),
+  );
+
+  const paramSets = enumerable.length === 0 ? new Map<string, RouteParams[]>() :
+    await isolatePaths(enumerable, prefix, options);
+
+  const paths: RoutePath[] = [];
+  for (const route of routes) {
+    const file = prefix + route.file;
+    if (!route.isDynamic) {
+      paths.push({ file, pathname: routePathname(route, {}), params: {} });
+      continue;
+    }
+    for (const params of paramSets.get(file) ?? []) {
+      paths.push({ file, pathname: routePathname(route, params), params });
+    }
+  }
+  return paths;
+}
+
+/**
+ * The URL a route with these params is served at.
+ *
+ * Derived from `routeToOutputPath` rather than from the segments directly, so it is
+ * exactly the file `pletivo build` would have written — and then the same directory
+ * URL `toPathname` gives that file, trailing slash included. `paginate` builds its
+ * `page.url` links the same way, so a page's own links and this list agree.
+ */
+function routePathname(route: Route, params: RouteParams): string {
+  const output = routeToOutputPath(route, params);
+  return "/" + (output.endsWith(INDEX_HTML) ? output.slice(0, -INDEX_HTML.length) : output);
+}
+
+const INDEX_HTML = "index.html";
+
+/** Ask the isolate for each route's param sets. One call, however many routes. */
+async function isolatePaths(
+  routes: Route[],
+  prefix: string,
+  options: ProjectOptions,
+): Promise<Map<string, RouteParams[]>> {
+  const project = await compileProject(options.files, options.compiler);
+  const { payload } = await callIsolate({
+    project,
+    options,
+    label: "resolving getStaticPaths",
+    body: {
+      op: "paths",
+      routes: routes.map((route) => ({ file: prefix + route.file, route })),
+    },
+  });
+  if (!isPathsPayload(payload)) {
+    throw new Error("[pletivo-workers] the isolate returned an unexpected getStaticPaths payload");
+  }
+  return new Map(
+    Object.entries(payload.paths).map(([file, sets]) => [file, sets.map(decodeParams)]),
+  );
+}
+
 // ── Rendering ───────────────────────────────────────────────────────
 
 export async function renderPage(options: RenderPageOptions): Promise<RenderedPage> {
@@ -223,13 +425,6 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   if (!match) throw new RouteNotFoundError(pathname);
   const file = prefix + match.route.file;
 
-  if (match.route.isDynamic) {
-    throw new UnsupportedRouteError(
-      file,
-      "a dynamic route needs getStaticPaths(), which means executing the page module " +
-        "on the host — only static routes render here",
-    );
-  }
   if (match.route.isEndpoint) {
     throw new UnsupportedRouteError(file, "endpoint routes are not implemented");
   }
@@ -238,6 +433,11 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   if (source === undefined) throw new RouteNotFoundError(pathname);
 
   if (file.endsWith(".md")) {
+    // A markdown page has no module, so it can declare neither a path list nor the
+    // on-demand opt-out — a dynamic one is unresolvable by construction.
+    if (match.route.isDynamic) {
+      throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
+    }
     // The stylesheet is the whole project's, so a `.md` page links the same one every
     // other page does — which costs it the project compile it otherwise never needs.
     // Only when the project has a stylesheet at all: the common CSS-free markdown site
@@ -254,7 +454,16 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
 
   const project = await compileProject(files, options.compiler);
   const stylesheet = await siteStylesheet(project, options);
-  const rendered = await renderModule({ project, file, params: match.params, loader, site, options });
+  const rendered = await renderModule({
+    project,
+    file,
+    params: match.params,
+    // A static route needs none of the getStaticPaths machinery, and the isolate
+    // tells the two apart by whether it was handed a route.
+    route: match.route.isDynamic ? match.route : null,
+    site,
+    options,
+  });
   const css = pageCss({
     entry: file,
     styles: project.styles,
@@ -327,7 +536,29 @@ export async function renderMarkdownPage(source: string): Promise<string> {
   );
 }
 
-interface IsolateResult {
+/**
+ * How params cross the isolate boundary.
+ *
+ * Not as an object: `undefined` is a real param value — a rest segment that matched
+ * nothing, which is how `[...page]` names its first page — and `JSON.stringify` drops
+ * a key whose value is `undefined`. Sent as an object, `{ page: undefined }` would
+ * arrive as `{}` and match the wrong entry of `getStaticPaths`. Pairs with `null`
+ * survive the round trip.
+ */
+type ParamPair = [string, string | null];
+
+function encodeParams(params: RouteParams): ParamPair[] {
+  return Object.keys(params).map((name): ParamPair => [name, params[name] ?? null]);
+}
+
+function decodeParams(pairs: ParamPair[]): RouteParams {
+  const params: RouteParams = {};
+  for (const [name, value] of pairs) params[name] = value === null ? undefined : value;
+  return params;
+}
+
+interface RenderedPayload {
+  status: "rendered";
   html: string;
   /** Project paths whose component function ran, for the `is:global` gate. */
   renderedModules: string[];
@@ -335,7 +566,19 @@ interface IsolateResult {
   tsxStyles: string[];
 }
 
-interface IsolateRender extends IsolateResult {
+/** The dynamic route matched no path. Params only — no props were ever produced. */
+interface UnresolvedPayload {
+  status: "unresolved";
+  reason: UnresolvedReason;
+}
+
+/** Project path -> the param sets its `getStaticPaths()` returned. */
+interface PathsPayload {
+  status: "paths";
+  paths: Record<string, ParamPair[][]>;
+}
+
+interface IsolateRender extends RenderedPayload {
   bundleId: string;
 }
 
@@ -343,8 +586,14 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
-function isIsolateResult(value: unknown): value is IsolateResult {
+/** Narrows enough for `Reflect.get`, which is how every payload here is read. */
+function hasStatus(value: unknown, status: string): value is object {
   if (typeof value !== "object" || value === null) return false;
+  return Reflect.get(value, "status") === status;
+}
+
+function isRenderedPayload(value: unknown): value is RenderedPayload {
+  if (!hasStatus(value, "rendered")) return false;
   return (
     typeof Reflect.get(value, "html") === "string" &&
     isStringArray(Reflect.get(value, "renderedModules")) &&
@@ -352,48 +601,124 @@ function isIsolateResult(value: unknown): value is IsolateResult {
   );
 }
 
-async function renderModule(input: {
+function isUnresolvedPayload(value: unknown): value is UnresolvedPayload {
+  if (!hasStatus(value, "unresolved")) return false;
+  const reason = Reflect.get(value, "reason");
+  return reason === "no-static-path" || reason === "not-enumerable";
+}
+
+function isParamPair(value: unknown): value is ParamPair {
+  if (!Array.isArray(value) || value.length !== 2) return false;
+  const [name, param]: unknown[] = value;
+  return typeof name === "string" && (typeof param === "string" || param === null);
+}
+
+function isPathsPayload(value: unknown): value is PathsPayload {
+  if (!hasStatus(value, "paths")) return false;
+  const paths = Reflect.get(value, "paths");
+  if (typeof paths !== "object" || paths === null) return false;
+  return Object.values(paths).every(
+    (sets: unknown) =>
+      Array.isArray(sets) &&
+      sets.every((set: unknown) => Array.isArray(set) && set.every(isParamPair)),
+  );
+}
+
+/**
+ * One round trip to the render isolate, whichever question is being asked.
+ *
+ * The module map is the whole project and nothing else, so it stays content-addressed
+ * — every per-request value rides in the request body, and identical sources keep
+ * reusing one warm isolate however many pathnames are rendered from them.
+ */
+async function callIsolate(input: {
   project: CompiledProject;
-  file: string;
-  params: RouteParams;
-  loader: WorkerLoaderBinding;
-  site: string | undefined;
-  options: RenderPageOptions;
-}): Promise<IsolateRender> {
-  const { project, file, params, loader, site, options } = input;
+  options: ProjectOptions;
+  /** Names the operation in an error, e.g. `rendering src/pages/index.astro`. */
+  label: string;
+  body: Record<string, unknown>;
+}): Promise<{ bundleId: string; payload: unknown }> {
+  const { project, options, label, body } = input;
   const modules = { ...project.modules, [ENTRY_MODULE]: entryModule(project) };
   const bundleId = await bundleHash(modules);
 
-  const stub = loader.get(bundleId, () => ({
+  const content = project.content === null ? null : options.content;
+  if (project.content !== null && !content) throw new ContentUnavailableError();
+
+  const stub = options.loader.get(bundleId, () => ({
     compatibilityDate: options.compatibilityDate ?? DEFAULT_COMPATIBILITY_DATE,
     compatibilityFlags: ["nodejs_compat"],
     mainModule: ENTRY_MODULE,
     modules,
     // The render is a pure function of the sources. Nothing it runs should reach
-    // the network, and the isolate is running code the host just generated.
+    // the network, and the isolate is running code the host just generated. The
+    // content binding below is unaffected: it is a capability, not the network.
     globalOutbound: null,
+    ...(content ? { env: { [CONTENT_BINDING]: content.binding } } : {}),
   }));
 
-  // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost
-  // stand-in. The request itself only carries the render instructions — the page's
-  // own `Astro.request` is synthesized from `url` inside the isolate, matching a
-  // static build, which has no request either.
-  const origin = site ? new URL(site).origin : "http://localhost/";
+  // Opened per render, not per isolate: the isolate outlives the request that made
+  // it, so the sources have to be named by something that travels with the request.
+  const handle = content ? content.store.open(options.files) : null;
   const request = new Request("http://pletivo.invalid/render", {
     method: "POST",
-    body: JSON.stringify({ file, params, url: pageUrl(options.pathname, origin), site }),
+    body: JSON.stringify(
+      handle ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options) } : body,
+    ),
   });
   let response: Response;
   try {
     response = await stub.getEntrypoint().fetch(request);
   } catch (error) {
     throw new IsolateStartError(error, typescriptSuspects(modules));
+  } finally {
+    handle?.close();
   }
   if (!response.ok) {
-    throw new Error(`[pletivo-workers] rendering ${file} failed:\n${await response.text()}`);
+    throw new Error(`[pletivo-workers] ${label} failed:\n${await response.text()}`);
   }
-  const payload: unknown = await response.json();
-  if (!isIsolateResult(payload)) {
+  return { bundleId, payload: await response.json() };
+}
+
+/** Where the project root sits in `files`, which is what a collection base resolves against. */
+function projectRoot(options: ProjectOptions): string {
+  const pagesDir = options.pagesDir ?? DEFAULT_PAGES_DIR;
+  return options.rootDir ?? parentDir(options.srcDir ?? parentDir(pagesDir));
+}
+
+async function renderModule(input: {
+  project: CompiledProject;
+  file: string;
+  params: RouteParams;
+  /** The matched route when it is dynamic, `null` when it is static. */
+  route: Route | null;
+  site: string | undefined;
+  options: RenderPageOptions;
+}): Promise<IsolateRender> {
+  const { project, file, params, route, site, options } = input;
+
+  // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost
+  // stand-in. The request itself only carries the render instructions — the page's
+  // own `Astro.request` is synthesized from `url` inside the isolate, matching a
+  // static build, which has no request either.
+  const origin = site ? new URL(site).origin : "http://localhost/";
+  const { bundleId, payload } = await callIsolate({
+    project,
+    options,
+    label: `rendering ${file}`,
+    body: {
+      op: "render",
+      file,
+      params: encodeParams(params),
+      route,
+      url: pageUrl(options.pathname, origin),
+      site,
+    },
+  });
+  if (isUnresolvedPayload(payload)) {
+    throw new RoutePathNotFoundError(options.pathname, file, payload.reason);
+  }
+  if (!isRenderedPayload(payload)) {
     throw new Error(`[pletivo-workers] the render isolate returned an unexpected payload`);
   }
   return { ...payload, bundleId };
@@ -405,6 +730,9 @@ function pageUrl(pathname: string, origin: string): string {
 
 /** Name of the generated module the isolate starts at. Never a project path. */
 const ENTRY_MODULE = "pletivo-entry.js";
+
+/** What the content binding is called in the isolate's `env`. */
+const CONTENT_BINDING = "PLETIVO_CONTENT";
 
 /**
  * The isolate's entry point.
@@ -418,6 +746,11 @@ const ENTRY_MODULE = "pletivo-entry.js";
  * takes plain props, so handing an Astro result object to a JSX component would give
  * it the render result as its props. `isAstroComponent` is the same test `build.ts`
  * splits on.
+ *
+ * This is also the only place `getStaticPaths` can run: it hands back props holding
+ * `render()` methods, so nothing it returns may be serialized back to the host. The
+ * `render` op therefore resolves and renders in one go; the `paths` op returns the
+ * params and drops the props on the floor, which is what makes it JSON-safe.
  */
 function entryModule(project: CompiledProject): string {
   const pages = [...project.moduleNames]
@@ -425,15 +758,57 @@ function entryModule(project: CompiledProject): string {
     .map(([file, name]) => `  ${JSON.stringify(file)}: () => import(${JSON.stringify(`./${name}`)}),`)
     .join("\n");
 
-  return `import { isAstroComponent, redirectPageHtml, renderAstroPage, runWithRenderTracking } from ${JSON.stringify(`./${RUNTIME_MODULE_NAME}`)};
-
+  return `import { createPaginate, isAstroComponent, redirectPageHtml, renderAstroPage, runWithRenderTracking } from ${JSON.stringify(`./${RUNTIME_MODULE_NAME}`)};
+${contentPrelude(project)}
 const PAGES = {
 ${pages}
 };
 
-async function renderPageComponent(component, pageContext) {
-  if (isAstroComponent(component)) return renderAstroPage(component, {}, pageContext);
-  const output = await component({ __pageContext: pageContext });
+// The Workers host has no \`base\` yet, so paginate's URLs are root-relative — the
+// same output a project built with \`base: "/"\` gets.
+const BASE = "/";
+
+// \`undefined\` is a real param value and JSON drops it; see ParamPair in render.ts.
+function decodeParams(pairs) {
+  const params = {};
+  for (const [name, value] of pairs) params[name] = value === null ? undefined : value;
+  return params;
+}
+
+function encodeParams(params) {
+  return Object.keys(params).map((name) => [name, params[name] ?? null]);
+}
+
+function loadPage(file) {
+  const load = PAGES[file];
+  return load ? load() : null;
+}
+
+/**
+ * What a dynamic route renders with — or why it renders nothing.
+ *
+ * The three kinds the Bun host has, in the order it tests them: an enumerable route
+ * renders only what \`getStaticPaths()\` listed, \`prerender = false\` takes its params
+ * from the URL, and a route that declares neither stays a 404.
+ */
+async function resolveDynamic(module, route, urlParams) {
+  if (typeof module.getStaticPaths === "function") {
+    const paths = await module.getStaticPaths({ paginate: createPaginate(route, BASE) });
+    const match = paths.find((entry) =>
+      Object.keys(urlParams).every((name) => entry.params[name] === urlParams[name]),
+    );
+    if (!match) return { unresolved: "no-static-path" };
+    // \`Astro.params\` is the path's own param set, not the URL's — build.ts renders
+    // from the getStaticPaths entry, which may carry params no URL segment names.
+    return { params: match.params, props: match.props || {} };
+  }
+  if (module.prerender === false) return { params: urlParams, props: {} };
+  return { unresolved: "not-enumerable" };
+}
+
+async function renderPageComponent(component, props, pageContext) {
+  if (isAstroComponent(component)) return renderAstroPage(component, props, pageContext);
+  const output = await component({ ...props, __pageContext: pageContext });
   if (typeof output === "string") return output;
   // A static file cannot send a 3xx, so a redirect becomes the meta-refresh page
   // Astro's static output emits. Any other Response has no static equivalent.
@@ -444,30 +819,125 @@ async function renderPageComponent(component, pageContext) {
   return "";
 }
 
-export default {
-  async fetch(request) {
-    const { file, params, url, site } = await request.json();
-    const load = PAGES[file];
-    if (!load) return new Response("no module for " + file, { status: 404 });
-    const module = await load();
-    if (typeof module.default !== "function") {
-      return new Response(file + " has no default export", { status: 500 });
+async function listPaths(routes) {
+  const paths = {};
+  for (const { file, route } of routes) {
+    const module = await loadPage(file);
+    if (!module || typeof module.getStaticPaths !== "function") continue;
+    const list = await module.getStaticPaths({ paginate: createPaginate(route, BASE) });
+    paths[file] = list.map((entry) => encodeParams(entry.params));
+  }
+  return Response.json({ status: "paths", paths });
+}
+
+async function render({ file, params, route, url, site }) {
+  const module = await loadPage(file);
+  if (!module) return new Response("no module for " + file, { status: 404 });
+  if (typeof module.default !== "function") {
+    return new Response(file + " has no default export", { status: 500 });
+  }
+  let pageParams = decodeParams(params);
+  let props = {};
+  if (route) {
+    const resolved = await resolveDynamic(module, route, pageParams);
+    if (resolved.unresolved) {
+      return Response.json({ status: "unresolved", reason: resolved.unresolved });
     }
-    const { value, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-      renderPageComponent(module.default, {
-        url: new URL(url),
-        site: site ? new URL(site) : undefined,
-        params,
-        preferredLocaleList: [],
-      }),
-    );
-    return Response.json({
-      html: value ?? "",
-      renderedModules: [...renderedModules],
-      tsxStyles,
-    });
+    pageParams = resolved.params;
+    props = resolved.props;
+  }
+  const { value, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
+    renderPageComponent(module.default, props, {
+      url: new URL(url),
+      site: site ? new URL(site) : undefined,
+      params: pageParams,
+      preferredLocaleList: [],
+    }),
+  );
+  return Response.json({
+    status: "rendered",
+    html: value ?? "",
+    renderedModules: [...renderedModules],
+    tsxStyles,
+  });
+}
+
+export default {
+  async fetch(request, env) {
+    const body = await request.json();
+    await openContent(env, body);
+    return body.op === "paths" ? listPaths(body.routes) : render(body);
   },
 };
+`;
+}
+
+/**
+ * The isolate's content wiring, emitted only for a project that reaches for the API.
+ *
+ * Two things have to happen on **every** request, and both are consequences of the
+ * isolate being reused on purpose:
+ *
+ *  - the `ContentHost` is re-installed, because the binding call has to carry this
+ *    request's ref — the stub in `env` was made for the first request and knows
+ *    nothing about this one;
+ *  - `initCollections` runs, which drops every cached entry. A store that survived
+ *    would answer the next render with the previous render's markdown, and since a
+ *    content edit does *not* change the module map, that next render is exactly the
+ *    one an author is watching for.
+ *
+ * The config module sits behind a thunk for the same reason pages do: a throw at its
+ * module scope should fail the render that needed it, not the isolate.
+ */
+function contentPrelude(project: CompiledProject): string {
+  if (project.content === null) {
+    return "\nasync function openContent() {}\n";
+  }
+  const { configModule } = project.content;
+  return `import { initCollections, setContentHost } from ${JSON.stringify(`./${CONTENT_MODULE_NAME}`)};
+
+const CONTENT_CONFIG = ${configModule === null ? "null" : `() => import(${JSON.stringify(`./${configModule}`)})`};
+
+/** Project paths are \`/\`-joined keys of a virtual file map, never filesystem paths. */
+function joinPath(dir, name) {
+  if (!dir) return name;
+  return name ? dir + "/" + name : dir;
+}
+
+async function openContent(env, body) {
+  const files = env && env[${JSON.stringify(CONTENT_BINDING)}];
+  if (!files) throw new Error("[pletivo-workers] the render isolate has no content binding");
+  const ref = body.contentRef;
+  setContentHost({
+    async scan(projectRoot, base, pattern) {
+      const dir = joinPath(projectRoot, base);
+      return {
+        root: dir,
+        // A virtual key is not a filesystem path, so this URL is rooted at the file
+        // map rather than at the machine. \`generateId\` reading \`base\` therefore sees
+        // a different absolute prefix than it would on the Bun host.
+        rootUrl: new URL("file:///" + dir + "/"),
+        files: await files.scan(ref, dir, pattern),
+      };
+    },
+    async readFile(path) {
+      const text = await files.read(ref, path);
+      if (text === null) throw new Error("[pletivo-workers] no content file " + path);
+      return text;
+    },
+    dirname(path) {
+      const at = path.lastIndexOf("/");
+      return at === -1 ? "" : path.slice(0, at);
+    },
+    resolveDir: joinPath,
+    async loadConfig() {
+      if (!CONTENT_CONFIG) return {};
+      const module = await CONTENT_CONFIG();
+      return module.collections || {};
+    },
+  });
+  await initCollections(body.rootDir || "");
+}
 `;
 }
 

@@ -2,8 +2,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import {
   RouteNotFoundError,
+  RoutePathNotFoundError,
   UnsupportedRouteError,
   bundleHash,
+  projectPaths,
   projectRoutes,
   renderPage,
   typescriptSuspects,
@@ -174,6 +176,277 @@ describe("renderPage, .tsx through the Worker Loader", () => {
   });
 });
 
+/**
+ * The three kinds of dynamic route the Bun host has, in one project.
+ *
+ * `tests/fixture-on-demand-routes` encodes the same three for the Bun dev server, and
+ * the intent is the same here: an enumerable route renders only what it listed,
+ * `prerender = false` renders whatever the URL says, and a route that declares
+ * neither stays a 404 — the last one is the guard that stops the on-demand branch
+ * from swallowing every unresolvable route.
+ */
+const DYNAMIC = new Map<string, string>([
+  ["src/pages/index.astro", `<html><body><p>home</p></body></html>\n`],
+  [
+    "src/pages/posts/[slug].astro",
+    `---
+export async function getStaticPaths() {
+  return [
+    { params: { slug: "hello" }, props: { title: "Hello", body: "first" } },
+    { params: { slug: "world" }, props: { title: "World", body: "second" } },
+  ];
+}
+const { title, body } = Astro.props;
+---
+<html><head><title>{title}</title></head><body><p id="body">{body}</p><p id="slug">{Astro.params.slug}</p></body></html>
+`,
+  ],
+  [
+    "src/pages/list/[...page].astro",
+    `---
+export async function getStaticPaths({ paginate }) {
+  return paginate(["a", "b", "c"], { pageSize: 2 });
+}
+const { page } = Astro.props;
+---
+<html><body><p id="items">{page.data.join(",")}</p><p id="n">{page.currentPage}/{page.lastPage}</p><p id="next">{page.url.next}</p></body></html>
+`,
+  ],
+  [
+    "src/pages/live/[slug].astro",
+    `---
+export const prerender = false;
+const { slug } = Astro.params;
+---
+<html><body><p id="slug">{slug}</p><p id="path">{Astro.url.pathname}</p></body></html>
+`,
+  ],
+  [
+    "src/pages/mystery/[slug].astro",
+    `---
+const { slug } = Astro.params;
+---
+<html><body><p id="slug">{slug}</p></body></html>
+`,
+  ],
+  [
+    "src/pages/entry/[id].astro",
+    `---
+export async function getStaticPaths() {
+  return [
+    {
+      params: { id: "one" },
+      props: { entry: { title: "One", render: async () => "<em>rendered</em>" } },
+    },
+  ];
+}
+const { entry } = Astro.props;
+const body = await entry.render();
+---
+<html><body><h1>{entry.title}</h1><div set:html={body}></div></body></html>
+`,
+  ],
+  [
+    "src/pages/tag/[name].tsx",
+    `export function getStaticPaths() {
+  return [{ params: { name: "css" }, props: { count: 3 } }];
+}
+
+export default function Tag({ count, __pageContext }) {
+  return (
+    <html>
+      <body>
+        <p id="count">{count}</p>
+        <p id="name">{__pageContext.params.name}</p>
+      </body>
+    </html>
+  );
+}
+`,
+  ],
+]);
+
+const renderDynamic = (pathname: string) =>
+  renderPage({ files: DYNAMIC, pathname, loader, compiler });
+
+/** The error a render threw. Fails the test when the render succeeded instead. */
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected the render to be rejected, and it resolved");
+}
+
+describe("renderPage, getStaticPaths routes", () => {
+  test("renders a listed path with the props that path carries", async () => {
+    const page = await renderDynamic("/posts/world");
+    expect(page.file).toBe("src/pages/posts/[slug].astro");
+    expect(page.html).toContain("<title>World</title>");
+    expect(page.html).toContain('<p id="body">second</p>');
+  });
+
+  test("gives Astro.params the params of the matched path", async () => {
+    expect((await renderDynamic("/posts/hello")).html).toContain('<p id="slug">hello</p>');
+  });
+
+  test("404s a path getStaticPaths did not list", async () => {
+    const error = await rejection(renderDynamic("/posts/nope"));
+    expect(error).toBeInstanceOf(RoutePathNotFoundError);
+    expect(error).toMatchObject({
+      reason: "no-static-path",
+      pathname: "/posts/nope",
+      file: "src/pages/posts/[slug].astro",
+    });
+  });
+
+  test("keeps props that cannot be serialized inside the isolate", async () => {
+    // The whole reason this is one call: a collection-backed route's props hold a
+    // `render()` method, which no JSON boundary would survive.
+    const { html } = await renderDynamic("/entry/one");
+    expect(html).toContain("<h1>One</h1>");
+    expect(html).toContain("<div><em>rendered</em></div>");
+  });
+
+  test("hands a .tsx page its props as plain props, not as a render result", async () => {
+    const { html } = await renderDynamic("/tag/css");
+    expect(html).toContain('<p id="count">3</p>');
+    expect(html).toContain('<p id="name">css</p>');
+  });
+});
+
+describe("renderPage, paginate()", () => {
+  test("serves the first page at the unnumbered URL", async () => {
+    const { html } = await renderDynamic("/list");
+    expect(html).toContain('<p id="items">a,b</p>');
+    expect(html).toContain('<p id="n">1/2</p>');
+    expect(html).toContain('<p id="next">/list/2/</p>');
+  });
+
+  test("serves the numbered pages", async () => {
+    const { html } = await renderDynamic("/list/2");
+    expect(html).toContain('<p id="items">c</p>');
+    expect(html).toContain('<p id="n">2/2</p>');
+  });
+
+  test("404s past the last page", async () => {
+    expect(await rejection(renderDynamic("/list/3"))).toBeInstanceOf(RoutePathNotFoundError);
+  });
+});
+
+describe("renderPage, prerender = false", () => {
+  test("renders any slug — there is no path list to match against", async () => {
+    for (const slug of ["a", "another-one", "with-123-digits"]) {
+      const { html } = await renderDynamic(`/live/${slug}`);
+      expect(html).toContain(`<p id="slug">${slug}</p>`);
+    }
+  });
+
+  test("gives Astro.url the requested pathname", async () => {
+    expect((await renderDynamic("/live/some-slug")).html).toContain(
+      '<p id="path">/live/some-slug</p>',
+    );
+  });
+});
+
+describe("renderPage, a dynamic route that resolves to nothing", () => {
+  test("stays a 404 rather than rendering with the URL's params", async () => {
+    const error = await rejection(renderDynamic("/mystery/anything"));
+    expect(error).toBeInstanceOf(RoutePathNotFoundError);
+    expect(error).toMatchObject({ reason: "not-enumerable" });
+    expect(String(error)).toContain("nothing says what its paths are");
+  });
+
+  test("a markdown route cannot declare paths at all", async () => {
+    const files = new Map([["src/pages/notes/[slug].md", "---\ntitle: N\n---\n\ntext\n"]]);
+    const error = await rejection(renderPage({ files, pathname: "/notes/a", loader, compiler }));
+    expect(error).toBeInstanceOf(RoutePathNotFoundError);
+    expect(error).toMatchObject({ reason: "not-enumerable" });
+  });
+});
+
+describe("projectPaths", () => {
+  test("enumerates the static routes and every param set getStaticPaths returned", async () => {
+    const paths = await projectPaths({ files: DYNAMIC, loader, compiler });
+    // Trailing slashes because that is the URL `pletivo build` renders the file at,
+    // and the URL paginate writes into `page.url`.
+    expect(paths.map((path) => path.pathname).sort()).toEqual([
+      "/",
+      "/entry/one/",
+      "/list/",
+      "/list/2/",
+      "/posts/hello/",
+      "/posts/world/",
+      "/tag/css/",
+    ]);
+  });
+
+  test("carries the params, and only the params", async () => {
+    const paths = await projectPaths({ files: DYNAMIC, loader, compiler });
+    const post = paths.find((path) => path.pathname === "/posts/world/");
+    expect(post).toEqual({
+      file: "src/pages/posts/[slug].astro",
+      pathname: "/posts/world/",
+      params: { slug: "world" },
+    });
+  });
+
+  test("keeps a rest param that matched nothing, which JSON would have dropped", async () => {
+    // `{ page: undefined }` is how paginate names its first page. Serialized as an
+    // object the key vanishes and the wrong entry matches.
+    const paths = await projectPaths({ files: DYNAMIC, loader, compiler });
+    const first = paths.find((path) => path.pathname === "/list/");
+    expect(first?.params).toEqual({ page: undefined });
+    expect(Object.keys(first?.params ?? {})).toEqual(["page"]);
+  });
+
+  test("lists nothing for a route with no path list", async () => {
+    // `prerender = false` has none by design, and `mystery/[slug]` has none at all.
+    const paths = await projectPaths({ files: DYNAMIC, loader, compiler });
+    expect(paths.some((path) => path.pathname.startsWith("/live/"))).toBe(false);
+    expect(paths.some((path) => path.pathname.startsWith("/mystery/"))).toBe(false);
+  });
+
+  test("every pathname it returns renders", async () => {
+    for (const { pathname } of await projectPaths({ files: DYNAMIC, loader, compiler })) {
+      expect((await renderDynamic(pathname)).html).toContain("<html>");
+    }
+  });
+
+  test("starts no isolate for a project with no dynamic route", async () => {
+    const quiet = new FileLoader();
+    const paths = await projectPaths({
+      files: new Map([["src/pages/index.astro", "<html><body>hi</body></html>\n"]]),
+      loader: quiet,
+      compiler,
+    });
+    expect(paths.map((path) => path.pathname)).toEqual(["/"]);
+    expect(quiet.bundles.size).toBe(0);
+    await quiet.cleanup();
+  });
+});
+
+describe("isolate reuse across route kinds", () => {
+  test("one bundle serves enumeration, a static route and every dynamic one", async () => {
+    // The module map is the project and nothing else — params and route travel in the
+    // request. If a per-request value ever leaked into the map this count would climb.
+    const reused = new FileLoader();
+    const at = (pathname: string) => renderPage({ files: DYNAMIC, pathname, loader: reused, compiler });
+    await projectPaths({ files: DYNAMIC, loader: reused, compiler });
+    const ids = [
+      (await at("/")).bundleId,
+      (await at("/posts/hello")).bundleId,
+      (await at("/posts/world")).bundleId,
+      (await at("/list/2")).bundleId,
+      (await at("/live/anything")).bundleId,
+    ];
+    expect(new Set(ids).size).toBe(1);
+    expect(reused.bundles.size).toBe(1);
+    await reused.cleanup();
+  });
+});
+
 describe("renderPage, the project stylesheet", () => {
   // A page importing CSS from its frontmatter, a `.js` module importing more of it,
   // and a page that imports none of it but still links the same site-wide bundle.
@@ -251,8 +524,19 @@ describe("renderPage, refusals", () => {
     expect(render("/notes")).rejects.toThrow(/only \.astro, \.tsx and \.md pages render here/);
   });
 
-  test("refuses a dynamic route rather than guessing its params", () => {
-    expect(render("/blog/hello")).rejects.toBeInstanceOf(UnsupportedRouteError);
+  test("refuses an endpoint route, which is not a page at all", async () => {
+    const files = new Map([
+      ["src/pages/rss.xml.ts", "export function GET() { return new Response('x'); }\n"],
+    ]);
+    const error = await rejection(renderPage({ files, pathname: "/rss.xml", loader, compiler }));
+    expect(error).toBeInstanceOf(UnsupportedRouteError);
+    expect(String(error)).toContain("endpoint routes are not implemented");
+  });
+
+  test("404s a dynamic route that never said what its paths are", async () => {
+    // `blog/[slug].astro` declares neither getStaticPaths nor the on-demand opt-out.
+    const error = await rejection(render("/blog/hello"));
+    expect(error).toBeInstanceOf(RoutePathNotFoundError);
   });
 });
 

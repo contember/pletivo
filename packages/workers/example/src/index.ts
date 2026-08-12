@@ -8,20 +8,54 @@
  *   POST /__render    {"files": {...}, "pathname": "/", "site": "..."} — render a
  *                     project handed in with the request, which is what a Durable
  *                     Object holding an agent's edits would do
+ *   POST /__paths     the same body, minus the pathname — every page the project can
+ *                     enumerate, which is what a preview index would list
  */
 
+import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   RouteNotFoundError,
   UnsupportedRouteError,
+  projectPaths,
   renderPage,
   type RenderedAsset,
   type WorkerLoaderBinding,
 } from "../../src/render.ts";
+import { ContentFiles, type ContentBinding, type ContentFileRef } from "../../src/content-files.ts";
 import { SITE } from "./site.ts";
 import { TAILWIND } from "./tailwind.ts";
 
 interface Env {
   LOADER: WorkerLoaderBinding;
+}
+
+/**
+ * `ctx.exports` — the self-referential bindings a Worker can hand to something else.
+ * Declared structurally, like `WorkerLoaderBinding`, so the package does not depend
+ * on which `@cloudflare/workers-types` the app installed.
+ *
+ * The entrypoint has to be *called* with an options object: `ctx.exports.X()` throws,
+ * and `ctx.exports.X` uncalled is not serializable into a dynamic Worker's `env`.
+ */
+interface RenderContext {
+  exports: { PletivoContent: (options: { props?: unknown }) => ContentBinding };
+}
+
+/** Content files the renders in flight are reading. */
+const CONTENT = new ContentFiles();
+
+/**
+ * The loopback the render isolate calls to read content, and the reason content never
+ * has to enter the module map. `globalOutbound: null` still holds inside that isolate
+ * — this is a capability, not the network.
+ */
+export class PletivoContent extends WorkerEntrypoint {
+  scan(ref: string, dir: string, pattern: string): ContentFileRef[] {
+    return CONTENT.scan(ref, dir, pattern);
+  }
+  read(ref: string, path: string): string | null {
+    return CONTENT.read(ref, path);
+  }
 }
 
 /**
@@ -50,20 +84,37 @@ function isRenderRequest(value: unknown): value is RenderRequest {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: RenderContext): Promise<Response> {
     const url = new URL(request.url);
     const asset = assets.get(url.pathname);
     if (asset) {
       return new Response(asset.body, { headers: { "content-type": asset.contentType } });
     }
 
+    // Made per request, but it is only *used* the first time an isolate is created —
+    // `env.LOADER.get` runs its code factory on a cache miss and never again. That is
+    // why the stub is stateless and every call carries a ref instead.
+    const content = { binding: ctx.exports.PletivoContent({}), store: CONTENT };
+
     try {
+      if (url.pathname === "/__paths") {
+        const { files, pagesDir } = await readRenderRequest(request);
+        return Response.json(
+          await projectPaths({ files, pagesDir, loader: env.LOADER, content }),
+        );
+      }
+
       const render =
         url.pathname === "/__render"
           ? await readRenderRequest(request)
           : { files: SITE, pathname: url.pathname };
 
-      const page = await renderPage({ ...render, loader: env.LOADER, tailwind: TAILWIND });
+      const page = await renderPage({
+        ...render,
+        loader: env.LOADER,
+        content,
+        tailwind: TAILWIND,
+      });
       if (assets.size >= ASSET_LIMIT) assets.clear();
       for (const generated of page.assets) assets.set(generated.path, generated);
 

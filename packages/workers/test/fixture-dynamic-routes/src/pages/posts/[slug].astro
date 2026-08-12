@@ -1,0 +1,35 @@
+---
+import { POSTS } from "../../data/posts.ts";
+
+// A plain getStaticPaths: literal params, and props that carry a *function*. That
+// last part is the point — a collection-backed route's props hold `render()`, so
+// props can never be serialized out of the render isolate, and the Workers host has
+// to resolve the path and render it in one call.
+export async function getStaticPaths() {
+  return POSTS.map((post) => ({
+    params: { slug: post.slug },
+    props: { post, shout: () => post.title.toUpperCase() },
+  }));
+}
+
+const { post, shout } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{post.title}</title>
+  </head>
+  <body>
+    <h1>{shout()}</h1>
+    <p id="body">{post.body}</p>
+    <p id="slug">{Astro.params.slug}</p>
+  </body>
+</html>
+
+<style>
+  #body {
+    color: rgb(1, 2, 3);
+  }
+</style>
