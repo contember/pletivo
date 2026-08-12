@@ -15,6 +15,7 @@ bun run --cwd examples/basic build       # Static build → dist/
 bun test                                 # All tests
 bun test tests/unit/router.test.ts       # Single test file
 bun test tests/unit/                     # Test directory
+bun test packages/workers/test           # Workers host (its own CI step)
 
 # Benchmark (pletivo vs native Astro build)
 scripts/benchmark.sh                     # 5 runs (default)
@@ -34,27 +35,28 @@ No linter or formatter is configured.
 ## Project Structure
 
 Bun workspace monorepo. The engine is split by *what host it can run on*, so a
-non-Bun host can reuse everything that is not tied to Bun:
+second host (a Cloudflare Worker isolate) can reuse everything that is not Bun:
 
-- **`packages/runtime`** — `@pletivo/runtime`. What ships into the output and runs at render time: JSX runtime (SSR), astro shim, islands, hydration, base path. Zero host dependencies; the only import outside itself is `node:async_hooks`.
-- **`packages/core`** — `@pletivo/core`. Host-agnostic logic: router, i18n, astro-host types, routes adapter, paginate, image service, incremental-cache primitives. May use `node:path`/`url`/`events`/`crypto` and pure-JS npm deps, but never `Bun.*`, `node:fs`, or `node:child_process`.
-- **`packages/pletivo`** — the Bun host, and the only package published to npm: CLI, build, dev server with HMR, Bun loader plugins, CSS pipeline (Tailwind v4), content collections, markdown pipeline, incremental cache, astro-host runner.
+- **`packages/runtime`** — `@pletivo/runtime`. What ships into the output and runs at render time: JSX runtime (SSR), astro shim, islands, hydration, base-path. Zero host dependencies; the only import outside itself is `node:async_hooks`.
+- **`packages/core`** — `@pletivo/core`. Host-agnostic logic: router, i18n, markdown pipeline, astro-host types, routes adapter, paginate, image service. May use `node:path`/`url`/`events`/`crypto` and pure-JS npm deps, but never `Bun.*`, `node:fs`, or `node:child_process`.
+- **`packages/pletivo`** — the Bun host, and the only package published to npm: CLI, build, dev server with HMR, Bun loader plugins, CSS pipeline (Tailwind v4), content collections, incremental cache, astro-host runner.
+- **`packages/workers`** — `@pletivo/workers`. The Cloudflare Worker host: `@astrojs/compiler` as Go wasm in-isolate, import rewriting against a virtual module graph, Tailwind v4 from a virtual file map. See `docs/todos/016` for where it diverges from Bun.
 - **`packages/astro-jsx-pages`** — Babel+Vite plugin enabling TSX pages inside Astro. Built with tsc.
 - **`examples/`** — `basic` (pletivo-native), `basic-astro`, `basic-astro-native`.
 
-Neither `runtime` nor `core` has a build step; their `exports` point at source. A
-`dist/` build would give modules that hold process-global state two module
-records when one importer resolves through `exports` and another through a
-relative path.
+Neither `runtime` nor `core` has a build step, by design: `exports` points at
+source. A `dist/` build would give modules that hold process-global state (base,
+the island registry, the render-tracking store) two module records when one
+importer resolves through `exports` and another through a relative path.
 
 `tests/unit/package-boundaries.test.ts` enforces the split. If it fires, the
 layering is broken — do not weaken it.
 
-Re-export stubs in `packages/pletivo/src/runtime/` and `src/content/index.ts`
-stay on purpose: they are named in the package's `exports`, and Node forbids an
-`exports` target outside the package directory. `runtime/astro-container.ts` and
-`i18n/virtual-module.ts` are pinned by `pletivoSrcDir` string paths in
-`astro-plugin.ts`.
+A handful of re-export stubs remain in `packages/pletivo/src/` on purpose:
+`runtime/{jsx-runtime,hooks,astro-shim}.ts` and `content/index.ts` are named in
+the package's `exports`, and Node forbids an `exports` target outside the package
+directory. `runtime/astro-container.ts` and `i18n/virtual-module.ts` are pinned by
+`pletivoSrcDir` string paths in `astro-plugin.ts`.
 
 ## Release
 
@@ -85,6 +87,8 @@ gh run watch $(gh run list --workflow=release.yml --limit=1 --json databaseId -q
 
 - Island registry tracks islands per render pass — call `resetIslandRegistry()` between page renders or islands leak across pages.
 - Island props must be JSON-serializable.
+- **Bun applies tsconfig `paths` at run time, not just in `tsc`.** `preact/hooks` is mapped to the SSR no-op stub, which is correct for SSR and wrong for anything building a client bundle. Re-rooting a resolve does not escape it — Bun walks up from the resolve base to find a tsconfig, and node_modules sits under the repo root. `islandPlugin()` therefore resolves preact subpaths through preact's own `exports` map. See `docs/todos/013`; this shipped broken for months because the build stayed green.
+- Hoisted `.astro` CSS is emitted in **import-graph order** (depth-first post-order from the page module), not in loader or render order. That order is what the cascade resolves ties by. See `docs/todos/014`.
 - A thrown `astro:config:setup` does not disable the integration for the process. The failure lands in `host.setupErrors`, rides on the dev error overlay, and the hook is re-run on every file change (rate-limited on requests) until it passes. Hooks are therefore re-entrant: the retry context dedupes `injectRoute` / `injectScript` / `updateConfig` so a partially-applied hook does not register its side effects twice.
 - Build CSS is chunked by *the set of page entries that reach a CSS module* (`planJsImportedCss`), one stylesheet per set plus a shared sheet. A page whose module graph wasn't collected this build — restored from the incremental cache, or a dynamic route whose module was never imported — has unknown reach and must link **every** group; dropping that fallback silently loses CSS. Anything the page walk can't attribute (hoisted-script CSS, modules reached only through a dynamic import) goes in the shared sheet, never nowhere.
 - `url()` targets in CSS are rewritten to hashed files by `css-assets.ts` *before* Bun loads the stylesheet, because Bun inlines everything up to 131,071 B as base64 and exposes no threshold. The rewritten URL carries a placeholder origin (`https://pletivo-asset-placeholder.invalid`) — Bun fails the build on an absolute `url(/…)` it cannot resolve but leaves `http(s):` alone — which `stripCssAssetPlaceholders` removes from the built CSS. Extraction is off unless `configureCssAssets` ran, so dev keeps inlining.

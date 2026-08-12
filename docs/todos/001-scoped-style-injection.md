@@ -23,6 +23,6 @@
 
 - `packages/pletivo/src/astro-plugin.ts` — `scopedCssMap` stores scope hash per entry, `getScopedCssForPage()` matches by scope class
 - `packages/pletivo/src/build.ts` — fallback injection for pages without `</head>`
-- `packages/pletivo/src/runtime/astro-shim.ts` — documented `renderHead()` no-op rationale
+- `packages/runtime/src/astro-shim.ts` — documented `renderHead()` no-op rationale
 - `tests/integration/scoped-styles.test.ts` — new test file
 - `tests/fixture-astro-styles/` — new test fixture

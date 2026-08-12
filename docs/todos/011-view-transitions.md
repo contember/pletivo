@@ -27,4 +27,4 @@ Low priority for SSG. Astro itself is moving away from the original `<ViewTransi
 
 ## Files
 
-- `packages/pletivo/src/runtime/astro-shim.ts` — transition stubs
+- `packages/runtime/src/astro-shim.ts` — transition stubs
