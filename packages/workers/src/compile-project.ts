@@ -23,6 +23,7 @@ import {
   RUNTIME_MODULES,
   RUNTIME_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
+import { isCollectableCss } from "./project-css.ts";
 import { JSX_IMPORT_SPECIFIER, stripTypes, TranspileError } from "./transpile.ts";
 
 /** One `<style>` block from a `.astro` file, in the order it was written. */
@@ -47,6 +48,14 @@ export interface CompiledProject {
   styles: ReadonlyMap<string, AstroStyles>;
   /** Project path -> the project paths it imports, in execution order. */
   imports: ReadonlyMap<string, string[]>;
+  /**
+   * Project path -> the stylesheets it imports for their side effect.
+   *
+   * Kept apart from `imports` because they are not edges the isolate walks — a `.css`
+   * module is empty in the bundle. They are what the project stylesheet is built from;
+   * see `project-css.ts`.
+   */
+  cssImports: ReadonlyMap<string, string[]>;
 }
 
 /**
@@ -64,10 +73,10 @@ const VERBATIM = [".js", ".mjs"];
 /**
  * Resolvable, but empty in the bundle.
  *
- * A frontmatter `import "./styles.css"` is a Vite side effect: the Bun host collects
- * the file into the page's stylesheet and the module itself contributes nothing at
- * run time. There is no stylesheet pipeline here, so the import resolves to an empty
- * module and the CSS is dropped — see `docs/todos/016`.
+ * A frontmatter `import "./styles.css"` is a Vite side effect: the file is collected
+ * into the project stylesheet (`cssImports` below, then `project-css.ts`) and the
+ * module itself contributes nothing at run time. `.scss`/`.sass` resolve too, but
+ * nothing compiles them yet — see `docs/todos/016`.
  */
 const EMPTY = [".css", ".scss", ".sass"];
 /** Compiled by sucrase rather than by `@astrojs/compiler`. */
@@ -192,7 +201,15 @@ export async function compileProject(
   const moduleNames = new Map<string, string>();
   const styles = new Map<string, AstroStyles>();
   const imports = new Map<string, string[]>();
+  const cssImports = new Map<string, string[]>();
   const takenNames = new Map<string, string>();
+
+  /** Both edge sets a module contributes, read from the one specifier list. */
+  const recordEdges = (file: string, code: string): void => {
+    const specifiers = collectSpecifiers(code);
+    imports.set(file, resolveEdges(file, specifiers, files, isExecutableModule));
+    cssImports.set(file, resolveEdges(file, specifiers, files, isCollectableCss));
+  };
 
   // Names first: rewriting an import needs the target's name, whichever order the
   // files come in.
@@ -222,7 +239,7 @@ export async function compileProject(
 
     if (VERBATIM.includes(extension)) {
       modules[name] = rewriteImports(source, { importer: file, resolve });
-      imports.set(file, resolveEdges(file, collectSpecifiers(source), files));
+      recordEdges(file, source);
       continue;
     }
 
@@ -230,7 +247,7 @@ export async function compileProject(
       const code = transpile(source, { file, jsx: WITH_JSX.includes(extension) });
       // The JSX import sucrase prepends is not a project edge, and `resolveEdges`
       // drops it for the same reason it drops any specifier outside the file map.
-      imports.set(file, resolveEdges(file, collectSpecifiers(code), files));
+      recordEdges(file, code);
       modules[name] = rewriteImports(code, { importer: file, resolve });
       continue;
     }
@@ -257,11 +274,11 @@ export async function compileProject(
     // Types out before the graph is read: `import type` is not an edge, and with
     // `keepUnusedImports` nothing else in the prologue moves.
     const code = transpile(stripStyleImports(result.code), { file });
-    imports.set(file, resolveEdges(file, collectSpecifiers(code), files));
+    recordEdges(file, code);
     modules[name] = rewriteImports(code, { importer: file, resolve });
   }
 
-  return { modules, moduleNames, styles, imports };
+  return { modules, moduleNames, styles, imports, cssImports };
 }
 
 /**
@@ -285,24 +302,24 @@ function transpile(code: string, options: { file: string; jsx?: boolean }): stri
 }
 
 /**
- * Project paths an importer reaches, deduped, in order.
+ * Project paths an importer reaches that `keep` accepts, deduped, in order.
  *
  * The compiler emits both `import X from './X.astro'` and
  * `import * as $$module1 from './X.astro'` for the same component — one edge, not
- * two. Files with no module (`.css`, and anything outside the map) are dropped:
- * they contribute nothing the cascade order can walk through.
+ * two. Anything outside the file map is dropped: there is nothing to walk to.
  */
 function resolveEdges(
   importer: string,
   specifiers: string[],
   files: ReadonlyMap<string, string>,
+  keep: (file: string) => boolean,
 ): string[] {
   const seen = new Set<string>();
   const edges: string[] = [];
   for (const specifier of specifiers) {
     const resolved = resolveSpecifier(importer, specifier);
     if (seen.has(resolved) || !files.has(resolved)) continue;
-    if (!isExecutableModule(resolved)) continue;
+    if (!keep(resolved)) continue;
     seen.add(resolved);
     edges.push(resolved);
   }

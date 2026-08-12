@@ -174,6 +174,74 @@ describe("renderPage, .tsx through the Worker Loader", () => {
   });
 });
 
+describe("renderPage, the project stylesheet", () => {
+  // A page importing CSS from its frontmatter, a `.js` module importing more of it,
+  // and a page that imports none of it but still links the same site-wide bundle.
+  const styled = new Map<string, string>([
+    [
+      "src/pages/index.astro",
+      '---\nimport "../styles/page.css";\nimport { N } from "../lib/util.js";\n---\n' +
+        "<html><head><title>{N}</title></head><body><p>hi</p></body></html>\n",
+    ],
+    ["src/lib/util.js", 'import "../styles/util.css";\nexport const N = "n";\n'],
+    ["src/styles/page.css", ".page { color: red }\n"],
+    ["src/styles/util.css", ".util { color: blue }\n"],
+    ["src/pages/bare.astro", "<html><body><p>bare</p></body></html>\n"],
+    ["src/pages/nohead.astro", "<p>no head at all</p>\n"],
+    ["src/pages/note.md", "---\ntitle: Note\n---\n\ntext\n"],
+  ]);
+  const renderStyled = (pathname: string) => renderPage({ files: styled, pathname, loader, compiler });
+
+  test("links the bundle from the head and hands it back as an asset to serve", async () => {
+    const page = await renderStyled("/");
+    expect(page.assets).toHaveLength(1);
+    const [asset] = page.assets;
+    expect(asset.contentType).toBe("text/css; charset=utf-8");
+    expect(page.html).toContain(`<link rel="stylesheet" href="${asset.path}">`);
+    // Every source stylesheet, labelled and sorted — no import walk needed for these,
+    // the glob over src/ already has them.
+    expect(asset.body).toBe(
+      "/* styles/page.css */\n.page { color: red }\n\n\n/* styles/util.css */\n.util { color: blue }\n",
+    );
+  });
+
+  test("gives every page of the project the same stylesheet, .md included", async () => {
+    const [index, bare, note] = await Promise.all([
+      renderStyled("/"),
+      renderStyled("/bare"),
+      renderStyled("/note"),
+    ]);
+    expect(bare.assets[0].path).toBe(index.assets[0].path);
+    expect(note.assets[0].path).toBe(index.assets[0].path);
+    expect(note.html).toContain(`<link rel="stylesheet" href="${index.assets[0].path}">`);
+  });
+
+  test("puts the link before the page's own <style>, so a scoped rule still wins", async () => {
+    const files = new Map(styled);
+    files.set(
+      "src/pages/index.astro",
+      '---\nimport "../styles/page.css";\n---\n' +
+        "<html><head><title>t</title></head><body><p>hi</p></body></html>\n" +
+        "<style>p { color: green }</style>\n",
+    );
+    const { html } = await renderPage({ files, pathname: "/", loader, compiler });
+    expect(html.indexOf('<link rel="stylesheet"')).toBeLessThan(html.indexOf("<style>"));
+  });
+
+  test("leaves a page with no </head> unlinked, exactly as writeHtml does", async () => {
+    const page = await renderStyled("/nohead");
+    expect(page.html).not.toContain("<link rel=\"stylesheet\"");
+    // The asset is still produced — the project has one stylesheet either way.
+    expect(page.assets).toHaveLength(1);
+  });
+
+  test("produces no asset and no link for a project with no CSS", async () => {
+    const page = await render("/");
+    expect(page.assets).toEqual([]);
+    expect(page.html).not.toContain("<link rel=\"stylesheet\"");
+  });
+});
+
 describe("renderPage, refusals", () => {
   test("reports an unmatched pathname", () => {
     expect(render("/nope")).rejects.toBeInstanceOf(RouteNotFoundError);
