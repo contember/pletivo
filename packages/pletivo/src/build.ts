@@ -3,7 +3,7 @@ import fs from "fs/promises";
 import { scanRoutes } from "./router";
 import { routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
-import { initCollections, getValidationFailures } from "./content/collection";
+import { initCollections, getValidationFailures, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry } from "@pletivo/runtime/island";
 import { runWithRenderTracking, redirectPageHtml, AstroCookies, type AstroResponse } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
@@ -133,7 +133,11 @@ export interface BuildOptions {
   clean?: boolean;
 }
 
-export async function build(projectRoot: string, config: PletivoConfig, options: BuildOptions = {}) {
+export function build(projectRoot: string, config: PletivoConfig, options: BuildOptions = {}) {
+  return runWithBunContentRuntime(() => buildWithContentRuntime(projectRoot, config, options));
+}
+
+async function buildWithContentRuntime(projectRoot: string, config: PletivoConfig, options: BuildOptions) {
   const tStart = performance.now();
   const pagesDir = path.join(projectRoot, config.srcDir, "pages");
   const distDir = path.join(projectRoot, config.outDir);

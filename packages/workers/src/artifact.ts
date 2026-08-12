@@ -1,137 +1,126 @@
-/**
- * The consuming half of a prepared site artifact.
- *
- * `pletivo prepare` ran the config/integration phase on Bun, where a filesystem and
- * npm exist, and froze what it produced (`@pletivo/core/artifact`). Here that frozen
- * thing is turned back into the only two shapes the isolate understands: extra
- * sources to compile, and extra modules to put in the bundle.
- *
- * Both are *code*, so both belong in the module map and both legitimately change
- * `bundleHash` — a different integration set is a different bundle. Nothing per
- * request and nothing per configuration goes here; that rides in `env` or in the
- * request body, and `render.ts` keeps the two apart.
- *
- * Only the modules a project actually reaches are added. A vendored `marked` sits in
- * the artifact whether or not this project imports it, and a bundle that carried it
- * anyway would be both larger and a different content address than the same project
- * prepared without it.
- */
-
 import {
-  assertArtifactVersion,
-  type ArtifactModules,
+  parsePreparedSite,
+  type ArtifactModule,
+  type ArtifactResolutionTarget,
+  type ModuleId,
   type PreparedSite,
 } from "@pletivo/core/artifact";
-import { collectSpecifiers } from "./rewrite-imports.ts";
 
-/**
- * A specifier the artifact claims to answer, whose target names nothing.
- *
- * Loud, because the alternative is an unresolved import inside the isolate, which
- * surfaces as "the bundle would not run" with no mention of the artifact at all.
- */
-export class ArtifactTargetError extends Error {
-  constructor(
-    readonly specifier: string,
-    readonly target: string,
-  ) {
+/** The strict executable artifact seam exposed by the Workers host package. */
+export { parsePreparedSite };
+export type { PreparedSite };
+
+/** An artifact external the Workers host does not deliberately implement. */
+export class UnsupportedArtifactExternalError extends Error {
+  constructor(readonly specifier: string) {
     super(
-      `[pletivo-workers] the site artifact maps ${JSON.stringify(specifier)} to ` +
-        `${JSON.stringify(target)}, which is neither a generated source nor a module it ` +
-        "carries. Re-run `pletivo prepare`.",
+      `[pletivo-workers] the site artifact requires unsupported host external ` +
+        `${JSON.stringify(specifier)}. Re-run \`pletivo prepare\` with a supported integration.`,
     );
-    this.name = "ArtifactTargetError";
+    this.name = "UnsupportedArtifactExternalError";
   }
 }
 
-/** What one compile pass takes from an artifact. */
-export interface ArtifactBinder {
-  /** The file map the project is compiled from: generated sources under the caller's. */
-  sources(files: ReadonlyMap<string, string>): ReadonlyMap<string, string>;
-  /**
-   * The bundle name a resolved specifier lands on, or `null` when the artifact does
-   * not answer it.
-   *
-   * `nameOf` is `compileProject`'s own resolver, and it is asked first: a target that
-   * names a generated source is a file in the map, so it has to be named *and walked*
-   * exactly like a project file. Only a target it declines — a module the artifact
-   * pre-bundled, which is in `modules` and in no file map — is answered from here.
-   */
-  resolve(resolved: string, nameOf: (file: string) => string | null): string | null;
-  /** Every artifact module `resolve` reached, plus everything those import. */
-  modules(): Record<string, string>;
+/** Two module owners attempted to use the same logical identity. */
+export class ModuleIdentityCollisionError extends Error {
+  constructor(
+    readonly moduleId: ModuleId,
+    reason: string,
+  ) {
+    super(`[pletivo-workers] module identity ${JSON.stringify(moduleId)} collides: ${reason}`);
+    this.name = "ModuleIdentityCollisionError";
+  }
 }
 
-/** A binder for a project with no artifact: answers nothing, adds nothing. */
-const EMPTY: ArtifactBinder = {
-  sources: (files) => files,
-  resolve: () => null,
-  modules: () => ({}),
-};
+const RESERVED_ARTIFACT_PREFIXES = ["project:", "generated:", "host:"];
 
-/**
- * Bind an artifact to one compile pass.
- *
- * Stateful on purpose — `modules()` reports what `resolve()` reached — and therefore
- * made fresh per `compileProject` call, so no two projects can see each other's set.
- */
-export function artifactBinder(prepared: PreparedSite | null | undefined): ArtifactBinder {
-  if (!prepared) return EMPTY;
-  assertArtifactVersion(prepared.artifact);
+/** A normalized, validated view over an optional Artifact V2 graph. */
+export interface ArtifactResolver {
+  module(id: ModuleId): ArtifactModule | null;
+  resolve(importer: ModuleId, specifier: string): ArtifactResolutionTarget | null;
+  modules(): readonly ArtifactModule[];
+}
 
-  const { virtualModules, vendor, generatedSources } = prepared.artifact;
-  const available: ArtifactModules = prepared.modules;
-  const used = new Set<string>();
+/** Bind the strict V2 graph to the host external capabilities it may use. */
+export function createArtifactResolver(
+  prepared: PreparedSite | null | undefined,
+  supportedExternals: ReadonlySet<string>,
+): ArtifactResolver {
+  if (prepared === null || prepared === undefined) return EMPTY;
+  const validated = parsePreparedSite(prepared);
+  const modules = new Map<ModuleId, ArtifactModule>();
+  for (const module of validated.artifact.modules) {
+    const reserved = RESERVED_ARTIFACT_PREFIXES.find((prefix) => module.id.startsWith(prefix));
+    if (reserved !== undefined) {
+      throw new ModuleIdentityCollisionError(
+        module.id,
+        `${JSON.stringify(reserved)} is reserved for Worker-owned modules`,
+      );
+    }
+    modules.set(module.id, module);
+  }
+
+  const resolutions = new Map<ModuleId, Map<string, ArtifactResolutionTarget>>();
+  for (const resolution of validated.artifact.resolutions) {
+    if (
+      resolution.target.kind === "external" &&
+      !supportedExternals.has(resolution.target.specifier)
+    ) {
+      throw new UnsupportedArtifactExternalError(resolution.target.specifier);
+    }
+    let bySpecifier = resolutions.get(resolution.importer);
+    if (bySpecifier === undefined) {
+      bySpecifier = new Map<string, ArtifactResolutionTarget>();
+      resolutions.set(resolution.importer, bySpecifier);
+    }
+    bySpecifier.set(resolution.specifier, resolution.target);
+  }
 
   return {
-    sources(files) {
-      const entries = Object.entries(generatedSources);
-      if (entries.length === 0) return files;
-      // Generated sources first, so a project file of the same name wins. There is no
-      // legitimate overlap — these are `node_modules` paths — and a project that does
-      // overlap should see its own file.
-      return new Map([...entries, ...files]);
-    },
-
-    resolve(resolved, nameOf) {
-      const target = vendor[resolved] ?? virtualModules[resolved];
-      if (target === undefined) return null;
-      const name = nameOf(target);
-      if (name !== null) return `./${name}`;
-      if (!(target in available)) throw new ArtifactTargetError(resolved, target);
-      used.add(target);
-      return `./${target}`;
-    },
-
-    modules() {
-      const out: Record<string, string> = {};
-      const queue = [...used];
-      while (queue.length > 0) {
-        const name = queue.shift();
-        if (name === undefined || name in out) continue;
-        const code = available[name];
-        if (code === undefined) continue;
-        out[name] = code;
-        // An artifact module may name another by its bundle name; a package bundled
-        // whole names none, so this walk usually stops at the first step.
-        for (const specifier of collectSpecifiers(code)) {
-          const target = specifier.startsWith("./") ? specifier.slice(2) : specifier;
-          if (target in available) queue.push(target);
-        }
-      }
-      return out;
-    },
+    module: (id) => modules.get(id) ?? null,
+    resolve: (importer, specifier) => resolutions.get(importer)?.get(specifier) ?? null,
+    modules: () => validated.artifact.modules,
   };
 }
 
-/**
- * Module names the artifact supplies, for a diagnostic that must not blame them.
- *
- * A bundled npm package is a megabyte of somebody else's JavaScript, and somewhere in
- * it a line begins `type … =` inside a string. `typescriptSuspects` would name it as
- * the reason an isolate refused to start, which is the exact mistake `1101194` was
- * about — these modules are Bun's own output and cannot carry TypeScript.
- */
+const EMPTY: ArtifactResolver = {
+  module: () => null,
+  resolve: () => null,
+  modules: () => [],
+};
+
+/** Project source identity used by both producer edges and the Worker compiler. */
+export function projectModuleId(path: string): ModuleId {
+  return `project:${normalizeProjectPath(path)}`;
+}
+
+/** Normalize separators and dot segments without touching URL/package semantics. */
+export function normalizeProjectPath(path: string): string {
+  const normalized: string[] = [];
+  for (const segment of path.replace(/\\/g, "/").split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      normalized.pop();
+      continue;
+    }
+    normalized.push(segment);
+  }
+  return normalized.join("/");
+}
+
+/** Reversible Loader name derived from every byte of the logical identity. */
+export function executionNameForModuleId(id: ModuleId): string {
+  const bytes = new TextEncoder().encode(id);
+  const encoded = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `module-${encoded}.js`;
+}
+
+/** Artifact Loader names, used only to keep startup diagnostics source-aware. */
 export function artifactModuleNames(prepared: PreparedSite | null | undefined): Set<string> {
-  return new Set(prepared ? Object.keys(prepared.modules) : []);
+  if (prepared === null || prepared === undefined) return new Set();
+  return new Set(
+    parsePreparedSite(prepared).artifact.modules.map((module) =>
+      executionNameForModuleId(module.id),
+    ),
+  );
 }

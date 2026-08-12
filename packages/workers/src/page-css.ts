@@ -1,130 +1,82 @@
-/**
- * The `<style>` blocks a rendered page needs, in the order they cascade.
- *
- * A port of the Bun host's `getAstroCssForPage` (`astro-plugin.ts`) and the walk in
- * `astro-css-order.ts`, reading the import graph `compileProject` already built
- * instead of the filesystem. The order is not a free choice — it is what decides
- * which rule wins — so the two hosts have to agree on it:
- *
- *   - a page's own `<style>` lands after the CSS of the components it imports;
- *   - siblings follow the importer's *import* order, not their render order;
- *   - a deeper component precedes the component that imports it;
- *   - a module reached twice keeps its first position.
- *
- * That is a depth-first post-order walk of the static import graph rooted at the page.
- */
+/** Scoped Astro CSS ordering and safe HTML insertion. */
 
-import type { InjectedScripts } from "@pletivo/core/artifact";
-import type { AstroStyles } from "./compile-project.ts";
+import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
+import type { ResolvedStyleGraph } from "./compiled-program.ts";
 
 export interface PageCssOptions {
-  /** The page's project path — the root of the walk. */
-  entry: string;
-  /** Project path -> its `<style>` blocks. */
-  styles: ReadonlyMap<string, AstroStyles>;
-  /** Project path -> the project paths it imports, in execution order. */
-  imports: ReadonlyMap<string, string[]>;
-  /** The rendered HTML, read for `astro-{scope}` classes. */
+  entry: ModuleId;
+  graph: ResolvedStyleGraph;
   html: string;
-  /** Module ids whose render function ran, reported by the isolate. */
-  renderedModules: ReadonlySet<string>;
+  renderedModules: ReadonlySet<ModuleId>;
 }
 
-/**
- * Concatenated CSS for one page, or `""`.
- *
- * A component contributes when the page shows it, and each of its blocks is gated
- * separately because the two kinds are visible in different ways: a scoped block by
- * its `astro-{scope}` class appearing in the HTML, an `is:global` block by the
- * component having rendered at all — a global-only component emits no scoped DOM,
- * so class presence cannot see it.
- */
 export function pageCss(options: PageCssOptions): string {
-  const { entry, styles, imports, html, renderedModules } = options;
-  const classes = extractAstroClasses(html);
-  const contributions = new Map<string, string[]>();
+  const classes = extractAstroClasses(options.html);
+  const contributions = new Map<ModuleId, string[]>();
 
-  for (const [file, entryStyles] of styles) {
-    const scoped = classes.has(`astro-${entryStyles.scope}`);
-    const rendered = renderedModules.has(file);
+  for (const styles of options.graph.styles) {
+    const scoped = classes.has(`astro-${styles.scope}`);
+    const rendered = options.renderedModules.has(styles.moduleId);
     if (!scoped && !rendered) continue;
-    const css = entryStyles.blocks
+    const css = styles.blocks
       .filter((block) => (block.global ? rendered : scoped))
       .map((block) => block.css);
-    if (css.length > 0) contributions.set(file, css);
+    if (css.length > 0) contributions.set(styles.moduleId, css);
   }
   if (contributions.size === 0) return "";
 
   const parts: string[] = [];
-  for (const file of orderContributors([...contributions.keys()], entry, imports, renderedModules)) {
-    parts.push(...contributions.get(file)!);
+  for (const moduleId of orderContributors(contributions, options)) {
+    parts.push(...(contributions.get(moduleId) ?? []));
   }
   return parts.join("\n");
 }
 
 function orderContributors(
-  files: string[],
-  entry: string,
-  imports: ReadonlyMap<string, string[]>,
-  renderedModules: ReadonlySet<string>,
-): string[] {
-  if (files.length < 2) return files;
-  const remaining = new Set(files);
-  const ordered: string[] = [];
-  for (const file of moduleOrder(entry, imports)) {
-    if (remaining.delete(file)) ordered.push(file);
+  contributions: ReadonlyMap<ModuleId, readonly string[]>,
+  options: PageCssOptions,
+): ModuleId[] {
+  const remaining = new Set(contributions.keys());
+  const ordered: ModuleId[] = [];
+  for (const moduleId of moduleOrder(options.entry, options.graph)) {
+    if (remaining.delete(moduleId)) ordered.push(moduleId);
   }
-  if (remaining.size === 0) return ordered;
-  // Whatever the walk could not reach. Fall back to the order the components
-  // rendered in — a real property of this page — then to the path, so the result
-  // never depends on the order the map happened to be iterated in.
-  const rendered = [...renderedModules].filter((file) => remaining.has(file));
-  const rest = [...remaining].filter((file) => !renderedModules.has(file)).sort();
-  return [...ordered, ...rendered, ...rest];
+  for (const moduleId of options.renderedModules) {
+    if (remaining.delete(moduleId)) ordered.push(moduleId);
+  }
+  const graphOrder = new Map(options.graph.modules.map((moduleId, index) => [moduleId, index]));
+  const rest = [...remaining].sort((left, right) => {
+    const leftIndex = graphOrder.get(left) ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = graphOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
+    return leftIndex - rightIndex || (left < right ? -1 : left > right ? 1 : 0);
+  });
+  return [...ordered, ...rest];
 }
 
-/** Modules reachable from `entry`, in the order their CSS executes. */
-export function moduleOrder(entry: string, imports: ReadonlyMap<string, string[]>): string[] {
-  const order: string[] = [];
-  const seen = new Set<string>();
-  const visit = (file: string): void => {
-    if (seen.has(file)) return;
-    seen.add(file);
-    for (const child of imports.get(file) ?? []) visit(child);
-    order.push(file);
+/** Executable modules reachable from `entry`, in depth-first post-order. */
+export function moduleOrder(entry: ModuleId, graph: ResolvedStyleGraph): ModuleId[] {
+  const imports = new Map<ModuleId, ModuleId[]>();
+  for (const edge of graph.executionEdges) {
+    const targets = imports.get(edge.importer);
+    if (targets) targets.push(edge.target);
+    else imports.set(edge.importer, [edge.target]);
+  }
+  const order: ModuleId[] = [];
+  const seen = new Set<ModuleId>();
+  const visit = (moduleId: ModuleId): void => {
+    if (seen.has(moduleId)) return;
+    seen.add(moduleId);
+    for (const child of imports.get(moduleId) ?? []) visit(child);
+    order.push(moduleId);
   };
   visit(entry);
   return order;
 }
 
-/** Every `astro-XXXXX` scope class in an HTML string. */
 export function extractAstroClasses(html: string): Set<string> {
   return new Set(html.match(/astro-[a-z0-9]+/g) ?? []);
 }
 
-/**
- * The last step the Bun host's `writeHtml` takes before a page hits disk: give it a
- * doctype if the template did not, then put the page's CSS in the head.
- *
- * `css` is every stylesheet the page carries, already in cascade order — the page's own
- * sheet first, its components' scoped blocks after, so a scoped rule outranks it. They
- * arrive as a list rather than one string each because **there is exactly one
- * insertion**: two insertions before the same anchor keep their order in `<head>` and
- * *reverse* it in the fallback that prepends, so a page with no `</head>` would come
- * out with its cascade upside down. One insertion also fixes the old asymmetry — the
- * `<link>` had no fallback at all, so such a page got its scoped rules and no
- * stylesheet; now both follow the same head → body → prepend ladder.
- *
- * `scripts` are what `injectScript()` produced during `astro:config:setup`, frozen
- * into the site artifact. They land last and only in `<head>`, which is `writeHtml`'s
- * own order and its own restriction: a page with no `</head>` gets none of them on
- * either host. `before-hydration` is deliberately absent — `writeHtml` emits those
- * only for a page carrying islands, and this host has none.
- *
- * Not ported from `writeHtml`, because there is no build pipeline behind them here:
- * hashed public-asset rewriting, CSS modules and the island hydration runtime. Nor is
- * the `<link rel="stylesheet">` itself — this host inlines, see `project-css.ts`.
- */
 export function finalizeHtml(
   html: string,
   css: readonly string[],
@@ -136,7 +88,7 @@ export function finalizeHtml(
   }
   const parts = css.filter(Boolean);
   if (parts.length > 0) {
-    const tag = parts.map((part) => `<style>${part}</style>`).join("\n");
+    const tag = parts.map((part) => `<style>${escapeInlineStyle(part)}</style>`).join("\n");
     if (out.includes("</head>")) out = out.replace("</head>", tag + "\n</head>");
     else if (out.includes("</body>")) out = out.replace("</body>", tag + "\n</body>");
     else out = tag + "\n" + out;
@@ -146,7 +98,10 @@ export function finalizeHtml(
   return out;
 }
 
-/** The tags `build.ts:1391` writes, in its order: inline first, then module. */
+function escapeInlineStyle(css: string): string {
+  return css.replace(/<\/style/gi, "\\3C /style");
+}
+
 function injectedScriptTags(scripts: InjectedScripts | undefined): string {
   if (!scripts) return "";
   return [

@@ -1,7 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { compileProject, isContentApi } from "../src/compile-project.ts";
-import { ContentFiles, globMatcher } from "../src/content-files.ts";
+import {
+  ContentFiles,
+  globMatcher,
+  type ContentBinding,
+  type ContentFileRef,
+} from "../src/content-files.ts";
 import { CONTENT_MODULE_NAME } from "../src/generated/runtime-modules.ts";
 import { ContentUnavailableError, projectPaths, renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
@@ -18,6 +23,7 @@ import { FileLoader } from "./file-loader.ts";
 const compiler = createAstroCompiler(await astroWasmModule());
 const loader = new FileLoader();
 afterAll(() => loader.cleanup());
+const EXECUTION_NAMESPACE = { tenant: "content-tests", capabilityGeneration: "content-v1" };
 
 const CONFIG = `import { defineCollection, z } from "astro:content";
 import { glob } from "astro/loaders";
@@ -56,15 +62,57 @@ function note(title: string, body = "body"): string {
   return `---\ntitle: ${title}\n---\n\n${body}\n`;
 }
 
+const CONTENT_FILES = new ContentFiles();
+
 function contentAccess(): { binding: ContentFiles; store: ContentFiles } {
   // On Bun the binding and the store are the same object; in workerd the binding is
   // a loopback stub and the store lives in the host worker.
-  const files = new ContentFiles();
-  return { binding: files, store: files };
+  return { binding: CONTENT_FILES, store: CONTENT_FILES };
 }
 
-async function render(files: Map<string, string>, content = contentAccess()) {
-  return renderPage({ files, pathname: "/", loader, compiler, content });
+async function render(
+  files: Map<string, string>,
+  content = contentAccess(),
+  executionNamespace = EXECUTION_NAMESPACE,
+) {
+  return renderPage({
+    files,
+    pathname: "/",
+    loader,
+    compiler,
+    content,
+    executionNamespace,
+  });
+}
+
+class ScanBarrier implements ContentBinding {
+  readonly #waiting: Promise<void>;
+  #release: () => void = () => {};
+  #arrivals = 0;
+
+  constructor(
+    readonly inner: ContentFiles,
+    readonly parties: number,
+    readonly rejectedText: string,
+  ) {
+    this.#waiting = new Promise((resolve) => {
+      this.#release = resolve;
+    });
+  }
+
+  async scan(ref: string, dir: string, pattern: string): Promise<ContentFileRef[]> {
+    const found = this.inner.scan(ref, dir, pattern);
+    this.#arrivals++;
+    if (this.#arrivals >= this.parties) this.#release();
+    await this.#waiting;
+    return found;
+  }
+
+  read(ref: string, path: string): string | null {
+    const source = this.inner.read(ref, path);
+    if (source?.includes(this.rejectedText)) throw new Error("forced content read failure");
+    return source;
+  }
 }
 
 describe("content collections", () => {
@@ -138,6 +186,27 @@ describe("content collections", () => {
     expect(right.html).toContain("<li>Right</li>");
   });
 
+  test("isolates overlapping cached-module content state and recovers after one throws", async () => {
+    const store = new ContentFiles();
+    const binding = new ScanBarrier(store, 2, "Explode");
+    const content = { binding, store };
+    const namespace = { tenant: "content-tests", capabilityGeneration: "barrier-v1" };
+
+    const results = await Promise.allSettled([
+      render(project({ "a.md": note("Left") }), content, namespace),
+      render(project({ "a.md": note("Explode") }), content, namespace),
+    ]);
+
+    expect(results[0].status).toBe("fulfilled");
+    if (results[0].status === "fulfilled") expect(results[0].value.html).toContain("Left");
+    expect(results[1].status).toBe("rejected");
+    expect(store.openCount).toBe(0);
+
+    const recovered = await render(project({ "a.md": note("Recovered") }), content, namespace);
+    expect(recovered.html).toContain("Recovered");
+    expect(store.openCount).toBe(0);
+  });
+
   test("close every handle the renders opened", async () => {
     const content = contentAccess();
     await render(project({ "a.md": note("Alpha") }), content);
@@ -167,7 +236,13 @@ const { note } = Astro.props;
 <html><body><h1>{note.data.title}</h1></body></html>
 `,
     );
-    const paths = await projectPaths({ files, loader, compiler, content: contentAccess() });
+    const paths = await projectPaths({
+      files,
+      loader,
+      compiler,
+      content: contentAccess(),
+      executionNamespace: EXECUTION_NAMESPACE,
+    });
     expect(paths.map((path) => path.pathname).sort()).toEqual(["/", "/notes/a/", "/notes/b/"]);
   });
 
@@ -176,6 +251,21 @@ const { note } = Astro.props;
     await expect(
       renderPage({ files: project({ "a.md": note("Alpha") }), pathname: "/", loader, compiler }),
     ).rejects.toThrow(ContentUnavailableError);
+  });
+
+  test("rejects missing execution identity before asking the Loader", async () => {
+    const isolatedLoader = new FileLoader();
+    await expect(
+      renderPage({
+        files: project({ "a.md": note("Alpha") }),
+        pathname: "/",
+        loader: isolatedLoader,
+        compiler,
+        content: contentAccess(),
+      }),
+    ).rejects.toThrow(/executionNamespace/);
+    expect(isolatedLoader.getCounts.size).toBe(0);
+    await isolatedLoader.cleanup();
   });
 });
 

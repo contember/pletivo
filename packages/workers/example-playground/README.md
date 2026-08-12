@@ -21,8 +21,15 @@ bindings — and forwards everything else to those factories. The render itself 
 a **dynamic Worker**: `env.LOADER` creates an isolate out of modules this worker compiled
 a moment ago, with `globalOutbound: null`, so a page being rendered can reach nothing.
 
-`docs/todos/023` is the design; `packages/workers/example-workspace/` is the same thing
-with `curl` instead of a UI.
+`ContentFiles` remains an instance field on the Durable Object that opened the request
+handle. A stateless `WorkerEntrypoint` binding forwards each content call to that object
+by its stable ID. Worker Loader can transfer this service capability into the render
+isolate; it cannot transfer a Durable Object stub directly. The execution namespace
+derives its tenant from the same ID and carries a named capability generation, so Loader
+reuse cannot pin another project's binding.
+
+`docs/todos/023` is the design. This is the repository's only Durable Object workspace
+example, so its binding topology is also the production reference.
 
 ## Routes
 
@@ -30,7 +37,7 @@ with `curl` instead of a UI.
 |---|---|
 | `GET /__playground` | the editor |
 | `GET /__paths` | every page the project can enumerate, dynamic routes expanded |
-| `GET /__files` | the paths in the workspace, and its revision |
+| `GET /__files` | the source paths in the workspace, and its revision |
 | `GET/PUT/DELETE /__files/<path>` | one source |
 | `POST /__reset` | throw the edits away, re-seed |
 | `GET /<anything>` | that page, rendered out of the workspace |
@@ -58,9 +65,9 @@ Two details worth knowing before editing it:
 
 `wrangler deploy --config packages/workers/example-playground/wrangler.jsonc`
 
-Needs an account with the Worker Loader beta enabled — that binding is what runs code
-produced at run time, and there is no substitute for it. SQLite-backed Durable Objects
-and `nodejs_compat` are ordinary.
+Needs an account with Worker Loader support — that binding is what runs code produced at
+run time, and there is no substitute for it. SQLite-backed Durable Objects and
+`nodejs_compat` are ordinary.
 
 One object serves one project, so one project renders one page at a time. That ceiling is
 fine for a playground and is the open question in `docs/todos/023 §8` for anything larger.

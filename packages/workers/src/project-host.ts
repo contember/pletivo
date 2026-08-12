@@ -28,8 +28,9 @@
 import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
+import { GeneratedAssetCache } from "./asset-cache.ts";
 import type { ProjectEnv } from "./env.ts";
-import { serveImage } from "./images.ts";
+import type { ExecutionNamespace } from "./execution-identity.ts";
 import type { OutboundAccess } from "./outbound.ts";
 import type { ProjectSnapshot, ProjectStore } from "./project-store.ts";
 import {
@@ -70,6 +71,8 @@ export interface ProjectHostOptions {
   rootDir?: string;
   /** `compatibility_date` for the render isolate. */
   compatibilityDate?: string;
+  compatibilityFlags?: readonly string[];
+  executionNamespace?: ExecutionNamespace;
   /** Only a test outside a Worker needs this — see `compileProject`. */
   compiler?: AstroCompiler;
   /**
@@ -90,7 +93,7 @@ export interface ProjectHostOptions {
    */
   artifactPath?: string;
   /** The artifact already parsed, for a host that is handed one per request. */
-  artifact?: PreparedSite;
+  artifact?: unknown;
   /**
    * How many generated files to keep for the browser's follow-up GET.
    *
@@ -98,7 +101,7 @@ export interface ProjectHostOptions {
    * many to hold. A single-project host wants a handful — one stylesheet, plus whatever
    * `?url` imports its pages make.
    */
-  assetLimit?: number;
+  generatedAssetCache?: { maxEntries: number; maxBytes: number };
 }
 
 export interface ProjectHost {
@@ -118,15 +121,17 @@ export interface ProjectHost {
   snapshot(): Promise<ProjectSnapshot>;
 }
 
-const DEFAULT_ASSET_LIMIT = 32;
+const DEFAULT_GENERATED_ASSET_CACHE = { maxEntries: 32, maxBytes: 4 * 1024 * 1024 };
 
 /** Content-hashed names, so nothing served under one can go stale. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
 export function createProjectHost(options: ProjectHostOptions): ProjectHost {
-  const assetLimit = options.assetLimit ?? DEFAULT_ASSET_LIMIT;
-  /** What the last renders linked to, so the follow-up GET for one finds bytes. */
-  const served = new Map<string, RenderedAsset>();
+  const directArtifact =
+    options.artifact === undefined ? undefined : parsePreparedSite(options.artifact);
+  const served = new GeneratedAssetCache<RenderedAsset>(
+    options.generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE,
+  );
   /**
    * Compiled files, held for as long as this host is — not a module global: two hosts
    * in one isolate are two projects competing for one budget, and an entry's `.astro`
@@ -134,24 +139,23 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
    */
   const compileCache =
     options.compileCache === false ? undefined : (options.compileCache ?? createCompileCache());
-  /** The parsed artifact and the revision it was read at; `null` means read and absent. */
-  let artifactAt: { revision: string; artifact: PreparedSite | null } | null = null;
+  let artifactAt: { revision: string; artifact: PreparedSite } | null = null;
 
   /** The artifact for this snapshot: the caller's, or the project's own file. */
   function artifactOf(snapshot: ProjectSnapshot): PreparedSite | undefined {
-    if (options.artifact) return options.artifact;
+    if (directArtifact !== undefined) return directArtifact;
     const path = options.artifactPath;
     if (path === undefined) return undefined;
-    if (artifactAt?.revision === snapshot.revision) return artifactAt.artifact ?? undefined;
+    if (artifactAt?.revision === snapshot.revision) return artifactAt.artifact;
     const source = snapshot.files.get(path);
-    const artifact = source === undefined ? null : parseArtifact(source);
+    if (source === undefined) throw new ProjectArtifactError(path, "configured artifact is missing");
+    const artifact = parseArtifact(source, path);
     artifactAt = { revision: snapshot.revision, artifact };
-    return artifact ?? undefined;
+    return artifact;
   }
 
   /** Everything both entrypoints need, resolved against the store as it is now. */
-  async function projectOptions(): Promise<ProjectOptions> {
-    const snapshot = await options.store.snapshot();
+  function projectOptions(snapshot: ProjectSnapshot): ProjectOptions {
     return {
       files: snapshot.files,
       assets: snapshot.assets,
@@ -164,29 +168,38 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       srcDir: options.srcDir,
       rootDir: options.rootDir,
       compatibilityDate: options.compatibilityDate,
+      compatibilityFlags: options.compatibilityFlags,
+      executionNamespace: options.executionNamespace,
       compiler: options.compiler,
       compileCache,
       artifact: artifactOf(snapshot),
     };
   }
 
-  async function render(pathname: string): Promise<RenderedPage> {
+  async function renderSnapshot(pathname: string, snapshot: ProjectSnapshot): Promise<RenderedPage> {
     const page = await renderPage({
-      ...(await projectOptions()),
+      ...projectOptions(snapshot),
       pathname,
       site: options.site,
       tailwind: options.tailwind,
     });
-    if (served.size >= assetLimit) served.clear();
-    for (const asset of page.assets) served.set(asset.path, asset);
+    const rejected = served.putAll(page.assets);
+    if (rejected.length > 0) {
+      throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
+    }
     return page;
+  }
+
+  async function render(pathname: string): Promise<RenderedPage> {
+    return renderSnapshot(pathname, await options.store.snapshot());
   }
 
   return {
     render,
 
     async paths(): Promise<RoutePath[]> {
-      return projectPaths(await projectOptions());
+      const snapshot = await options.store.snapshot();
+      return projectPaths(projectOptions(snapshot));
     },
 
     snapshot: () => options.store.snapshot(),
@@ -201,17 +214,18 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
         });
       }
 
-      // `/_astro/<name>.<hash>.<ext>` and the `/cdn-cgi/image/` form a page links to.
-      const { assets } = await options.store.snapshot();
-      const image = serveImage(url.pathname, assets);
-      if (image?.bytes) {
-        return new Response(image.bytes, {
-          headers: { "content-type": image.contentType, "cache-control": IMMUTABLE },
-        });
-      }
-
       try {
-        const page = await render(url.pathname);
+        // `/_astro/<name>.<hash>.<ext>` and the `/cdn-cgi/image/` form a page links to.
+        const snapshot = await options.store.snapshot();
+        const image = await snapshot.assets.resolveOutput(url.pathname);
+        if (image !== null) {
+          if (image.bytes === null) return new Response("Not Found", { status: 404 });
+          return new Response(image.bytes, {
+            headers: { "content-type": image.contentType, "cache-control": IMMUTABLE },
+          });
+        }
+
+        const page = await renderSnapshot(url.pathname, snapshot);
         return new Response(page.html, {
           headers: {
             "content-type": "text/html; charset=utf-8",
@@ -226,19 +240,37 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   };
 }
 
-/**
- * A malformed artifact is dropped rather than half-read: the render proceeds without
- * one, and the bare specifier it would have answered fails by name at the Loader —
- * a better failure than a project silently missing half its `node_modules`.
- */
-function parseArtifact(source: string): PreparedSite | null {
+/** A rendered page references generated assets this host cannot retain for follow-up GETs. */
+export class GeneratedAssetRetentionError extends Error {
+  constructor(readonly paths: readonly string[]) {
+    super(
+      `[pletivo-workers] generated asset cache cannot retain ${paths.length} referenced ` +
+        `asset(s): ${paths.map((path) => JSON.stringify(path)).join(", ")}`,
+    );
+    this.name = "GeneratedAssetRetentionError";
+  }
+}
+
+/** A configured artifact is mandatory and must be a complete V2 envelope. */
+export class ProjectArtifactError extends Error {
+  constructor(readonly path: string, reason: string) {
+    super(`[pletivo-workers] invalid project artifact ${JSON.stringify(path)}: ${reason}`);
+    this.name = "ProjectArtifactError";
+  }
+}
+
+function parseArtifact(source: string, path: string): PreparedSite {
   let parsed: unknown;
   try {
     parsed = JSON.parse(source);
-  } catch {
-    return null;
+  } catch (error) {
+    throw new ProjectArtifactError(path, error instanceof Error ? error.message : String(error));
   }
-  return parsePreparedSite(parsed);
+  try {
+    return parsePreparedSite(parsed);
+  } catch (error) {
+    throw new ProjectArtifactError(path, error instanceof Error ? error.message : String(error));
+  }
 }
 
 function errorResponse(error: unknown): Response {

@@ -24,6 +24,8 @@
  * to re-create the compiler.
  */
 
+import type { ModuleId } from "@pletivo/core/artifact";
+
 /** The slice of `tailwindcss` this host uses. Validated at run time by `loadTailwind`. */
 interface TailwindModule {
   compile(css: string, options: TailwindCompileOptions): Promise<TailwindCompiler>;
@@ -74,6 +76,16 @@ export interface CompileTailwindOptions {
    * `@tailwindcss/oxide` comparison in `docs/todos/016 §7` is stated against.
    */
   candidates?: readonly string[];
+  /** Canonical CSS targets, in source import order for each logical importer. */
+  styleTargets?: ReadonlyMap<ModuleId, readonly ModuleId[]>;
+  /** Canonical target identities for the four host-embedded Tailwind stylesheets. */
+  embeddedTargets?: ReadonlyMap<ModuleId, keyof TailwindStylesheets>;
+}
+
+export interface TailwindCompilation {
+  css: string;
+  /** Entry and project/artifact stylesheets compiled through its @import closure. */
+  consumedStylesheets: readonly ModuleId[];
 }
 
 /** Extensions that only ever hold CSS, never class names. */
@@ -123,32 +135,76 @@ function join(base: string, id: string): string {
  * yet, so a project that narrows its content with `@source` gets a superset — extra
  * candidates, never missing ones.
  */
-export async function compileTailwind(options: CompileTailwindOptions): Promise<string> {
+export async function compileTailwind(options: CompileTailwindOptions): Promise<TailwindCompilation> {
   const { entry, files, stylesheets } = options;
-  const source = files.get(entry);
+  const source = sourceFor(entry, files);
   if (source === undefined) {
     throw new Error(
       `[pletivo-workers] tailwind entry ${JSON.stringify(entry)} is not in the file map`,
     );
   }
 
+  const consumed = new Set<ModuleId>([entry]);
+  const targetCursors = new Map<ModuleId, number>();
+
   const { compile } = await loadTailwind();
   const compiler = await compile(source, {
-    base: dirname(entry),
+    // The value is opaque to Tailwind and comes back to loadStylesheet as importer identity.
+    base: entry,
     from: entry,
     async loadStylesheet(id, base) {
+      const targets = options.styleTargets?.get(base);
+      let resolved: ModuleId;
+      if (targets) {
+        const cursor = targetCursors.get(base) ?? 0;
+        const target = targets[cursor];
+        if (target === undefined) {
+          throw new Error(
+            `[pletivo-workers] canonical CSS graph has no remaining target for ` +
+              `${JSON.stringify(id)} from ${JSON.stringify(base)}`,
+          );
+        }
+        targetCursors.set(base, cursor + 1);
+        resolved = target;
+      } else {
+        // Retained for the standalone parity harness; page assembly always supplies C1 targets.
+        resolved = id.startsWith(".") ? join(dirname(base), id) : id;
+      }
+      const embedded = options.embeddedTargets?.get(resolved);
+      if (embedded !== undefined) {
+        if (!isTailwindStylesheet(id, stylesheets) || embedded !== id) {
+          throw new Error(
+            `[pletivo-workers] canonical CSS target ${JSON.stringify(resolved)} does not match ` +
+              `embedded stylesheet ${JSON.stringify(id)}`,
+          );
+        }
+        consumed.add(resolved);
+        return { path: resolved, base: resolved, content: stylesheets[embedded] };
+      }
       if (isTailwindStylesheet(id, stylesheets)) {
+        if (options.styleTargets) {
+          throw new Error(
+            `[pletivo-workers] canonical CSS target ${JSON.stringify(resolved)} is not registered ` +
+              `for embedded stylesheet ${JSON.stringify(id)}`,
+          );
+        }
         return { path: `virtual:${id}`, base, content: stylesheets[id] };
       }
-      const resolved = id.startsWith(".") ? join(base, id) : id;
-      const content = files.get(resolved);
+      if (isProjectCssModule(resolved)) {
+        throw new Error(
+          `[pletivo-workers] CSS module ${JSON.stringify(resolved)} cannot be loaded by Tailwind; ` +
+            "the Workers CSS-modules pipeline is not implemented",
+        );
+      }
+      const content = sourceFor(resolved, files);
       if (content === undefined) {
         throw new Error(
           `[pletivo-workers] cannot resolve stylesheet ${JSON.stringify(id)} ` +
             `from ${JSON.stringify(base)}`,
         );
       }
-      return { path: resolved, base: dirname(resolved), content };
+      consumed.add(resolved);
+      return { path: resolved, base: resolved, content };
     },
     async loadModule(id) {
       throw new Error(
@@ -158,9 +214,33 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
     },
   });
 
-  return compiler.build(
-    compiler.root === "none" ? [] : (options.candidates ?? scanCandidates(files)),
-  );
+  for (const importer of consumed) {
+    const targets = options.styleTargets?.get(importer);
+    if (targets === undefined) continue;
+    const consumedCount = targetCursors.get(importer) ?? 0;
+    if (consumedCount !== targets.length) {
+      throw new Error(
+        `[pletivo-workers] Tailwind consumed ${consumedCount} of ${targets.length} canonical ` +
+          `stylesheet target(s) from ${JSON.stringify(importer)}`,
+      );
+    }
+  }
+
+  return {
+    css: compiler.build(
+      compiler.root === "none" ? [] : (options.candidates ?? scanCandidates(files)),
+    ),
+    consumedStylesheets: [...consumed],
+  };
+}
+
+function isProjectCssModule(moduleId: ModuleId): boolean {
+  return moduleId.startsWith("project:") && moduleId.endsWith(".module.css");
+}
+
+function sourceFor(moduleId: ModuleId, files: ReadonlyMap<string, string>): string | undefined {
+  if (moduleId.startsWith("project:")) return files.get(moduleId.slice("project:".length));
+  return files.get(moduleId);
 }
 
 /** Every candidate in the project, from the virtual file map rather than a filesystem walk. */
@@ -232,6 +312,147 @@ export function extractCandidates(source: string): string[] {
   const out = new Set<string>();
   scan(source, 0, source.length, out, 0);
   return [...out];
+}
+
+/** Candidates from decoded HTML `class` attributes only. */
+export function extractHtmlClassCandidates(html: string): string[] {
+  const candidates = new Set<string>();
+  const lower = html.toLowerCase();
+  let cursor = 0;
+  while (cursor < html.length) {
+    const opening = html.indexOf("<", cursor);
+    if (opening === -1) break;
+    if (html.startsWith("<!--", opening)) {
+      const end = html.indexOf("-->", opening + 4);
+      cursor = end === -1 ? html.length : end + 3;
+      continue;
+    }
+    const tag = readHtmlTag(html, opening);
+    if (!tag) {
+      cursor = opening + 1;
+      continue;
+    }
+    if (!tag.closing) collectClassAttributes(tag.source, candidates);
+    cursor = tag.end;
+    if (!tag.closing && (tag.name === "style" || tag.name === "script")) {
+      const close = findRawTextClose(lower, tag.name, cursor);
+      cursor = close === -1 ? html.length : close;
+    }
+  }
+  return [...candidates];
+}
+
+function findRawTextClose(html: string, name: "style" | "script", from: number): number {
+  const prefix = `</${name}`;
+  let cursor = from;
+  while (cursor < html.length) {
+    const found = html.indexOf(prefix, cursor);
+    if (found === -1) return -1;
+    const delimiter = html[found + prefix.length];
+    if (delimiter === ">" || delimiter === "/" || /\s/.test(delimiter ?? "")) return found;
+    cursor = found + prefix.length;
+  }
+  return -1;
+}
+
+interface HtmlTag {
+  name: string;
+  source: string;
+  end: number;
+  closing: boolean;
+}
+
+function readHtmlTag(html: string, opening: number): HtmlTag | null {
+  let cursor = opening + 1;
+  const closing = html[cursor] === "/";
+  if (closing) cursor++;
+  while (/\s/.test(html[cursor] ?? "")) cursor++;
+  const nameStart = cursor;
+  while (/[A-Za-z0-9:-]/.test(html[cursor] ?? "")) cursor++;
+  if (cursor === nameStart) return null;
+  const name = html.slice(nameStart, cursor).toLowerCase();
+  let quote = "";
+  for (; cursor < html.length; cursor++) {
+    const char = html[cursor];
+    if (quote) {
+      if (char === quote) quote = "";
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === ">") {
+      return { name, source: html.slice(nameStart + name.length, cursor), end: cursor + 1, closing };
+    }
+  }
+  return null;
+}
+
+function collectClassAttributes(source: string, candidates: Set<string>): void {
+  let cursor = 0;
+  while (cursor < source.length) {
+    while (/\s|\//.test(source[cursor] ?? "")) cursor++;
+    const nameStart = cursor;
+    while (!/[\s=/>]/.test(source[cursor] ?? ">")) cursor++;
+    if (cursor === nameStart) {
+      cursor++;
+      continue;
+    }
+    const name = source.slice(nameStart, cursor).toLowerCase();
+    while (/\s/.test(source[cursor] ?? "")) cursor++;
+    if (source[cursor] !== "=") continue;
+    cursor++;
+    while (/\s/.test(source[cursor] ?? "")) cursor++;
+    const quote = source[cursor] === "\"" || source[cursor] === "'" ? source[cursor++] : "";
+    const valueStart = cursor;
+    if (quote) while (cursor < source.length && source[cursor] !== quote) cursor++;
+    else while (cursor < source.length && !/[\s>]/.test(source[cursor])) cursor++;
+    const value = source.slice(valueStart, cursor);
+    if (quote && source[cursor] === quote) cursor++;
+    if (name !== "class") continue;
+    for (const candidate of extractCandidates(decodeHtmlEntities(value))) candidates.add(candidate);
+  }
+}
+
+const HTML_ENTITIES: Readonly<Record<string, string>> = {
+  amp: "&",
+  apos: "'",
+  ast: "*",
+  colon: ":",
+  comma: ",",
+  commat: "@",
+  dollar: "$",
+  equals: "=",
+  excl: "!",
+  gt: ">",
+  hat: "^",
+  lbrack: "[",
+  lt: "<",
+  num: "#",
+  percnt: "%",
+  period: ".",
+  plus: "+",
+  quest: "?",
+  quot: "\"",
+  rbrack: "]",
+  semi: ";",
+  sol: "/",
+  vert: "|",
+};
+
+function decodeHtmlEntities(value: string): string {
+  // This intentionally covers numeric references and the punctuation subset Tailwind
+  // class syntax can contain; it is not a complete WHATWG named-entity table.
+  return value.replace(/&(#(?:x[0-9a-f]+|[0-9]+);?|[a-z][a-z0-9]+;)/gi, (entity, body: string) => {
+    if (body[0] !== "#") return HTML_ENTITIES[body.slice(0, -1).toLowerCase()] ?? entity;
+    const numeric = body.endsWith(";") ? body.slice(0, -1) : body;
+    const hexadecimal = numeric[1]?.toLowerCase() === "x";
+    const digits = numeric.slice(hexadecimal ? 2 : 1);
+    const codePoint = Number.parseInt(digits, hexadecimal ? 16 : 10);
+    if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff) return "�";
+    return String.fromCodePoint(codePoint);
+  });
 }
 
 function scan(source: string, from: number, to: number, out: Set<string>, depth: number): void {

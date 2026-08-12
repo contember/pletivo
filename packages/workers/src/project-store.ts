@@ -7,8 +7,8 @@
  * that outlives any one render and that an agent writes to between two of them.
  *
  * This is the seam. A store answers "the project, as it is now"; everything above it
- * is unchanged, because a `ProjectSnapshot` is exactly the pair of maps `renderPage`
- * already takes.
+ * is unchanged: a `ProjectSnapshot` holds immutable text plus a demand-driven asset
+ * view bound to the same revision.
  *
  * **This materialises the whole project, deliberately, for now.** The compile no longer
  * walks all of it — `compileProject` follows the requested page's import graph (023 §4).
@@ -18,14 +18,19 @@
  * read — and this interface is where it goes.
  */
 
-import type { ProjectAssets } from "./content-files.ts";
+import type { ProjectAssetsView } from "./asset-port.ts";
+import {
+  createProjectAssetsView,
+  projectAssetsView,
+  type ProjectAssets,
+} from "./content-files.ts";
 
-/** The project as one render sees it: text one side, bytes the other. */
+/** The project as one render sees it: text and assets from one revision. */
 export interface ProjectSnapshot {
   /** Path -> source, keyed the way `renderPage` keys `files`. */
   files: ReadonlyMap<string, string>;
-  /** Path -> the binary's bytes, or what the store already knows about it. */
-  assets: ProjectAssets;
+  /** Snapshot-owned source metadata and output lookup, both demand-driven. */
+  assets: ProjectAssetsView;
   /**
    * Changes when the project does, and only then.
    *
@@ -53,7 +58,8 @@ export interface ProjectStore {
 }
 
 /**
- * A store over maps the caller already holds.
+ * A store over maps the caller already holds. The maps are copied once so later
+ * caller mutation cannot change a snapshot without changing its revision.
  *
  * What every host here did before a store existed, named: the preview server handed a
  * project per request, and the tests. The revision is supplied by the caller, since
@@ -61,9 +67,23 @@ export interface ProjectStore {
  */
 export function createMapProjectStore(
   files: ReadonlyMap<string, string>,
-  assets: ProjectAssets = new Map(),
+  assets: ProjectAssets | ProjectAssetsView = new Map(),
   revision = "static",
 ): ProjectStore {
-  const snapshot: ProjectSnapshot = { files, assets, revision };
+  const snapshotFiles = new Map(files);
+  const snapshotAssets = isAssetMap(assets)
+    ? createProjectAssetsView(assets)
+    : projectAssetsView(assets);
+  const snapshot: ProjectSnapshot = {
+    files: snapshotFiles,
+    assets: snapshotAssets,
+    revision,
+  };
   return { snapshot: () => Promise.resolve(snapshot) };
+}
+
+function isAssetMap(
+  assets: ProjectAssets | ProjectAssetsView,
+): assets is ProjectAssets {
+  return !("info" in assets && "resolveOutput" in assets);
 }

@@ -1,107 +1,83 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import path from "path";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import path from "node:path";
+import { serializePreparedSite, type PrepareReport, type PreparedSite } from "@pletivo/core/artifact";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import { prepare } from "../../packages/pletivo/src/prepare/index";
-import type { PreparedSite } from "@pletivo/core/artifact";
-
-/**
- * `pletivo prepare` against the fixture the Workers host renders from
- * (`packages/workers/test/fixture-vendor`), which is deliberately shaped like
- * astro-icon: a package that ships `.astro`, a Vite plugin whose `load()` returns a
- * JSON literal computed off disk, and an `injectScript`.
- *
- * The assertions are on what came out, not on it having run — a prepare that silently
- * carries nothing produces a bundle that fails at the Loader with no mention of the
- * artifact at all.
- */
 
 const fixtureRoot = path.resolve(import.meta.dir, "../../packages/workers/test/fixture-vendor");
-let prepared: PreparedSite;
+let site: PreparedSite;
+let report: PrepareReport;
 
 describe("pletivo prepare", () => {
   beforeAll(async () => {
     __resetForTests();
-    prepared = await prepare(fixtureRoot);
+    const prepared = await prepare(fixtureRoot);
+    site = prepared.site;
+    report = prepared.report;
   });
 
   afterAll(() => {
     __resetForTests();
   });
 
-  test("freezes the config fields a render reads", () => {
-    expect(prepared.artifact.config.site).toBe("https://vendor.example");
-    expect(prepared.artifact.config.base).toBe("/");
-    expect(prepared.artifact.config.trailingSlash).toBe("ignore");
+  test("freezes only config fields the Workers host consumes", () => {
+    expect(site.artifact.config).toEqual({ site: "https://vendor.example" });
   });
 
-  test("freezes injectScript bodies as the strings they already are", () => {
-    expect(prepared.artifact.scripts.headInline).toEqual(['window.__vendorDemo = "ready";\n']);
-    expect(prepared.artifact.scripts.page).toEqual([]);
+  test("freezes supported injectScript bodies in semantic order", () => {
+    expect(site.artifact.scripts).toEqual({
+      headInline: ['window.__vendorDemo = "ready";\n'],
+      page: [],
+    });
   });
 
-  test("carries a package that ships .astro as sources, keyed by its own path", () => {
-    const sources = prepared.artifact.generatedSources;
-    expect(Object.keys(sources).sort()).toEqual([
-      "node_modules/pletivo-vendor-demo/components/Badge.astro",
-      "node_modules/pletivo-vendor-demo/components/index.ts",
-      "node_modules/pletivo-vendor-demo/components/palette.ts",
-    ]);
-    expect(sources["node_modules/pletivo-vendor-demo/components/Badge.astro"]).toContain("<style>");
+  test("carries npm source graphs with package-local identities and compile paths", () => {
+    const paths = site.artifact.modules.map((module) => module.compilePath);
+    expect(paths).toContain("node_modules/pletivo-vendor-demo/components/Badge.astro");
+    expect(paths).toContain("node_modules/pletivo-vendor-demo/components/palette.ts");
+    expect(paths).toContain("node_modules/pletivo-vendor-demo/index.js");
+    expect(paths).toContain("node_modules/pletivo-vendor-demo/internal/title-case.js");
+    expect(site.artifact.modules.every((module) => module.id.startsWith("npm:") || module.id.startsWith("virtual:"))).toBe(true);
   });
 
-  test("bundles a plain-JavaScript package into one module", () => {
-    const name = prepared.artifact.vendor["pletivo-vendor-demo"];
-    expect(name).toBe("vendor.pletivo-vendor-demo.js");
-    const code = prepared.modules[name];
-    // The entry and the file it imports, in one module: nothing is left pointing at
-    // node_modules, because the isolate has none.
-    expect(code).toContain("slugLabel");
-    expect(code).toContain("toUpperCase");
-    expect(code).not.toContain("./internal/title-case.js");
+  test("keeps relative extension remapping importer-aware", () => {
+    const palette = site.artifact.modules.find((module) => module.compilePath?.endsWith("/palette.ts"));
+    const badge = site.artifact.modules.find((module) => module.compilePath?.endsWith("/Badge.astro"));
+    expect(palette).toBeDefined();
+    expect(badge).toBeDefined();
+    if (!palette || !badge) throw new Error("Expected both vendor fixture modules");
+    expect(site.artifact.resolutions).toContainEqual({
+      importer: badge.id,
+      specifier: "./palette.js",
+      target: { kind: "module", id: palette.id },
+    });
   });
 
-  test("bundles a package for the names that import it, and nothing else", () => {
-    const code = prepared.modules[prepared.artifact.vendor["pletivo-vendor-demo"]];
-    // Not only smaller: pointed at `@iconify/utils`' own entry, `Bun.build` writes an
-    // export clause naming 83 functions and defines a handful, and the Loader then
-    // refuses the bundle. A generated `export { … } from` entry does not reach that.
-    expect(code).not.toContain("unusedHelper");
+  test("freezes virtual module source and its project resolution", () => {
+    const frozen = site.artifact.modules.find((module) => module.id.startsWith("virtual:"));
+    expect(frozen?.source).toContain('"positive":"#0a7d32"');
+    expect(frozen?.kind).toBe("ts");
+    expect(site.artifact.resolutions.some((edge) =>
+      edge.specifier === "virtual:vendor-demo" && edge.target.kind === "module" && edge.target.id === frozen?.id
+    )).toBe(true);
   });
 
-  test("redirects a package's `./x.js` to the `x.ts` it actually lands on", () => {
-    expect(prepared.artifact.vendor["node_modules/pletivo-vendor-demo/components/palette.js"]).toBe(
-      "node_modules/pletivo-vendor-demo/components/palette.ts",
-    );
-  });
-
-  test("freezes the virtual module the vendored component imports", () => {
-    const name = prepared.artifact.virtualModules["virtual:vendor-demo"];
-    expect(name).toBe("virtual.virtual_vendor-demo.js");
-    // The plugin read tones.json off disk at prepare time; the isolate gets the result,
-    // stripped of the TypeScript a `load()` is allowed to return and the Loader is not.
-    expect(prepared.modules[name]).toContain('positive: "#0a7d32"');
-    expect(prepared.modules[name]).toStartWith("export default");
-  });
-
-  test("names the artifact by its own content, data and code alike", async () => {
-    expect(prepared.artifact.id).toMatch(/^[0-9a-f]{32}$/);
+  test("is deterministic and keeps diagnostics outside executable data", async () => {
+    const serialized = serializePreparedSite(site);
     __resetForTests();
     const again = await prepare(fixtureRoot);
-    expect(again.artifact.id).toBe(prepared.artifact.id);
+    expect(serializePreparedSite(again.site)).toBe(serialized);
+    expect(serialized).not.toContain("diagnostics");
+    expect(report.diagnostics).toEqual([]);
   });
 
-  test("shifts every path it names when the file map is not rooted at the project", async () => {
+  test("uses pathPrefix only for compiler filename identity", async () => {
     __resetForTests();
     const shifted = await prepare(fixtureRoot, { pathPrefix: "some/where" });
-    expect(Object.keys(shifted.artifact.generatedSources)).toContain(
-      "some/where/node_modules/pletivo-vendor-demo/components/Badge.astro",
+    const badge = shifted.site.artifact.modules.find((module) =>
+      module.compilePath?.endsWith("node_modules/pletivo-vendor-demo/components/Badge.astro"),
     );
-    expect(shifted.artifact.vendor["pletivo-vendor-demo/components"]).toBe(
-      "some/where/node_modules/pletivo-vendor-demo/components/index.ts",
-    );
-  });
-
-  test("reports nothing it had to drop for this project", () => {
-    expect(prepared.artifact.diagnostics).toEqual([]);
+    expect(badge?.id).toMatch(/^npm:/);
+    expect(badge?.compilePath).toStartWith("some/where/");
   });
 });

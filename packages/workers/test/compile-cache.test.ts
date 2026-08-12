@@ -1,11 +1,11 @@
 /**
- * The per-file compile cache: that a warm compile is the *same* bundle, and that each
+ * The per-file compile cache: that a warm compile is the same complete result, and that each
  * effect the entry has to carry by hand survives a hit.
  *
  * Every one of those effects fails silently — a missing `import.meta.env` global throws
  * at frontmatter, a dropped `astro:env` name stops the isolate booting, a lost `<style>`
  * renders an unstyled page with no error at all — so each gets its own test rather than
- * riding on the bundle comparison that would also catch it.
+ * riding on the complete-result comparison that would also catch it.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -18,8 +18,8 @@ import type {
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
 import { createCompileCache, type CompiledFile } from "../src/compile-cache.ts";
 import { compileProject, type CompiledProject } from "../src/compile-project.ts";
+import { createProjectAssetsView } from "../src/content-files.ts";
 import { IMPORT_META_ENV_GLOBAL } from "../src/env.ts";
-import { bundleHash } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 
 const compiler = createAstroCompiler(await astroWasmModule());
@@ -116,6 +116,7 @@ export const collections = {
 ]);
 
 const ASSETS = new Map([["src/assets/logo.png", PNG_4x4]]);
+const ASSET_VIEW = createProjectAssetsView(ASSETS);
 
 function build(
   files: ReadonlyMap<string, string>,
@@ -125,7 +126,7 @@ function build(
   return compileProject({
     files,
     entries: [PAGE],
-    assets: ASSETS,
+    assets: ASSET_VIEW,
     srcDir: "src",
     compiler: built,
     cache,
@@ -138,25 +139,12 @@ function copyOf(source: string): string {
 }
 
 describe("a warm cache", () => {
-  test("produces the identical bundle", async () => {
+  test("produces the identical compiled project", async () => {
     const cache = createCompileCache();
     const cold = await build(PROJECT, cache);
     const warm = await build(PROJECT, cache);
 
-    // The bundle the isolate is handed, byte for byte — and therefore the same isolate.
-    expect(await bundleHash(warm.modules)).toBe(await bundleHash(cold.modules));
-    // …and everything the render reads beside it, each of which a wrong entry could
-    // move without moving the modules.
-    expect(warm.styles).toEqual(cold.styles);
-    expect(warm.imports).toEqual(cold.imports);
-    expect(warm.cssImports).toEqual(cold.cssImports);
-    expect(warm.moduleNames).toEqual(cold.moduleNames);
-    expect(warm.entries).toEqual(cold.entries);
-    expect(warm.env).toEqual(cold.env);
-    expect(warm.importMetaEnv).toEqual(cold.importMetaEnv);
-    expect(warm.content).toEqual(cold.content);
-    expect(warm.images).toEqual(cold.images);
-    expect(warm.urlAssets).toEqual(cold.urlAssets);
+    expect(warm).toEqual(cold);
   });
 
   test("recompiles only the file that changed", async () => {
@@ -189,7 +177,7 @@ describe("a warm cache", () => {
     ]);
     const cache = createCompileCache();
     const counting = countingCompiler();
-    const options = { files, assets: ASSETS, srcDir: "src", compiler: counting.compiler, cache };
+    const options = { files, assets: ASSET_VIEW, srcDir: "src", compiler: counting.compiler, cache };
 
     const a = await compileProject({ ...options, entries: ["src/pages/a.astro"] });
     const b = await compileProject({ ...options, entries: ["src/pages/b.astro"] });
@@ -215,7 +203,7 @@ describe("a warm cache", () => {
     const warm = await build(copied, cache, counting.compiler);
 
     expect(counting.transformed).toEqual([]);
-    expect(await bundleHash(warm.modules)).toBe(await bundleHash(cold.modules));
+    expect(warm).toEqual(cold);
   });
 
   test("misses again once the entry is deleted", async () => {
@@ -274,8 +262,8 @@ describe("what a cache entry has to carry", () => {
     const { warm } = await twice();
     expect(warm.cssImports.get(PAGE)).toEqual(["src/styles/site.css"]);
     expect(warm.imports.get(PAGE)).not.toContain("src/styles/site.css");
-    // The stub itself is compiled by neither half, so it records no edges at all.
-    expect(warm.imports.has("src/styles/site.css")).toBe(false);
+    // CSS owns an explicit empty execution list; its own @imports, if any, are style edges.
+    expect(warm.imports.get("src/styles/site.css")).toEqual([]);
   });
 
   test("a .js file keeps its edges and its substituted code together", async () => {
@@ -312,6 +300,37 @@ describe("what a cache entry has to carry", () => {
     const logo = warm.moduleNames.get("src/assets/logo.png") ?? "";
     expect(warm.modules[logo]).toBe(cold.modules[logo]);
     expect(warm.modules[logo]).toContain(`"width":4`);
+  });
+
+  test("refreshes image metadata without recompiling a warm importer", async () => {
+    const cache = createCompileCache();
+    const counting = countingCompiler();
+    const firstAssets = createProjectAssetsView(new Map([
+      ["src/assets/logo.png", { width: 4, height: 4, format: "png", hash: "11111111" }],
+    ]));
+    const secondAssets = createProjectAssetsView(new Map([
+      ["src/assets/logo.png", { width: 8, height: 6, format: "png", hash: "22222222" }],
+    ]));
+    const options = {
+      files: PROJECT,
+      entries: [PAGE],
+      srcDir: "src",
+      compiler: counting.compiler,
+      cache,
+    };
+
+    const cold = await compileProject({ ...options, assets: firstAssets });
+    counting.transformed.length = 0;
+    const warm = await compileProject({ ...options, assets: secondAssets });
+    const coldLogo = cold.modules[cold.moduleNames.get("src/assets/logo.png") ?? ""];
+    const warmLogo = warm.modules[warm.moduleNames.get("src/assets/logo.png") ?? ""];
+
+    expect(counting.transformed).toEqual([]);
+    expect(coldLogo).toContain('/_astro/logo.11111111.png');
+    expect(warmLogo).toContain('/_astro/logo.22222222.png');
+    expect(warmLogo).toContain('"width":8');
+    expect(warmLogo).toContain('"height":6');
+    expect(warmLogo).not.toBe(coldLogo);
   });
 
   test("a file the compiler rejects is not cached", async () => {

@@ -4,6 +4,7 @@ import {
   initCollections,
   getCollection,
   getEntry,
+  runWithBunContentRuntime,
 } from "../../packages/pletivo/src/content/collection";
 import type {
   AstroLoader,
@@ -12,26 +13,14 @@ import type {
 } from "../../packages/pletivo/src/content/collection";
 import { z } from "zod";
 import path from "path";
-import fs from "fs/promises";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-custom-loaders");
-const configPath = path.join(fixtureRoot, "src/content.config.ts");
 
 // ── Helpers ──
 
-/** Write a content.config.ts that exports the given collections object */
-async function writeConfig(collections: Record<string, ReturnType<typeof defineCollection>>) {
-  // We write the collections to a JSON-serializable file and import them
-  // from the test. For Bun's import cache, we use a version suffix.
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-
-  // Store collections in a global so the config file can reference them
-  (globalThis as any).__testCollections = collections;
-
-  await fs.writeFile(
-    configPath,
-    `export const collections = (globalThis as Record<string, any>).__testCollections;\n`,
-  );
+/** Install the collections read by the fixture's stable content.config.ts. */
+function installCollections(collections: Record<string, ReturnType<typeof defineCollection>>) {
+  Reflect.set(globalThis, "__testCollections", collections);
 }
 
 describe("function loader", () => {
@@ -41,7 +30,7 @@ describe("function loader", () => {
       { id: "post-2", title: "Second Post", tags: ["update"] },
     ];
 
-    await writeConfig({
+    installCollections({
       articles: defineCollection({
         loader,
         schema: z.object({
@@ -50,29 +39,29 @@ describe("function loader", () => {
         }),
       }),
     });
-    await initCollections(fixtureRoot);
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
   });
 
   test("loads entries from function loader", async () => {
-    const entries = await getCollection("articles");
+    const entries = await runWithBunContentRuntime(() => getCollection("articles"));
     expect(entries.length).toBe(2);
   });
 
   test("entries have correct IDs", async () => {
-    const entries = await getCollection("articles");
+    const entries = await runWithBunContentRuntime(() => getCollection("articles"));
     const ids = entries.map((e) => e.id).sort();
     expect(ids).toEqual(["post-1", "post-2"]);
   });
 
   test("entry data is validated against schema", async () => {
-    const entry = await getEntry("articles", "post-1");
+    const entry = await runWithBunContentRuntime(() => getEntry("articles", "post-1"));
     expect(entry).toBeDefined();
     expect(entry!.data.title).toBe("Hello World");
     expect(entry!.data.tags).toEqual(["intro"]);
   });
 
   test("render returns empty html for non-markdown entries", async () => {
-    const entry = await getEntry("articles", "post-1");
+    const entry = await runWithBunContentRuntime(() => getEntry("articles", "post-1"));
     const { html } = await entry!.render();
     expect(html).toBe("");
   });
@@ -94,7 +83,7 @@ describe("Astro Content Layer loader", () => {
           const { id, ...data } = post;
           // Validate via parseData
           const validated = await context.parseData({ id, data });
-          context.store.set({ id, data: validated as Record<string, unknown> });
+          context.store.set({ id, data: validated });
         }
 
         // Use meta store
@@ -102,7 +91,7 @@ describe("Astro Content Layer loader", () => {
       },
     };
 
-    await writeConfig({
+    installCollections({
       cms: defineCollection({
         loader,
         schema: z.object({
@@ -111,23 +100,28 @@ describe("Astro Content Layer loader", () => {
         }),
       }),
     });
-    await initCollections(fixtureRoot);
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
   });
 
   test("loads entries from Astro Content Layer loader", async () => {
-    const entries = await getCollection("cms");
+    const entries = await runWithBunContentRuntime(() => getCollection("cms"));
     expect(entries.length).toBe(3);
   });
 
   test("entries are validated against schema", async () => {
-    const entry = await getEntry("cms", "cms-1");
+    const entry = await runWithBunContentRuntime(() => getEntry("cms", "cms-1"));
     expect(entry).toBeDefined();
     expect(entry!.data.title).toBe("CMS Post One");
     expect(entry!.data.category).toBe("news");
   });
 
   test("filtering works on Astro loader entries", async () => {
-    const news = await getCollection("cms", (e) => (e.data as any).category === "news");
+    const news = await runWithBunContentRuntime(() =>
+      getCollection<{ title: string; category: string }>(
+        "cms",
+        (entry) => entry.data.category === "news",
+      ),
+    );
     expect(news.length).toBe(2);
   });
 });
@@ -146,24 +140,24 @@ describe("Astro loader with rendered content", () => {
       },
     };
 
-    await writeConfig({
+    installCollections({
       pages: defineCollection({
         loader,
         schema: z.object({ title: z.string() }),
       }),
     });
-    await initCollections(fixtureRoot);
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
   });
 
   test("rendered content is available via render()", async () => {
-    const entry = await getEntry("pages", "page-1");
+    const entry = await runWithBunContentRuntime(() => getEntry("pages", "page-1"));
     expect(entry).toBeDefined();
     const { html } = await entry!.render();
     expect(html).toBe("<h1>Hello</h1>");
   });
 
   test("body is preserved", async () => {
-    const entry = await getEntry("pages", "page-1");
+    const entry = await runWithBunContentRuntime(() => getEntry("pages", "page-1"));
     expect(entry!.body).toBe("# Hello");
   });
 });
@@ -178,7 +172,7 @@ describe("Astro loader parseData validation errors", () => {
           id: "good",
           data: { title: "Valid", count: 5 },
         });
-        context.store.set({ id: "good", data: valid as Record<string, unknown> });
+        context.store.set({ id: "good", data: valid });
 
         // This entry has invalid data — parseData throws
         try {
@@ -186,14 +180,14 @@ describe("Astro loader parseData validation errors", () => {
             id: "bad",
             data: { title: 123, count: "not-a-number" },
           });
-          context.store.set({ id: "bad", data: { title: 123 } as any });
+          context.store.set({ id: "bad", data: { title: 123 } });
         } catch {
           // Loader handles the error — skips the entry
         }
       },
     };
 
-    await writeConfig({
+    installCollections({
       strict: defineCollection({
         loader,
         schema: z.object({
@@ -202,11 +196,11 @@ describe("Astro loader parseData validation errors", () => {
         }),
       }),
     });
-    await initCollections(fixtureRoot);
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
   });
 
   test("only valid entries are stored when loader handles errors", async () => {
-    const entries = await getCollection("strict");
+    const entries = await runWithBunContentRuntime(() => getCollection("strict"));
     expect(entries.length).toBe(1);
     expect(entries[0].id).toBe("good");
     expect(entries[0].data.title).toBe("Valid");

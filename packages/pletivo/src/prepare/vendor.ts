@@ -1,376 +1,655 @@
-/**
- * npm, turned into something a Worker Loader can run.
- *
- * Two shapes come out, and which one a package gets is decided by what is in it
- * rather than by a list:
- *
- *  - **A bundle.** Plain JavaScript and TypeScript go through `Bun.build` into one
- *    self-contained module. That is the ordinary case and it is what makes deep
- *    packages viable at all — `marked` is 39 files and arrives as one.
- *  - **Sources.** A package that ships `.astro` cannot be bundled: the Astro compiler
- *    derives a component's `astro-{scope}` hash from the *filename* it is given, and
- *    the host worker's CSS pipeline needs to see the `<style>` blocks separately. So
- *    the whole relative graph is carried as sources, keyed by the path the Bun host
- *    would have compiled them at, and the host worker compiles them like project
- *    files. `astro-icon/components` is this case, and so is every component library.
- *
- * Either way the *set* is closed: a vendored source's own bare imports are queued and
- * vendored too, so nothing is left pointing at node_modules.
- */
+/** Close every non-project import into Artifact V2 modules and resolutions. */
 
-import os from "node:os";
+import fs from "node:fs/promises";
 import path from "node:path";
-import { classifySpecifier, extensionOf, specifierUses, specifiersOf, type SpecifierUse } from "./scan";
+import type {
+  ArtifactModule,
+  ArtifactModuleKind,
+  ArtifactResolution,
+  ModuleId,
+} from "@pletivo/core/artifact";
+import {
+  classifySpecifier,
+  extensionOf,
+  ImportScanError,
+  specifiersOf,
+} from "./scan";
 
-/** What a bare specifier landed on, in the vocabulary of `SiteArtifact`. */
-export interface VendorOutput {
-  /** Resolved specifier -> a generated-source path or a module name. */
-  vendor: Record<string, string>;
-  /** Project-root-relative path -> source text, compiled by the host worker. */
-  generatedSources: Record<string, string>;
-  /** Module name -> JavaScript, put in the bundle as-is. */
-  modules: Record<string, string>;
-  /** Virtual specifiers reached through a vendored source, for the freezing pass. */
-  virtualSpecifiers: Set<string>;
-  /** Specifier -> why it could not be carried. */
-  refused: Map<string, string>;
+export interface ProjectImportSource {
+  id: ModuleId;
+  file: string;
+  source: string;
 }
 
-export interface VendorRequest {
-  specifier: string;
-  /** Absolute path of the file that named it — where resolution starts. */
-  importer: string;
-  /** Which of its exports that file wanted. Merged across every importer. */
-  use: SpecifierUse;
+export interface FrozenVirtualSource {
+  id: string;
+  code: string;
+  loader: string;
 }
 
-/** Merge one importer's demands into what a specifier is bundled for. */
-function mergeUse(into: SpecifierUse, from: SpecifierUse): void {
-  if (from.whole) into.whole = true;
-  for (const name of from.names) into.names.add(name);
+export type FreezeVirtualSource = (
+  specifier: string,
+  importer: string,
+) => Promise<FrozenVirtualSource | null>;
+
+export interface PreparedGraph {
+  modules: ArtifactModule[];
+  resolutions: ArtifactResolution[];
 }
 
-/** The demands a source file makes, as vendor requests. */
-export function requestsFrom(file: string, source: string): VendorRequest[] {
-  const out: VendorRequest[] = [];
-  for (const [specifier, use] of specifierUses(file, source)) {
-    if (classifySpecifier(specifier) !== "vendor") continue;
-    out.push({ specifier, importer: file, use });
+export class PrepareGraphError extends Error {
+  constructor(
+    readonly source: string,
+    readonly hook: string,
+    readonly reason: string,
+  ) {
+    super(`${source} (${hook}): ${reason}`);
+    this.name = "PrepareGraphError";
   }
-  return out;
 }
 
-/** Extensions the host worker compiles itself, so they can travel as sources. */
-const SOURCE_EXTENSIONS = new Set([".astro", ".ts", ".tsx", ".js", ".jsx", ".mjs"]);
-/** Extensions that are only ever a stylesheet: carried whole, collected by the CSS pipeline. */
-const STYLE_EXTENSIONS = new Set([".css"]);
+interface ImportRequest {
+  importer: ModuleId;
+  importerFile: string;
+  resolveFrom: string;
+  relativeViaVite: boolean;
+  stylesheet: boolean;
+  specifier: string;
+}
 
-/**
- * Resolve and carry every bare specifier reachable from `requests`.
- *
- * `root` is the project root, and every generated-source key is relative to it — the
- * same way a virtual file map is keyed, and the same way the Bun host names a module
- * when it computes a scope hash.
- */
-export async function vendorSpecifiers(
+interface PackageIdentity {
+  digest: string;
+  root: string;
+}
+
+interface PackageRecord {
+  root: string;
+  manifest: unknown;
+}
+
+const WORKER_EXPORT_CONDITIONS = ["workerd", "worker", "browser", "import", "default"];
+const STYLESHEET_EXPORT_CONDITIONS = ["style", ...WORKER_EXPORT_CONDITIONS];
+
+/** Build the artifact-owned part of the project graph. */
+export async function prepareModuleGraph(
   root: string,
-  requests: VendorRequest[],
-  /** Prepended to every generated-source key. Only a harness whose file map is not rooted at the project needs it. */
+  projectSources: readonly ProjectImportSource[],
+  freezeVirtual: FreezeVirtualSource,
   pathPrefix = "",
-): Promise<VendorOutput> {
-  const out: VendorOutput = {
-    vendor: {},
-    generatedSources: {},
-    modules: {},
-    virtualSpecifiers: new Set(),
-    refused: new Map(),
+): Promise<PreparedGraph> {
+  const modules = new Map<ModuleId, ArtifactModule>();
+  const resolutions: ArtifactResolution[] = [];
+  const queue: ImportRequest[] = [];
+  const seenRequests = new Map<ModuleId, Set<string>>();
+  const physicalIds = new Map<string, ModuleId>();
+
+  const enqueueImports = (
+    importer: ModuleId,
+    importerFile: string,
+    resolveFrom: string,
+    relativeViaVite: boolean,
+    stylesheet: boolean,
+    source: string,
+  ): void => {
+    try {
+      for (const specifier of specifiersOf(importerFile, source)) {
+        queue.push({ importer, importerFile, resolveFrom, relativeViaVite, stylesheet, specifier });
+      }
+    } catch (error) {
+      if (!(error instanceof ImportScanError)) throw error;
+      throw new PrepareGraphError(
+        importerFile,
+        "scan",
+        `${error.reason}; importer ${JSON.stringify(importer)}`,
+      );
+    }
   };
-  const queue = [...requests];
-  const seen = new Set<string>();
-  /** Bundled after the walk, so every importer's demands are known first. */
-  const pending = new Map<string, { entry: string; use: SpecifierUse }>();
+
+  for (const project of projectSources) {
+    enqueueImports(
+      project.id,
+      project.file,
+      path.dirname(project.file),
+      false,
+      extensionOf(project.file) === ".css",
+      project.source,
+    );
+  }
+
+  const addPhysicalModule = async (file: string): Promise<ModuleId> => {
+    const canonical = await canonicalFile(file);
+    const known = physicalIds.get(canonical);
+    if (known) return known;
+
+    const packageIdentity = await packageIdentityFor(canonical);
+    if (!packageIdentity) {
+      throw new PrepareGraphError(
+        displayPath(root, canonical),
+        "resolve",
+        "resolved outside the project without an owning package.json",
+      );
+    }
+    const packageRelative = normalizePath(path.relative(packageIdentity.root, canonical));
+    if (packageRelative === "" || packageRelative.startsWith("../")) {
+      throw new PrepareGraphError(
+        displayPath(root, canonical),
+        "resolve",
+        "could not derive a package-relative module identity",
+      );
+    }
+    const id = `npm:${packageIdentity.digest}/${packageRelative}`;
+    const existing = modules.get(id);
+    if (existing) {
+      if (existing.compilePath !== compilePathFor(root, canonical, pathPrefix)) {
+        throw new PrepareGraphError(id, "identity", "two resolved files produced the same module id");
+      }
+      physicalIds.set(canonical, id);
+      return id;
+    }
+
+    const kind = kindForFile(canonical);
+    let source: string;
+    try {
+      source = await Bun.file(canonical).text();
+    } catch (error) {
+      throw new PrepareGraphError(
+        displayPath(root, canonical),
+        "load",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    modules.set(id, {
+      id,
+      kind,
+      source,
+      compilePath: compilePathFor(root, canonical, pathPrefix),
+    });
+    physicalIds.set(canonical, id);
+    enqueueImports(id, canonical, path.dirname(canonical), false, kind === "css", source);
+    return id;
+  };
 
   while (queue.length > 0) {
     const request = queue.shift();
-    if (request === undefined) continue;
-    const already = pending.get(request.specifier);
-    if (already) {
-      mergeUse(already.use, request.use);
+    if (!request) continue;
+    let importerRequests = seenRequests.get(request.importer);
+    if (!importerRequests) {
+      importerRequests = new Set<string>();
+      seenRequests.set(request.importer, importerRequests);
+    }
+    if (importerRequests.has(request.specifier)) continue;
+    importerRequests.add(request.specifier);
+
+    const kind = classifySpecifier(request.specifier);
+    if (kind === "unsupported") {
+      throw new PrepareGraphError(
+        request.importerFile,
+        "import",
+        `imports ${JSON.stringify(request.specifier)}, which the Workers host cannot provide`,
+      );
+    }
+    if (kind === "builtin") {
+      throw new PrepareGraphError(
+        request.importerFile,
+        "import",
+        `imports ${JSON.stringify(request.specifier)}, which is not a supported Workers host external`,
+      );
+    }
+    if (kind === "host") {
+      resolutions.push({
+        importer: request.importer,
+        specifier: request.specifier,
+        target: { kind: "external", specifier: request.specifier },
+      });
       continue;
     }
-    if (seen.has(request.specifier)) continue;
-    seen.add(request.specifier);
+    if (kind === "virtual" || (kind === "relative" && request.relativeViaVite)) {
+      const frozen = await freezeVirtual(request.specifier, request.importerFile);
+      if (!frozen) {
+        throw new PrepareGraphError(
+          request.importerFile,
+          "vite.load",
+          `could not resolve and load ${kind === "virtual" ? "virtual module" : "relative import from a non-file virtual module"} ` +
+            JSON.stringify(request.specifier),
+        );
+      }
+      const moduleKind = kindForLoader(frozen.loader, frozen.id);
+      const frozenIdentity = await logicalFrozenIdentity(root, frozen.id, moduleKind, pathPrefix);
+      const digest = digestText(
+        `${frozenIdentity.logicalId}\0${moduleKind}\0${frozen.code}`,
+      ).slice(0, 32);
+      const id = `virtual:${digest}`;
+      if (!modules.has(id)) {
+        modules.set(id, {
+          id,
+          kind: moduleKind,
+          source: frozen.code,
+          compilePath: frozenIdentity.compilePath,
+        });
+        const resolveFrom = frozenIdentity.physicalFile
+          ? path.dirname(frozenIdentity.physicalFile)
+          : root;
+        enqueueImports(
+          id,
+          frozen.id,
+          resolveFrom,
+          frozenIdentity.physicalFile === null,
+          moduleKind === "css",
+          frozen.code,
+        );
+      }
+      resolutions.push({
+        importer: request.importer,
+        specifier: request.specifier,
+        target: { kind: "module", id },
+      });
+      continue;
+    }
 
     let resolved: string;
     try {
-      resolved = Bun.resolveSync(request.specifier, path.dirname(request.importer));
-    } catch (error) {
-      out.refused.set(
+      resolved = await resolveWorkerSpecifier(
         request.specifier,
-        `could not be resolved from ${path.relative(root, request.importer)}: ` +
+        request.resolveFrom,
+        request.stylesheet,
+      );
+    } catch (error) {
+      if (error instanceof PrepareGraphError) throw error;
+      throw new PrepareGraphError(
+        request.importerFile,
+        "resolve",
+        `could not resolve ${JSON.stringify(request.specifier)}: ` +
           (error instanceof Error ? error.message : String(error)),
       );
-      continue;
+    }
+    if (request.stylesheet && kindForFile(resolved) !== "css") {
+      throw new PrepareGraphError(
+        request.importerFile,
+        "resolve",
+        `CSS @import ${JSON.stringify(request.specifier)} resolved to a non-CSS module`,
+      );
     }
 
-    const extension = extensionOf(resolved);
-    if (STYLE_EXTENSIONS.has(extension)) {
-      const key = await carrySource(root, resolved, out, pathPrefix);
-      if (key !== null) out.vendor[request.specifier] = key;
-      continue;
-    }
-
-    if (await graphHasAstro(resolved)) {
-      const entry = await carryGraph(root, resolved, out, queue, pathPrefix);
-      if (entry !== null) out.vendor[request.specifier] = entry;
-      continue;
-    }
-
-    pending.set(request.specifier, {
-      entry: resolved,
-      use: { names: new Set(request.use.names), whole: request.use.whole },
+    // Project-relative imports remain owned by the caller's source map. Relative
+    // imports inside carried npm/virtual modules must be closed into the artifact.
+    if (kind === "relative" && request.importer.startsWith("project:")) continue;
+    const id = await addPhysicalModule(resolved);
+    resolutions.push({
+      importer: request.importer,
+      specifier: request.specifier,
+      target: { kind: "module", id },
     });
   }
 
-  for (const [specifier, { entry, use }] of pending) {
-    const name = await bundlePackage(specifier, entry, use, out);
-    if (name !== null) out.vendor[specifier] = name;
-  }
-
-  return out;
+  return {
+    modules: [...modules.values()].sort((left, right) => compareStrings(left.id, right.id)),
+    resolutions: resolutions.sort((left, right) => {
+      const importerOrder = compareStrings(left.importer, right.importer);
+      return importerOrder === 0
+        ? compareStrings(left.specifier, right.specifier)
+        : importerOrder;
+    }),
+  };
 }
 
-/**
- * Whether anything reachable from `entry` by a relative import is an `.astro` file.
- *
- * The question the two shapes turn on, asked of the graph rather than of the package
- * name — a package can ship components under one export and plain JavaScript under
- * another, and only the one being imported matters.
- */
-async function graphHasAstro(entry: string): Promise<boolean> {
-  for (const file of await relativeGraph(entry)) {
-    if (file.endsWith(".astro")) return true;
+function kindForFile(file: string): ArtifactModuleKind {
+  const extension = extensionOf(file);
+  if (extension === ".js" || extension === ".mjs") return "js";
+  if (extension === ".ts" || extension === ".mts") return "ts";
+  if (extension === ".jsx") return "jsx";
+  if (extension === ".tsx") return "tsx";
+  if (extension === ".json") return "json";
+  if (extension === ".astro") return "astro";
+  if (extension === ".css") return "css";
+  if (extension === ".cjs" || extension === ".cts") {
+    throw new PrepareGraphError(
+      file,
+      "loader",
+      `CommonJS ${extension} modules cannot run in the Workers module graph`,
+    );
   }
-  return false;
+  throw new PrepareGraphError(file, "loader", `unsupported module extension ${JSON.stringify(extension)}`);
 }
 
-/** Every file reachable from `entry` through relative imports, `entry` included. */
-async function relativeGraph(entry: string): Promise<string[]> {
-  const found: string[] = [];
-  const seen = new Set<string>();
-  const queue = [entry];
-  while (queue.length > 0) {
-    const file = queue.shift();
-    if (file === undefined || seen.has(file)) continue;
-    seen.add(file);
-    if (!SOURCE_EXTENSIONS.has(extensionOf(file))) continue;
-    found.push(file);
-    let source: string;
-    try {
-      source = await Bun.file(file).text();
-    } catch {
-      continue;
-    }
-    for (const specifier of specifiersOf(file, source)) {
-      if (classifySpecifier(specifier) !== "relative") continue;
-      try {
-        queue.push(Bun.resolveSync(specifier, path.dirname(file)));
-      } catch {
-        // Unresolvable from here is the Bun host's problem to report, not prepare's.
-      }
-    }
-  }
-  return found;
+function kindForLoader(loader: string, id: string): ArtifactModuleKind {
+  if (loader === "js") return "js";
+  if (loader === "ts") return "ts";
+  if (loader === "jsx") return "jsx";
+  if (loader === "tsx") return "tsx";
+  if (loader === "json") return "json";
+  if (loader === "css") return "css";
+  if (loader === "astro") return "astro";
+  throw new PrepareGraphError(id, "vite.load", `unsupported loader ${JSON.stringify(loader)}`);
 }
 
-/**
- * Carry a package's whole relative graph as sources, queueing its bare imports.
- *
- * Relative specifiers get an entry of their own whenever the path they spell is not
- * the path they land on — `./cache.js` naming a `cache.ts` is TypeScript's own
- * convention and nothing in a file map would find it.
- */
-async function carryGraph(
+interface FrozenIdentity {
+  logicalId: string;
+  compilePath: string;
+  physicalFile: string | null;
+}
+
+async function logicalFrozenIdentity(
   root: string,
-  entry: string,
-  out: VendorOutput,
-  queue: VendorRequest[],
+  id: string,
+  kind: ArtifactModuleKind,
   pathPrefix: string,
-): Promise<string | null> {
-  const entryKey = await carrySource(root, entry, out, pathPrefix);
-  if (entryKey === null) return null;
-
-  for (const file of await relativeGraph(entry)) {
-    const key = await carrySource(root, file, out, pathPrefix);
-    if (key === null) continue;
-    const source = out.generatedSources[key];
-    const uses = specifierUses(file, source);
-    for (const specifier of specifiersOf(file, source)) {
-      const kind = classifySpecifier(specifier);
-      if (kind === "virtual") {
-        out.virtualSpecifiers.add(specifier);
-        continue;
-      }
-      if (kind === "unsupported") {
-        out.refused.set(specifier, `${projectKey(root, file) ?? file} imports it, and no Worker can answer it`);
-        continue;
-      }
-      if (kind === "vendor") {
-        queue.push({ specifier, importer: file, use: uses.get(specifier) ?? WHOLE });
-        continue;
-      }
-      if (kind !== "relative") continue;
-      let target: string;
-      try {
-        target = Bun.resolveSync(specifier, path.dirname(file));
-      } catch {
-        continue;
-      }
-      // What `resolveSpecifier` in the host worker will make of it, so the two agree
-      // on the key even when the extension does not.
-      const spelled = path.posix.normalize(path.posix.join(path.posix.dirname(key), specifier));
-      const landed = await carrySource(root, target, out, pathPrefix);
-      if (landed !== null && landed !== spelled) out.vendor[spelled] = landed;
-    }
+): Promise<FrozenIdentity> {
+  if (!path.isAbsolute(id)) {
+    return {
+      logicalId: id,
+      compilePath: virtualCompilePath(id, kind),
+      physicalFile: null,
+    };
   }
-  return entryKey;
+  const canonical = await canonicalFile(id);
+  const projectRelative = normalizePath(path.relative(root, canonical));
+  if (isProjectRelative(projectRelative)) {
+    return {
+      logicalId: `project:${projectRelative}`,
+      compilePath: compilePathFor(root, canonical, pathPrefix),
+      physicalFile: canonical,
+    };
+  }
+  const packageIdentity = await packageIdentityFor(canonical);
+  if (!packageIdentity) {
+    throw new PrepareGraphError(
+      displayPath(root, canonical),
+      "vite.resolveId",
+      "absolute Vite id is outside the project and has no owning package.json",
+    );
+  }
+  const packageRelative = normalizePath(path.relative(packageIdentity.root, canonical));
+  if (!isProjectRelative(packageRelative) || packageRelative === "") {
+    throw new PrepareGraphError(
+      displayPath(root, canonical),
+      "vite.resolveId",
+      "could not derive a package-relative identity for absolute Vite id",
+    );
+  }
+  return {
+    logicalId: `npm:${packageIdentity.digest}/${packageRelative}`,
+    compilePath: compilePathFor(root, canonical, pathPrefix),
+    physicalFile: canonical,
+  };
 }
 
-/** Read one file into `generatedSources`, keyed the way a virtual file map keys it. */
-async function carrySource(
-  root: string,
-  file: string,
-  out: VendorOutput,
-  pathPrefix: string,
-): Promise<string | null> {
-  const key = projectKey(root, file, pathPrefix);
-  if (key === null) {
-    out.refused.set(file, "sits outside the project root, so no file-map key names it");
-    return null;
-  }
-  if (key in out.generatedSources) return key;
-  try {
-    out.generatedSources[key] = await Bun.file(file).text();
-  } catch (error) {
-    out.refused.set(file, error instanceof Error ? error.message : String(error));
-    return null;
-  }
-  return key;
-}
-
-/**
- * A file's key in the virtual file map.
- *
- * `null` when it climbs out of the project root: `resolveSpecifier` drops a `..`, so
- * such a key can never be resolved, and a package hoisted above the root has to be
- * reported rather than carried under a name that is quietly wrong.
- */
-function projectKey(root: string, file: string, pathPrefix = ""): string | null {
-  const relative = path.relative(root, file).split(path.sep).join("/");
-  if (relative.startsWith("../") || relative === "") return null;
-  return pathPrefix ? `${pathPrefix}/${relative}` : relative;
-}
-
-/** Nothing may be dropped: what a namespace import or a dynamic `import()` asks for. */
-const WHOLE: SpecifierUse = { names: new Set(), whole: true };
-
-/**
- * Bundle a package into one module.
- *
- * `target: "browser"` with the `workerd` condition, because that is what the isolate
- * is: no `node:` shims beyond what `nodejs_compat` gives, and a package whose only
- * entry is CommonJS still comes out as ESM.
- *
- * The entry point is a *generated* re-export of exactly the names the project asked
- * for, whenever it asked by name. That is not only smaller — it is what keeps
- * `Bun.build` honest. Pointed at `@iconify/utils`' own entry it emits an export list
- * of 83 names and defines a handful, and the Loader answers "Export 'buildParsedSVG'
- * is not defined in module"; pointed at `export { getIconData, iconToSVG } from "…"`
- * it emits a module that runs.
- */
-async function bundlePackage(
+async function resolveWorkerSpecifier(
   specifier: string,
-  entry: string,
-  use: SpecifierUse,
-  out: VendorOutput,
-): Promise<string | null> {
-  const name = moduleNameFor(specifier);
-  if (name in out.modules) return name;
+  resolveFrom: string,
+  stylesheet: boolean,
+): Promise<string> {
+  if (specifier.startsWith(".") || specifier.startsWith("/")) {
+    const candidate = specifier.startsWith("/")
+      ? specifier
+      : path.resolve(resolveFrom, specifier);
+    const resolved = await resolveFileCandidate(candidate);
+    if (resolved) return resolved;
+    throw new Error(`no file matches ${JSON.stringify(candidate)}`);
+  }
 
-  const byName = !use.whole && use.names.size > 0;
-  const source = byName
-    ? `export { ${[...use.names].sort().join(", ")} } from ${JSON.stringify(entry)};\n`
-    : null;
-  const entrypoint = source === null ? entry : await writeSyntheticEntry(entry, source);
-
-  let result: Awaited<ReturnType<typeof Bun.build>>;
-  try {
-    result = await Bun.build({
-      entrypoints: [entrypoint],
-      format: "esm",
-      target: "browser",
-      conditions: ["workerd", "worker"],
-      minify: false,
-      sourcemap: "none",
-      external: ["node:*"],
-    });
-  } catch (error) {
-    out.refused.set(specifier, error instanceof Error ? error.message : String(error));
-    return null;
-  } finally {
-    if (entrypoint !== entry) await Bun.file(entrypoint).unlink();
+  const parsed = parsePackageSpecifier(specifier);
+  const packageRecord = await findPackage(resolveFrom, parsed.name);
+  if (!packageRecord) {
+    throw new Error(`package ${JSON.stringify(parsed.name)} was not found from ${JSON.stringify(resolveFrom)}`);
   }
-  if (!result.success || result.outputs.length === 0) {
-    out.refused.set(specifier, result.logs.map((log) => String(log)).join("; ") || "produced no output");
-    return null;
+  const conditions = stylesheet ? STYLESHEET_EXPORT_CONDITIONS : WORKER_EXPORT_CONDITIONS;
+  const target = resolvePackageEntry(packageRecord.manifest, parsed.subpath, conditions);
+  if (!target) {
+    throw new Error(
+      `package ${JSON.stringify(parsed.name)} does not export ${JSON.stringify(parsed.subpath)} ` +
+        `for conditions ${conditions.join(", ")}`,
+    );
   }
-  const code = await result.outputs[0].text();
-  const missing = byName ? [...use.names].filter((wanted) => !exportsName(code, wanted)) : [];
-  if (missing.length > 0) {
-    out.refused.set(specifier, `the bundle does not export ${missing.join(", ")}`);
-    return null;
+  if (!target.startsWith("./")) {
+    throw new Error(`package export target ${JSON.stringify(target)} is not package-relative`);
   }
-  out.modules[name] = code;
-  return name;
+  const candidate = path.resolve(packageRecord.root, target);
+  const relative = normalizePath(path.relative(packageRecord.root, candidate));
+  if (!isProjectRelative(relative)) {
+    throw new Error(`package export target ${JSON.stringify(target)} escapes its package root`);
+  }
+  const resolved = await resolveFileCandidate(candidate);
+  if (resolved) return resolved;
+  throw new Error(`package export target ${JSON.stringify(target)} does not resolve to a supported file`);
 }
 
-/**
- * Where a generated entry lives while `Bun.build` reads it.
- *
- * Outside node_modules, deliberately. The re-export names the package's real entry by
- * absolute path, so resolution works from anywhere — but a file written *inside* the
- * package is treated as part of it, and `Bun.build` then tree-shakes the re-export
- * away and leaves the name in the export clause: the same "Export 'getIconData' is
- * not defined in module" the package's own entry produces.
- */
-async function writeSyntheticEntry(entry: string, source: string): Promise<string> {
-  const file = path.join(
-    os.tmpdir(),
-    `pletivo-vendor-${process.pid}-${syntheticEntries++}.mjs`,
-  );
-  await Bun.write(file, source);
-  return file;
+interface ParsedPackageSpecifier {
+  name: string;
+  subpath: string;
 }
 
-let syntheticEntries = 0;
+function parsePackageSpecifier(specifier: string): ParsedPackageSpecifier {
+  const segments = specifier.split("/");
+  const packageSegments = specifier.startsWith("@") ? segments.slice(0, 2) : segments.slice(0, 1);
+  const name = packageSegments.join("/");
+  const rest = segments.slice(packageSegments.length).join("/");
+  return { name, subpath: rest ? `./${rest}` : "." };
+}
 
-/** Whether a bundle names `wanted` in an export clause. */
-function exportsName(code: string, wanted: string): boolean {
-  for (const match of code.matchAll(/export\s*\{([^}]*)\}/g)) {
-    for (const entry of match[1].split(",")) {
-      const parts = entry.trim().split(/\s+as\s+/);
-      if ((parts[1] ?? parts[0]).trim() === wanted) return true;
+async function findPackage(resolveFrom: string, name: string): Promise<PackageRecord | null> {
+  let directory = path.resolve(resolveFrom);
+  while (true) {
+    const packageRoot = path.join(directory, "node_modules", name);
+    const manifestPath = path.join(packageRoot, "package.json");
+    try {
+      const source = await fs.readFile(manifestPath, "utf8");
+      const manifest: unknown = JSON.parse(source);
+      return { root: await canonicalFile(packageRoot), manifest };
+    } catch (error) {
+      if (!isMissingFile(error)) {
+        throw new PrepareGraphError(
+          manifestPath,
+          "package.json",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+
+function resolvePackageEntry(
+  manifest: unknown,
+  subpath: string,
+  conditions: readonly string[] = WORKER_EXPORT_CONDITIONS,
+): string | null {
+  const exportsValue = objectProperty(manifest, "exports");
+  if (exportsValue !== undefined) {
+    return resolveExportsValue(exportsValue, subpath, null, conditions);
+  }
+  if (subpath !== ".") return subpath;
+  for (const field of ["browser", "module", "main"]) {
+    const value = objectProperty(manifest, field);
+    if (typeof value === "string" && value.trim()) {
+      return value.startsWith("./") ? value : `./${value}`;
     }
   }
-  return new RegExp(`export\\s+(?:default\\s|(?:async\\s+)?function\\s+${wanted}\\b|const\\s+${wanted}\\b|class\\s+${wanted}\\b)`).test(code);
+  return "./index.js";
 }
 
-/** A bundle name that is legal, stable, and readable in an isolate stack trace. */
-export function moduleNameFor(specifier: string): string {
-  return `vendor.${specifier.replace(/[^A-Za-z0-9._-]/g, "_")}.js`;
+function resolveExportsValue(
+  value: unknown,
+  subpath: string,
+  replacement: string | null,
+  conditions: readonly string[],
+): string | null {
+  if (typeof value === "string") {
+    if (subpath !== "." && replacement === null) return null;
+    return replacement === null ? value : value.replaceAll("*", replacement);
+  }
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      const resolved = resolveExportsValue(candidate, subpath, replacement, conditions);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+
+  const keys = Object.keys(value);
+  const subpathKeys = keys.filter((key) => key.startsWith("."));
+  if (subpathKeys.length > 0) {
+    const exact = objectProperty(value, subpath);
+    if (exact !== undefined) return resolveExportsValue(exact, ".", null, conditions);
+    const patterns = subpathKeys
+      .filter((key) => key.includes("*"))
+      .sort((left, right) => right.length - left.length || compareStrings(left, right));
+    for (const pattern of patterns) {
+      const star = pattern.indexOf("*");
+      const prefix = pattern.slice(0, star);
+      const suffix = pattern.slice(star + 1);
+      if (!subpath.startsWith(prefix) || !subpath.endsWith(suffix)) continue;
+      const matched = subpath.slice(prefix.length, subpath.length - suffix.length);
+      const target = objectProperty(value, pattern);
+      const resolved = resolveExportsValue(target, ".", matched, conditions);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+  if (subpath !== ".") return null;
+  for (const condition of conditions) {
+    const candidate = objectProperty(value, condition);
+    if (candidate === undefined) continue;
+    const resolved = resolveExportsValue(candidate, ".", replacement, conditions);
+    if (resolved) return resolved;
+  }
+  return null;
 }
 
-/** The same, for a frozen virtual module. Kept apart so the two cannot collide. */
-export function virtualModuleNameFor(specifier: string): string {
-  return `virtual.${specifier.replace(/[^A-Za-z0-9._-]/g, "_")}.js`;
+function objectProperty(value: unknown, property: string): unknown {
+  if (typeof value !== "object" || value === null) return undefined;
+  return Reflect.get(value, property);
+}
+
+async function resolveFileCandidate(candidate: string): Promise<string | null> {
+  const extension = extensionOf(candidate);
+  const candidates = [candidate];
+  if (extension === ".js") {
+    const stem = candidate.slice(0, -extension.length);
+    candidates.push(`${stem}.ts`, `${stem}.tsx`, `${stem}.jsx`, `${stem}.mts`);
+  } else if (extension === "") {
+    for (const suffix of [".js", ".mjs", ".ts", ".mts", ".jsx", ".tsx", ".json", ".astro", ".css", ".cjs", ".cts"]) {
+      candidates.push(`${candidate}${suffix}`);
+    }
+  }
+  for (const file of candidates) {
+    if (await isFile(file)) return file;
+  }
+  if (extension === "" && await isDirectory(candidate)) {
+    const manifestPath = path.join(candidate, "package.json");
+    try {
+      const source = await fs.readFile(manifestPath, "utf8");
+      const manifest: unknown = JSON.parse(source);
+      const entry = resolvePackageEntry(manifest, ".");
+      if (entry?.startsWith("./")) {
+        const nested = await resolveFileCandidate(path.resolve(candidate, entry));
+        if (nested) return nested;
+      }
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    for (const suffix of [".js", ".mjs", ".ts", ".mts", ".jsx", ".tsx", ".json", ".astro", ".css", ".cjs", ".cts"]) {
+      const index = path.join(candidate, `index${suffix}`);
+      if (await isFile(index)) return index;
+    }
+  }
+  return null;
+}
+
+async function isFile(file: string): Promise<boolean> {
+  try {
+    return (await fs.stat(file)).isFile();
+  } catch (error) {
+    if (isMissingFile(error)) return false;
+    throw error;
+  }
+}
+
+async function isDirectory(file: string): Promise<boolean> {
+  try {
+    return (await fs.stat(file)).isDirectory();
+  } catch (error) {
+    if (isMissingFile(error)) return false;
+    throw error;
+  }
+}
+
+function isProjectRelative(relative: string): boolean {
+  return relative !== ".." && !relative.startsWith("../") && !path.isAbsolute(relative);
+}
+
+async function canonicalFile(file: string): Promise<string> {
+  try {
+    return await fs.realpath(file);
+  } catch {
+    return path.resolve(file);
+  }
+}
+
+async function packageIdentityFor(file: string): Promise<PackageIdentity | null> {
+  let directory = path.dirname(file);
+  while (true) {
+    const manifestPath = path.join(directory, "package.json");
+    try {
+      const manifest = await fs.readFile(manifestPath, "utf8");
+      const logicalInstance = packageInstancePath(directory);
+      return {
+        root: directory,
+        digest: digestText(`${logicalInstance}\0${manifest}`).slice(0, 20),
+      };
+    } catch (error) {
+      if (!isMissingFile(error)) {
+        throw new PrepareGraphError(manifestPath, "package.json", String(error));
+      }
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+
+function packageInstancePath(directory: string): string {
+  const normalized = normalizePath(directory);
+  const marker = "/node_modules/";
+  const first = normalized.indexOf(marker);
+  return first === -1 ? path.posix.basename(normalized) : normalized.slice(first + 1);
+}
+
+function isMissingFile(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  return Reflect.get(error, "code") === "ENOENT";
+}
+
+function compilePathFor(root: string, file: string, pathPrefix: string): string {
+  const relative = normalizePath(path.relative(root, file));
+  if (!pathPrefix) return relative;
+  return path.posix.join(normalizePath(pathPrefix), relative);
+}
+
+function virtualCompilePath(id: string, kind: ArtifactModuleKind): string {
+  const clean = id.replaceAll("\0", "");
+  if (clean.trim()) return clean;
+  return `virtual-module.${extensionForKind(kind)}`;
+}
+
+function extensionForKind(kind: ArtifactModuleKind): string {
+  return kind === "astro" ? "astro" : kind;
+}
+
+function displayPath(root: string, file: string): string {
+  return normalizePath(path.relative(root, file)) || normalizePath(file);
+}
+
+function normalizePath(value: string): string {
+  return value.split(path.sep).join("/");
+}
+
+function digestText(value: string): string {
+  return new Bun.CryptoHasher("sha256").update(value).digest("hex");
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

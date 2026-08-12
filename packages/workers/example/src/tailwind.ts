@@ -14,7 +14,7 @@ import index from "tailwindcss/index.css";
 import preflight from "tailwindcss/preflight.css";
 import theme from "tailwindcss/theme.css";
 import utilities from "tailwindcss/utilities.css";
-import type { TailwindStylesheets } from "../../src/tailwind.ts";
+import type { TailwindStylesheets } from "@pletivo/workers/tailwind";
 
 export const TAILWIND: TailwindStylesheets = {
   tailwindcss: index,

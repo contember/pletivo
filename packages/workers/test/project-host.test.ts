@@ -1,7 +1,7 @@
 /**
  * The seam a Durable Object composes: a store that reads a project, and a host that
  * serves it. Both exercised without a Durable Object under them, which is the point of
- * the split — `example-workspace/` wires the same two objects to a real workspace.
+ * the split — `example-playground/` wires the same two objects to a real workspace.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -12,7 +12,12 @@ import type {
   TransformResult,
 } from "@astrojs/compiler/types";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
-import { createProjectHost } from "../src/project-host.ts";
+import { createProjectAssetsView, probeImage } from "../src/content-files.ts";
+import {
+  createProjectHost,
+  GeneratedAssetRetentionError,
+  ProjectArtifactError,
+} from "../src/project-host.ts";
 import { createMapProjectStore, type ProjectStore } from "../src/project-store.ts";
 import {
   createWorkspaceProjectStore,
@@ -141,13 +146,21 @@ describe("createWorkspaceProjectStore", () => {
     const workspace = new FakeWorkspace();
     workspace.write("/src/pages/index.astro", PAGE);
     // A one-pixel GIF, which is bytes no decoder would round-trip.
-    workspace.write("/src/hero.gif", new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00]));
+    workspace.write(
+      "/src/hero.gif",
+      Uint8Array.from(atob("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="), (char) =>
+        char.charCodeAt(0),
+      ),
+    );
 
     const store = createWorkspaceProjectStore(workspace, { revision: () => workspace.revision });
     const { files, assets } = await store.snapshot();
 
     expect(files.has("src/hero.gif")).toBe(false);
-    expect(assets.get("src/hero.gif")).toBeInstanceOf(Uint8Array);
+    const info = await assets.info("src/hero.gif");
+    expect(info?.format).toBe("gif");
+    const output = `/_astro/hero.${info?.hash}.gif`;
+    expect((await assets.resolveOutput(output))?.bytes).toBeInstanceOf(Uint8Array);
   });
 
   test("skips node_modules and the other build directories", async () => {
@@ -278,7 +291,89 @@ describe("createProjectHost", () => {
     expect(await asset.text()).toBe("console.log('form');\n");
   });
 
-  test("inlines the page's CSS instead of linking a stylesheet to serve", async () => {
+  test("does not probe unrelated images during an ordinary page fetch", async () => {
+    let probes = 0;
+    const bytes = Uint8Array.from(
+      atob("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="),
+      (char) => char.charCodeAt(0),
+    );
+    const assets = createProjectAssetsView(
+      new Map([["src/assets/hero.gif", bytes]]),
+      (source, path) => {
+        probes++;
+        return probeImage(source, path);
+      },
+    );
+    const host = hostOf(
+      createMapProjectStore(new Map([["src/pages/index.astro", PAGE]]), assets),
+    );
+
+    expect((await host.fetch(new Request("https://example.test/"))).status).toBe(200);
+    expect(probes).toBe(0);
+  });
+
+  test("returns known metadata-only image output as 404 without rendering a page", async () => {
+    const host = hostOf(
+      createMapProjectStore(
+        new Map([["src/pages/index.astro", `---\nthrow new Error("page ran");\n---\n<p>x</p>\n`]]),
+        new Map([
+          [
+            "src/assets/hero.png",
+            { width: 4, height: 4, format: "png", hash: "12345678" },
+          ],
+        ]),
+      ),
+    );
+
+    const response = await host.fetch(
+      new Request("https://example.test/_astro/hero.12345678.png"),
+    );
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain("page ran");
+  });
+
+  test("turns ambiguous exact image output into a 500 response", async () => {
+    const metadata = { width: 4, height: 4, format: "png", hash: "12345678" };
+    const host = hostOf(
+      createMapProjectStore(
+        new Map([["src/pages/index.astro", PAGE]]),
+        new Map([
+          ["a/hero.png", metadata],
+          ["b/hero.png", { ...metadata }],
+        ]),
+      ),
+    );
+
+    const response = await host.fetch(
+      new Request("https://example.test/_astro/hero.12345678.png"),
+    );
+    expect(response.status).toBe(500);
+    expect(await response.text()).toContain("ProjectAssetOutputAmbiguityError");
+  });
+
+  test("fails the page when a referenced generated asset cannot be retained", async () => {
+    const host = createProjectHost({
+      store: createMapProjectStore(
+        new Map([
+          [
+            "src/pages/index.astro",
+            `---\nimport script from "../scripts/large.js?url";\n---\n<script src={script}></script>\n`,
+          ],
+          ["src/scripts/large.js", "export const payload = 'larger than the cache';\n"],
+        ]),
+      ),
+      loader,
+      compiler,
+      generatedAssetCache: { maxEntries: 2, maxBytes: 4 },
+    });
+
+    await expect(host.render("/")).rejects.toBeInstanceOf(GeneratedAssetRetentionError);
+    const response = await host.fetch(new Request("https://example.test/"));
+    expect(response.status).toBe(500);
+    expect(await response.text()).toContain("GeneratedAssetRetentionError");
+  });
+
+  test("inlines only CSS reached from the page import graph", async () => {
     const host = hostOf(
       createMapProjectStore(
         new Map([
@@ -290,7 +385,8 @@ describe("createProjectHost", () => {
 
     const html = await (await host.fetch(new Request("https://example.test/"))).text();
 
-    expect(html).toContain("papayawhip");
+    expect(html).toContain("rebeccapurple");
+    expect(html).not.toContain("papayawhip");
     expect(html).not.toContain('<link rel="stylesheet"');
   });
 
@@ -300,6 +396,50 @@ describe("createProjectHost", () => {
     const response = await host.fetch(new Request("https://example.test/nope"));
 
     expect(response.status).toBe(404);
+  });
+
+  describe("configured artifacts", () => {
+    const artifactPath = ".pletivo/site.json";
+
+    function artifactHost(source?: string) {
+      const project = new Map<string, string>([
+        ["src/pages/index.md", "---\ntitle: Local\n---\n\nbody\n"],
+      ]);
+      if (source !== undefined) project.set(artifactPath, source);
+      return createProjectHost({
+        store: createMapProjectStore(project),
+        artifactPath,
+        loader,
+        compiler,
+      });
+    }
+
+    test("rejects a missing configured artifact before route handling", async () => {
+      await expect(artifactHost().render("/missing")).rejects.toBeInstanceOf(
+        ProjectArtifactError,
+      );
+    });
+
+    test("rejects invalid JSON instead of falling back to local-only source", async () => {
+      await expect(artifactHost("{").render("/")).rejects.toBeInstanceOf(ProjectArtifactError);
+    });
+
+    test("rejects wrong-version and malformed V2 envelopes", async () => {
+      const wrongVersion = JSON.stringify({
+        artifact: { version: 1, config: {}, scripts: {}, modules: [], resolutions: [] },
+      });
+      const malformed = JSON.stringify({ artifact: { version: 2 } });
+      await expect(artifactHost(wrongVersion).render("/")).rejects.toBeInstanceOf(
+        ProjectArtifactError,
+      );
+      await expect(artifactHost(malformed).render("/")).rejects.toBeInstanceOf(
+        ProjectArtifactError,
+      );
+    });
+
+    test("parses the artifact before taking the direct markdown path", async () => {
+      await expect(artifactHost("null").render("/")).rejects.toBeInstanceOf(ProjectArtifactError);
+    });
   });
 
   test("a workspace write shows up in the next render", async () => {

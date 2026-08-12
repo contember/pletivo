@@ -41,15 +41,16 @@ import {
   type RouteParams,
 } from "@pletivo/core/router";
 import { parseMarkdown } from "@pletivo/core/content/markdown";
-import type { InjectedScripts, PreparedSite } from "@pletivo/core/artifact";
-import { artifactModuleNames } from "./artifact.ts";
+import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
+import { artifactModuleNames, projectModuleId } from "./artifact.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
-import { isCollectableCss, pageStylesheet, parentDir } from "./project-css.ts";
+import { pageStylesheet, parentDir } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
-import type { ContentBinding, ContentStore, ProjectAssets } from "./content-files.ts";
+import type { ProjectAssetsView } from "./asset-port.ts";
+import type { ContentBinding, ContentStore } from "./content-files.ts";
 import {
   assertEnvFits,
   envModules,
@@ -61,7 +62,6 @@ import {
   importMetaEnvPayload,
   IMPORT_META_ENV_BINDING,
   IMPORT_META_ENV_GLOBAL,
-  type EnvPayload,
   type ProjectEnv,
 } from "./env.ts";
 import {
@@ -71,9 +71,24 @@ import {
   type OutboundBinding,
 } from "./outbound.ts";
 import {
+  ExecutionIdentityError,
+  isolateKey,
+  programHash,
+  type ExecutionNamespace,
+} from "./execution-identity.ts";
+import {
+  ISOLATE_PROTOCOL_VERSION,
+  IsolateProtocolError,
+  parseIsolateResponse,
+  type IsolateParamPair,
+  type IsolateRequest,
+  type IsolateResponse,
+} from "./isolate-protocol.ts";
+import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
   IMAGE_MODULE_NAME,
+  ISOLATE_PROTOCOL_MODULE_NAME,
   RUNTIME_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
 
@@ -140,8 +155,11 @@ export interface ProjectOptions {
    * enter the isolate, and a host that already knows an image's size may hand that
    * instead of the file — see `ProjectAsset` in `content-files.ts`.
    */
-  assets?: ProjectAssets;
+  assets?: ProjectAssetsView;
   loader: WorkerLoaderBinding;
+  executionNamespace?: ExecutionNamespace;
+  /** Observes resolved execution identity without wrapping the Loader callback. */
+  executionObserver?: { onLoaderGet(key: string, programHash: string): void };
   /** Where pages live in `files`. */
   pagesDir?: string;
   /** Where the source tree starts in `files`. Defaults to the parent of `pagesDir`. */
@@ -150,6 +168,7 @@ export interface ProjectOptions {
   rootDir?: string;
   /** `compatibility_date` for the render isolate. */
   compatibilityDate?: string;
+  compatibilityFlags?: readonly string[];
   /**
    * Overrides the compiler bound to the bundled `astro.wasm`. Only a test outside
    * a Worker needs this — see `compileProject`.
@@ -198,11 +217,11 @@ export interface ProjectOptions {
    * and the injected script bodies.
    *
    * Code, not configuration: its modules go into the map, so a different integration
-   * set is a different `bundleHash` and a different isolate — which is correct, it is
+ * set is a different program hash and a different isolate — which is correct, it is
    * a different program. Without one, a project that imports an npm package fails at
    * the Loader, which is where every such project stood before. See `artifact.ts`.
    */
-  artifact?: PreparedSite;
+  artifact?: unknown;
 }
 
 export interface RenderPageOptions extends ProjectOptions {
@@ -232,8 +251,8 @@ export interface RenderedPage {
   /** Project path of the page that produced it. */
   file: string;
   /**
-   * Content address of the module bundle, and the isolate's id. The same modules reuse
-   * a warm isolate instead of minting a new dynamic Worker.
+   * Content address of the exact Loader program. The isolate cache key also covers
+   * the namespace, platform settings, capabilities, and immutable environment.
    *
    * Not a project identity: the bundle is only what the requested page's import graph
    * reaches, so two pages sharing no module get two of these. That is the trade
@@ -393,6 +412,12 @@ const DEFAULT_PAGES_DIR = "src/pages";
  * render isolate. The host worker's own date is set by its wrangler config.
  */
 const DEFAULT_COMPATIBILITY_DATE = "2026-01-01";
+const DEFAULT_COMPATIBILITY_FLAGS = ["nodejs_compat"];
+const WORKER_HOST_ABI = "pletivo-workers-v2";
+const SHARED_NAMESPACE: ExecutionNamespace = {
+  tenant: "pletivo-workers-stateless",
+  capabilityGeneration: "none",
+};
 
 /** Extensions `parseRoute` turns into routes. */
 const PAGE_EXTENSIONS = [".astro", ".md", ".mdx", ".tsx", ".jsx", ".ts", ".js"];
@@ -440,18 +465,18 @@ export interface RoutePath {
  * enumerate, which is the point of them), routes that declare neither, and endpoints.
  * `renderPage` still serves an on-demand route when asked for a concrete pathname.
  *
- * The isolate is only started when the project has a dynamic route at all.
+ * Static executable routes enter the isolate too, so unsupported SSR exports fail
+ * during enumeration instead of producing a path the host cannot later render.
  */
 export async function projectPaths(options: ProjectOptions): Promise<RoutePath[]> {
+  const artifact = validateArtifact(options.artifact);
   const pagesDir = options.pagesDir ?? DEFAULT_PAGES_DIR;
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
   const routes = projectRoutes(options.files, pagesDir).filter((route) => !route.isEndpoint);
-  const enumerable = routes.filter(
-    (route) => route.isDynamic && isExecutableModule(prefix + route.file),
-  );
+  const executable = routes.filter((route) => isExecutableModule(prefix + route.file));
 
-  const paramSets = enumerable.length === 0 ? new Map<string, RouteParams[]>() :
-    await isolatePaths(enumerable, prefix, options);
+  const paramSets = executable.length === 0 ? new Map<string, RouteParams[]>() :
+    await isolatePaths(executable, prefix, options, artifact);
 
   const paths: RoutePath[] = [];
   for (const route of routes) {
@@ -487,28 +512,30 @@ async function isolatePaths(
   routes: Route[],
   prefix: string,
   options: ProjectOptions,
+  artifact: PreparedSite | undefined,
 ): Promise<Map<string, RouteParams[]>> {
   const project = await compileProject({
     files: options.files,
-    // The dynamic routes and nothing else: a static route's pathname comes from
-    // `parseRoute` out here and never reaches the isolate.
+    // Static routes are included so the isolate can reject unsupported SSR exports.
     entries: routes.map((route) => prefix + route.file),
     srcDir: srcDirOf(options),
     compiler: options.compiler,
-    artifact: options.artifact,
+    artifact,
     assets: options.assets,
     cache: options.compileCache,
   });
   const { payload } = await callIsolate({
     project,
     options,
+    artifact,
     label: "resolving getStaticPaths",
     body: {
+      protocol: ISOLATE_PROTOCOL_VERSION,
       op: "paths",
       routes: routes.map((route) => ({ file: prefix + route.file, route })),
     },
   });
-  if (!isPathsPayload(payload)) {
+  if (payload.status !== "paths") {
     throw new Error("[pletivo-workers] the isolate returned an unexpected getStaticPaths payload");
   }
   return new Map(
@@ -519,12 +546,13 @@ async function isolatePaths(
 // ── Rendering ───────────────────────────────────────────────────────
 
 export async function renderPage(options: RenderPageOptions): Promise<RenderedPage> {
+  const artifact = validateArtifact(options.artifact);
   const { files, pathname, loader, pagesDir = DEFAULT_PAGES_DIR } = options;
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
   // The caller's `site` outranks the artifact's: a preview server serving one project
   // under several hostnames is naming the origin it is actually being reached at.
-  const site = options.site ?? options.artifact?.artifact.config.site;
-  const scripts = options.artifact?.artifact.scripts;
+  const site = options.site ?? artifact?.artifact.config.site;
+  const scripts = artifact?.artifact.scripts;
   const srcDir = options.srcDir ?? parentDir(pagesDir);
   const rootDir = options.rootDir ?? parentDir(srcDir);
 
@@ -551,18 +579,16 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     // nothing else — a key scan, not a walk. That takes the wasm compiler out of every
     // markdown render. `files` rather than a merged map for the same reason: with no
     // graph, an artifact's `node_modules` sources have nothing to contribute.
-    const stylesheet = hasStylesheet(files)
-      ? await pageStylesheet({
-          files,
-          srcDir,
-          rootDir,
-          cssImports: NO_EDGES,
-          imports: NO_EDGES,
-          entry: file,
-          html,
-          tailwind: options.tailwind,
-        })
-      : null;
+    const stylesheet = await pageStylesheet({
+      files,
+      srcDir,
+      rootDir,
+      styleGraph: EMPTY_STYLE_GRAPH,
+      entry: projectModuleId(file),
+      html,
+      scripts,
+      tailwind: options.tailwind,
+    });
     return {
       html: finalizeHtml(html, [stylesheet ?? ""], scripts),
       file,
@@ -581,7 +607,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     entries: [file],
     srcDir,
     compiler: options.compiler,
-    artifact: options.artifact,
+    artifact,
     assets: options.assets,
     cache: options.compileCache,
   });
@@ -594,11 +620,11 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     route: match.route.isDynamic ? match.route : null,
     site,
     options,
+    artifact,
   });
   const css = pageCss({
-    entry: file,
-    styles: project.styles,
-    imports: project.imports,
+    entry: projectModuleId(file),
+    graph: project.styleGraph,
     html: rendered.html,
     renderedModules: new Set(rendered.renderedModules),
   });
@@ -614,10 +640,10 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     files: project.sources,
     srcDir,
     rootDir,
-    cssImports: project.cssImports,
-    imports: project.imports,
-    entry: file,
+    styleGraph: project.styleGraph,
+    entry: projectModuleId(file),
     html: rendered.html,
+    scripts,
     tailwind: options.tailwind,
   });
   return {
@@ -628,14 +654,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   };
 }
 
-/** The edge maps a page with no module graph has. */
-const NO_EDGES: ReadonlyMap<string, string[]> = new Map();
-
-/** Whether anything in the project could produce a stylesheet at all. */
-function hasStylesheet(files: ReadonlyMap<string, string>): boolean {
-  for (const file of files.keys()) if (isCollectableCss(file)) return true;
-  return false;
-}
+const EMPTY_STYLE_GRAPH = { modules: [], executionEdges: [], styleEdges: [], styles: [] };
 
 function assetsOf(urlAssets: ReadonlyMap<string, string>): RenderedAsset[] {
   const assets: RenderedAsset[] = [];
@@ -690,83 +709,29 @@ export async function renderMarkdownPage(source: string): Promise<string> {
  * arrive as `{}` and match the wrong entry of `getStaticPaths`. Pairs with `null`
  * survive the round trip.
  */
-type ParamPair = [string, string | null];
-
-function encodeParams(params: RouteParams): ParamPair[] {
-  return Object.keys(params).map((name): ParamPair => [name, params[name] ?? null]);
+function encodeParams(params: RouteParams): IsolateParamPair[] {
+  return Object.keys(params).map((name): IsolateParamPair => [name, params[name] ?? null]);
 }
 
-function decodeParams(pairs: ParamPair[]): RouteParams {
+function decodeParams(pairs: IsolateParamPair[]): RouteParams {
   const params: RouteParams = {};
   for (const [name, value] of pairs) params[name] = value === null ? undefined : value;
   return params;
 }
 
-interface RenderedPayload {
+interface IsolateRender {
   status: "rendered";
   html: string;
-  /** Project paths whose component function ran, for the `is:global` gate. */
   renderedModules: string[];
-  /** `<style>` blocks a `.tsx` page hoisted, in the order they were reached. */
   tsxStyles: string[];
-}
-
-/** The dynamic route matched no path. Params only — no props were ever produced. */
-interface UnresolvedPayload {
-  status: "unresolved";
-  reason: UnresolvedReason;
-}
-
-/** Project path -> the param sets its `getStaticPaths()` returned. */
-interface PathsPayload {
-  status: "paths";
-  paths: Record<string, ParamPair[][]>;
-}
-
-interface IsolateRender extends RenderedPayload {
   bundleId: string;
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
-}
-
-/** Narrows enough for `Reflect.get`, which is how every payload here is read. */
-function hasStatus(value: unknown, status: string): value is object {
-  if (typeof value !== "object" || value === null) return false;
-  return Reflect.get(value, "status") === status;
-}
-
-function isRenderedPayload(value: unknown): value is RenderedPayload {
-  if (!hasStatus(value, "rendered")) return false;
-  return (
-    typeof Reflect.get(value, "html") === "string" &&
-    isStringArray(Reflect.get(value, "renderedModules")) &&
-    isStringArray(Reflect.get(value, "tsxStyles"))
-  );
-}
-
-function isUnresolvedPayload(value: unknown): value is UnresolvedPayload {
-  if (!hasStatus(value, "unresolved")) return false;
-  const reason = Reflect.get(value, "reason");
-  return reason === "no-static-path" || reason === "not-enumerable";
-}
-
-function isParamPair(value: unknown): value is ParamPair {
-  if (!Array.isArray(value) || value.length !== 2) return false;
-  const [name, param]: unknown[] = value;
-  return typeof name === "string" && (typeof param === "string" || param === null);
-}
-
-function isPathsPayload(value: unknown): value is PathsPayload {
-  if (!hasStatus(value, "paths")) return false;
-  const paths = Reflect.get(value, "paths");
-  if (typeof paths !== "object" || paths === null) return false;
-  return Object.values(paths).every(
-    (sets: unknown) =>
-      Array.isArray(sets) &&
-      sets.every((set: unknown) => Array.isArray(set) && set.every(isParamPair)),
-  );
+export class IsolateExecutionError extends Error {
+  constructor(readonly detail: string, readonly isolateStack?: string) {
+    super(`[pletivo-workers] render isolate execution failed: ${detail}`);
+    this.name = "IsolateExecutionError";
+  }
 }
 
 /**
@@ -779,11 +744,12 @@ function isPathsPayload(value: unknown): value is PathsPayload {
 async function callIsolate(input: {
   project: CompiledProject;
   options: ProjectOptions;
+  artifact: PreparedSite | undefined;
   /** Names the operation in an error, e.g. `rendering src/pages/index.astro`. */
   label: string;
-  body: Record<string, unknown>;
-}): Promise<{ bundleId: string; payload: unknown }> {
-  const { project, options, label, body } = input;
+  body: IsolateRequest;
+}): Promise<{ bundleId: string; payload: IsolateResponse }> {
+  const { project, options, artifact, label, body } = input;
   // The env values are not in the map — only the names their modules export, which is
   // forced: ESM decides its exports statically. Rotating a secret leaves the bundle,
   // and therefore the warm isolate, exactly where it was.
@@ -793,14 +759,30 @@ async function callIsolate(input: {
   const importMetaEnv = project.importMetaEnv ? importMetaEnvPayload(options.importMetaEnv) : null;
   assertEnvFits(env, importMetaEnv);
   const modules = {
-    ...project.modules,
+    ...project.program.modules,
     ...(project.env === null ? {} : envModules(project.env, env)),
     [ENTRY_MODULE]: entryModule(project),
   };
-  const bundleId = await bundleHash(modules);
+  const bundleId = await programHash({ mainModule: ENTRY_MODULE, modules });
 
   const content = project.content === null ? null : options.content;
   if (project.content !== null && !content) throw new ContentUnavailableError();
+  const stateful = content !== null || outboundKind(options.outbound) === "proxy";
+  if (stateful && options.executionNamespace === undefined) {
+    throw new ExecutionIdentityError(
+      "isolate.namespace",
+      "content and proxy outbound capabilities require executionNamespace",
+    );
+  }
+  const namespace = options.executionNamespace ?? SHARED_NAMESPACE;
+  const compatibilityDate = options.compatibilityDate ?? DEFAULT_COMPATIBILITY_DATE;
+  const compatibilityFlags = options.compatibilityFlags ?? DEFAULT_COMPATIBILITY_FLAGS;
+  const key = await isolateKey({
+    programHash: bundleId,
+    namespace,
+    platform: { hostAbi: WORKER_HOST_ABI, compatibilityDate, compatibilityFlags },
+    policy: { outbound: outboundKind(options.outbound), env, importMetaEnv },
+  });
 
   const isolateEnv = {
     ...(content ? { [CONTENT_BINDING]: content.binding } : {}),
@@ -808,9 +790,9 @@ async function callIsolate(input: {
     ...(importMetaEnv ? { [IMPORT_META_ENV_BINDING]: importMetaEnv } : {}),
   };
 
-  const stub = options.loader.get(await isolateId(bundleId, options, env, importMetaEnv), () => ({
-    compatibilityDate: options.compatibilityDate ?? DEFAULT_COMPATIBILITY_DATE,
-    compatibilityFlags: ["nodejs_compat"],
+  const workerCode: DynamicWorkerCode = {
+    compatibilityDate,
+    compatibilityFlags: [...compatibilityFlags],
     mainModule: ENTRY_MODULE,
     modules,
     // Cut off unless the caller said otherwise, because a render is a pure function
@@ -818,29 +800,48 @@ async function callIsolate(input: {
     // bindings below are unaffected either way: a capability is not the network.
     ...outboundConfig(options.outbound),
     ...(Object.keys(isolateEnv).length > 0 ? { env: isolateEnv } : {}),
-  }));
+  };
+  options.executionObserver?.onLoaderGet(key, bundleId);
+  // Loader serializes the callback closure. Keep the request options and host-owned
+  // stores out of it; only this immutable, capability-safe DTO may cross.
+  const stub = options.loader.get(key, immutableCodeFactory(workerCode));
 
   // Opened per render, not per isolate: the isolate outlives the request that made
   // it, so the sources have to be named by something that travels with the request.
   const handle = content ? content.store.open(options.files, options.assets) : null;
+  const requestBody: IsolateRequest = handle
+    ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options) }
+    : body;
   const request = new Request("http://pletivo.invalid/render", {
     method: "POST",
-    body: JSON.stringify(
-      handle ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options) } : body,
-    ),
+    body: JSON.stringify(requestBody),
   });
   let response: Response;
   try {
     response = await stub.getEntrypoint().fetch(request);
   } catch (error) {
-    throw new IsolateStartError(error, typescriptSuspects(modules, artifactModuleNames(options.artifact)));
+    throw new IsolateStartError(error, typescriptSuspects(modules, artifactModuleNames(artifact)));
   } finally {
     handle?.close();
   }
-  if (!response.ok) {
-    throw new Error(`[pletivo-workers] ${label} failed:\n${await response.text()}`);
+  if (!response.ok) throw new IsolateExecutionError(`${label} failed: ${await response.text()}`);
+  let responseValue: unknown;
+  try {
+    responseValue = await response.json();
+  } catch (error) {
+    throw new IsolateProtocolError(
+      "$",
+      `expected a JSON response: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
-  return { bundleId, payload: await response.json() };
+  const payload = parseIsolateResponse(responseValue);
+  if (payload.status === "error") throw new IsolateExecutionError(payload.message, payload.stack);
+  return { bundleId, payload };
+}
+
+/** Create the Loader callback outside request-owned call frames. */
+function immutableCodeFactory(code: DynamicWorkerCode): () => DynamicWorkerCode {
+  return () => code;
 }
 
 /** Where the source tree sits in `files`. `compileProject` probes it for the content config. */
@@ -861,8 +862,9 @@ async function renderModule(input: {
   route: Route | null;
   site: string | undefined;
   options: RenderPageOptions;
+  artifact: PreparedSite | undefined;
 }): Promise<IsolateRender> {
-  const { project, file, params, route, site, options } = input;
+  const { project, file, params, route, site, options, artifact } = input;
 
   // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost
   // stand-in. The request itself only carries the render instructions — the page's
@@ -872,8 +874,10 @@ async function renderModule(input: {
   const { bundleId, payload } = await callIsolate({
     project,
     options,
+    artifact,
     label: `rendering ${file}`,
     body: {
+      protocol: ISOLATE_PROTOCOL_VERSION,
       op: "render",
       file,
       params: encodeParams(params),
@@ -882,10 +886,10 @@ async function renderModule(input: {
       site,
     },
   });
-  if (isUnresolvedPayload(payload)) {
+  if (payload.status === "unresolved") {
     throw new RoutePathNotFoundError(options.pathname, file, payload.reason);
   }
-  if (!isRenderedPayload(payload)) {
+  if (payload.status !== "rendered") {
     throw new Error(`[pletivo-workers] the render isolate returned an unexpected payload`);
   }
   return { ...payload, bundleId };
@@ -893,6 +897,10 @@ async function renderModule(input: {
 
 function pageUrl(pathname: string, origin: string): string {
   return new URL("/" + pathname.replace(/^\//, ""), origin).href;
+}
+
+function validateArtifact(value: unknown): PreparedSite | undefined {
+  return value === undefined ? undefined : parsePreparedSite(value);
 }
 
 /** Name of the generated module the isolate starts at. Never a project path. */
@@ -912,7 +920,7 @@ const CONTENT_BINDING = "PLETIVO_CONTENT";
  *
  * The table is `project.entries` — the pages this bundle was built for — and not every
  * executable module in it, which is what the page loader is ever called with. Sorted,
- * because this text is in the bundle and therefore in `bundleHash`: unsorted, two
+ * because this text is in the Loader program: unsorted, two
  * renders reaching the same modules in different orders would address one program twice.
  *
  * The two page kinds are called differently, and the difference is not cosmetic: a
@@ -927,17 +935,16 @@ const CONTENT_BINDING = "PLETIVO_CONTENT";
  * params and drops the props on the floor, which is what makes it JSON-safe.
  */
 function entryModule(project: CompiledProject): string {
-  const pages = [...project.entries]
-    .filter(isExecutableModule)
-    .sort()
-    .flatMap((file) => {
-      const name = project.moduleNames.get(file);
-      if (name === undefined) return [];
-      return [`  ${JSON.stringify(file)}: () => import(${JSON.stringify(`./${name}`)}),`];
+  const pages = [...project.program.entries]
+    .sort((left, right) => left.moduleId < right.moduleId ? -1 : left.moduleId > right.moduleId ? 1 : 0)
+    .map(({ moduleId, executionName }) => {
+      const file = moduleId.startsWith("project:") ? moduleId.slice("project:".length) : moduleId;
+      return `  ${JSON.stringify(file)}: () => import(${JSON.stringify(`./${executionName}`)}),`;
     })
     .join("\n");
 
   return `import { createPaginate, isAstroComponent, redirectPageHtml, renderAstroPage, runWithRenderTracking } from ${JSON.stringify(`./${RUNTIME_MODULE_NAME}`)};
+import { ISOLATE_PROTOCOL_VERSION, parseIsolateRequest } from ${JSON.stringify(`./${ISOLATE_PROTOCOL_MODULE_NAME}`)};
 ${contentPrelude(project)}${envPrelude(project)}${importMetaEnvPrelude(project)}
 const PAGES = {
 ${pages}
@@ -981,8 +988,13 @@ async function resolveDynamic(module, route, urlParams) {
     // from the getStaticPaths entry, which may carry params no URL segment names.
     return { params: match.params, props: match.props || {} };
   }
-  if (module.prerender === false) return { params: urlParams, props: {} };
   return { unresolved: "not-enumerable" };
+}
+
+function assertStaticOnly(module, file) {
+  if (module.prerender === false) {
+    throw new Error(file + " exports prerender = false, which this static Worker host rejects");
+  }
 }
 
 async function renderPageComponent(component, props, pageContext) {
@@ -1002,16 +1014,19 @@ async function listPaths(routes) {
   const paths = {};
   for (const { file, route } of routes) {
     const module = await loadPage(file);
+    if (!module) throw new Error("no module for " + file);
+    assertStaticOnly(module, file);
     if (!module || typeof module.getStaticPaths !== "function") continue;
     const list = await module.getStaticPaths({ paginate: createPaginate(route, BASE) });
     paths[file] = list.map((entry) => encodeParams(entry.params));
   }
-  return Response.json({ status: "paths", paths });
+  return Response.json({ protocol: ISOLATE_PROTOCOL_VERSION, status: "paths", paths });
 }
 
 async function render({ file, params, route, url, site }) {
   const module = await loadPage(file);
   if (!module) return new Response("no module for " + file, { status: 404 });
+  assertStaticOnly(module, file);
   if (typeof module.default !== "function") {
     return new Response(file + " has no default export", { status: 500 });
   }
@@ -1020,7 +1035,7 @@ async function render({ file, params, route, url, site }) {
   if (route) {
     const resolved = await resolveDynamic(module, route, pageParams);
     if (resolved.unresolved) {
-      return Response.json({ status: "unresolved", reason: resolved.unresolved });
+      return Response.json({ protocol: ISOLATE_PROTOCOL_VERSION, status: "unresolved", reason: resolved.unresolved });
     }
     pageParams = resolved.params;
     props = resolved.props;
@@ -1034,6 +1049,7 @@ async function render({ file, params, route, url, site }) {
     }),
   );
   return Response.json({
+    protocol: ISOLATE_PROTOCOL_VERSION,
     status: "rendered",
     html: value ?? "",
     renderedModules: [...renderedModules],
@@ -1049,13 +1065,19 @@ export default {
     // identical to one thrown while starting, and the host would have to guess.
     // \`await\` on both branches, or the rejection leaves the try block unseen.
     try {
-      const body = await request.json();
+      const body = parseIsolateRequest(await request.json());
       openImportMetaEnv(env);
       openEnv(env);
-      await openContent(env, body);
-      return body.op === "paths" ? await listPaths(body.routes) : await render(body);
+      return await withContent(env, body, () =>
+        body.op === "paths" ? listPaths(body.routes) : render(body)
+      );
     } catch (error) {
-      return new Response((error && error.stack) || String(error), { status: 500 });
+      return Response.json({
+        protocol: ISOLATE_PROTOCOL_VERSION,
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+        ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+      });
     }
   },
 };
@@ -1132,10 +1154,10 @@ function openImportMetaEnv(env) {
  */
 function contentPrelude(project: CompiledProject): string {
   if (project.content === null) {
-    return "\nasync function openContent() {}\n";
+    return "\nasync function withContent(_env, _body, run) { return run(); }\n";
   }
   const { configModule } = project.content;
-  return `import { imageSchemaFor, initCollections, setContentHost } from ${JSON.stringify(`./${CONTENT_MODULE_NAME}`)};
+  return `import { createContentRuntime, imageSchemaFor, initCollections, runWithContentRuntime } from ${JSON.stringify(`./${CONTENT_MODULE_NAME}`)};
 import { imageOutputPath, makeImageMetadata } from ${JSON.stringify(`./${IMAGE_MODULE_NAME}`)};
 
 const CONTENT_CONFIG = ${configModule === null ? "null" : `() => import(${JSON.stringify(`./${configModule}`)})`};
@@ -1159,11 +1181,11 @@ function resolveFrom(dir, relative) {
   return out.join("/");
 }
 
-async function openContent(env, body) {
+async function withContent(env, body, run) {
   const files = env && env[${JSON.stringify(CONTENT_BINDING)}];
   if (!files) throw new Error("[pletivo-workers] the render isolate has no content binding");
   const ref = body.contentRef;
-  setContentHost({
+  const runtime = createContentRuntime({
     async scan(projectRoot, base, pattern) {
       const dir = resolveFrom(projectRoot, base);
       return {
@@ -1210,58 +1232,10 @@ async function openContent(env, body) {
       return module.collections || {};
     },
   });
-  await initCollections(body.rootDir || "");
+  return runWithContentRuntime(runtime, async () => {
+    await initCollections(body.rootDir || "");
+    return run();
+  });
 }
 `;
-}
-
-/**
- * Content address of a module map. Same sources, same id, same warm isolate —
- * `env.LOADER.get` only calls the factory when it has nothing cached under the id.
- */
-export async function bundleHash(modules: Record<string, string>): Promise<string> {
-  const text = Object.keys(modules)
-    .sort()
-    .map((name) => `${name}\0${modules[name]}`)
-    .join("\0");
-  return digestHex(text, 16);
-}
-
-async function digestHex(text: string, bytes: number): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(digest)]
-    .slice(0, bytes)
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-/**
- * What the isolate is cached under: the sources, plus the configuration that cannot
- * be changed after it is created.
- *
- * `env.LOADER.get(id, code)` runs `code` on a cache miss and never again, so
- * everything in it — `globalOutbound`, `env` — belongs to the *first* render that
- * asked for that id. The module map is content-addressed, which takes care of the
- * sources; the rest of the code object is not in the map, and an id that ignored it
- * would hand the second caller the first caller's network policy.
- *
- * A default configuration adds nothing: cut off, with no env values, the id is
- * exactly `bundleHash(modules)`, so identical sources keep reusing one isolate the
- * way they always have. Only a caller asking for something else pays for a second
- * one, and pays once — the suffix is a hash of the configuration, not of the request.
- *
- * The one thing it cannot cover is *which* proxy: a stub is a fresh object every
- * request and nothing in it identifies the service behind it. A host serving several
- * tenants with different proxies over identical sources therefore has to vary
- * something this id does see — a tenant id among the env values is enough.
- */
-async function isolateId(
-  bundleId: string,
-  options: ProjectOptions,
-  env: EnvPayload | null,
-  importMetaEnv: Record<string, string> | null,
-): Promise<string> {
-  const outbound = outboundKind(options.outbound);
-  if (outbound === "blocked" && env === null && importMetaEnv === null) return bundleId;
-  return `${bundleId}.${await digestHex(JSON.stringify({ outbound, env, importMetaEnv }), 8)}`;
 }
