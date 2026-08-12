@@ -6,8 +6,9 @@
  * `@pletivo/core/content/collection`. What is left here is the part that needs a
  * machine: `Bun.Glob` to enumerate, `Bun.file` to read, a dynamic `import()` to
  * execute `content.config.*` and `.mdx` bodies, and the image probe. It is
- * installed once, at module load, so importing this module is all a caller has to
- * do — which is what keeps `pletivo/content` and `astro:content` working unchanged.
+ * owned by one runtime instance for the Bun process. Build and dev enter that
+ * runtime around their coherent lifecycle, so every page sees the same intentional
+ * cache without making it process-global.
  */
 
 import path from "path";
@@ -16,8 +17,9 @@ import { pathToFileURL } from "url";
 import { Glob } from "bun";
 import { z } from "zod";
 import {
+  createContentRuntime,
   imageSchemaFor,
-  setContentHost,
+  runWithContentRuntime,
   type ContentHost,
   type ContentScan,
 } from "@pletivo/core/content/collection";
@@ -134,6 +136,11 @@ const bunContentHost: ContentHost = {
   },
 };
 
-setContentHost(bunContentHost);
+const bunContentRuntime = createContentRuntime(bunContentHost);
+
+/** Enter the Bun host's single content lifecycle. */
+export function runWithBunContentRuntime<T>(fn: () => T): T {
+  return runWithContentRuntime(bunContentRuntime, fn);
+}
 
 export * from "@pletivo/core/content/collection";

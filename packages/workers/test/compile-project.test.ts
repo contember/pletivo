@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
+import type { ProjectAssetInfo, ProjectAssetsView } from "../src/asset-port.ts";
 import { compileProject, isExecutableModule } from "../src/compile-project.ts";
 import { typescriptSuspects } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
@@ -36,6 +37,14 @@ import { NAME } from "../lib/name.js";
 const ENTRIES = ["src/pages/index.astro"];
 const project = await compileProject({ files: PROJECT, entries: ENTRIES, compiler });
 
+function moduleCode(built: Awaited<ReturnType<typeof compileProject>>, file: string): string {
+  const name = built.moduleNames.get(file);
+  if (name === undefined) throw new Error(`missing module name for ${file}`);
+  const code = built.modules[name];
+  if (code === undefined) throw new Error(`missing module body for ${file}`);
+  return code;
+}
+
 describe("compileProject", () => {
   test("names a module for every file the entry reaches, and nothing else", () => {
     // All five are reachable from `index.astro`; the `.md` files and the `README` are
@@ -63,7 +72,7 @@ describe("compileProject", () => {
 
   test("flattens every module to the bundle root, so `./name` always resolves", () => {
     for (const name of project.moduleNames.values()) expect(name).not.toContain("/");
-    expect(project.moduleNames.get("src/pages/index.astro")).toBe("src_pages_index.astro.js");
+    expect(project.moduleNames.get("src/pages/index.astro")).toStartWith("module-");
   });
 
   test("ships @pletivo/runtime alongside the project", () => {
@@ -71,23 +80,27 @@ describe("compileProject", () => {
   });
 
   test("points compiled output at the runtime module", () => {
-    expect(project.modules["src_pages_index.astro.js"]).toContain('"./pletivo-runtime.js"');
+    expect(moduleCode(project, "src/pages/index.astro")).toContain('"./pletivo-runtime.js"');
   });
 
   test("rewrites a component import to its bundle name", () => {
-    expect(project.modules["src_pages_index.astro.js"]).toContain(
-      '"./src_components_Layout.astro.js"',
+    expect(moduleCode(project, "src/pages/index.astro")).toContain(
+      `"./${project.moduleNames.get("src/components/Layout.astro")}"`,
     );
   });
 
   test("resolves a `.js` import and carries the module verbatim", () => {
-    expect(project.modules["src_pages_index.astro.js"]).toContain('"./src_lib_name.js.js"');
-    expect(project.modules["src_lib_name.js.js"]).toBe('export const NAME = "pletivo";\n');
+    expect(moduleCode(project, "src/pages/index.astro")).toContain(
+      `"./${project.moduleNames.get("src/lib/name.js")}"`,
+    );
+    expect(moduleCode(project, "src/lib/name.js")).toBe('export const NAME = "pletivo";\n');
   });
 
   test("resolves a side-effect CSS import to an empty module", () => {
-    expect(project.modules["src_pages_index.astro.js"]).toContain('"./src_styles_site.css.js"');
-    expect(project.modules["src_styles_site.css.js"]).toBe("export {};\n");
+    expect(moduleCode(project, "src/pages/index.astro")).toContain(
+      `"./${project.moduleNames.get("src/styles/site.css")}"`,
+    );
+    expect(moduleCode(project, "src/styles/site.css")).toBe("export {};\n");
   });
 
   test("strips the compiler's virtual style imports, which nothing resolves", () => {
@@ -120,7 +133,98 @@ describe("compileProject", () => {
   test("keeps the scope hash the page HTML will carry", () => {
     const scope = project.styles.get("src/components/Layout.astro")?.scope;
     expect(scope).toMatch(/^[a-z0-9]+$/);
-    expect(project.modules["src_components_Layout.astro.js"]).toContain(`astro-${scope}`);
+    expect(moduleCode(project, "src/components/Layout.astro")).toContain(`astro-${scope}`);
+  });
+});
+
+describe("compileProject, demand-driven assets", () => {
+  const imageInfo: ProjectAssetInfo = {
+    width: 4,
+    height: 4,
+    format: "png",
+    hash: "1234abcd",
+  };
+
+  function view(info: ProjectAssetsView["info"]): ProjectAssetsView {
+    return { info, resolveOutput: () => null };
+  }
+
+  test("awaits an asynchronous asset view", async () => {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const assets = view(async (source) => {
+      expect(source).toBe("src/assets/logo.png");
+      started.resolve();
+      await release.promise;
+      return imageInfo;
+    });
+    const building = compileProject({
+      files: new Map([
+        ["src/pages/index.ts", 'import logo from "../assets/logo.png"; export default logo;\n'],
+      ]),
+      entries: ["src/pages/index.ts"],
+      assets,
+      compiler,
+    });
+
+    await started.promise;
+    release.resolve();
+    const built = await building;
+    expect(moduleCode(built, "src/assets/logo.png")).toContain('src":"/_astro/logo.1234abcd.png"');
+  });
+
+  test("does not probe an image imported only by an unreached module", async () => {
+    const probed: string[] = [];
+    const assets = view((source) => {
+      probed.push(source);
+      return imageInfo;
+    });
+    await compileProject({
+      files: new Map([
+        ["src/pages/index.ts", "export default 'page';\n"],
+        ["src/components/orphan.ts", 'import logo from "../assets/logo.png"; export default logo;\n'],
+      ]),
+      entries: ["src/pages/index.ts"],
+      assets,
+      compiler,
+    });
+
+    expect(probed).toEqual([]);
+  });
+
+  test("probes one canonical image source once across importers", async () => {
+    const probed: string[] = [];
+    const assets = view(async (source) => {
+      probed.push(source);
+      return imageInfo;
+    });
+    await compileProject({
+      files: new Map([
+        [
+          "src/pages/index.ts",
+          'import logo from "../assets/logo.png"; import "../components/card.ts"; export default logo;\n',
+        ],
+        ["src/components/card.ts", 'import logo from "../assets/logo.png"; export default logo;\n'],
+      ]),
+      entries: ["src/pages/index.ts"],
+      assets,
+      compiler,
+    });
+
+    expect(probed).toEqual(["src/assets/logo.png"]);
+  });
+
+  test("names missing metadata at the imported image", async () => {
+    await expect(
+      compileProject({
+        files: new Map([
+          ["src/pages/index.ts", 'import logo from "../assets/missing.png"; export default logo;\n'],
+        ]),
+        entries: ["src/pages/index.ts"],
+        assets: view(() => null),
+        compiler,
+      }),
+    ).rejects.toThrow(/src\/pages\/index\.ts.*image metadata is missing or unreadable/s);
   });
 });
 
@@ -237,10 +341,10 @@ export interface Props {}
     const typed = await compileProject({ files: TYPED, compiler });
     // The component import survives; the `import type` does not, and never was an edge.
     expect(typed.imports.get("src/pages/index.astro")).toEqual(["src/components/Card.astro"]);
-    expect(typed.modules["src_pages_index.astro.js"]).toContain(
-      '"./src_components_Card.astro.js"',
+    expect(moduleCode(typed, "src/pages/index.astro")).toContain(
+      `"./${typed.moduleNames.get("src/components/Card.astro")}"`,
     );
-    expect(typed.modules["src_pages_index.astro.js"]).not.toContain("../lib/types.ts");
+    expect(moduleCode(typed, "src/pages/index.astro")).not.toContain("../lib/types.ts");
   });
 
   test("renders the same page body as the same file without the annotations", async () => {
@@ -264,8 +368,8 @@ const { title } = Astro.props;
         .split("\n")
         .filter((line) => line.trim() !== "")
         .join("\n");
-    expect(blank(a.modules["src_pages_index.astro.js"])).toBe(
-      blank(b.modules["src_pages_index.astro.js"]),
+    expect(blank(moduleCode(a, "src/pages/index.astro"))).toBe(
+      blank(moduleCode(b, "src/pages/index.astro")),
     );
   });
 
@@ -306,8 +410,11 @@ describe("compileProject, refusals", () => {
 
 describe("isExecutableModule", () => {
   test("names the extensions the isolate can be handed code for", () => {
-    expect(["a.astro", "a.tsx", "a.ts", "a.jsx", "a.mts", "a.js", "a.mjs"].map(isExecutableModule))
-      .toEqual([true, true, true, true, true, true, true]);
+    expect(
+      ["a.astro", "a.tsx", "a.ts", "a.jsx", "a.mts", "a.cts", "a.js", "a.mjs", "a.json"].map(
+        isExecutableModule,
+      ),
+    ).toEqual([true, true, true, true, true, true, true, true, true]);
     // `.css` becomes a resolvable stub, not code; `.md` never becomes a module.
     expect(["a.css", "a.md", "a.mdx", "a.png"].map(isExecutableModule)).toEqual([
       false,
@@ -334,14 +441,14 @@ import { helper } from "../lib/util";
 
   test("resolves an extensionless import and a directory index, the way Bun does", async () => {
     const built = await compileProject({ files, compiler });
-    const page = built.modules["src_pages_index.astro.js"];
+    const page = moduleCode(built, "src/pages/index.astro");
     expect(page).toContain(`"./${built.moduleNames.get("src/layouts/Layout.astro")}"`);
     expect(page).toContain(`"./${built.moduleNames.get("src/lib/util/index.ts")}"`);
   });
 
   test("resolves `./x.js` to the `x.ts` it lands on — TypeScript's own convention", async () => {
     const built = await compileProject({ files, compiler });
-    expect(built.modules["src_pages_index.astro.js"]).toContain(
+    expect(moduleCode(built, "src/pages/index.astro")).toContain(
       `"./${built.moduleNames.get("src/lib/name.ts")}"`,
     );
   });
@@ -357,11 +464,12 @@ import { helper } from "../lib/util";
     ]);
   });
 
-  test("still leaves a specifier nothing answers alone, so the Loader names it", async () => {
-    const built = await compileProject({
-      files: new Map([["src/pages/a.astro", `---\nimport "./missing";\n---\n<p>a</p>\n`]]),
-      compiler,
-    });
-    expect(built.modules["src_pages_a.astro.js"]).toContain(`"./missing"`);
+  test("fails loudly when no project file or artifact answers a specifier", async () => {
+    await expect(
+      compileProject({
+        files: new Map([["src/pages/a.astro", `---\nimport "./missing";\n---\n<p>a</p>\n`]]),
+        compiler,
+      }),
+    ).rejects.toThrow(/src\/pages\/a\.astro.*\.\/missing/);
   });
 });

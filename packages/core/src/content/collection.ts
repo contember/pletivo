@@ -3,9 +3,9 @@
  *
  * Everything here is host-agnostic. What is not — walking a directory, reading a
  * file, importing the project's `content.config.*`, probing an image — goes through
- * `ContentHost`, which a host installs once with `setContentHost()`. The Bun host
- * backs it with `Bun.Glob` and `Bun.file`; the Workers host backs it with a binding
- * to whoever holds the sources, since an isolate has no filesystem at all.
+ * `ContentHost`, owned by an explicit `ContentRuntime`. The Bun host backs it with
+ * `Bun.Glob` and `Bun.file`; the Workers host backs it with a binding to whoever
+ * holds the sources, since an isolate has no filesystem at all.
  *
  * The seam is deliberately narrow: it answers *where the bytes are*, never *what
  * they mean*. Frontmatter parsing, Zod validation, id generation, reference
@@ -14,6 +14,7 @@
  */
 
 import { z } from "zod";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { renderMarkdown, parseFrontmatter, parseYamlObject } from "./markdown";
 import type { ImageMetadata } from "../image-service";
 
@@ -39,7 +40,7 @@ export interface Loader {
 export interface AstroLoader {
   name: string;
   load(context: LoaderContext): Promise<void>;
-  schema?: z.ZodType;
+  schema?: z.ZodType<Record<string, unknown>, unknown>;
 }
 
 /** Entry shape for DataStore.set() */
@@ -80,7 +81,10 @@ export interface LoaderContext {
   /** Astro config reference (if available) */
   config: Record<string, unknown>;
   /** Validate entry data against the collection's Zod schema */
-  parseData<T = Record<string, unknown>>(props: { id: string; data: T }): Promise<T>;
+  parseData(props: {
+    id: string;
+    data: Record<string, unknown>;
+  }): Promise<Record<string, unknown>>;
 }
 
 /**
@@ -182,7 +186,9 @@ export interface SchemaContext {
   image: () => z.ZodType<ImageMetadata, unknown>;
 }
 
-export type SchemaFn = (ctx: SchemaContext) => z.ZodType;
+export type SchemaFn = (
+  ctx: SchemaContext,
+) => z.ZodType<Record<string, unknown>, unknown>;
 
 export interface CollectionConfig {
   /** Loader that provides raw entries. Accepts glob(), Astro Content Layer loaders, or inline functions. */
@@ -194,7 +200,7 @@ export interface CollectionConfig {
    * function form `({ image }) => z.object({...})` that receives schema
    * helpers — match Astro's content-collection API.
    */
-  schema: z.ZodType | SchemaFn;
+  schema: z.ZodType<Record<string, unknown>, unknown> | SchemaFn;
   /** Optional HTML transform applied after markdown rendering */
   transform?: (html: string, data: Record<string, unknown>) => string;
 }
@@ -213,6 +219,11 @@ export interface CollectionEntry<T = Record<string, unknown>> {
    * e.g. so a bare `<Youtube />` in the body resolves without an import.
    */
   render(components?: Record<string, unknown>): Promise<RenderResult>;
+}
+
+interface InternalCollectionEntry extends CollectionEntry {
+  _filePath?: string;
+  _mdxFilePath?: string;
 }
 
 // ── The host seam ──
@@ -287,25 +298,83 @@ export interface ContentHost {
   loaderConfig?(): Record<string, unknown> | Promise<Record<string, unknown>>;
 }
 
-let contentHost: ContentHost | null = null;
+/** One host plus all collection state that belongs to one coherent lifecycle. */
+export interface ContentRuntime {
+  readonly host: ContentHost;
+}
 
-/**
- * Install the host. Called once per process by the Bun host, and once per request
- * by the Workers host — see the note on `initCollections` about why the second one
- * has to be per request.
- */
-export function setContentHost(host: ContentHost): void {
-  contentHost = host;
+interface ContentGeneration {
+  collectionCache: Map<string, InternalCollectionEntry[]>;
+  collectionInflight: Map<string, Promise<InternalCollectionEntry[]>>;
+  collectionDeps: Map<string, Set<string>>;
+  collectionsConfig: Record<string, CollectionConfig> | null;
+  configProjectRoot: string;
+  configVersion: number;
+  validationFailures: Array<{ collection: string; id: string; errors: string }>;
+}
+
+interface ContentRuntimeState {
+  nextConfigVersion: number;
+  current: ContentGeneration;
+}
+
+const runtimeStorage = new AsyncLocalStorage<ContentRuntime>();
+const collectionLoadStorage = new AsyncLocalStorage<Set<string>>();
+const runtimeStates = new WeakMap<ContentRuntime, ContentRuntimeState>();
+
+/** Create one independently cached collection runtime for a host. */
+export function createContentRuntime(host: ContentHost): ContentRuntime {
+  const runtime = { host };
+  runtimeStates.set(runtime, {
+    nextConfigVersion: 0,
+    current: createGeneration("", 0),
+  });
+  return runtime;
+}
+
+function createGeneration(projectRoot: string, configVersion: number): ContentGeneration {
+  return {
+    collectionCache: new Map(),
+    collectionInflight: new Map(),
+    collectionDeps: new Map(),
+    collectionsConfig: null,
+    configProjectRoot: projectRoot,
+    configVersion,
+    validationFailures: [],
+  };
+}
+
+/** Make `runtime` active for every content API reached from `fn`. */
+export function runWithContentRuntime<T>(runtime: ContentRuntime, fn: () => T): T {
+  if (!runtimeStates.has(runtime)) {
+    throw new Error("Content runtime was not created by createContentRuntime().");
+  }
+  return runtimeStorage.run(runtime, fn);
+}
+
+function requireRuntime(): ContentRuntime {
+  const runtime = runtimeStorage.getStore();
+  if (!runtime) {
+    throw new Error(
+      "Content collections have no active runtime. Enter one with " +
+        "runWithContentRuntime() before using a content API.",
+    );
+  }
+  return runtime;
+}
+
+function requireState(): ContentRuntimeState {
+  const state = runtimeStates.get(requireRuntime());
+  if (!state) throw new Error("Active content runtime has no state.");
+  return state;
+}
+
+function requireGeneration(): ContentGeneration {
+  return requireState().current;
 }
 
 function requireHost(): ContentHost {
-  if (!contentHost) {
-    throw new Error(
-      "Content collections have no host. Import `pletivo/content` (Bun) or call " +
-        "`setContentHost()` before using a collection.",
-    );
-  }
-  return contentHost;
+  return requireRuntime().host;
 }
 
 // ── Built-in loaders ──
@@ -342,19 +411,14 @@ export interface GlobOptions {
  *  - `.yaml`, `.yml` → YAML parse as frontmatter, empty body
  */
 export function glob(options: GlobOptions): Loader {
-  // `__scanRoots` lets loadCollection() learn which directories this
-  // loader walked, so the incremental cache can fingerprint each as a
-  // dep (catches add/remove of files in the collection — per-file
-  // mtime+size checks miss new files since the cache has nothing to
-  // compare against).
-  const loader: Loader & { __scanRoots?: string[] } = {
+  const loader: Loader = {
     // Raw base dir — read at dev-server startup (see getContentBaseDirs) to watch
     // content that lives outside `src/`, without having to load the collection first.
     __globBase: options.base,
     async load(projectRoot: string): Promise<RawEntry[]> {
       const host = requireHost();
       const scan = await host.scan(projectRoot, options.base, options.pattern ?? "**/*.{md,mdx}");
-      loader.__scanRoots = [scan.root];
+      collectionLoadStorage.getStore()?.add(scan.root);
       const entries: RawEntry[] = [];
 
       for (const { entry: file, path: fullPath } of scan.files) {
@@ -372,7 +436,7 @@ export function glob(options: GlobOptions): Loader {
           try {
             data = JSON.parse(content);
           } catch (e) {
-            console.error(`  JSON parse error in ${file}: ${(e as Error).message}`);
+            console.error(`  JSON parse error in ${file}: ${errorMessage(e)}`);
             continue;
           }
           extras = { _filePath: fullPath };
@@ -380,7 +444,7 @@ export function glob(options: GlobOptions): Loader {
           try {
             data = parseYamlObject(content);
           } catch (e) {
-            console.error(`  YAML parse error in ${file}: ${(e as Error).message}`);
+            console.error(`  YAML parse error in ${file}: ${errorMessage(e)}`);
             continue;
           }
           extras = { _filePath: fullPath };
@@ -436,53 +500,34 @@ export function defineCollection(config: CollectionConfig): CollectionConfig {
 
 // ── Runtime state ──
 
-const collectionCache = new Map<string, CollectionEntry[]>();
-/** In-flight loads keyed by collection name — concurrent getCollection() calls share one loadCollection() pass instead of racing. */
-const collectionInflight = new Map<string, Promise<CollectionEntry[]>>();
-/**
- * Per-collection set of paths that contribute to the loaded entries:
- * every entry's source file, plus the loader's scan root(s) so the
- * incremental cache can detect additions (the root dir's listing
- * fingerprint changes when a file appears/disappears). Populated when
- * `loadCollection` finishes; re-fired into the active runtime-dep
- * scope on every subsequent `getCollection` call so that pages which
- * hit the cached entries still attribute the deps to themselves.
- */
-const collectionDeps = new Map<string, Set<string>>();
-let collectionsConfig: Record<string, CollectionConfig> | null = null;
-let configProjectRoot: string = "";
-let configVersion = 0;
-
 /**
  * Entries that failed schema validation since the last `initCollections()`.
  * Build.ts reads this after rendering and exits non-zero if non-empty,
  * so a typo in a frontmatter image path doesn't ship a "successful"
  * build with silently dropped entries.
  */
-const validationFailures: Array<{ collection: string; id: string; errors: string }> = [];
-
 export function getValidationFailures(): ReadonlyArray<{ collection: string; id: string; errors: string }> {
-  return validationFailures;
+  return requireGeneration().validationFailures;
 }
 
 /**
  * Load the project's collection definitions and drop every cached entry.
  *
- * The cache reset is the load-bearing half on a long-lived host. A Worker isolate
- * outlives the request that started it — deliberately, since keeping content out of
- * the module map is what lets one isolate serve many edits — so a store that
- * survived a request would answer the next one with the previous render's content.
- * Call this at the start of every render pass there; once per build is enough on Bun.
+ * The cache reset is the load-bearing half on a long-lived runtime. A host chooses
+ * the runtime lifetime: Workers use a request-owned runtime, while Bun keeps one
+ * runtime for a coherent build or dev-server lifecycle. Call this whenever that
+ * runtime must observe a new project snapshot.
  */
 export async function initCollections(projectRoot: string): Promise<void> {
-  configProjectRoot = projectRoot;
-  collectionCache.clear();
-  collectionInflight.clear();
-  collectionDeps.clear();
-  validationFailures.length = 0;
-  configVersion++;
+  const runtime = requireRuntime();
+  const state = requireState();
+  const generation = createGeneration(projectRoot, ++state.nextConfigVersion);
+  state.current = generation;
 
-  collectionsConfig = await requireHost().loadConfig(projectRoot, configVersion);
+  const config = await runtime.host.loadConfig(projectRoot, generation.configVersion);
+  if (state.current === generation) {
+    generation.collectionsConfig = config;
+  }
 }
 
 /**
@@ -493,10 +538,11 @@ export async function initCollections(projectRoot: string): Promise<void> {
  * still invalidates the collection cache and reloads the preview.
  */
 export function getContentBaseDirs(projectRoot: string): string[] {
-  if (!collectionsConfig) return [];
+  const generation = requireGeneration();
+  if (!generation.collectionsConfig) return [];
   const host = requireHost();
   const dirs = new Set<string>();
-  for (const config of Object.values(collectionsConfig)) {
+  for (const config of Object.values(generation.collectionsConfig)) {
     const loader = config.loader;
     const base = (loader && "__globBase" in loader ? loader.__globBase : undefined) ?? config.directory;
     if (typeof base === "string") dirs.add(host.resolveDir(projectRoot, base));
@@ -504,39 +550,47 @@ export function getContentBaseDirs(projectRoot: string): string[] {
   return [...dirs];
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // ── Query API ──
 
-export async function getCollection<T = Record<string, unknown>>(
+export function getCollection<T = Record<string, unknown>>(
   name: string,
   filter?: (entry: CollectionEntry<T>) => boolean,
-): Promise<CollectionEntry<T>[]> {
-  if (!collectionsConfig) {
+): Promise<CollectionEntry<T>[]>;
+export async function getCollection(
+  name: string,
+  filter?: (entry: CollectionEntry) => boolean,
+): Promise<CollectionEntry[]> {
+  const runtime = requireRuntime();
+  const generation = requireGeneration();
+  if (!generation.collectionsConfig) {
     throw new Error("Collections not initialized. Call initCollections() first.");
   }
 
-  const config = collectionsConfig[name];
+  const config = generation.collectionsConfig[name];
   if (!config) {
     throw new Error(
       `Collection "${name}" not found. Define it in src/content.config.ts or src/content/config.ts`,
     );
   }
 
-  let entries = collectionCache.get(name) as CollectionEntry<T>[] | undefined;
+  let entries = generation.collectionCache.get(name);
   if (!entries) {
-    let inflight = collectionInflight.get(name) as
-      | Promise<CollectionEntry<T>[]>
-      | undefined;
+    let inflight = generation.collectionInflight.get(name);
     if (!inflight) {
       inflight = (async () => {
-        const loaded = await loadCollection(config, name);
-        collectionCache.set(name, loaded);
-        return loaded as CollectionEntry<T>[];
+        const loaded = await loadCollection(runtime, generation, config, name);
+        generation.collectionCache.set(name, loaded);
+        return loaded;
       })();
-      collectionInflight.set(name, inflight as Promise<CollectionEntry[]>);
+      generation.collectionInflight.set(name, inflight);
       try {
         entries = await inflight;
       } finally {
-        collectionInflight.delete(name);
+        generation.collectionInflight.delete(name);
       }
     } else {
       entries = await inflight;
@@ -547,17 +601,21 @@ export async function getCollection<T = Record<string, unknown>>(
   // ends up with the entry source files in its dep set. Without this,
   // pages that hit the warm `collectionCache` would record nothing
   // and would happily serve stale HTML after a content edit.
-  republishCollectionDeps(name);
+  republishCollectionDeps(runtime, generation, name);
   if (filter) {
     entries = entries.filter(filter);
   }
   return entries;
 }
 
-function republishCollectionDeps(name: string): void {
-  const deps = collectionDeps.get(name);
+function republishCollectionDeps(
+  runtime: ContentRuntime,
+  generation: ContentGeneration,
+  name: string,
+): void {
+  const deps = generation.collectionDeps.get(name);
   if (!deps) return;
-  const record = contentHost?.recordDep;
+  const record = runtime.host.recordDep;
   if (!record) return;
   for (const p of deps) record(p);
 }
@@ -614,47 +672,57 @@ export async function getEntry<T = Record<string, unknown>>(
  *  2. Astro Content Layer loader — `{ name, load(ctx) }`
  *  3. Legacy pletivo loader — `{ load(root) }` (glob, etc.)
  */
-async function loadCollection(config: CollectionConfig, name: string): Promise<CollectionEntry[]> {
-  if (!config.loader) {
+async function loadCollection(
+  runtime: ContentRuntime,
+  generation: ContentGeneration,
+  config: CollectionConfig,
+  name: string,
+): Promise<InternalCollectionEntry[]> {
+  const loader = config.loader;
+  if (!loader) {
     throw new Error(`Collection "${name}" has no loader. Use glob() or set directory.`);
   }
 
   let rawEntries: RawEntry[];
 
-  if (typeof config.loader === "function") {
+  if (typeof loader === "function") {
     // Function loader — returns array of entry objects
-    rawEntries = await loadFromFunctionLoader(config.loader as FunctionLoader);
-  } else if ("name" in config.loader && typeof (config.loader as AstroLoader).name === "string") {
+    rawEntries = await loadFromFunctionLoader(loader);
+  } else if (isAstroLoader(loader)) {
     // Astro Content Layer loader
-    rawEntries = await loadFromAstroLoader(config.loader as AstroLoader, config, name);
+    rawEntries = await loadFromAstroLoader(runtime.host, loader, config, name);
   } else {
     // Legacy pletivo loader (glob, etc.)
-    rawEntries = await (config.loader as Loader).load(configProjectRoot);
+    const deps = new Set<string>();
+    rawEntries = await collectionLoadStorage.run(
+      deps,
+      () => loader.load(generation.configProjectRoot),
+    );
+    generation.collectionDeps.set(name, deps);
   }
 
-  const entries = await buildEntries(rawEntries, config, name);
+  const entries = await buildEntries(runtime.host, generation, rawEntries, config, name);
 
   // Harvest the per-entry source paths + the loader's scan roots so
   // subsequent `getCollection` calls (cache hits) can re-fire them as
-  // runtime deps. Scan roots are only known for the legacy `glob()`
-  // loader, which stamps them onto the loader object as `__scanRoots`.
-  const deps = new Set<string>();
+  // runtime deps. A glob records its scan root in the active load scope.
+  const deps = generation.collectionDeps.get(name) ?? new Set<string>();
   for (const e of entries) {
-    const fp = (e as unknown as { _filePath?: unknown })._filePath;
+    const fp = e._filePath;
     if (typeof fp === "string") deps.add(fp);
-    const mfp = (e as unknown as { _mdxFilePath?: unknown })._mdxFilePath;
+    const mfp = e._mdxFilePath;
     if (typeof mfp === "string") deps.add(mfp);
   }
-  const roots = (config.loader as { __scanRoots?: unknown }).__scanRoots;
-  if (Array.isArray(roots)) {
-    for (const r of roots) if (typeof r === "string") deps.add(r);
-  }
-  collectionDeps.set(name, deps);
+  generation.collectionDeps.set(name, deps);
   // Fire once now into the active scope — the call that triggered
   // this load should also get the deps attributed.
-  republishCollectionDeps(name);
+  republishCollectionDeps(runtime, generation, name);
 
   return entries;
+}
+
+function isAstroLoader(loader: Loader | AstroLoader): loader is AstroLoader {
+  return "name" in loader && typeof loader.name === "string";
 }
 
 /** Run a function loader and normalize its output to RawEntry[]. */
@@ -667,7 +735,12 @@ async function loadFromFunctionLoader(loader: FunctionLoader): Promise<RawEntry[
 }
 
 /** Run an Astro Content Layer loader with a full LoaderContext. */
-async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig, name: string): Promise<RawEntry[]> {
+async function loadFromAstroLoader(
+  host: ContentHost,
+  loader: AstroLoader,
+  config: CollectionConfig,
+  name: string,
+): Promise<RawEntry[]> {
   const storeMap = new Map<string, DataStoreEntry>();
   const metaMap = new Map<string, unknown>();
 
@@ -700,8 +773,8 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
   // not meaningful for entries without an `_filePath`, so the factory
   // resolves with `null` here and any image() call surfaces a clear
   // error.
-  const schemaSpec = (loader.schema ?? config.schema) as z.ZodType | SchemaFn;
-  const resolveForDir = makeSchemaResolver(schemaSpec);
+  const schemaSpec = loader.schema ?? config.schema;
+  const resolveForDir = makeSchemaResolver(schemaSpec, host);
 
   const context: LoaderContext = {
     collection: name,
@@ -709,9 +782,9 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
     meta,
     logger,
     config: {},
-    async parseData<T>({ id, data }: { id: string; data: T }): Promise<T> {
-      const filePath = (data as Record<string, unknown>)?._filePath;
-      const entryDir = typeof filePath === "string" ? requireHost().dirname(filePath) : null;
+    async parseData({ id, data }) {
+      const filePath = data._filePath;
+      const entryDir = typeof filePath === "string" ? host.dirname(filePath) : null;
       const schema = resolveForDir(entryDir);
       const result = await schema.safeParseAsync(data);
       if (!result.success) {
@@ -720,14 +793,14 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
           : String(result.error);
         throw new Error(`Validation error in ${name}/${id}: ${errors}`);
       }
-      return result.data as T;
+      return result.data;
     },
   };
 
   // Provide the host's config if it has one to give.
-  const loaderConfig = contentHost?.loaderConfig;
+  const loaderConfig = host.loaderConfig;
   if (loaderConfig) {
-    context.config = await loaderConfig.call(contentHost);
+    context.config = await loaderConfig.call(host);
   }
 
   await loader.load(context);
@@ -753,8 +826,11 @@ async function loadFromAstroLoader(loader: AstroLoader, config: CollectionConfig
  * that is not content — a Worker isolate has no way to reach it, so it says so at
  * the point of use instead of producing a broken `src`.
  */
-function resolveImageFactory(entryDir: string | null): () => z.ZodType<ImageMetadata, unknown> {
-  const factory = contentHost?.image;
+function resolveImageFactory(
+  host: ContentHost,
+  entryDir: string | null,
+): () => z.ZodType<ImageMetadata, unknown> {
+  const factory = host.image;
   if (!factory) {
     return () =>
       z.string().transform((_value: string, ctx: z.RefinementCtx) => {
@@ -767,7 +843,7 @@ function resolveImageFactory(entryDir: string | null): () => z.ZodType<ImageMeta
         return z.NEVER;
       });
   }
-  return () => factory.call(contentHost, entryDir);
+  return () => factory.call(host, entryDir);
 }
 
 /**
@@ -777,17 +853,18 @@ function resolveImageFactory(entryDir: string | null): () => z.ZodType<ImageMeta
  * produces M Zod schemas instead of N.
  */
 function makeSchemaResolver(
-  schema: z.ZodType | SchemaFn,
-): (entryDir: string | null) => z.ZodType {
+  schema: z.ZodType<Record<string, unknown>, unknown> | SchemaFn,
+  host: ContentHost,
+): (entryDir: string | null) => z.ZodType<Record<string, unknown>, unknown> {
   if (typeof schema !== "function") {
     return () => schema;
   }
-  const cache = new Map<string, z.ZodType>();
+  const cache = new Map<string, z.ZodType<Record<string, unknown>, unknown>>();
   return (entryDir) => {
     const key = entryDir ?? "";
     let resolved = cache.get(key);
     if (!resolved) {
-      resolved = schema({ image: resolveImageFactory(entryDir) });
+      resolved = schema({ image: resolveImageFactory(host, entryDir) });
       cache.set(key, resolved);
     }
     return resolved;
@@ -802,12 +879,18 @@ function makeSchemaResolver(
  * entry order, error logs, and `validationFailures` stay deterministic.
  */
 type EntryOutcome =
-  | { kind: "ok"; entry: CollectionEntry }
+  | { kind: "ok"; entry: InternalCollectionEntry }
   | { kind: "fail"; id: string; errors: string };
 
-async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, name: string): Promise<CollectionEntry[]> {
-  const host = requireHost();
-  const resolveForDir = makeSchemaResolver(config.schema);
+async function buildEntries(
+  host: ContentHost,
+  generation: ContentGeneration,
+  rawEntries: RawEntry[],
+  config: CollectionConfig,
+  name: string,
+): Promise<InternalCollectionEntry[]> {
+  const configVersion = generation.configVersion;
+  const resolveForDir = makeSchemaResolver(config.schema, host);
 
   const outcomes = await Promise.all(
     rawEntries.map(async (raw): Promise<EntryOutcome> => {
@@ -823,10 +906,10 @@ async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, na
         return { kind: "fail", id: raw.id, errors };
       }
 
-      if (_mdxFilePath) {
-        const mdxPath = _mdxFilePath as string;
-        const validatedData = result.data as Record<string, unknown>;
-        const entry: CollectionEntry = {
+      if (typeof _mdxFilePath === "string") {
+        const mdxPath = _mdxFilePath;
+        const validatedData = result.data;
+        const entry: InternalCollectionEntry = {
           id: raw.id,
           data: validatedData,
           body: raw.body,
@@ -852,14 +935,14 @@ async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, na
         return { kind: "ok", entry };
       }
 
-      const validatedData = result.data as Record<string, unknown>;
+      const validatedData = result.data;
       // Pre-rendered HTML from an Astro Content Layer loader (entry.rendered)
       // is used as-is; a glob() `.md` entry has no `_html` and renders its
       // body lazily on first `render()`. Either way the result is memoized so
       // repeated renders don't re-run the markdown pipeline.
       const preRendered = typeof _html === "string" ? _html : undefined;
       let renderedHtml: string | null = null;
-      const entry: CollectionEntry = {
+      const entry: InternalCollectionEntry = {
         id: raw.id,
         data: validatedData,
         body: raw.body,
@@ -877,11 +960,11 @@ async function buildEntries(rawEntries: RawEntry[], config: CollectionConfig, na
     }),
   );
 
-  const entries: CollectionEntry[] = [];
+  const entries: InternalCollectionEntry[] = [];
   for (const outcome of outcomes) {
     if (outcome.kind === "fail") {
       console.error(`Validation error in ${name}/${outcome.id}:\n${outcome.errors}`);
-      validationFailures.push({ collection: name, id: outcome.id, errors: outcome.errors });
+      generation.validationFailures.push({ collection: name, id: outcome.id, errors: outcome.errors });
     } else {
       entries.push(outcome.entry);
     }
@@ -900,11 +983,15 @@ export { z } from "zod";
  * at the entry level rather than under `data` so the user's schema
  * doesn't see it as a foreign field.
  */
-function attachSourcePath(entry: CollectionEntry, filePath: unknown, mdxFilePath: unknown): void {
+function attachSourcePath(
+  entry: InternalCollectionEntry,
+  filePath: unknown,
+  mdxFilePath: unknown,
+): void {
   if (typeof filePath === "string") {
-    (entry as unknown as { _filePath: string })._filePath = filePath;
+    entry._filePath = filePath;
   }
   if (typeof mdxFilePath === "string") {
-    (entry as unknown as { _mdxFilePath: string })._mdxFilePath = mdxFilePath;
+    entry._mdxFilePath = mdxFilePath;
   }
 }

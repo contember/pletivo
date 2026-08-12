@@ -41,10 +41,16 @@
 
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
-import type { PreparedSite } from "@pletivo/core/artifact";
+import type { ArtifactModuleKind, ModuleId, PreparedSite } from "@pletivo/core/artifact";
 import { imageOutputPath } from "@pletivo/core/image";
 import { compileAstro, parseAstro, type AstroCompiler } from "./astro-compiler.ts";
-import { artifactBinder } from "./artifact.ts";
+import {
+  createArtifactResolver,
+  executionNameForModuleId,
+  ModuleIdentityCollisionError,
+  normalizeProjectPath,
+  projectModuleId,
+} from "./artifact.ts";
 import {
   ASSETS_DIR,
   ASSETS_SOURCES,
@@ -52,11 +58,17 @@ import {
   IMAGE_RUNTIME_SPECIFIER,
 } from "./astro-assets.ts";
 import type { CompileCache, CompiledFile } from "./compile-cache.ts";
-import { assetInfo, type ImageInfo, type ProjectAssets, type ProjectAsset } from "./content-files.ts";
+import type {
+  ExecutableProgram,
+  ResolvedStyleGraph,
+} from "./compiled-program.ts";
+import type { ProjectAssetInfo, ProjectAssetsView } from "./asset-port.ts";
 import {
   ENV_CLIENT_SPECIFIER,
+  ENV_CLIENT_MODULE_NAME,
   ENV_MODULES,
   ENV_SERVER_SPECIFIER,
+  ENV_SERVER_MODULE_NAME,
   IMPORT_META_ENV_GLOBAL,
   type ProjectEnvUse,
 } from "./env.ts";
@@ -75,7 +87,12 @@ import {
   RUNTIME_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
 import { md5Hex } from "./md5.ts";
-import { isCollectableCss } from "./project-css.ts";
+import type {
+  ResolvedModule,
+  ResolvedModuleEdge,
+  ResolvedModuleGraph,
+  ResolvedTarget,
+} from "./module-graph.ts";
 import { JSX_IMPORT_SPECIFIER, stripTypes, TranspileError } from "./transpile.ts";
 
 /** One `<style>` block from a `.astro` file, in the order it was written. */
@@ -160,6 +177,12 @@ export interface CompiledProject {
    * stylesheet does, because a Worker has nowhere to put a file.
    */
   urlAssets: ReadonlyMap<string, string>;
+  /** Frozen compiler/execution seam, derived from the same canonical resolution pass. */
+  program: ExecutableProgram;
+  /** Frozen CSS seam, retaining source-order edges by logical ModuleId. */
+  styleGraph: ResolvedStyleGraph;
+  /** The canonical graph behind both legacy maps and the frozen DTOs. */
+  graph: ResolvedModuleGraph;
 }
 
 export interface ProjectContent {
@@ -183,29 +206,24 @@ const bundled: AstroCompiler = { transform: compileAstro, parse: parseAstro };
 const COMPILED = ".astro";
 /** Already JavaScript: carried into the bundle untouched. */
 const VERBATIM = [".js", ".mjs"];
-/**
- * Resolvable, but empty in the bundle.
- *
- * A frontmatter `import "./styles.css"` is a Vite side effect: the file is collected
- * into the project stylesheet (`cssImports` below, then `project-css.ts`) and the
- * module itself contributes nothing at run time. `.scss`/`.sass` resolve too, but
- * nothing compiles them yet — see `docs/todos/016`.
- */
-const EMPTY = [".css", ".scss", ".sass"];
-/** Compiled by sucrase rather than by `@astrojs/compiler`. */
-const TRANSPILED = [".ts", ".tsx", ".jsx", ".mts", ".cts"];
-/** Of those, the ones whose `<` is an element and not a type assertion. */
-const WITH_JSX = [".tsx", ".jsx"];
-
-/** Every extension that becomes a module in the bundle. */
-const MODULE_EXTENSIONS = [COMPILED, ...VERBATIM, ...TRANSPILED, ...EMPTY];
-
-/** Extensions that carry executable code, as opposed to a resolvable stub. */
-const EXECUTABLE = [COMPILED, ...VERBATIM, ...TRANSPILED];
-
+/** Resolvable as a style edge and represented by an empty Loader module. */
+const EMPTY = [".css"];
 /** Whether a project path becomes a module the isolate can run. */
 export function isExecutableModule(file: string): boolean {
-  return EXECUTABLE.includes(extensionOf(file));
+  const kind = projectModuleKind(file);
+  return kind !== null && kind !== "css";
+}
+
+function projectModuleKind(file: string): ArtifactModuleKind | null {
+  const extension = extensionOf(file);
+  if (extension === COMPILED) return "astro";
+  if (VERBATIM.includes(extension)) return "js";
+  if (extension === ".ts" || extension === ".mts" || extension === ".cts") return "ts";
+  if (extension === ".tsx") return "tsx";
+  if (extension === ".jsx") return "jsx";
+  if (extension === ".json") return "json";
+  if (EMPTY.includes(extension)) return "css";
+  return null;
 }
 
 /**
@@ -217,7 +235,31 @@ export function isExecutableModule(file: string): boolean {
  * `pletivo/content` is the package's own `exports` entry. A project written against
  * either renders on both hosts with nothing changed.
  */
-const CONTENT_API_MODULES = new Set(["astro:content", "astro/loaders", "pletivo/content"]);
+type HostAlias =
+  | { kind: "fixed"; executionName: string }
+  | { kind: "content" }
+  | { kind: "assets" }
+  | { kind: "image" }
+  | { kind: "env"; executionName: string };
+
+/** Every supported public spelling converges on one generated singleton module. */
+const HOST_ALIASES: ReadonlyMap<string, HostAlias> = new Map([
+  [JSX_IMPORT_SPECIFIER, { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
+  ["pletivo/jsx-dev-runtime", { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
+  ["@pletivo/runtime/jsx-runtime", { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
+  ["pletivo/astro-shim", { kind: "fixed", executionName: RUNTIME_MODULE_NAME }],
+  ["@pletivo/runtime/astro-shim", { kind: "fixed", executionName: RUNTIME_MODULE_NAME }],
+  ["astro:content", { kind: "content" }],
+  ["astro/loaders", { kind: "content" }],
+  ["pletivo/content", { kind: "content" }],
+  [ASSETS_SPECIFIER, { kind: "assets" }],
+  [IMAGE_RUNTIME_SPECIFIER, { kind: "image" }],
+  [ENV_CLIENT_SPECIFIER, { kind: "env", executionName: ENV_CLIENT_MODULE_NAME }],
+  [ENV_SERVER_SPECIFIER, { kind: "env", executionName: ENV_SERVER_MODULE_NAME }],
+]);
+
+const SUPPORTED_ARTIFACT_EXTERNALS = new Set(HOST_ALIASES.keys());
+const UNSUPPORTED_PACKAGE_ROOTS = new Set(["pletivo", "@pletivo/runtime", "@pletivo/core"]);
 
 /**
  * …and this is the shape *this repo* writes.
@@ -233,7 +275,7 @@ const PLETIVO_CONTENT_PATH = /(?:^|\/)pletivo\/src\/content\/(?:collection|index
 
 /** Whether a resolved specifier is the content API. */
 export function isContentApi(resolved: string): boolean {
-  return CONTENT_API_MODULES.has(resolved) || PLETIVO_CONTENT_PATH.test(resolved);
+  return HOST_ALIASES.get(resolved)?.kind === "content" || PLETIVO_CONTENT_PATH.test(resolved);
 }
 
 /**
@@ -383,17 +425,6 @@ export function resolveInFiles(
  * one page's graph reaches files in an order of its own, and a name that moved
  * with discovery order would give one program two bundles.
  */
-function bundleName(file: string): string {
-  const flat = file.replace(/[^A-Za-z0-9._-]/g, "_");
-  // `/` -> `_` is injective only for a path that holds no `_` and no other illegal
-  // character; anything else needs the path itself to disambiguate.
-  const ambiguous = /[^A-Za-z0-9._\-/]/.test(file) || file.includes("_");
-  // Ten hex digits, not six: every `node_modules/…` path holds a `_` and so takes this
-  // branch, and a large artifact contributes thousands of them. 24 bits puts a birthday
-  // collision at roughly one project in four at that size; 40 bits puts it out of reach.
-  return ambiguous ? `${flat}.${md5Hex(file).slice(0, 10)}.js` : `${flat}.js`;
-}
-
 /**
  * `bundleName`, with the collision it cannot rule out turned into an error.
  *
@@ -401,16 +432,16 @@ function bundleName(file: string): string {
  * overwrite a module in the bundle — the failure would surface as an unresolvable import
  * somewhere else entirely.
  */
-function claimBundleName(file: string, taken: Map<string, string>): string {
-  const name = bundleName(file);
+function claimBundleName(id: ModuleId, taken: Map<string, ModuleId>): string {
+  const name = executionNameForModuleId(id);
   const other = taken.get(name);
-  if (other !== undefined && other !== file) {
+  if (other !== undefined && other !== id) {
     throw new Error(
-      `[pletivo-workers] ${JSON.stringify(file)} and ${JSON.stringify(other)} both compile to ` +
+      `[pletivo-workers] ${JSON.stringify(id)} and ${JSON.stringify(other)} both compile to ` +
         `the bundle name ${JSON.stringify(name)}`,
     );
   }
-  taken.set(name, file);
+  taken.set(name, id);
   return name;
 }
 
@@ -422,6 +453,30 @@ function claimBundleName(file: string, taken: Map<string, string>): string {
  */
 function stripStyleImports(code: string): string {
   return code.replace(/import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?/g, "");
+}
+
+/** Keep the compiler filename for scope hashing, but expose logical identity at render time. */
+function replaceAstroTrackingId(code: string, compilePath: string, moduleId: ModuleId): string {
+  const field = `, ${compilerString(compilePath)}, undefined);`;
+  const call = code.lastIndexOf(" = $$createComponent(");
+  const at = call === -1 ? -1 : code.indexOf(field, call);
+  if (call === -1 || at === -1) {
+    throw new UnsupportedFileError(
+      compilePath,
+      "the Astro compiler did not emit its createComponent module-id field",
+    );
+  }
+  return code.slice(0, at) + `, ${compilerString(moduleId)}, undefined);` + code.slice(at + field.length);
+}
+
+function compilerString(value: string): string {
+  return `'${value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029")}'`;
 }
 
 /**
@@ -519,7 +574,7 @@ export interface CompileProjectOptions {
    * of images and a page reaches a handful. The rest are named by the collections that
    * carry them, over the binding, one entry at a time.
    */
-  assets?: ProjectAssets;
+  assets?: ProjectAssetsView;
   /**
    * Compiled files kept between calls, keyed by path and checked by `source ===`.
    * Absent, every file is compiled. See `compile-cache.ts` for what an entry carries
@@ -530,9 +585,118 @@ export interface CompileProjectOptions {
 
 /** One file the walk has claimed a name for and has still to compile. */
 interface Pending {
-  file: string;
-  name: string;
+  module: SourceModule;
+}
+
+interface SourceModule {
+  id: ModuleId;
+  legacyKey: string;
+  kind: ArtifactModuleKind;
   source: string;
+  compilePath: string;
+  executionName: string;
+  origin: "project" | "artifact" | "generated";
+}
+
+interface ResolutionUse {
+  edge: ResolvedModuleEdge;
+  rewritten: string;
+  targetLegacyKey: string | null;
+}
+
+function sameDescriptor(
+  left: Omit<SourceModule, "executionName">,
+  right: SourceModule,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.source === right.source &&
+    left.compilePath === right.compilePath &&
+    left.origin === right.origin
+  );
+}
+
+function moduleResolution(
+  importer: SourceModule,
+  specifier: string,
+  target: SourceModule,
+): ResolutionUse {
+  return {
+    edge: {
+      importer: importer.id,
+      specifier,
+      target: { kind: "module", id: target.id },
+      kind: target.kind === "css" ? "style" : "execution",
+    },
+    rewritten: `./${target.executionName}`,
+    targetLegacyKey: target.legacyKey,
+  };
+}
+
+function externalResolution(
+  importer: SourceModule,
+  specifier: string,
+  external: string,
+  executionName: string,
+): ResolutionUse {
+  return {
+    edge: {
+      importer: importer.id,
+      specifier,
+      target: { kind: "external", specifier: external },
+      kind: "execution",
+    },
+    rewritten: `./${executionName}`,
+    targetLegacyKey: null,
+  };
+}
+
+function unresolvedImport(
+  importer: SourceModule,
+  specifier: string,
+  reason: string,
+): UnsupportedFileError {
+  return new UnsupportedFileError(
+    importer.compilePath,
+    `import ${JSON.stringify(specifier)} from ${JSON.stringify(importer.id)} is unresolved: ${reason}`,
+  );
+}
+
+function normalizeProjectFiles(files: ReadonlyMap<string, string>): Map<string, string> {
+  const normalized = new Map<string, string>();
+  const owners = new Map<string, string>();
+  for (const [inputPath, source] of files) {
+    const path = normalizeProjectPath(inputPath);
+    if (path.length === 0) throw new UnsupportedFileError(inputPath, "the normalized path is empty");
+    const owner = owners.get(path);
+    if (owner !== undefined && owner !== inputPath) {
+      throw new ModuleIdentityCollisionError(
+        projectModuleId(path),
+        `${JSON.stringify(inputPath)} and ${JSON.stringify(owner)} normalize to the same project module`,
+      );
+    }
+    owners.set(path, inputPath);
+    normalized.set(path, source);
+  }
+  return normalized;
+}
+
+function addAssetSources(projectFiles: Map<string, string>, files: Map<string, string>): void {
+  for (const [file, source] of Object.entries(ASSETS_SOURCES)) {
+    if (!projectFiles.has(file)) projectFiles.set(file, source);
+    if (!files.has(file)) files.set(file, source);
+  }
+}
+
+function moduleTargetId(target: ResolvedTarget): ModuleId {
+  if (target.kind !== "module") {
+    throw new Error("[pletivo-workers] an external target cannot become a module edge");
+  }
+  return target.id;
+}
+
+function sourceLegacyKey(id: ModuleId, claimed: ReadonlyMap<ModuleId, SourceModule>): string {
+  return claimed.get(id)?.legacyKey ?? id;
 }
 
 /**
@@ -548,14 +712,11 @@ interface Pending {
  * `docs/todos/023 §10`.
  */
 export async function compileProject(options: CompileProjectOptions): Promise<CompiledProject> {
-  const { compiler = bundled, assets = new Map(), cache } = options;
-  const artifact = artifactBinder(options.artifact ?? null);
-  // Reassigned once, if `resolve` ever asks for `astro:assets` — see `withAssetSources`.
-  let files = artifact.sources(options.files);
-  /** Image path -> its metadata module, filled as `resolve` reaches each one. */
-  const images = new Map<string, string>();
-  /** `<file>?raw` / `<file>?url` -> the module that default-exports its value, same. */
-  const queried = new Map<string, string>();
+  const { compiler = bundled, assets, cache } = options;
+  const artifact = createArtifactResolver(options.artifact, SUPPORTED_ARTIFACT_EXTERNALS);
+  const projectFiles = normalizeProjectFiles(options.files);
+  const files = new Map<string, string>(projectFiles);
+  for (const module of artifact.modules()) files.set(module.id, module.source);
   /** URL path -> the file's text, for every `?url` import the project made. */
   const urlAssets = new Map<string, string>();
   const modules: Record<string, string> = { ...RUNTIME_MODULES };
@@ -563,7 +724,11 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
   const styles = new Map<string, AstroStyles>();
   const imports = new Map<string, string[]>();
   const cssImports = new Map<string, string[]>();
-  const takenNames = new Map<string, string>();
+  const takenNames = new Map<string, ModuleId>();
+  const claimed = new Map<ModuleId, SourceModule>();
+  const graphModules: ResolvedModule[] = [];
+  const graphEdges: ResolvedModuleEdge[] = [];
+  const assetInfos = new Map<string, Promise<ProjectAssetInfo | null>>();
   /** Named and not yet compiled. Appended to *while* it is walked; see the header. */
   const queue: Pending[] = [];
   /** Names taken from `astro:env/client` and `astro:env/server`, across the whole walk. */
@@ -579,18 +744,89 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
    * compiling A and has to emit `./<name-of-B>` before B has been read, and the name
    * is a pure function of B's path, so it can be claimed without reading it.
    */
-  const nameOf = (file: string): string | null => {
-    if (!MODULE_EXTENSIONS.includes(extensionOf(file))) return null;
-    const source = files.get(file);
-    // Not in the map is not an error here: the artifact's targets come through this
-    // too, and a pre-bundled module of its own is answered by `artifact.resolve`.
-    if (source === undefined) return null;
-    const known = moduleNames.get(file);
-    if (known !== undefined) return known;
-    const name = claimBundleName(file, takenNames);
-    moduleNames.set(file, name);
-    queue.push({ file, name, source });
-    return name;
+  const claim = (module: Omit<SourceModule, "executionName">): SourceModule => {
+    const known = claimed.get(module.id);
+    if (known !== undefined) {
+      if (!sameDescriptor(module, known)) {
+        throw new ModuleIdentityCollisionError(module.id, "the claimed module descriptors differ");
+      }
+      moduleNames.set(module.legacyKey, known.executionName);
+      return known;
+    }
+    const executionName = claimBundleName(module.id, takenNames);
+    const sourceModule: SourceModule = { ...module, executionName };
+    claimed.set(module.id, sourceModule);
+    moduleNames.set(module.legacyKey, executionName);
+    graphModules.push({
+      identity: {
+        id: module.id,
+        compilePath: module.compilePath,
+        executionName,
+      },
+      kind: module.kind,
+      source: module.source,
+    });
+    queue.push({ module: sourceModule });
+    return sourceModule;
+  };
+
+  const projectModule = (file: string): SourceModule | null => {
+    const source = projectFiles.get(file);
+    const kind = projectModuleKind(file);
+    if (source === undefined || kind === null) return null;
+    return claim({
+      id: projectModuleId(file),
+      legacyKey: file,
+      kind,
+      source,
+      compilePath: file,
+      origin: "project",
+    });
+  };
+
+  const artifactModule = (id: ModuleId): SourceModule => {
+    const module = artifact.module(id);
+    if (module === null) {
+      throw new UnsupportedFileError(id, "the validated artifact target is missing");
+    }
+    return claim({
+      id: module.id,
+      legacyKey: module.id,
+      kind: module.kind,
+      source: module.source,
+      compilePath: module.compilePath ?? module.id,
+      origin: "artifact",
+    });
+  };
+
+  const generatedModule = (id: ModuleId, legacyKey: string, code: string): SourceModule => {
+    const known = claimed.get(id);
+    const descriptor: Omit<SourceModule, "executionName"> = {
+      id,
+      legacyKey,
+      kind: "js",
+      source: code,
+      compilePath: id,
+      origin: "generated",
+    };
+    if (known !== undefined) {
+      if (!sameDescriptor(descriptor, known)) {
+        throw new ModuleIdentityCollisionError(id, "the generated module descriptors differ");
+      }
+      moduleNames.set(legacyKey, known.executionName);
+      return known;
+    }
+    const executionName = claimBundleName(id, takenNames);
+    const module: SourceModule = { ...descriptor, executionName };
+    claimed.set(id, module);
+    moduleNames.set(legacyKey, executionName);
+    modules[executionName] = code;
+    graphModules.push({
+      identity: { id, compilePath: id, executionName },
+      kind: "js",
+      source: code,
+    });
+    return module;
   };
 
   let usesContent = false;
@@ -600,84 +836,124 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
   let usesImportMetaEnv = false;
   const usedEnv = new Set<string>();
 
-  const resolve = (resolved: string): string | null => {
-    // The one bare specifier the bundle answers to on its own: sucrase writes it into
-    // every module that holds JSX, and it names a package, not a project file.
-    if (resolved === JSX_IMPORT_SPECIFIER) return `./${JSX_RUNTIME_MODULE_NAME}`;
-    // The content API is the other. Everything that reaches for it — the config
-    // module and every page that queries a collection — has to land on the *same*
-    // module, or `initCollections` would fill a store the page never reads.
-    if (isContentApi(resolved)) {
+  const readAssetInfo = (source: string): Promise<ProjectAssetInfo | null> => {
+    let pending = assetInfos.get(source);
+    if (pending === undefined) {
+      pending = assets === undefined ? Promise.resolve(null) : Promise.resolve(assets.info(source));
+      assetInfos.set(source, pending);
+    }
+    return pending;
+  };
+
+  const externalUse = (
+    importer: SourceModule,
+    rawSpecifier: string,
+    external: string,
+  ): ResolutionUse => {
+    const alias = HOST_ALIASES.get(external);
+    if (alias === undefined) {
+      throw unresolvedImport(importer, rawSpecifier, `unsupported host external ${JSON.stringify(external)}`);
+    }
+    if (alias.kind === "content") {
       if (!usesContent) {
         usesContent = true;
-        // Nothing in a project imports the content config — the isolate's prelude
-        // reaches it through a thunk — so a pruned walk has to seed it by path. From
-        // here rather than after the walk, because it has a graph of its own (the
-        // loaders, the schema modules) that still has to be walked.
-        contentConfig = findContentConfig(files, options.srcDir);
-        if (contentConfig !== null) nameOf(contentConfig);
+        contentConfig = findContentConfig(projectFiles, options.srcDir);
+        if (contentConfig !== null) projectModule(contentConfig);
       }
-      return `./${CONTENT_MODULE_NAME}`;
+      return externalResolution(importer, rawSpecifier, external, CONTENT_MODULE_NAME);
     }
-    // `astro:assets` is Astro's own specifier and the Bun host answers it too. Here it
-    // lands on generated sources the host worker compiles — `.astro` components cannot
-    // be pre-built, since only the host worker has the compiler. See `astro-assets.ts`.
-    if (resolved === ASSETS_SPECIFIER) {
+    if (alias.kind === "assets") {
       usesImages = true;
-      files = withAssetSources(files);
-      const name = nameOf(`${ASSETS_DIR}/index.ts`);
-      return name === null ? null : `./${name}`;
+      addAssetSources(projectFiles, files);
+      const target = projectModule(`${ASSETS_DIR}/index.ts`);
+      if (target === null) throw unresolvedImport(importer, rawSpecifier, "generated asset entry is missing");
+      return moduleResolution(importer, rawSpecifier, target);
     }
-    if (resolved === IMAGE_RUNTIME_SPECIFIER) {
+    if (alias.kind === "image") {
       usesImages = true;
-      return `./${IMAGE_MODULE_NAME}`;
+      return externalResolution(importer, rawSpecifier, external, IMAGE_MODULE_NAME);
     }
-    // An ESM-imported image: a module the host worker writes from what it knows about
-    // the file. Built on demand, so nothing in `assets` is read until it is imported.
-    const asset = assets.get(resolved);
-    if (asset !== undefined) {
-      let name = moduleNames.get(resolved);
-      if (name === undefined) {
-        const module = imageModule(resolved, asset);
-        // Unreadable header: left out, so the import fails at the Loader by name
-        // rather than resolving to a module with made-up dimensions in it.
-        if (module === null) return null;
-        name = claimBundleName(resolved, takenNames);
-        moduleNames.set(resolved, name);
-        images.set(resolved, module);
-      }
-      return `./${name}`;
+    if (alias.kind === "env") {
+      usedEnv.add(external);
+      return externalResolution(importer, rawSpecifier, external, alias.executionName);
     }
-    // `astro:env` is Astro's own specifier and the Bun host answers to it too, so a
-    // project that reads its configuration renders on either host unchanged. The
-    // module it lands on is generated per render, because only the caller knows the
-    // values — see `envModules` in env.ts.
-    const envModule = ENV_MODULES.get(resolved);
-    if (envModule !== undefined) {
-      usedEnv.add(resolved);
-      return `./${envModule}`;
-    }
-    const query = importQuery(resolved);
-    if (query !== null) {
-      let name = queried.get(resolved);
-      if (name === undefined) {
-        const target = resolveInFiles(query.file, files);
-        const source = target === null ? undefined : files.get(target);
-        if (source === undefined || target === null) return null;
-        name = claimBundleName(resolved, takenNames);
-        queried.set(resolved, name);
-        moduleNames.set(resolved, name);
+    return externalResolution(importer, rawSpecifier, external, alias.executionName);
+  };
+
+  const resolveImport = async (
+    importer: SourceModule,
+    rawSpecifier: string,
+  ): Promise<ResolutionUse> => {
+    const resolved =
+      importer.origin === "project"
+        ? resolveSpecifier(importer.legacyKey, rawSpecifier)
+        : rawSpecifier;
+
+    if (importer.origin === "project") {
+      const query = importQuery(resolved);
+      if (query !== null) {
+        const target = resolveInFiles(query.file, projectFiles);
+        const source = target === null ? undefined : projectFiles.get(target);
+        if (target === null || source === undefined) {
+          throw unresolvedImport(importer, rawSpecifier, "query target does not exist");
+        }
         const value = query.kind === "text" ? source : urlAssetHref(target, source, urlAssets);
-        modules[name] = `export default ${JSON.stringify(value)};\n`;
+        const code = `export default ${JSON.stringify(value)};\n`;
+        const generated = generatedModule(
+          `generated:query:${projectModuleId(target)}:${query.kind}`,
+          resolved,
+          code,
+        );
+        return moduleResolution(importer, rawSpecifier, generated);
       }
-      return `./${name}`;
+
+      const local = resolveInFiles(resolved, projectFiles);
+      if (local !== null) {
+        const target = projectModule(local);
+        if (target === null) {
+          throw unresolvedImport(importer, rawSpecifier, "the target kind is unsupported");
+        }
+        return moduleResolution(importer, rawSpecifier, target);
+      }
+
+      if (isImageSource(resolved)) {
+        const info = await readAssetInfo(resolved);
+        if (info === null) {
+          throw unresolvedImport(importer, rawSpecifier, "the image metadata is missing or unreadable");
+        }
+        const code = imageModule(resolved, info);
+        usesImages = true;
+        return moduleResolution(
+          importer,
+          rawSpecifier,
+          generatedModule(`generated:image:${projectModuleId(resolved)}`, resolved, code),
+        );
+      }
+
+      if (PLETIVO_CONTENT_PATH.test(resolved)) {
+        return externalUse(importer, rawSpecifier, "pletivo/content");
+      }
     }
-    const file = resolveInFiles(resolved, files);
-    const name = file === null ? null : nameOf(file);
-    if (name !== null) return `./${name}`;
-    // Last, so a project file always outranks the artifact: everything above this is
-    // a specifier no file map can hold, and everything below it is npm.
-    return artifact.resolve(resolved, nameOf);
+
+    const directAlias = HOST_ALIASES.get(rawSpecifier);
+    if (directAlias !== undefined) return externalUse(importer, rawSpecifier, rawSpecifier);
+
+    const frozen = artifact.resolve(importer.id, rawSpecifier);
+    if (frozen !== null) {
+      if (frozen.kind === "external") {
+        return externalUse(importer, rawSpecifier, frozen.specifier);
+      }
+      return moduleResolution(importer, rawSpecifier, artifactModule(frozen.id));
+    }
+
+    if (UNSUPPORTED_PACKAGE_ROOTS.has(rawSpecifier)) {
+      throw unresolvedImport(importer, rawSpecifier, "unsupported package root export");
+    }
+    throw unresolvedImport(
+      importer,
+      rawSpecifier,
+      "no project file, Artifact V2 resolution, or supported host alias answers it",
+    );
   };
 
   /**
@@ -685,27 +961,40 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
    * compiler — which is all of the expensive work, and therefore all a cache holds.
    * What the file *set* decides is `applyCompiled` below.
    */
-  const compileFile = async (file: string, source: string): Promise<CompiledFile> => {
-    const extension = extensionOf(file);
-
-    if (VERBATIM.includes(extension)) return fileEntry(source, source, null);
-
-    if (TRANSPILED.includes(extension)) {
-      // The JSX import sucrase prepends is not a project edge, and `resolveEdges`
-      // drops it for the same reason it drops any specifier outside the file map.
-      return fileEntry(source, transpile(source, { file, jsx: WITH_JSX.includes(extension) }), null);
+  const compileFile = async (module: SourceModule): Promise<CompiledFile> => {
+    const { source, compilePath, kind } = module;
+    if (kind === "js") return fileEntry(source, source, null, kind);
+    if (kind === "json") {
+      let value: unknown;
+      try {
+        value = JSON.parse(source);
+      } catch (error) {
+        throw new UnsupportedFileError(
+          compilePath,
+          `invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind);
+    }
+    if (kind === "ts" || kind === "tsx" || kind === "jsx") {
+      return fileEntry(
+        source,
+        transpile(source, { file: compilePath, jsx: kind === "tsx" || kind === "jsx" }),
+        null,
+        kind,
+      );
     }
 
     const result = await compiler.transform(source, {
-      filename: file,
-      internalURL: `./${RUNTIME_MODULE_NAME}`,
+      filename: compilePath,
+      internalURL: "pletivo/astro-shim",
       sourcemap: false,
       resolvePath: async (specifier) => specifier,
     });
     const errors = (result.diagnostics ?? []).filter((diagnostic) => diagnostic.severity === 1);
     if (errors.length > 0) {
       throw new UnsupportedFileError(
-        file,
+        compilePath,
         `the Astro compiler reported\n${errors.map((error) => `  ${error.text}`).join("\n")}`,
       );
     }
@@ -718,7 +1007,12 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
 
     // Types out before the graph is read: `import type` is not an edge, and with
     // `keepUnusedImports` nothing else in the prologue moves.
-    return fileEntry(source, transpile(stripStyleImports(result.code), { file }), declared);
+    return fileEntry(
+      source,
+      transpile(stripStyleImports(result.code), { file: compilePath }),
+      declared,
+      kind,
+    );
   };
 
   /**
@@ -726,59 +1020,106 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
    * one file's bytes. Measured at 2 ms for a whole project, which is why it is out
    * here — and why every side effect that rides on `resolve` is free on a hit.
    */
-  const applyCompiled = (file: string, name: string, entry: CompiledFile): void => {
+  const applyCompiled = async (module: SourceModule, entry: CompiledFile): Promise<void> => {
+    const { legacyKey, executionName } = module;
     if (entry.importMetaEnv) usesImportMetaEnv = true;
-    if (entry.styles !== null) styles.set(file, entry.styles);
-    // The names, not just the specifier: a generated module's exports are static, so
-    // `astro:env/server` has to be built knowing what this project asks of it.
-    if (entry.envNames !== null) {
-      for (const [specifier, names] of entry.envNames) {
-        const into = envNames.get(specifier);
-        if (into !== undefined) for (const imported of names) into.add(imported);
+    if (entry.styles !== null) styles.set(legacyKey, entry.styles);
+    const bySpecifier = new Map<string, ResolutionUse>();
+    const executionTargets: string[] = [];
+    const styleTargets: string[] = [];
+    const seenExecution = new Set<string>();
+    const seenStyles = new Set<string>();
+    for (const specifier of entry.specifiers) {
+      let use = bySpecifier.get(specifier);
+      if (use === undefined) {
+        use = await resolveImport(module, specifier);
+        bySpecifier.set(specifier, use);
+        graphEdges.push(use.edge);
+      }
+      if (use.edge.target.kind === "external") {
+        const alias = HOST_ALIASES.get(use.edge.target.specifier);
+        if (alias?.kind === "env") {
+          const into = envNames.get(use.edge.target.specifier);
+          const importedNames = entry.envNames?.get(specifier) ?? [];
+          if (into !== undefined) for (const imported of importedNames) into.add(imported);
+        }
+      }
+      if (use.targetLegacyKey === null) continue;
+      if (use.edge.kind === "style") {
+        if (!seenStyles.has(use.targetLegacyKey)) styleTargets.push(use.targetLegacyKey);
+        seenStyles.add(use.targetLegacyKey);
+      } else {
+        if (!seenExecution.has(use.targetLegacyKey)) executionTargets.push(use.targetLegacyKey);
+        seenExecution.add(use.targetLegacyKey);
       }
     }
-    // Recorded before the rewrite for every extension, where `.js` alone used to do it
-    // after: resolving an edge reads the file map and nothing else, so the order
-    // between the two cannot matter.
-    imports.set(file, resolveEdges(file, entry.specifiers, files, isExecutableModule));
-    cssImports.set(file, resolveEdges(file, entry.specifiers, files, isCollectableCss));
-    modules[name] = rewriteImports(entry.code ?? entry.source, { importer: file, resolve });
+    imports.set(legacyKey, executionTargets);
+    cssImports.set(legacyKey, styleTargets);
+    const compiledCode = module.kind === "astro"
+      ? replaceAstroTrackingId(entry.code ?? entry.source, module.compilePath, module.id)
+      : (entry.code ?? entry.source);
+    modules[executionName] = rewriteImports(compiledCode, {
+      importer: module.compilePath,
+      resolve(_resolved, specifier) {
+        const use = bySpecifier.get(specifier);
+        if (use === undefined) {
+          throw unresolvedImport(module, specifier, "rewrite did not see the canonical resolution");
+        }
+        return use.rewritten;
+      },
+    });
   };
 
   const compileOne = async (pending: Pending): Promise<void> => {
-    const { file, name, source } = pending;
+    const { module } = pending;
 
     // A resolvable stub: no code to compile, no edges to record, nothing to cache.
-    if (EMPTY.includes(extensionOf(file))) {
-      modules[name] = "export {};\n";
+    if (module.kind === "css") {
+      const targets: string[] = [];
+      const seen = new Set<string>();
+      for (const specifier of collectCssSpecifiers(module.source)) {
+        const use = await resolveImport(module, specifier);
+        graphEdges.push(use.edge);
+        if (use.edge.kind !== "style" || use.targetLegacyKey === null) {
+          throw unresolvedImport(module, specifier, "CSS @import must resolve to a CSS module");
+        }
+        if (!seen.has(use.targetLegacyKey)) targets.push(use.targetLegacyKey);
+        seen.add(use.targetLegacyKey);
+      }
+      imports.set(module.legacyKey, []);
+      cssImports.set(module.legacyKey, targets);
+      modules[module.executionName] = "export {};\n";
       return;
     }
 
-    const held = cache?.get(file);
-    let entry = held !== undefined && held.source === source ? held : undefined;
+    const held = cache?.get(module.compilePath);
+    let entry =
+      held !== undefined && held.source === module.source && held.kind === module.kind
+        ? held
+        : undefined;
     if (entry === undefined) {
-      entry = await compileFile(file, source);
+      entry = await compileFile(module);
       // Written only once the file has fully compiled, so a compiler diagnostic or a
       // sucrase failure never poisons an entry.
-      cache?.set(file, entry);
+      cache?.set(module.compilePath, entry);
     }
-    applyCompiled(file, name, entry);
+    await applyCompiled(module, entry);
   };
 
   // Materialised before the walk, because `files` can gain the `astro:assets` sources
   // part-way through it.
-  const seeds = options.entries ?? [...files.keys()];
-  const entries = seeds.filter((seed) => nameOf(seed) !== null);
+  const seeds = (options.entries ?? [...projectFiles.keys()]).map(normalizeProjectPath);
+  const entries: string[] = [];
+  for (const seed of seeds) {
+    const module = projectModule(seed);
+    if (module === null) continue;
+    entries.push(seed);
+  }
 
   // An index cursor rather than `shift()`: `resolve` runs inside `rewriteImports`, so
   // compiling one file appends the files it imports to the queue being walked.
   for (let index = 0; index < queue.length; index++) {
     await compileOne(queue[index]);
-  }
-
-  for (const [file, code] of images) {
-    const name = moduleNames.get(file);
-    if (name !== undefined) modules[name] = code;
   }
 
   let content: ProjectContent | null = null;
@@ -791,11 +1132,43 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
   // `imageOutputPath` is what names it on both hosts.
   if (usesImages || usesContent) modules[IMAGE_MODULE_NAME] = GENERATED_MODULES[IMAGE_MODULE_NAME];
 
-  // After the walk, so only the modules something actually imported are carried —
-  // and transitively, since one artifact module may name another.
-  Object.assign(modules, artifact.modules());
-
   const env = envUse(usedEnv, envNames);
+  const requirements = {
+    content: content === null ? null : { configExecutionName: content.configModule },
+    images: usesImages || usesContent,
+    importMetaEnv: usesImportMetaEnv,
+    env,
+  };
+  const programEntries = entries.map((file) => {
+    const executionName = moduleNames.get(file);
+    if (executionName === undefined) {
+      throw new UnsupportedFileError(file, "the compiled entry has no execution name");
+    }
+    return { moduleId: projectModuleId(file), executionName };
+  });
+  const program: ExecutableProgram = {
+    mainModule: "pletivo-entry.js",
+    modules,
+    entries: programEntries,
+    requirements,
+  };
+  const executionEdges = graphEdges
+    .filter((edge) => edge.kind === "execution" && edge.target.kind === "module")
+    .map((edge) => ({ importer: edge.importer, target: moduleTargetId(edge.target) }));
+  const styleEdges = graphEdges
+    .filter((edge) => edge.kind === "style" && edge.target.kind === "module")
+    .map((edge) => ({ importer: edge.importer, target: moduleTargetId(edge.target) }));
+  const styleGraph: ResolvedStyleGraph = {
+    modules: graphModules.map((module) => module.identity.id),
+    executionEdges,
+    styleEdges,
+    styles: graphModules.flatMap((module) => {
+      const declared = styles.get(sourceLegacyKey(module.identity.id, claimed));
+      return declared === undefined
+        ? []
+        : [{ moduleId: module.identity.id, scope: declared.scope, blocks: declared.blocks }];
+    }),
+  };
   return {
     modules,
     sources: files,
@@ -809,7 +1182,17 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
     importMetaEnv: usesImportMetaEnv,
     env,
     urlAssets,
+    program,
+    styleGraph,
+    graph: { modules: graphModules, edges: graphEdges },
   };
+}
+
+function collectCssSpecifiers(source: string): string[] {
+  const specifiers: string[] = [];
+  const pattern = /@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?/g;
+  for (const match of source.matchAll(pattern)) specifiers.push(match[1]);
+  return specifiers;
 }
 
 /**
@@ -843,11 +1226,17 @@ function substituteImportMetaEnv(code: string): { code: string; used: boolean } 
  * `import.meta.env` rewritten. `code` is `null` when substitution did not fire and the
  * text *is* the source, so a plain `.js` module costs a pointer.
  */
-function fileEntry(source: string, text: string, styles: AstroStyles | null): CompiledFile {
+function fileEntry(
+  source: string,
+  text: string,
+  styles: AstroStyles | null,
+  kind: ArtifactModuleKind,
+): CompiledFile {
   const substituted = substituteImportMetaEnv(text);
   const specifiers = collectSpecifiers(text);
   return {
     source,
+    kind,
     code: substituted.code === source ? null : substituted.code,
     importMetaEnv: substituted.used,
     specifiers,
@@ -868,9 +1257,10 @@ function envNamesOf(
   specifiers: readonly string[],
 ): ReadonlyMap<string, readonly string[]> | null {
   let names: Map<string, readonly string[]> | null = null;
-  for (const specifier of ENV_MODULES.keys()) {
-    if (!specifiers.includes(specifier)) continue;
-    (names ??= new Map()).set(specifier, collectImportedNames(text, specifier));
+  for (const specifier of new Set(specifiers)) {
+    const imported = collectImportedNames(text, specifier);
+    if (imported.length === 0) continue;
+    (names ??= new Map()).set(specifier, imported);
   }
   return names;
 }
@@ -883,16 +1273,10 @@ function envNamesOf(
  * back to bytes when the browser asks for the URL. Non-enumerable, exactly as on the
  * Bun host, so it cannot leak through `JSON.stringify`.
  *
- * `null` when the file's header cannot be read: better an import that fails by name
- * than a component rendering made-up dimensions.
+ * The view already validated the metadata. A missing or unreadable image fails in
+ * the canonical resolver before this module is created.
  */
-function imageModule(file: string, asset: ProjectAsset): string | null {
-  let info: ImageInfo;
-  try {
-    info = assetInfo(asset, file);
-  } catch {
-    return null;
-  }
+function imageModule(file: string, info: ProjectAssetInfo): string {
   const visible = {
     src: `/${imageOutputPath(file, info.hash)}`,
     width: info.width,
@@ -906,22 +1290,18 @@ function imageModule(file: string, asset: ProjectAsset): string | null {
   );
 }
 
-/**
- * The `astro:assets` sources, merged the first time `resolve` is asked for them.
- *
- * This used to be a substring scan of every source, run before any module was read,
- * because nothing else could tell whether the project would need them. The demand-driven
- * walk answers it exactly instead: a project that only mentions `astro:assets` in prose
- * no longer carries them.
- *
- * Merged in rather than kept beside `files`, so `resolveInFiles` and the CSS pipeline
- * see one map — and only for a project that got here, because `sources` is what
- * `sourceStylesheets` reads for the base stylesheet.
- */
-function withAssetSources(files: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
-  if (files.has(`${ASSETS_DIR}/index.ts`)) return files;
-  // Generated sources first, so a project file of the same name would win.
-  return new Map([...Object.entries(ASSETS_SOURCES), ...files]);
+const IMAGE_SOURCE_EXTENSIONS = new Set([
+  ".avif",
+  ".gif",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".svg",
+  ".webp",
+]);
+
+function isImageSource(file: string): boolean {
+  return IMAGE_SOURCE_EXTENSIONS.has(extensionOf(file));
 }
 
 /**
@@ -956,29 +1336,4 @@ function transpile(code: string, options: { file: string; jsx?: boolean }): stri
       : "";
     throw new UnsupportedFileError(options.file, detail + where);
   }
-}
-
-/**
- * Project paths an importer reaches that `keep` accepts, deduped, in order.
- *
- * The compiler emits both `import X from './X.astro'` and
- * `import * as $$module1 from './X.astro'` for the same component — one edge, not
- * two. Anything outside the file map is dropped: there is nothing to walk to.
- */
-function resolveEdges(
-  importer: string,
-  specifiers: readonly string[],
-  files: ReadonlyMap<string, string>,
-  keep: (file: string) => boolean,
-): string[] {
-  const seen = new Set<string>();
-  const edges: string[] = [];
-  for (const specifier of specifiers) {
-    const resolved = resolveInFiles(resolveSpecifier(importer, specifier), files);
-    if (resolved === null || seen.has(resolved)) continue;
-    if (!keep(resolved)) continue;
-    seen.add(resolved);
-    edges.push(resolved);
-  }
-  return edges;
 }

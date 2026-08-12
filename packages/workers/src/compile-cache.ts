@@ -26,12 +26,15 @@
  * belongs to one host and must not be shared between two that compile differently.
  */
 
+import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 import type { AstroStyles } from "./compile-project.ts";
 
 /** One file's compile, everything the file set decides left out. */
 export interface CompiledFile {
   /** The source this was built from, by identity — the whole freshness check. */
   source: string;
+  /** Source interpretation; resolution is deliberately not cached with it. */
+  kind?: ArtifactModuleKind;
   /**
    * The JavaScript `rewriteImports` runs over, after `import.meta.env` substitution.
    * `null` means "the source itself": substitution returns its argument unchanged when
@@ -51,12 +54,10 @@ export interface CompiledFile {
    */
   specifiers: readonly string[];
   /**
-   * Per `astro:env` specifier, the names this file takes from it — the export list of
-   * the generated module. A dropped name is `SyntaxError: does not provide an export
-   * named 'X'` and the isolate refuses to start. `null` when the file imports neither.
+   * Per raw specifier, the statically imported names. Resolution later assigns them to
+   * `astro:env` aliases; caching only the final external would freeze artifact semantics.
    *
-   * Note the asymmetry with `usedEnv`, which rides on `resolve` and is therefore free:
-   * both halves have to name the same specifier for the module to be built at all.
+   * `null` when the file has no named imports.
    */
   envNames: ReadonlyMap<string, readonly string[]> | null;
   /** The `<style>` blocks a `.astro` file declares, with its scope hash. Feeds `pageCss`. */

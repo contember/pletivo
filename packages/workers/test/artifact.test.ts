@@ -1,207 +1,439 @@
 import { describe, expect, test } from "bun:test";
 import {
   ARTIFACT_VERSION,
+  ArtifactFormatError,
   ArtifactVersionError,
-  parsePreparedSite,
+  type ArtifactModule,
+  type ArtifactResolution,
   type PreparedSite,
-  type SiteArtifact,
 } from "@pletivo/core/artifact";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
-import { compileProject } from "../src/compile-project.ts";
-import { ArtifactTargetError } from "../src/artifact.ts";
-import { finalizeHtml } from "../src/page-css.ts";
+import { createCompileCache } from "../src/compile-cache.ts";
+import { compileProject, UnsupportedFileError } from "../src/compile-project.ts";
+import {
+  ModuleIdentityCollisionError,
+  UnsupportedArtifactExternalError,
+  parsePreparedSite,
+} from "../src/artifact.ts";
+import { finalizeHtml, pageCss } from "../src/page-css.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
-
-/**
- * The artifact seam, driven with a hand-written artifact rather than with
- * `pletivo prepare` — the two halves have to be provable apart, and this is the half
- * a Worker runs.
- *
- * `tests/integration/prepare.test.ts` is the producing half, and the vendor fixture in
- * `fixture-parity.test.ts` is both of them against `pletivo build`'s actual bytes.
- */
 
 const compiler = createAstroCompiler(await astroWasmModule());
 
-function artifactOf(partial: Partial<SiteArtifact>): SiteArtifact {
-  return {
+const IDs = {
+  sameA: "npm:a/same.js",
+  sameB: "npm:b/same.js",
+  root: "virtual:root",
+  data: "virtual:data.json",
+  chip: "virtual:Chip.tsx",
+  card: "npm:widget/Card.astro",
+  base: "npm:widget/Base.astro",
+  css: "npm:widget/card.css",
+  theme: "npm:widget/theme.css",
+  slash: "virtual:a/b",
+  underscore: "virtual:a_b",
+  unused: "npm:unused/index.js",
+};
+
+const MODULES: ArtifactModule[] = [
+  { id: IDs.sameA, kind: "js", source: `export const SAME = "a";\n` },
+  { id: IDs.sameB, kind: "js", source: `export const SAME = "b";\n` },
+  {
+    id: IDs.root,
+    kind: "ts",
+    source: `import data from "./data.json";\nimport Chip from "./Chip.tsx";\nexport { data, Chip };\n`,
+  },
+  { id: IDs.data, kind: "json", source: `{"label":"ok"}` },
+  {
+    id: IDs.chip,
+    kind: "tsx",
+    source: `export default function Chip({ label }: { label: string }) { return <b>{label}</b>; }\n`,
+  },
+  {
+    id: IDs.card,
+    kind: "astro",
+    compilePath: "../node_modules/widget/Card.astro",
+    source: `---\nimport Base from "./Base.astro";\nimport "./card.css";\n---\n<Base><span>card</span></Base>\n<style>span { color: red; }</style>\n`,
+  },
+  {
+    id: IDs.base,
+    kind: "astro",
+    compilePath: "../node_modules/widget/Base.astro",
+    source: `<section><slot /></section>\n<style>section { display: block; }</style>\n`,
+  },
+  { id: IDs.css, kind: "css", source: `@import "./theme.css";\n.card { color: blue; }\n` },
+  { id: IDs.theme, kind: "css", source: `:root { --theme: blue; }\n` },
+  { id: IDs.slash, kind: "js", source: `export default "slash";\n` },
+  { id: IDs.underscore, kind: "js", source: `export default "underscore";\n` },
+  { id: IDs.unused, kind: "js", source: `export const UNUSED = true;\n` },
+];
+
+const RESOLUTIONS: ArtifactResolution[] = [
+  edge("project:src/pages/index.astro", "same", IDs.sameA),
+  edge("project:src/pages/index.astro", "virtual:root", IDs.root),
+  edge("project:src/pages/index.astro", "widget/Card.astro", IDs.card),
+  edge("project:src/pages/index.astro", "widget/card.css", IDs.css),
+  edge("project:src/pages/index.astro", "virtual:a/b", IDs.slash),
+  edge("project:src/pages/index.astro", "virtual:a_b", IDs.underscore),
+  edge("project:src/pages/other.astro", "same", IDs.sameB),
+  edge(IDs.root, "./data.json", IDs.data),
+  edge(IDs.root, "./Chip.tsx", IDs.chip),
+  edge(IDs.card, "./Base.astro", IDs.base),
+  edge(IDs.card, "./card.css", IDs.css),
+  edge(IDs.css, "./theme.css", IDs.theme),
+];
+
+const PREPARED: PreparedSite = {
+  artifact: {
     version: ARTIFACT_VERSION,
-    id: "test",
-    config: { base: "/", trailingSlash: "ignore", build: { format: "directory" } },
-    scripts: { headInline: [], page: [], beforeHydration: [] },
-    virtualModules: {},
-    vendor: {},
-    generatedSources: {},
-    diagnostics: [],
-    ...partial,
-  };
-}
+    config: { site: "https://example.test" },
+    scripts: { headInline: ["window.ready = true;"], page: ["import 'ready';"] },
+    modules: MODULES,
+    resolutions: RESOLUTIONS,
+  },
+};
 
 const PROJECT = new Map<string, string>([
   [
     "src/pages/index.astro",
     `---
-import { Badge } from "widgets/components";
-import { shout } from "widgets";
+import { SAME } from "same";
+import { data, Chip } from "virtual:root";
+import Card from "widget/Card.astro";
+import "widget/card.css";
+import slash from "virtual:a/b";
+import underscore from "virtual:a_b";
 ---
-<html><head><title>t</title></head><body><Badge /><p>{shout("hi")}</p></body></html>
+<Card /><Chip label={data.label} /><p>{SAME}{slash}{underscore}</p>
 `,
   ],
+  ["src/pages/other.astro", `---\nimport { SAME } from "same";\n---\n<p>{SAME}</p>\n`],
 ]);
 
-const PREPARED: PreparedSite = {
-  artifact: artifactOf({
-    vendor: {
-      "widgets/components": "node_modules/widgets/components/index.ts",
-      "node_modules/widgets/components/tone.js": "node_modules/widgets/components/tone.ts",
-      widgets: "vendor.widgets.js",
-    },
-    virtualModules: { "virtual:widget-tokens": "virtual.widget-tokens.js" },
-    generatedSources: {
-      "node_modules/widgets/components/index.ts": `export { default as Badge } from "./Badge.astro";\n`,
-      "node_modules/widgets/components/Badge.astro": `---
-import tokens from "virtual:widget-tokens";
-import { TONE } from "./tone.js";
----
-<span>{tokens.label}{TONE}</span>
-<style>span { color: red; }</style>
-`,
-      "node_modules/widgets/components/tone.ts": `export const TONE: string = "loud";\n`,
-    },
-  }),
-  modules: {
-    "vendor.widgets.js": `import { upper } from "./vendor.widgets.helper.js";\nexport const shout = (s) => upper(s);\n`,
-    "vendor.widgets.helper.js": `export const upper = (s) => s.toUpperCase();\n`,
-    "vendor.unused.js": `export const nobody = 1;\n`,
-    "virtual.widget-tokens.js": `export default { label: "L" };\n`,
-  },
-};
+function edge(importer: string, specifier: string, id: string): ArtifactResolution {
+  return { importer, specifier, target: { kind: "module", id } };
+}
 
-// Pruned to the page, so the artifact's targets have to be reached and walked rather
-// than named by a pass over the map: `widgets/components` names a *generated source*,
-// and everything it imports is only in the bundle because the walk followed it there.
-const compiled = await compileProject({
-  files: PROJECT,
-  entries: ["src/pages/index.astro"],
-  compiler,
-  artifact: PREPARED,
-});
+function bodyOf(
+  compiled: Awaited<ReturnType<typeof compileProject>>,
+  logicalFile: string,
+): string {
+  const name = compiled.moduleNames.get(logicalFile);
+  if (name === undefined) throw new Error(`Missing execution name for ${logicalFile}`);
+  const body = compiled.modules[name];
+  if (body === undefined) throw new Error(`Missing module body for ${logicalFile}`);
+  return body;
+}
 
-describe("a prepared artifact inside compileProject", () => {
-  test("compiles a package's .astro at the path the artifact names it", () => {
-    expect(compiled.moduleNames.has("node_modules/widgets/components/Badge.astro")).toBe(true);
-    // The scope hash is derived from that path, so the `<style>` block has to be
-    // collected under it too — that is what makes both hosts emit the same class.
-    const styles = compiled.styles.get("node_modules/widgets/components/Badge.astro");
-    expect(styles?.blocks.map((block) => block.css)).toEqual(["span:where(.astro-tgdqk3ug){color:red}"]);
+describe("Artifact V2 compiler consumer", () => {
+  test("uses project importer IDs and importer-dependent resolutions", async () => {
+    const index = await compileProject({
+      files: PROJECT,
+      entries: ["src/pages/index.astro"],
+      compiler,
+      artifact: PREPARED,
+    });
+    const other = await compileProject({
+      files: PROJECT,
+      entries: ["src/pages/other.astro"],
+      compiler,
+      artifact: PREPARED,
+    });
+
+    expect(index.graph.edges).toContainEqual({
+      importer: "project:src/pages/index.astro",
+      specifier: "same",
+      target: { kind: "module", id: IDs.sameA },
+      kind: "execution",
+    });
+    expect(bodyOf(index, "src/pages/index.astro")).toContain(
+      `"./${index.moduleNames.get(IDs.sameA)}"`,
+    );
+    expect(bodyOf(other, "src/pages/other.astro")).toContain(
+      `"./${other.moduleNames.get(IDs.sameB)}"`,
+    );
   });
 
-  test("points a bare specifier at the generated source it names", () => {
-    const page = compiled.modules[compiled.moduleNames.get("src/pages/index.astro") ?? ""];
-    const index = compiled.moduleNames.get("node_modules/widgets/components/index.ts");
-    expect(page).toContain(`from "./${index}"`);
-    expect(page).not.toContain("widgets/components");
+  test("walks a transitive virtual graph and deliberately compiles JSON and TSX", async () => {
+    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+
+    expect(bodyOf(compiled, IDs.data)).toBe(`export default {"label":"ok"};\n`);
+    expect(bodyOf(compiled, IDs.chip)).not.toContain(": { label: string }");
+    expect(bodyOf(compiled, IDs.chip)).toContain(
+      `"./pletivo-jsx-runtime.js"`,
+    );
+    expect(compiled.moduleNames.has(IDs.unused)).toBe(false);
   });
 
-  test("redirects a package's own `./x.js` to the `x.ts` it lands on", () => {
-    const badge = compiled.modules[
-      compiled.moduleNames.get("node_modules/widgets/components/Badge.astro") ?? ""
-    ];
-    const tone = compiled.moduleNames.get("node_modules/widgets/components/tone.ts");
-    expect(badge).toContain(`from "./${tone}"`);
-    // …and the TypeScript annotation in it is gone, because the Loader cannot parse one.
-    expect(compiled.modules[tone ?? ""]).toBe(`export const TONE = "loud";\n`);
+  test("keeps package Astro and CSS in one ordered graph", async () => {
+    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+
+    expect(compiled.imports.get("src/pages/index.astro")).toEqual([
+      IDs.sameA,
+      IDs.root,
+      IDs.card,
+      IDs.slash,
+      IDs.underscore,
+    ]);
+    expect(compiled.imports.get(IDs.card)).toEqual([IDs.base]);
+    expect(compiled.cssImports.get("src/pages/index.astro")).toEqual([IDs.css]);
+    expect(compiled.cssImports.get(IDs.card)).toEqual([IDs.css]);
+    expect(compiled.cssImports.get(IDs.css)).toEqual([IDs.theme]);
+    expect(compiled.styleGraph.styleEdges).toContainEqual({ importer: IDs.css, target: IDs.theme });
+    expect(compiled.graph.modules.find((module) => module.identity.id === IDs.card)?.identity.compilePath)
+      .toBe("../node_modules/widget/Card.astro");
+    expect(compiled.styles.get(IDs.card)?.blocks[0]?.css).toContain("astro-");
   });
 
-  test("answers a frozen virtual module, which no file map could hold", () => {
-    const badge = compiled.modules[
-      compiled.moduleNames.get("node_modules/widgets/components/Badge.astro") ?? ""
-    ];
-    expect(badge).toContain(`from "./virtual.widget-tokens.js"`);
-    expect(compiled.modules["virtual.widget-tokens.js"]).toBe(`export default { label: "L" };\n`);
+  test("makes every rewritten module import agree with its canonical edge", async () => {
+    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+    const graphModules = new Map(compiled.graph.modules.map((module) => [module.identity.id, module]));
+
+    for (const edge of compiled.graph.edges) {
+      if (edge.target.kind !== "module") continue;
+      const importer = graphModules.get(edge.importer);
+      const target = graphModules.get(edge.target.id);
+      if (importer?.kind === "css") continue;
+      expect(importer?.identity.executionName, edge.specifier).not.toBeNull();
+      expect(target?.identity.executionName, edge.specifier).not.toBeNull();
+      const importerBody = compiled.modules[importer?.identity.executionName ?? ""];
+      expect(importerBody, edge.specifier).toContain(`"./${target?.identity.executionName}"`);
+    }
+    expect(bodyOf(compiled, IDs.root)).toContain(
+      `import data from "./${compiled.moduleNames.get(IDs.data)}"`,
+    );
+    expect(bodyOf(compiled, IDs.root)).toContain(
+      `import Chip from "./${compiled.moduleNames.get(IDs.chip)}"`,
+    );
   });
 
-  test("carries a vendored module and everything it imports, and nothing else", () => {
-    expect(compiled.modules["vendor.widgets.js"]).toContain("shout");
-    expect(compiled.modules["vendor.widgets.helper.js"]).toContain("upper");
-    // The artifact holds it, the project never asks for it, so the bundle — and
-    // therefore the isolate's content address — does not pay for it.
-    expect("vendor.unused.js" in compiled.modules).toBe(false);
-  });
-
-  test("reports a target that names nothing, instead of leaving the import unresolved", async () => {
-    const broken: PreparedSite = {
-      artifact: artifactOf({ vendor: { widgets: "vendor.gone.js" } }),
-      modules: {},
+  test("uses logical artifact IDs for Astro render tracking even when compile paths collide", async () => {
+    const source = `<p>shared</p>\n<style is:global>.shared { color: red; }</style>\n`;
+    const firstId = "npm:first/Shared.astro";
+    const secondId = "npm:second/Shared.astro";
+    const prepared: PreparedSite = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [
+          { id: firstId, kind: "astro", source, compilePath: "shared/Shared.astro" },
+          { id: secondId, kind: "astro", source, compilePath: "shared/Shared.astro" },
+        ],
+        resolutions: [
+          edge("project:src/pages/index.js", "first", firstId),
+          edge("project:src/pages/index.js", "second", secondId),
+        ],
+      },
     };
-    const files = new Map([["src/pages/a.astro", `---\nimport "widgets";\n---\n<p>a</p>\n`]]);
-    expect(
-      compileProject({ files, entries: ["src/pages/a.astro"], compiler, artifact: broken }),
-    ).rejects.toThrow(ArtifactTargetError);
+    const cache = createCompileCache();
+    const compiled = await compileProject({
+      files: new Map([["src/pages/index.js", `import First from "first";\nimport Second from "second";\nexport { First, Second };\n`]]),
+      entries: ["src/pages/index.js"],
+      compiler,
+      artifact: prepared,
+      cache,
+    });
+
+    expect(bodyOf(compiled, firstId)).toContain(`, '${firstId}', undefined);`);
+    expect(bodyOf(compiled, secondId)).toContain(`, '${secondId}', undefined);`);
+    expect(bodyOf(compiled, secondId)).not.toContain(`, '${firstId}', undefined);`);
+    expect(pageCss({
+      entry: "project:src/pages/index.js",
+      graph: compiled.styleGraph,
+      html: "",
+      renderedModules: new Set([secondId]),
+    })).toContain(".shared");
   });
 
-  test("refuses an artifact from another generation rather than half-reading it", () => {
-    const stale: PreparedSite = {
-      artifact: { ...artifactOf({}), version: ARTIFACT_VERSION + 1 },
-      modules: {},
+  test("resolves artifact-relative names before host aliases", async () => {
+    const root = "virtual:relative-root";
+    const target = "virtual:relative-runtime";
+    const prepared: PreparedSite = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [
+          { id: root, kind: "js", source: `import value from "./pletivo-runtime.js";\nexport default value;\n` },
+          { id: target, kind: "js", source: `export default "artifact";\n` },
+        ],
+        resolutions: [
+          edge("project:src/pages/index.js", "root", root),
+          edge(root, "./pletivo-runtime.js", target),
+        ],
+      },
     };
-    expect(compileProject({ files: new Map(), compiler, artifact: stale })).rejects.toThrow(
-      ArtifactVersionError,
-    );
+    const compiled = await compileProject({
+      files: new Map([["src/pages/index.js", `import value from "root";\nexport default value;\n`]]),
+      entries: ["src/pages/index.js"],
+      artifact: prepared,
+      compiler,
+    });
+    expect(bodyOf(compiled, root)).toContain(`"./${compiled.moduleNames.get(target)}"`);
+    expect(compiled.graph.edges).toContainEqual({
+      importer: root,
+      specifier: "./pletivo-runtime.js",
+      target: { kind: "module", id: target },
+      kind: "execution",
+    });
+  });
+
+  test("assigns names from raw aliases to their resolved env external", async () => {
+    const prepared: PreparedSite = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [],
+        resolutions: [
+          { importer: "project:src/pages/index.js", specifier: "public-env", target: { kind: "external", specifier: "astro:env/client" } },
+          { importer: "project:src/pages/index.js", specifier: "private-env", target: { kind: "external", specifier: "astro:env/server" } },
+        ],
+      },
+    };
+    const compiled = await compileProject({
+      files: new Map([["src/pages/index.js", `const before = true;\nimport { PUBLIC as browser } from "public-env";\nimport { TOKEN } from "private-env";\nexport { before, browser, TOKEN };\n`]]),
+      entries: ["src/pages/index.js"],
+      artifact: prepared,
+      compiler,
+    });
+    expect(compiled.env).toEqual({ client: ["PUBLIC"], server: ["TOKEN"] });
+    expect(compiled.program.requirements.env).toEqual(compiled.env);
+  });
+
+  test("uses collision-proof names derived from full ModuleIds", async () => {
+    const first = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+    const second = await compileProject({ files: new Map([...PROJECT].reverse()), entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+
+    expect(first.moduleNames.get(IDs.slash)).not.toBe(first.moduleNames.get(IDs.underscore));
+    expect(second.moduleNames.get(IDs.slash)).toBe(first.moduleNames.get(IDs.slash));
+    expect(second.moduleNames.get(IDs.underscore)).toBe(first.moduleNames.get(IDs.underscore));
+  });
+
+  test("recomputes artifact resolution and graph effects on a compile-cache hit", async () => {
+    const cache = createCompileCache();
+    const cold = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED, cache });
+    const unchangedWarm = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED, cache });
+    const changed: PreparedSite = {
+      artifact: {
+        ...PREPARED.artifact,
+        resolutions: PREPARED.artifact.resolutions.map((resolution) =>
+          resolution.importer === "project:src/pages/index.astro" && resolution.specifier === "same"
+            ? edge(resolution.importer, resolution.specifier, IDs.sameB)
+            : resolution,
+        ),
+      },
+    };
+    const warm = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: changed, cache });
+
+    expect(unchangedWarm.graph).toEqual(cold.graph);
+    expect(unchangedWarm.program.requirements).toEqual(cold.program.requirements);
+    expect(unchangedWarm.styleGraph).toEqual(cold.styleGraph);
+    expect(bodyOf(cold, "src/pages/index.astro")).toContain(`"./${cold.moduleNames.get(IDs.sameA)}"`);
+    expect(bodyOf(warm, "src/pages/index.astro")).toContain(`"./${warm.moduleNames.get(IDs.sameB)}"`);
+    expect(warm.graph.edges).toContainEqual({
+      importer: "project:src/pages/index.astro",
+      specifier: "same",
+      target: { kind: "module", id: IDs.sameB },
+      kind: "execution",
+    });
+  });
+
+  test("rejects unsupported externals and absent artifact resolutions loudly", async () => {
+    const unknownExternal: PreparedSite = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [],
+        resolutions: [
+          {
+            importer: "project:src/pages/index.astro",
+            specifier: "unsafe",
+            target: { kind: "external", specifier: "node:fs" },
+          },
+        ],
+      },
+    };
+    await expect(
+      compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: unknownExternal }),
+    ).rejects.toBeInstanceOf(UnsupportedArtifactExternalError);
+    await expect(
+      compileProject({
+        files: new Map([["src/pages/a.astro", `---\nimport "missing-package";\n---\n<p>a</p>\n`]]),
+        entries: ["src/pages/a.astro"],
+        compiler,
+      }),
+    ).rejects.toThrow(/src\/pages\/a\.astro.*missing-package/);
+  });
+
+  test("strictly rejects wrong-version and dangling artifacts", async () => {
+    const wrongVersion = JSON.parse(JSON.stringify(PREPARED));
+    wrongVersion.artifact.version = 1;
+    await expect(
+      compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: wrongVersion }),
+    ).rejects.toBeInstanceOf(ArtifactVersionError);
+
+    const dangling = JSON.parse(JSON.stringify(PREPARED));
+    dangling.artifact.resolutions[0].target.id = "npm:missing/index.js";
+    await expect(
+      compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: dangling }),
+    ).rejects.toBeInstanceOf(ArtifactFormatError);
+  });
+
+  test("reserves Worker-owned ModuleId namespaces", async () => {
+    const prepared: PreparedSite = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [{ id: "project:src/pages/index.js", kind: "js", source: "export {};\n" }],
+        resolutions: [],
+      },
+    };
+    await expect(
+      compileProject({ files: new Map(), artifact: prepared, compiler }),
+    ).rejects.toBeInstanceOf(ModuleIdentityCollisionError);
+  });
+
+  test("rejects conflicting project descriptors under one normalized ModuleId", async () => {
+    await expect(
+      compileProject({
+        files: new Map([
+          ["src/pages/../index.js", `export default "first";\n`],
+          ["src/index.js", `export default "second";\n`],
+        ]),
+        compiler,
+      }),
+    ).rejects.toBeInstanceOf(ModuleIdentityCollisionError);
   });
 });
 
-describe("injected scripts in the finished page", () => {
-  const page = "<html><head><title>t</title></head><body><p>x</p></body></html>";
-
-  test("emits head-inline as a plain script and page as a module, in that order", () => {
-    const html = finalizeHtml(page, [], {
-      headInline: ["window.a = 1;"],
-      page: ["import 'b';"],
-      beforeHydration: ["never()"],
-    });
-    expect(html).toContain(
-      `<script>window.a = 1;</script>\n<script type="module">import 'b';</script>\n</head>`,
+describe("injected scripts and strict parsing", () => {
+  test("emits the two supported script stages after page CSS", () => {
+    const html = finalizeHtml(
+      "<html><head><title>t</title></head><body><p>x</p></body></html>",
+      [".site{color:blue}"],
+      PREPARED.artifact.scripts,
     );
-    // Moot until this host has islands, and dropped rather than emitted where it
-    // would run unconditionally.
-    expect(html).not.toContain("never()");
-  });
-
-  test("puts them after the page CSS, which is where writeHtml puts them", () => {
-    const html = finalizeHtml(page, [".site{color:blue}", ".x{color:red}"], {
-      headInline: ["window.a = 1;"],
-      page: [],
-      beforeHydration: [],
-    });
-    // Both stylesheets before the scripts, and the page's own sheet before the scoped
-    // block it has to lose to.
     expect(html).toContain(
-      "<style>.site{color:blue}</style>\n<style>.x{color:red}</style>\n<script>",
+      `<style>.site{color:blue}</style>\n<script>window.ready = true;</script>\n` +
+        `<script type="module">import 'ready';</script>\n</head>`,
     );
-    expect(html.indexOf("<style>")).toBeLessThan(html.indexOf("<script>"));
   });
 
-  test("leaves a page with no head alone rather than inventing one", () => {
-    const html = finalizeHtml("<p>x</p>", [], {
-      headInline: ["window.a = 1;"],
-      page: [],
-      beforeHydration: [],
-    });
-    expect(html).toBe("<p>x</p>");
-  });
-});
-
-describe("parsePreparedSite", () => {
-  test("round-trips what prepare writes", () => {
-    const parsed = parsePreparedSite(JSON.parse(JSON.stringify(PREPARED)));
-    expect(parsed).toEqual(PREPARED);
+  test("round-trips the V2 fixture", () => {
+    expect(parsePreparedSite(JSON.parse(JSON.stringify(PREPARED)))).toEqual(PREPARED);
   });
 
-  test("rejects a body that only looks like one", () => {
-    expect(parsePreparedSite({ artifact: PREPARED.artifact })).toBeNull();
-    expect(parsePreparedSite({ artifact: { version: 1 }, modules: {} })).toBeNull();
-    expect(parsePreparedSite({ ...PREPARED, modules: { a: 1 } })).toBeNull();
-    expect(parsePreparedSite(null)).toBeNull();
+  test("exposes unresolved imports as UnsupportedFileError", async () => {
+    await expect(
+      compileProject({
+        files: new Map([["src/pages/a.ts", `import "missing";`]]),
+        entries: ["src/pages/a.ts"],
+        compiler,
+      }),
+    ).rejects.toBeInstanceOf(UnsupportedFileError);
   });
 });

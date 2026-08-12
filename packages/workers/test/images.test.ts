@@ -1,8 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { imageContentHash, readImageDimensions } from "@pletivo/core/image";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
-import { ContentFiles, probeImage, type ProjectAssets } from "../src/content-files.ts";
-import { imageAssets, serveImage, withoutCdnCgi } from "../src/images.ts";
+import {
+  ContentFiles,
+  createProjectAssetsView,
+  probeImage,
+  ProjectAssetOutputAmbiguityError,
+  type ProjectAssets,
+} from "../src/content-files.ts";
+import { serveImage, withoutCdnCgi } from "../src/images.ts";
 import { renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
@@ -26,11 +32,11 @@ export const PNG_4x4 = Uint8Array.from(
 );
 
 describe("what crosses the content binding for an image", () => {
-  test("the host answers with four derived fields, not with the file", () => {
+  test("the host answers with four derived fields, not with the file", async () => {
     const files = new ContentFiles();
     const handle = files.open(new Map(), new Map([["src/assets/logo.png", PNG_4x4]]));
 
-    const info = files.image(handle.ref, "src/assets/logo.png");
+    const info = await files.image(handle.ref, "src/assets/logo.png");
     expect(info).toEqual({ width: 4, height: 4, format: "png", hash: imageContentHash(PNG_4x4) });
     // Whatever else grows on this binding, the payload stays a handful of bytes: a
     // 200-entry collection asks once per entry, per render.
@@ -60,7 +66,7 @@ describe("what crosses the content binding for an image", () => {
     expect(() => files.image(handle.ref, "logo.png")).toThrow(/already finished/);
   });
 
-  test("two renders in flight see their own assets", () => {
+  test("two renders in flight see their own assets", async () => {
     const other = Uint8Array.from(PNG_4x4);
     // A different last byte is a different hash and therefore a different output name.
     other[other.length - 1] ^= 0xff;
@@ -68,23 +74,50 @@ describe("what crosses the content binding for an image", () => {
     const first = files.open(new Map(), new Map([["logo.png", PNG_4x4]]));
     const second = files.open(new Map(), new Map([["logo.png", other]]));
 
-    expect(files.image(first.ref, "logo.png")?.hash).toBe(imageContentHash(PNG_4x4));
-    expect(files.image(second.ref, "logo.png")?.hash).toBe(imageContentHash(other));
+    expect((await files.image(first.ref, "logo.png"))?.hash).toBe(imageContentHash(PNG_4x4));
+    expect((await files.image(second.ref, "logo.png"))?.hash).toBe(imageContentHash(other));
 
     first.close();
     second.close();
   });
+
+  test("two stores with the same ref keep project assets isolated", async () => {
+    const leftStore = new ContentFiles();
+    const rightStore = new ContentFiles();
+    const left = leftStore.open(
+      new Map(),
+      new Map([["logo.png", { width: 1, height: 1, format: "png", hash: "11111111" }]]),
+    );
+    const right = rightStore.open(
+      new Map(),
+      new Map([["logo.png", { width: 2, height: 2, format: "png", hash: "22222222" }]]),
+    );
+
+    expect(left.ref).toBe(right.ref);
+    expect((await leftStore.image(left.ref, "logo.png"))?.width).toBe(1);
+    expect((await rightStore.image(right.ref, "logo.png"))?.width).toBe(2);
+    left.close();
+    right.close();
+  });
 });
 
 describe("probing", () => {
-  test("the same bytes are read once, however many entries name them", () => {
-    const first = probeImage(PNG_4x4, "logo.png");
-    const second = probeImage(PNG_4x4, "logo.png");
-    // Identity, not equality: the second call did not re-read or re-hash anything.
+  test("a project view probes one source once", () => {
+    let probes = 0;
+    const view = createProjectAssetsView(
+      new Map([["logo.png", PNG_4x4]]),
+      (bytes, path) => {
+        probes++;
+        return probeImage(bytes, path);
+      },
+    );
+    const first = view.info("logo.png");
+    const second = view.info("logo.png");
     expect(second).toBe(first);
+    expect(probes).toBe(1);
   });
 
-  test("the cache is keyed by the bytes, so replacing a file cannot be missed", () => {
+  test("replacing bytes produces fresh metadata", () => {
     const before = probeImage(PNG_4x4, "logo.png");
     const after = probeImage(Uint8Array.from(PNG_4x4).fill(0, 20, 24), "logo.png");
     expect(after).not.toBe(before);
@@ -110,10 +143,12 @@ afterAll(() => loader.cleanup());
 
 const HASH = imageContentHash(PNG_4x4);
 const OUTPUT = `/_astro/logo.${HASH}.png`;
+const EXECUTION_NAMESPACE = { tenant: "image-tests", capabilityGeneration: "content-v1" };
+
+const CONTENT_FILES = new ContentFiles();
 
 function contentAccess(): { binding: ContentFiles; store: ContentFiles } {
-  const files = new ContentFiles();
-  return { binding: files, store: files };
+  return { binding: CONTENT_FILES, store: CONTENT_FILES };
 }
 
 async function render(
@@ -123,11 +158,12 @@ async function render(
 ): Promise<string> {
   const page = await renderPage({
     files,
-    assets,
+    assets: createProjectAssetsView(assets),
     pathname,
     loader,
     compiler,
     content: contentAccess(),
+    executionNamespace: EXECUTION_NAMESPACE,
   });
   return page.html;
 }
@@ -173,11 +209,12 @@ import logo from "../assets/logo.png";
     );
     expect(html).toContain('alt="a logo"');
     // …and that URL leads back to bytes this host holds.
-    const served = serveImage(
+    const served = await serveImage(
       `/cdn-cgi/image/onerror=redirect,width=2,height=2,format=auto${OUTPUT}`,
       new Map([["src/assets/logo.png", PNG_4x4]]),
     );
-    expect(served?.bytes).toBe(PNG_4x4);
+    expect(served?.bytes).toEqual(PNG_4x4);
+    expect(served?.bytes).not.toBe(PNG_4x4);
     expect(served?.contentType).toBe("image/png");
   });
 
@@ -305,17 +342,128 @@ const items = await getCollection("items");
 });
 
 describe("what the host has to serve", () => {
-  test("every image in the map has a URL, whether or not a page linked to it", () => {
-    const routes = imageAssets(new Map([["src/assets/logo.png", PNG_4x4]]));
-    expect([...routes.keys()]).toEqual([OUTPUT]);
-    expect(routes.get(OUTPUT)?.source).toBe("src/assets/logo.png");
+  test("owns byte values after view creation", async () => {
+    const callerBytes = Uint8Array.from(PNG_4x4);
+    const ownedBytes = Uint8Array.from(callerBytes);
+    const hash = imageContentHash(ownedBytes);
+    const output = `/_astro/logo.${hash}.png`;
+    const view = createProjectAssetsView(new Map([["src/assets/logo.png", callerBytes]]));
+
+    callerBytes.fill(0);
+
+    expect(await view.info("src/assets/logo.png")).toEqual({
+      width: 4,
+      height: 4,
+      format: "png",
+      hash,
+    });
+    const served = await view.resolveOutput(output);
+    expect(served?.bytes).toEqual(ownedBytes);
+    expect(served?.bytes).not.toBe(callerBytes);
   });
 
-  test("a manifest-backed asset still has a URL, and says the bytes are elsewhere", () => {
-    const routes = imageAssets(
+  test("a page-like unmatched pathname probes no images", async () => {
+    const probed: string[] = [];
+    const view = createProjectAssetsView(
+      new Map([
+        ["src/assets/logo.png", PNG_4x4],
+        ["src/assets/other.png", Uint8Array.from(PNG_4x4)],
+      ]),
+      (bytes, path) => {
+        probed.push(path);
+        return probeImage(bytes, path);
+      },
+    );
+
+    expect(await view.resolveOutput("/docs/page/")).toBeNull();
+    expect(probed).toEqual([]);
+  });
+
+  test("one image pathname probes only its candidate and caches the result", async () => {
+    const probed: string[] = [];
+    const view = createProjectAssetsView(
+      new Map([
+        ["src/assets/logo.png", PNG_4x4],
+        ["src/assets/other.png", Uint8Array.from(PNG_4x4)],
+      ]),
+      (bytes, path) => {
+        probed.push(path);
+        return probeImage(bytes, path);
+      },
+    );
+
+    const first = await view.resolveOutput(OUTPUT);
+    const second = await view.resolveOutput(OUTPUT);
+    expect(first?.source).toBe("src/assets/logo.png");
+    expect(second).toBe(first);
+    expect(probed).toEqual(["src/assets/logo.png"]);
+  });
+
+  test("probes one same-basename bucket and distinguishes hashes", async () => {
+    const firstBytes = Uint8Array.from(PNG_4x4);
+    const secondBytes = Uint8Array.from(PNG_4x4);
+    secondBytes[secondBytes.length - 1] ^= 0xff;
+    const firstOutput = `/_astro/logo.${imageContentHash(firstBytes)}.png`;
+    const secondOutput = `/_astro/logo.${imageContentHash(secondBytes)}.png`;
+    const probed: string[] = [];
+    const view = createProjectAssetsView(
+      new Map([
+        ["a/logo.png", firstBytes],
+        ["b/logo.png", secondBytes],
+        ["c/other.png", PNG_4x4],
+      ]),
+      (bytes, path) => {
+        probed.push(path);
+        return probeImage(bytes, path);
+      },
+    );
+
+    expect((await view.resolveOutput(firstOutput))?.source).toBe("a/logo.png");
+    expect(probed).toEqual(["a/logo.png", "b/logo.png"]);
+    expect((await view.resolveOutput(secondOutput))?.source).toBe("b/logo.png");
+    expect(probed).toEqual(["a/logo.png", "b/logo.png"]);
+    expect(await view.resolveOutput("/_astro/logo.00000000.png")).toBeNull();
+    expect(await view.resolveOutput("/_astro/logo.00000000.png")).toBeNull();
+    expect(probed).toEqual(["a/logo.png", "b/logo.png"]);
+  });
+
+  test("rejects and caches an exact output collision", () => {
+    const probed: string[] = [];
+    const view = createProjectAssetsView(
+      new Map([
+        ["b/logo.png", Uint8Array.from(PNG_4x4)],
+        ["a/logo.png", Uint8Array.from(PNG_4x4)],
+      ]),
+      (bytes, path) => {
+        probed.push(path);
+        return probeImage(bytes, path);
+      },
+    );
+
+    expectAssetAmbiguity(() => view.resolveOutput(OUTPUT), ["a/logo.png", "b/logo.png"]);
+    expectAssetAmbiguity(() => view.resolveOutput(OUTPUT), ["a/logo.png", "b/logo.png"]);
+    expect(probed).toEqual(["a/logo.png", "b/logo.png"]);
+  });
+
+  test("rejects an exact metadata-only output collision", () => {
+    const metadata = { width: 4, height: 4, format: "png", hash: HASH };
+    const view = createProjectAssetsView(
+      new Map([
+        ["a/logo.png", metadata],
+        ["b/logo.png", { ...metadata }],
+      ]),
+    );
+
+    expectAssetAmbiguity(() => view.resolveOutput(OUTPUT), ["a/logo.png", "b/logo.png"]);
+  });
+
+  test("a manifest-backed result preserves metadata without pretending to have bytes", async () => {
+    const view = createProjectAssetsView(
       new Map([["src/assets/logo.png", { width: 4, height: 4, format: "png", hash: HASH }]]),
     );
-    expect(routes.get(OUTPUT)?.bytes).toBeNull();
+    const served = await view.resolveOutput(OUTPUT);
+    expect(served?.source).toBe("src/assets/logo.png");
+    expect(served?.bytes).toBeNull();
   });
 
   test("a cdn-cgi URL resolves to the file it names", () => {
@@ -325,7 +473,20 @@ describe("what the host has to serve", () => {
     expect(withoutCdnCgi("/cdn-cgi/image/")).toBe("/cdn-cgi/image/");
   });
 
-  test("a file this host has never heard of is null, not a guess", () => {
-    expect(serveImage("/_astro/other.00000000.png", new Map([["a.png", PNG_4x4]]))).toBeNull();
+  test("a file this host has never heard of is null, not a guess", async () => {
+    expect(
+      await serveImage("/_astro/other.00000000.png", new Map([["a.png", PNG_4x4]])),
+    ).toBeNull();
   });
 });
+
+function expectAssetAmbiguity(resolve: () => unknown, sources: readonly string[]): void {
+  try {
+    resolve();
+    throw new Error("expected an asset ambiguity");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProjectAssetOutputAmbiguityError);
+    if (!(error instanceof ProjectAssetOutputAmbiguityError)) throw error;
+    expect(error.sources).toEqual(sources);
+  }
+}

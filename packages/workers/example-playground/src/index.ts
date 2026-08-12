@@ -15,8 +15,8 @@
  *
  * There is no build step anywhere in that list. The sources live in the Durable
  * Object's SQLite; a `PUT` moves the workspace's revision counter, and the next `GET`
- * reads, compiles and renders whatever is there now. That is what `example-workspace`
- * demonstrates over `curl`, with a UI in front of it and a project worth editing.
+ * reads, compiles and renders whatever is there now. This is the sole live-workspace
+ * example; `example/` remains a request-scoped preview with no persistent project.
  *
  * The composition is unchanged and is the point:
  *
@@ -28,19 +28,23 @@
 
 import { Workspace } from "@cloudflare/computer";
 import type { DurableObjectStorageLike } from "@cloudflare/computer";
-import { DurableObject } from "cloudflare:workers";
-import { ContentFiles } from "../../src/content-files.ts";
-import type { ContentFileRef, ImageInfo } from "../../src/content-files.ts";
-import { createProjectHost, type ProjectHost } from "../../src/project-host.ts";
-import type { WorkerLoaderBinding } from "../../src/render.ts";
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { ContentFiles } from "@pletivo/workers/content-files";
+import type {
+  ContentBinding,
+  ContentFileRef,
+  ImageInfo,
+} from "@pletivo/workers/content-files";
+import { createProjectHost, type ProjectHost } from "@pletivo/workers/project-host";
+import type { WorkerLoaderBinding } from "@pletivo/workers/render";
 import {
   createWorkspaceProjectStore,
   vfsRevision,
   type WorkspaceDirent,
   type WorkspaceFiles,
-} from "../../src/workspace-store.ts";
-import { TAILWIND } from "../../example/src/tailwind.ts";
+} from "@pletivo/workers/workspace-store";
 import { SEED } from "./seed.ts";
+import { TAILWIND } from "./tailwind.ts";
 import PLAYGROUND_HTML from "./playground.html";
 
 interface Env {
@@ -48,11 +52,18 @@ interface Env {
   LOADER: WorkerLoaderBinding;
 }
 
+interface ProjectBindingPort extends ContentBinding {
+  fetch(request: Request): Promise<Response>;
+}
+
 /** Where the project sits in the workspace. Everything else there is not a source. */
 const PROJECT_ROOT = "/project";
 
 /** The one object, since the playground is one project. */
 const INSTANCE = "playground";
+const CONTENT_CAPABILITY_GENERATION = "content-forwarder-v1";
+const COMPATIBILITY_DATE = "2026-01-01";
+const COMPATIBILITY_FLAGS = ["nodejs_compat"];
 
 export class ProjectDO extends DurableObject<Env> {
   readonly #workspace: Workspace;
@@ -60,17 +71,13 @@ export class ProjectDO extends DurableObject<Env> {
   /**
    * Content files the renders in flight are reading.
    *
-   * An instance field, and the object itself is the binding — see `#scan` below.
+   * An instance field; `ProjectBinding` forwards calls to the methods below.
    */
   readonly #content = new ContentFiles();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    // computer types `exec<Row extends object>`, workers-types
-    // `exec<T extends Record<string, SqlStorageValue>>` — the parameter is phantom at
-    // run time and no assignment between the two is sound. Same assertion, and the same
-    // reason, as `@roj-ai/computer-worker`.
-    const storage = ctx.storage as unknown as DurableObjectStorageLike;
+    const storage: DurableObjectStorageLike = ctx.storage;
     this.#workspace = new Workspace({ storage });
     this.#host = createProjectHost({
       store: createWorkspaceProjectStore(this.#workspace.provider(), {
@@ -81,29 +88,27 @@ export class ProjectDO extends DurableObject<Env> {
         revision: vfsRevision(this.#workspace.db),
       }),
       loader: this.env.LOADER,
-      // A stub to this very object, because the thing that owns the files has to be
-      // the thing that answers for them. See the note on `scan` below.
-      content: { binding: env.PROJECT.get(ctx.id), store: this.#content },
+      content: {
+        binding: ctx.exports.ProjectBinding({ props: { projectId: ctx.id.toString() } }),
+        store: this.#content,
+      },
       tailwind: TAILWIND,
+      compatibilityDate: COMPATIBILITY_DATE,
+      compatibilityFlags: COMPATIBILITY_FLAGS,
+      executionNamespace: {
+        tenant: `project:${ctx.id.toString()}`,
+        capabilityGeneration: CONTENT_CAPABILITY_GENERATION,
+      },
     });
   }
 
   /**
    * `ContentBinding`, implemented by the Durable Object itself.
    *
-   * The obvious shape is a `WorkerEntrypoint` in the same script, reading a
-   * module-level `ContentFiles` that the DO also writes to. **It does not work in
-   * production.** Measured on workerd behind `workers.dev`: a DO and a
-   * `WorkerEntrypoint` from one script run in two isolates with two module records and
-   * two stores, so the ref the DO opened does not exist on the side the render asks —
-   * every page with a collection is a 500 and every page without one is fine.
-   * `wrangler dev` puts both in one isolate and shows none of it.
-   *
-   * So the binding is a stub to this object. `content-files.ts` names exactly this as a
-   * valid implementation, and it is the only one where opening a ref and answering for
-   * it happen in the same place. The call is re-entrant — the DO is awaiting the render
-   * that makes it — which is fine because these three methods touch no storage and a
-   * Durable Object accepts events while it awaits I/O.
+   * `ProjectBinding` forwards to these methods instead of owning a second
+   * `ContentFiles`. This keeps opening and answering in this object while giving the
+   * Loader a transferable service capability; a Durable Object stub itself cannot be
+   * serialized into a dynamic Worker's `env`.
    */
   scan(ref: string, dir: string, pattern: string): ContentFileRef[] {
     return this.#content.scan(ref, dir, pattern);
@@ -111,8 +116,8 @@ export class ProjectDO extends DurableObject<Env> {
   read(ref: string, path: string): string | null {
     return this.#content.read(ref, path);
   }
-  image(ref: string, path: string): ImageInfo | null {
-    return this.#content.image(ref, path);
+  async image(ref: string, path: string): Promise<ImageInfo | null> {
+    return await this.#content.image(ref, path);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -123,8 +128,8 @@ export class ProjectDO extends DurableObject<Env> {
       return Response.json(await this.#host.paths());
     }
     if (url.pathname === "/__files") {
-      const { files, assets, revision } = await this.#host.snapshot();
-      return Response.json({ revision, files: [...files.keys()], assets: [...assets.keys()] });
+      const { files, revision } = await this.#host.snapshot();
+      return Response.json({ revision, files: [...files.keys()] });
     }
     if (url.pathname.startsWith("/__files/")) {
       return this.#file(request, url.pathname.slice("/__files/".length));
@@ -194,6 +199,30 @@ export class ProjectDO extends DurableObject<Env> {
     const provider = this.#workspace.provider();
     for (const path of walkFiles(provider, PROJECT_ROOT)) provider.unlinkSync(path);
     this.#seed();
+  }
+}
+
+/** Transferable access to the DO-owned content store. */
+export class ProjectBinding extends WorkerEntrypoint<Env, { projectId: string }>
+  implements ProjectBindingPort {
+  #target(): DurableObjectStub<ProjectDO> {
+    return this.env.PROJECT.get(this.env.PROJECT.idFromString(this.ctx.props.projectId));
+  }
+
+  scan(ref: string, dir: string, pattern: string): Promise<ContentFileRef[]> {
+    return this.#target().scan(ref, dir, pattern);
+  }
+
+  read(ref: string, path: string): Promise<string | null> {
+    return this.#target().read(ref, path);
+  }
+
+  image(ref: string, path: string): Promise<ImageInfo | null> {
+    return this.#target().image(ref, path);
+  }
+
+  fetch(request: Request): Promise<Response> {
+    return this.#target().fetch(request);
   }
 }
 

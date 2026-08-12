@@ -1,5 +1,6 @@
 {
   "name": "@pletivo/workers",
+  "private": true,
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -12,10 +13,14 @@
   "exports": {
     "./*": "./src/*.ts"
   },
+  "scripts": {
+    "test:workerd": "bun test/workerd/run.ts"
+  },
   "dependencies": {
     "@astrojs/compiler": "^3",
     "@pletivo/core": "workspace:*",
     "@pletivo/runtime": "workspace:*",
+    "acorn": "^8.16.0",
     "sucrase": "^3"
   },
   "peerDependencies": {
@@ -31,6 +36,7 @@
     "@cloudflare/workers-types": "^5.20260810.1",
     "@tailwindcss/node": "4.3.3",
     "@tailwindcss/oxide": "4.3.3",
-    "tailwindcss": "^4"
+    "tailwindcss": "^4",
+    "wrangler": "4.100.0"
   }
 }

@@ -36,9 +36,49 @@ import Layout from "../layouts/Layout.astro";
     expect(specifiersOf("src/lib/a.ts", source)).toEqual(["zod"]);
   });
 
+  test("does not treat Bun's JSX lowering helpers as source imports", () => {
+    const source = `import { value } from "real-package";\nexport const Page = () => <p>{value}</p>;\n`;
+    expect(specifiersOf("src/pages/index.tsx", source)).toEqual(["real-package"]);
+  });
+
   test("contributes nothing for a file that is not a module", () => {
     expect(importableSource("src/data/x.json", "{}")).toBeNull();
     expect(specifiersOf("src/data/x.json", "{}")).toEqual([]);
+  });
+
+  test("reads CSS import edges without treating url assets as modules", () => {
+    const source = `
+/* @import "not-real.css"; */
+body::before { content: '@import "also-not-real.css"'; }
+@import "./reset.css";
+@import url('theme-package');
+@import URL(theme\\2d wide.css) screen;
+a { background: url('./dot.png') }
+`;
+    expect(specifiersOf("src/styles/app.css", source)).toEqual([
+      "./reset.css",
+      "theme-package",
+      "theme-wide.css",
+    ]);
+  });
+
+  test("propagates malformed modules and rejects CommonJS syntax", () => {
+    expect(() => specifiersOf("node_modules/bad/index.ts", "export const = ;")).toThrow(
+      /could not parse imports/,
+    );
+    expect(() => specifiersOf("node_modules/cjs/index.js", "module.exports = 1")).toThrow(
+      /CommonJS/,
+    );
+    expect(() => specifiersOf("node_modules/cjs/index.cjs", "exports.value = 1")).toThrow(
+      /CommonJS \.cjs/,
+    );
+    expect(() => specifiersOf("node_modules/cjs/index.cts", "export = 1")).toThrow(
+      /CommonJS \.cts/,
+    );
+    expect(specifiersOf(
+      "node_modules/esm/index.js",
+      `const text = "module.exports require('x')"; const pattern = /exports\\.value/;`,
+    )).toEqual([]);
   });
 });
 
@@ -51,7 +91,7 @@ describe("classifySpecifier", () => {
     expect(classifySpecifier("astro:assets")).toBe("host");
   });
 
-  test("leaves alone what nodejs_compat answers inside the isolate", () => {
+  test("separates Node built-ins for fatal producer validation", () => {
     expect(classifySpecifier("node:crypto")).toBe("builtin");
     expect(classifySpecifier("path")).toBe("builtin");
   });

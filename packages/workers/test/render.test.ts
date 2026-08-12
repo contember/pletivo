@@ -1,15 +1,18 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { ArtifactFormatError, ArtifactVersionError } from "@pletivo/core/artifact";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
 import {
+  IsolateExecutionError,
   RouteNotFoundError,
   RoutePathNotFoundError,
   UnsupportedRouteError,
-  bundleHash,
   projectPaths,
   projectRoutes,
   renderPage,
   typescriptSuspects,
+  type WorkerLoaderBinding,
 } from "../src/render.ts";
+import { IsolateProtocolError } from "../src/isolate-protocol.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
 
@@ -118,7 +121,7 @@ describe("renderPage, .astro through the Worker Loader", () => {
 
   test("hands the isolate one bundle, entered at the generated module", async () => {
     const page = await render("/");
-    const bundle = loader.bundles.get(page.bundleId);
+    const bundle = loader.programs.get(page.bundleId);
     expect(bundle?.mainModule).toBe("pletivo-entry.js");
     expect(bundle?.compatibilityFlags).toEqual(["nodejs_compat"]);
     expect(Object.keys(bundle?.modules ?? {})).toContain("pletivo-runtime.js");
@@ -137,10 +140,44 @@ describe("renderPage, .astro through the Worker Loader", () => {
 
   test("compiles only what the page reaches, so a sibling page is not in its bundle", async () => {
     const page = await render("/plain");
-    const modules = Object.keys(loader.bundles.get(page.bundleId)?.modules ?? {});
-    expect(modules).toContain("src_pages_plain.astro.js");
-    expect(modules).not.toContain("src_pages_index.astro.js");
-    expect(modules).not.toContain("src_components_Layout.astro.js");
+    const modules = Object.values(loader.programs.get(page.bundleId)?.modules ?? {});
+    expect(modules.some((source) => source.includes("<p>plain</p>"))).toBe(true);
+    expect(modules.some((source) => source.includes("pletivo at"))).toBe(false);
+    expect(modules.some((source) => source.includes("function $$Layout"))).toBe(false);
+  });
+});
+
+describe("the isolate response boundary", () => {
+  function responseLoader(response: Response): WorkerLoaderBinding {
+    return {
+      get: () => ({
+        getEntrypoint: () => ({ fetch: () => Promise.resolve(response.clone()) }),
+      }),
+    };
+  }
+
+  test("names a malformed response as a protocol failure", async () => {
+    await expect(
+      renderPage({
+        files: new Map([["src/pages/index.astro", "<p>page</p>\n"]]),
+        pathname: "/",
+        loader: responseLoader(new Response("not json")),
+        compiler,
+      }),
+    ).rejects.toBeInstanceOf(IsolateProtocolError);
+  });
+
+  test("keeps a versioned isolate error distinct from protocol corruption", async () => {
+    await expect(
+      renderPage({
+        files: new Map([["src/pages/index.astro", "<p>page</p>\n"]]),
+        pathname: "/",
+        loader: responseLoader(
+          Response.json({ protocol: 1, status: "error", message: "page failed" }),
+        ),
+        compiler,
+      }),
+    ).rejects.toBeInstanceOf(IsolateExecutionError);
   });
 });
 
@@ -156,6 +193,32 @@ describe("renderPage, .md on the host", () => {
 
   test("never reaches the isolate", async () => {
     expect((await render("/about")).bundleId).toBe("");
+  });
+
+  test("rejects a wrong-version direct artifact before rendering markdown", async () => {
+    await expect(
+      renderPage({
+        files: SITE,
+        pathname: "/about",
+        loader,
+        compiler,
+        artifact: {
+          artifact: { version: 1, config: {}, scripts: {}, modules: [], resolutions: [] },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ArtifactVersionError);
+  });
+
+  test("rejects a malformed V2 direct artifact before rendering markdown", async () => {
+    await expect(
+      renderPage({
+        files: SITE,
+        pathname: "/about",
+        loader,
+        compiler,
+        artifact: { artifact: { version: 2 } },
+      }),
+    ).rejects.toBeInstanceOf(ArtifactFormatError);
   });
 });
 
@@ -182,10 +245,14 @@ describe("renderPage, .tsx through the Worker Loader", () => {
 
   test("resolves the JSX runtime inside the bundle, not from a package", async () => {
     const page = await render("/tsx");
-    const modules = loader.bundles.get(page.bundleId)?.modules ?? {};
+    const modules = loader.programs.get(page.bundleId)?.modules ?? {};
     expect(Object.keys(modules)).toContain("pletivo-jsx-runtime.js");
-    expect(modules["src_pages_tsx.tsx.js"]).toContain('"./pletivo-jsx-runtime.js"');
-    expect(modules["src_pages_tsx.tsx.js"]).not.toContain('"pletivo/jsx-runtime"');
+    const pageModule = Object.values(modules).find(
+      (source) => source.includes("function Page") && source.includes("pletivo-jsx-runtime.js"),
+    );
+    expect(pageModule).toBeString();
+    expect(pageModule).toContain('"./pletivo-jsx-runtime.js"');
+    expect(pageModule).not.toContain('"pletivo/jsx-runtime"');
   });
 });
 
@@ -223,15 +290,6 @@ export async function getStaticPaths({ paginate }) {
 const { page } = Astro.props;
 ---
 <html><body><p id="items">{page.data.join(",")}</p><p id="n">{page.currentPage}/{page.lastPage}</p><p id="next">{page.url.next}</p></body></html>
-`,
-  ],
-  [
-    "src/pages/live/[slug].astro",
-    `---
-export const prerender = false;
-const { slug } = Astro.params;
----
-<html><body><p id="slug">{slug}</p><p id="path">{Astro.url.pathname}</p></body></html>
 `,
   ],
   [
@@ -349,17 +407,44 @@ describe("renderPage, paginate()", () => {
 });
 
 describe("renderPage, prerender = false", () => {
-  test("renders any slug — there is no path list to match against", async () => {
-    for (const slug of ["a", "another-one", "with-123-digits"]) {
-      const { html } = await renderDynamic(`/live/${slug}`);
-      expect(html).toContain(`<p id="slug">${slug}</p>`);
-    }
+  const ssr = new Map([
+    [
+      "src/pages/live/[slug].astro",
+      `---\nexport const prerender = false;\n---\n<html><body>live</body></html>\n`,
+    ],
+  ]);
+
+  test("rejects the dynamic SSR route", async () => {
+    await expect(
+      renderPage({ files: ssr, pathname: "/live/a", loader, compiler }),
+    ).rejects.toThrow(/prerender = false/);
   });
 
-  test("gives Astro.url the requested pathname", async () => {
-    expect((await renderDynamic("/live/some-slug")).html).toContain(
-      '<p id="path">/live/some-slug</p>',
+  test("rejects it during route enumeration too", async () => {
+    await expect(projectPaths({ files: ssr, loader, compiler })).rejects.toThrow(
+      /prerender = false/,
     );
+  });
+
+  test("rejects a static SSR page before calling its getStaticPaths export", async () => {
+    const files = new Map([
+      [
+        "src/pages/live.astro",
+        `---
+export const prerender = false;
+export function getStaticPaths() { throw new Error("getStaticPaths was called"); }
+---
+<html><body>live</body></html>
+`,
+      ],
+    ]);
+
+    await expect(renderPage({ files, pathname: "/live", loader, compiler })).rejects.toThrow(
+      /prerender = false/,
+    );
+    const error = await rejection(projectPaths({ files, loader, compiler }));
+    expect(String(error)).toContain("prerender = false");
+    expect(String(error)).not.toContain("getStaticPaths was called");
   });
 });
 
@@ -415,9 +500,8 @@ describe("projectPaths", () => {
   });
 
   test("lists nothing for a route with no path list", async () => {
-    // `prerender = false` has none by design, and `mystery/[slug]` has none at all.
+    // `mystery/[slug]` has no path list.
     const paths = await projectPaths({ files: DYNAMIC, loader, compiler });
-    expect(paths.some((path) => path.pathname.startsWith("/live/"))).toBe(false);
     expect(paths.some((path) => path.pathname.startsWith("/mystery/"))).toBe(false);
   });
 
@@ -427,7 +511,7 @@ describe("projectPaths", () => {
     }
   });
 
-  test("starts no isolate for a project with no dynamic route", async () => {
+  test("validates a static executable route in the isolate", async () => {
     const quiet = new FileLoader();
     const paths = await projectPaths({
       files: new Map([["src/pages/index.astro", "<html><body>hi</body></html>\n"]]),
@@ -435,7 +519,7 @@ describe("projectPaths", () => {
       compiler,
     });
     expect(paths.map((path) => path.pathname)).toEqual(["/"]);
-    expect(quiet.bundles.size).toBe(0);
+    expect(quiet.bundles.size).toBe(1);
     await quiet.cleanup();
   });
 });
@@ -472,7 +556,7 @@ describe("isolate reuse across route kinds", () => {
     const ids = [
       (await at("/", reused)).bundleId,
       (await at("/posts/hello", reused)).bundleId,
-      (await at("/live/anything", reused)).bundleId,
+      (await at("/tag/css", reused)).bundleId,
     ];
     expect(new Set(ids).size).toBe(3);
     expect(reused.bundles.size).toBe(4);
@@ -513,11 +597,8 @@ describe("renderPage, the page's stylesheet", () => {
     expect(page.assets).toEqual([]);
     expect(page.html).not.toContain('<link rel="stylesheet"');
     const [css] = styleBlocks(page.html);
-    // Every source stylesheet, labelled and sorted — no import walk needed for these,
-    // the glob over src/ already has them — then what the page's graph reached.
-    expect(css).toStartWith(
-      "/* styles/page.css */\n.page { color: red }\n\n\n/* styles/util.css */\n.util { color: blue }\n",
-    );
+    expect(css).toContain("/* styles/page.css */");
+    expect(css).not.toContain("/* styles/util.css */");
     expect(css).toContain("/* vendor/index.css */");
   });
 
@@ -529,9 +610,7 @@ describe("renderPage, the page's stylesheet", () => {
     expect(index.html).not.toContain(".from-bare");
     expect(bare.html).toContain(".from-bare");
     expect(bare.html).not.toContain(".from-index");
-    // The source tree is the half that stays project-wide, on purpose: a stylesheet
-    // nothing imports has no graph to be found through.
-    expect(bare.html).toContain("/* styles/page.css */");
+    expect(bare.html).not.toContain("/* styles/page.css */");
   });
 
   test("puts the page's sheet before its own <style>, so a scoped rule still wins", async () => {
@@ -553,8 +632,7 @@ describe("renderPage, the page's stylesheet", () => {
     // The old model inserted the `<link>` only before `</head>` and had no fallback, so
     // such a page got its scoped rules and no stylesheet at all. One insertion fixes it.
     const page = await renderStyled("/nohead");
-    expect(page.html).toStartWith("<style>/* styles/page.css */");
-    expect(page.html).toEndWith("</style>\n<p>no head at all</p>");
+    expect(page.html).toBe("<p>no head at all</p>");
   });
 
   test("inlines the source tree into a .md page without compiling the project", async () => {
@@ -573,7 +651,7 @@ describe("renderPage, the page's stylesheet", () => {
     expect(transforms).toBe(0);
     expect(page.bundleId).toBe("");
     expect(page.assets).toEqual([]);
-    expect(page.html).toContain("<style>/* styles/page.css */");
+    expect(page.html).not.toContain("<style>");
     expect(page.html).not.toContain(".from-index");
   });
 
@@ -664,15 +742,6 @@ describe("renderPage, refusals", () => {
     // `blog/[slug].astro` declares neither getStaticPaths nor the on-demand opt-out.
     const error = await rejection(render("/blog/hello"));
     expect(error).toBeInstanceOf(RoutePathNotFoundError);
-  });
-});
-
-describe("bundleHash", () => {
-  test("depends on names and sources, not on key order", async () => {
-    const a = await bundleHash({ "a.js": "1", "b.js": "2" });
-    expect(await bundleHash({ "b.js": "2", "a.js": "1" })).toBe(a);
-    expect(await bundleHash({ "a.js": "1", "b.js": "3" })).not.toBe(a);
-    expect(await bundleHash({ "a.js": "1", "c.js": "2" })).not.toBe(a);
   });
 });
 

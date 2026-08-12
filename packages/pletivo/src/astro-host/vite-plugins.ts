@@ -197,9 +197,32 @@ async function materializeViteVirtualModule(
 export async function freezeViteVirtualModule(
   specifier: string,
   importer?: string,
-): Promise<{ code: string; loader: string } | null> {
+): Promise<{ id: string; code: string; loader: string } | null> {
   const resolvedId = await resolveViteId(specifier, importer);
-  return loadViteId(resolvedId ?? specifier);
+  const id = resolvedId ?? specifier;
+  const loaded = await loadViteId(id);
+  if (loaded) return { id, code: loaded.code, loader: freezeLoaderForId(id, loaded.loader) };
+  if (resolvedId && path.isAbsolute(resolvedId) && await Bun.file(resolvedId).exists()) {
+    const loader = loaderForVirtualId(resolvedId);
+    return {
+      id: resolvedId,
+      code: await Bun.file(resolvedId).text(),
+      loader: freezeLoaderForId(resolvedId, loader),
+    };
+  }
+  return null;
+}
+
+function freezeLoaderForId(id: string, fallback: Loader): string {
+  const ext = path.extname(id.replace(/\0/g, "")).toLowerCase();
+  if (ext === ".astro") return "astro";
+  if (ext === ".css") return "css";
+  if (ext === ".jsx") return "jsx";
+  if (ext === ".tsx") return "tsx";
+  if (ext === ".js" || ext === ".mjs") return "js";
+  if (ext === ".ts" || ext === ".mts") return "ts";
+  if (ext === ".json") return "json";
+  return ext === "" ? fallback : `unsupported:${ext}`;
 }
 
 async function resolveViteId(specifier: string, importer?: string): Promise<string | null> {

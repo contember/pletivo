@@ -1,6 +1,11 @@
 import { describe, test, expect } from "bun:test";
 import path from "path";
-import { defineCollection, glob, type Loader } from "../../packages/pletivo/src/content/collection";
+import {
+  defineCollection,
+  glob,
+  runWithBunContentRuntime,
+  type Loader,
+} from "../../packages/pletivo/src/content/collection";
 import { z } from "zod";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
@@ -72,7 +77,7 @@ describe("defineCollection", () => {
 
   test("glob() default IDs strip extension and preserve subdirs", async () => {
     const loader = glob({ base: "src/content/news" });
-    const entries = await loader.load(fixtureRoot);
+    const entries = await runWithBunContentRuntime(() => loader.load(fixtureRoot));
     const ids = entries.map((e) => e.id).sort();
     expect(ids).toEqual(["cs/brno-1", "cs/praha-2", "en/prague-2"]);
   });
@@ -82,7 +87,7 @@ describe("defineCollection", () => {
       base: "src/content/news",
       generateId: ({ entry }) => `custom:${entry}`,
     });
-    const entries = await loader.load(fixtureRoot);
+    const entries = await runWithBunContentRuntime(() => loader.load(fixtureRoot));
     const ids = entries.map((e) => e.id).sort();
     expect(ids).toEqual([
       "custom:cs/brno-1.md",
@@ -96,7 +101,7 @@ describe("defineCollection", () => {
       base: "src/content/news",
       generateId: ({ data }) => `t-${(data as { title: string }).title}`,
     });
-    const entries = await loader.load(fixtureRoot);
+    const entries = await runWithBunContentRuntime(() => loader.load(fixtureRoot));
     const ids = entries.map((e) => e.id).sort();
     expect(ids).toEqual(["t-Brno 1", "t-Prague 2", "t-Praha 2"]);
   });

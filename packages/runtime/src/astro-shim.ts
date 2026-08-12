@@ -15,7 +15,11 @@
 import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-string";
 import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
-import { recordRenderedModule } from "./render-context";
+import {
+  getSlotArgs,
+  recordRenderedModule,
+  runWithSlotArgs,
+} from "./render-context";
 export { HtmlString };
 
 function escapeHtml(s: string): string {
@@ -111,7 +115,7 @@ export interface AstroResponse {
 
 interface SlotsAccessor {
   has(name: string): boolean;
-  render(name: string, args?: unknown[]): Promise<string>;
+  render(name: string, args?: unknown[]): Promise<HtmlString>;
 }
 
 // ── Cookies ─────────────────────────────────────────────────────────
@@ -289,7 +293,7 @@ export interface PageContext {
   clientAddress?: string;
 }
 
-type SlotFn = () => unknown;
+type SlotFn = (...args: unknown[]) => unknown;
 type SlotsRecord = Record<string, SlotFn>;
 
 function makeResult(pageContext: PageContext = {}): AstroResult {
@@ -334,10 +338,8 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
           },
           async render(name: string, args?: unknown[]) {
             const fn = slots?.[name];
-            if (typeof fn !== "function") return "";
-            const prevArgs = currentSlotArgs;
-            currentSlotArgs = args;
-            try {
+            if (typeof fn !== "function") return createHtml("");
+            return runWithSlotArgs(args, async () => {
               let html = await renderValue(fn());
               // For named slots with args, the compiler wraps the slot
               // content in the element that carried slot="name" (e.g.
@@ -348,16 +350,14 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
               }
               // Return an HtmlString so the result can be used with
               // set:html or interpolated without double-escaping.
-              return createHtml(html) as unknown as string;
-            } finally {
-              currentSlotArgs = prevArgs;
-            }
+              return createHtml(html);
+            });
           },
         },
         {
           has(_target, prop) {
             if (prop === "has" || prop === "render") return true;
-            return typeof slots?.[prop as string] === "function";
+            return typeof prop === "string" && typeof slots?.[prop] === "function";
           },
         },
       );
@@ -408,11 +408,6 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
  * - number → stringified
  * - string → HTML-escaped (text content default)
  */
-// Context for Astro.slots.render() with arguments. When set, function
-// values encountered during renderValue() are called with these args
-// (e.g. `{(props) => <div>{props.text}</div>}` in a slot).
-let currentSlotArgs: unknown[] | undefined;
-
 async function renderValue(value: unknown): Promise<string> {
   if (value == null || value === false || value === true) return "";
   if (typeof value === "string") return escapeHtml(value);
@@ -427,8 +422,8 @@ async function renderValue(value: unknown): Promise<string> {
   }
   // Functions (e.g. slot functions passed as values) — call and recurse
   if (typeof value === "function") {
-    const fn = value as (...a: unknown[]) => unknown;
-    return renderValue(currentSlotArgs ? fn(...currentSlotArgs) : fn());
+    const slotArgs = getSlotArgs();
+    return renderValue(slotArgs ? value(...slotArgs) : value());
   }
   // Fallback: stringify + escape
   return escapeHtml(String(value));

@@ -82,23 +82,35 @@ switch (command) {
   case "prepare": {
     // The config/integration phase, run once where a filesystem and npm exist. What
     // comes out is what `@pletivo/workers` renders with — see packages/pletivo/src/prepare.
-    const { prepare } = await import("./prepare/index");
+    const { prepare, PrepareError } = await import("./prepare/index");
     const { emitArtifact } = await import("./prepare/emit");
     const outDir = readFlag(["--out"]) ?? ".pletivo";
-    const prepared = await prepare(projectRoot);
+    let prepared: Awaited<ReturnType<typeof prepare>>;
+    try {
+      prepared = await prepare(projectRoot);
+    } catch (error) {
+      if (!(error instanceof PrepareError)) throw error;
+      for (const diagnostic of error.report.diagnostics) {
+        console.error(
+          `  ✗ ${diagnostic.source} (${diagnostic.hook}): ${diagnostic.reason}`,
+        );
+      }
+      process.exitCode = 1;
+      break;
+    }
     const written = await emitArtifact(
       outDir.startsWith("/") ? outDir : `${projectRoot}/${outDir}`,
-      prepared,
+      prepared.site,
     );
-    const counts = [
-      `${Object.keys(prepared.artifact.vendor).length} vendored specifier(s)`,
-      `${Object.keys(prepared.artifact.virtualModules).length} frozen virtual module(s)`,
-      `${Object.keys(prepared.artifact.generatedSources).length} carried source(s)`,
-    ];
-    console.log(`  artifact ${prepared.artifact.id}`);
-    for (const line of counts) console.log(`    ${line}`);
+    const virtualCount = prepared.site.artifact.modules.filter((module) =>
+      module.id.startsWith("virtual:"),
+    ).length;
+    console.log(`  artifact v${prepared.site.artifact.version}`);
+    console.log(`    ${prepared.site.artifact.modules.length} carried module(s)`);
+    console.log(`    ${prepared.site.artifact.resolutions.length} frozen resolution(s)`);
+    console.log(`    ${virtualCount} frozen virtual module(s)`);
     console.log(`    ${(written.moduleBytes / 1024).toFixed(1)} kB of modules → ${written.modulePath}`);
-    for (const diagnostic of prepared.artifact.diagnostics) {
+    for (const diagnostic of prepared.report.diagnostics) {
       console.warn(`  ⚠ ${diagnostic.source} (${diagnostic.hook}): ${diagnostic.reason}`);
     }
     break;

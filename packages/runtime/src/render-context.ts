@@ -21,21 +21,47 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-const renderTrackingStorage = new AsyncLocalStorage<{
-  renderedModules: Set<string>;
-  tsxStyles: string[];
-}>();
+interface RenderContextState {
+  renderedModules?: Set<string>;
+  tsxStyles?: string[];
+  slotArgs?: unknown[];
+}
+
+const renderContextStorage = new AsyncLocalStorage<RenderContextState>();
 
 export async function runWithRenderTracking<T>(
   fn: () => Promise<T>,
 ): Promise<{ value: T; renderedModules: Set<string>; tsxStyles: string[] }> {
   const renderedModules = new Set<string>();
   const tsxStyles: string[] = [];
-  const value = await renderTrackingStorage.run(
-    { renderedModules, tsxStyles },
+  const value = await renderContextStorage.run(
+    {
+      renderedModules,
+      tsxStyles,
+      slotArgs: renderContextStorage.getStore()?.slotArgs,
+    },
     fn,
   );
   return { value, renderedModules, tsxStyles };
+}
+
+export function runWithSlotArgs<T>(
+  slotArgs: unknown[] | undefined,
+  fn: () => T,
+): T {
+  const current = renderContextStorage.getStore();
+  return renderContextStorage.run(
+    {
+      renderedModules: current?.renderedModules,
+      tsxStyles: current?.tsxStyles,
+      slotArgs,
+    },
+    fn,
+  );
+}
+
+export function getSlotArgs(): unknown[] | undefined {
+  return renderContextStorage.getStore()?.slotArgs;
 }
 
 /**
@@ -46,12 +72,10 @@ export async function runWithRenderTracking<T>(
  * Astro styles.
  */
 export function pushTsxStyle(css: string): void {
-  const store = renderTrackingStorage.getStore();
-  if (store) store.tsxStyles.push(css);
+  renderContextStorage.getStore()?.tsxStyles?.push(css);
 }
 
 /** Record a component module id as rendered in the current pass. */
 export function recordRenderedModule(moduleId: string): void {
-  const store = renderTrackingStorage.getStore();
-  if (store) store.renderedModules.add(moduleId);
+  renderContextStorage.getStore()?.renderedModules?.add(moduleId);
 }

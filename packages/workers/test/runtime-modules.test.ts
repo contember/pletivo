@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { bundleRuntimeModule } from "../scripts/build-runtime.ts";
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  ISOLATE_PROTOCOL_MODULE_NAME,
   JSX_RUNTIME_MODULE_NAME,
   RUNTIME_MODULES,
   RUNTIME_MODULE_NAME,
@@ -48,8 +53,35 @@ describe("generated runtime modules", () => {
     expect(committed).toBe(generated);
   }, 60_000);
 
-  test("hold the modules compiled .astro and compiled JSX import", () => {
-    expect(Object.keys(RUNTIME_MODULES)).toEqual([RUNTIME_MODULE_NAME, JSX_RUNTIME_MODULE_NAME]);
+  test("hold the runtime, isolate protocol, and compiled JSX import", () => {
+    expect(Object.keys(RUNTIME_MODULES)).toEqual([
+      RUNTIME_MODULE_NAME,
+      ISOLATE_PROTOCOL_MODULE_NAME,
+      JSX_RUNTIME_MODULE_NAME,
+    ]);
+  });
+
+  test("carry the source request parser as a stateless Loader module", () => {
+    const source = GENERATED_MODULES[ISOLATE_PROTOCOL_MODULE_NAME];
+    expect(source).toContain("function parseIsolateRequest");
+    expect(source).toContain("ISOLATE_PROTOCOL_VERSION");
+    expect(source.slice(source.lastIndexOf("export {"))).toContain("parseIsolateRequest");
+    expect(source.slice(source.lastIndexOf("export {"))).toContain("ISOLATE_PROTOCOL_VERSION");
+    expect(source).not.toMatch(/(?:node:|node\/fs|Bun\.)/);
+  });
+
+  test("rejects a Node built-in before it can enter the protocol bundle", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "pletivo-protocol-builtin-"));
+    const entry = path.join(directory, "entry.ts");
+    try {
+      await writeFile(entry, 'import path from "node:path"; export default path.sep;\n');
+      await expect(bundleRuntimeModule({ specifier: entry, target: "browser" })).resolves.toBeString();
+      await expect(
+        bundleRuntimeModule({ specifier: entry, target: "browser", forbidNodeBuiltins: true }),
+      ).rejects.toThrow("Bundle failed");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   test("keep the content runtime out of every bundle that does not ask for it", () => {
@@ -69,8 +101,8 @@ describe("generated runtime modules", () => {
       clause.matchAll(/(?:^|\s)(?:\w+ as )?(\w+)[,\n}]/g).map((match) => match[1]),
     );
     // The query API a page uses, the definition API a `content.config.*` uses, `z`
-    // because that config imports it from here too, and the two the generated entry
-    // module wires the host up with.
+    // because that config imports it from here too, and the runtime scope API the
+    // generated entry module uses at the request boundary.
     for (const name of [
       "getCollection",
       "getEntry",
@@ -80,9 +112,41 @@ describe("generated runtime modules", () => {
       "render",
       "z",
       "initCollections",
-      "setContentHost",
+      "createContentRuntime",
+      "runWithContentRuntime",
     ]) {
       expect([name, exported.has(name)]).toEqual([name, true]);
+    }
+  });
+
+  test("loads the generated content runtime and executes its Zod API", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "pletivo-content-runtime-"));
+    const moduleFile = path.join(directory, "pletivo-content.mjs");
+    try {
+      await writeFile(moduleFile, GENERATED_MODULES[CONTENT_MODULE_NAME]);
+      const loaded: unknown = await import(pathToFileURL(moduleFile).href);
+      if (typeof loaded !== "object" || loaded === null) {
+        throw new Error("content runtime did not load as a module");
+      }
+      const z: unknown = Reflect.get(loaded, "z");
+      if (typeof z !== "object" || z === null) {
+        throw new Error("content runtime did not export z");
+      }
+      const stringFactory: unknown = Reflect.get(z, "string");
+      const objectFactory: unknown = Reflect.get(z, "object");
+      if (typeof stringFactory !== "function" || typeof objectFactory !== "function") {
+        throw new Error("content runtime exported an incomplete Zod API");
+      }
+      const titleSchema: unknown = Reflect.apply(stringFactory, z, []);
+      const schema: unknown = Reflect.apply(objectFactory, z, [{ title: titleSchema }]);
+      if (typeof schema !== "object" || schema === null) {
+        throw new Error("z.object did not return a schema");
+      }
+      const parse: unknown = Reflect.get(schema, "parse");
+      if (typeof parse !== "function") throw new Error("Zod schema did not expose parse");
+      expect(Reflect.apply(parse, schema, [{ title: "ok" }])).toEqual({ title: "ok" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -129,6 +193,7 @@ describe("generated runtime modules", () => {
     // Bundled as `browser` it would be stubbed to `{}`, and the render-tracking
     // store would silently stop tracking.
     expect(RUNTIME_MODULES[RUNTIME_MODULE_NAME]).toContain('from "node:async_hooks"');
+    expect(GENERATED_MODULES[CONTENT_MODULE_NAME]).toContain('from "node:async_hooks"');
   });
 
   test("carry no TypeScript into the bundle", () => {

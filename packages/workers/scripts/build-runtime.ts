@@ -11,6 +11,8 @@
  */
 
 import path from "node:path";
+import { builtinModules } from "node:module";
+import type { BunPlugin } from "bun";
 
 const PACKAGE_DIR = path.resolve(import.meta.dir, "..");
 const OUT_FILE = path.join(PACKAGE_DIR, "src/generated/runtime-modules.ts");
@@ -26,7 +28,7 @@ const OUT_FILE = path.join(PACKAGE_DIR, "src/generated/runtime-modules.ts");
  * compiler — runs in the *host* worker, where the app's own bundler already compiles
  * TypeScript.
  */
-interface Entry {
+export interface Entry {
   specifier: string;
   /**
    * `node` keeps `node:async_hooks` external — workerd provides it under
@@ -41,6 +43,10 @@ interface Entry {
    * condition below covers the one package where it overshoots.
    */
   target: "node" | "browser";
+  /** Runtime-provided modules that must stay imports in the generated bundle. */
+  external?: string[];
+  /** Reject Node built-ins while resolving this module graph. */
+  forbidNodeBuiltins?: boolean;
   /**
    * Export conditions to prefer over the target's own.
    *
@@ -65,8 +71,8 @@ const ENTRIES: Record<string, Entry> = {
    * and the CSS pipeline: `content.config.*` is a module that must be executed to
    * yield collection definitions, and the page calling `getCollection()` executes
    * there too. It is one module for the same reason `pletivo-runtime.js` is — the
-   * store, the config and `configVersion` are module state, and a page resolving
-   * `astro:content` to a second copy would read a store nobody ever filled.
+   * AsyncLocalStorage and the runtime-state map are module state, and a page resolving
+   * `astro:content` to a second copy would enter a different runtime context.
    *
    * It carries Zod and the whole unified/remark pipeline, roughly a megabyte, which
    * is why `compileProject` only puts it in the bundle for a project that reaches for
@@ -82,6 +88,9 @@ const ENTRIES: Record<string, Entry> = {
     specifier: "@pletivo/core/content/collection",
     target: "browser",
     conditions: ["workerd"],
+    // ContentRuntime scopes are AsyncLocalStorage-backed. Keep workerd's implementation
+    // instead of letting the browser target replace the built-in with an empty stub.
+    external: ["node:async_hooks"],
   },
   /**
    * The image pipeline: the dimension reader, the output-path naming, `getImage()`
@@ -96,10 +105,15 @@ const ENTRIES: Record<string, Entry> = {
     specifier: "@pletivo/core/image",
     target: "browser",
   },
+  "pletivo-isolate-protocol.js": {
+    specifier: path.join(PACKAGE_DIR, "src/isolate-protocol.ts"),
+    target: "browser",
+    forbidNodeBuiltins: true,
+  },
 };
 
 /** Of those, the ones `compileProject` adds to every bundle. */
-const ALWAYS_BUNDLED = ["pletivo-runtime.js"];
+const ALWAYS_BUNDLED = ["pletivo-runtime.js", "pletivo-isolate-protocol.js"];
 
 /**
  * `jsxImportSource` is a package name, and sucrase appends `/jsx-runtime` to it, so
@@ -112,10 +126,14 @@ const JSX_RUNTIME_MODULE =
 
 /** Bundle one entry point into a single self-contained module. */
 export async function bundleRuntimeModule(entry: Entry): Promise<string> {
+  const plugins: BunPlugin[] = [];
+  if (entry.external?.length) plugins.push(externalizeModules(entry.external));
+  if (entry.forbidNodeBuiltins) plugins.push(rejectNodeBuiltins(entry.specifier));
   const result = await Bun.build({
     entrypoints: [Bun.resolveSync(entry.specifier, PACKAGE_DIR)],
     target: entry.target,
     conditions: entry.conditions,
+    plugins: plugins.length > 0 ? plugins : undefined,
     format: "esm",
     minify: false,
   });
@@ -125,6 +143,41 @@ export async function bundleRuntimeModule(entry: Entry): Promise<string> {
     );
   }
   return result.outputs[0].text();
+}
+
+const NODE_BUILTINS = new Set(builtinModules.map((specifier) => specifier.replace(/^node:/, "")));
+
+function rejectNodeBuiltins(entry: string): BunPlugin {
+  return {
+    name: "reject-node-builtins",
+    setup(build) {
+      build.onResolve({ filter: /.*/ }, (args) => {
+        if (!NODE_BUILTINS.has(args.path.replace(/^node:/, ""))) return undefined;
+        throw new Error(
+          `[pletivo-workers] ${entry} cannot depend on Node built-in ${JSON.stringify(args.path)}`,
+        );
+      });
+    },
+  };
+}
+
+function externalizeModules(specifiers: string[]): BunPlugin {
+  return {
+    name: "externalize-runtime-modules",
+    setup(build) {
+      // A browser target replaces Node built-ins before Bun's `external` option sees
+      // them. Exact hooks preserve those imports without intercepting the rest of
+      // Bun's resolver graph.
+      for (const specifier of specifiers) {
+        const filter = new RegExp(`^${escapeRegex(specifier)}$`);
+        build.onResolve({ filter }, (args) => ({ path: args.path, external: true }));
+      }
+    },
+  };
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export async function generateRuntimeModules(): Promise<string> {
@@ -163,6 +216,9 @@ export async function generateRuntimeModules(): Promise<string> {
     "",
     "/** The module `astro:assets` and an `image()` schema resolve through. Added only when reached for. */",
     'export const IMAGE_MODULE_NAME = "pletivo-image.js";',
+    "",
+    "/** The request parser shared by generated isolate entries. */",
+    'export const ISOLATE_PROTOCOL_MODULE_NAME = "pletivo-isolate-protocol.js";',
     "",
   ].join("\n");
 }

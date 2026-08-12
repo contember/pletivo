@@ -22,15 +22,18 @@ import { FileLoader } from "./file-loader.ts";
  */
 
 const compiler = createAstroCompiler(await astroWasmModule());
-const files = new FileLoader();
-afterAll(() => files.cleanup());
+const fileLoaders: FileLoader[] = [];
+afterAll(() => Promise.all(fileLoaders.map((loader) => loader.cleanup())));
 
 /** Remembers what was asked of the Loader, which is the whole subject here. */
 class RecordingLoader implements WorkerLoaderBinding {
   readonly ids: string[] = [];
   readonly codes = new Map<string, DynamicWorkerCode>();
+  readonly inner = new FileLoader();
 
-  constructor(private readonly inner: WorkerLoaderBinding) {}
+  constructor() {
+    fileLoaders.push(this.inner);
+  }
 
   get(id: string, code: () => DynamicWorkerCode | Promise<DynamicWorkerCode>): DynamicWorkerStub {
     this.ids.push(id);
@@ -56,7 +59,17 @@ class RecordingLoader implements WorkerLoaderBinding {
 }
 
 const SITE = new Map<string, string>([
-  ["src/pages/index.astro", `<html><body><p>page</p></body></html>\n`],
+  [
+    "src/pages/index.astro",
+    `---
+import { TOKEN } from "astro:env/server";
+const site = import.meta.env.SITE;
+void TOKEN;
+void site;
+---
+<html><body><p>page</p></body></html>
+`,
+  ],
 ]);
 
 /** The stub a proxying host would hand over. Never called: nothing here fetches. */
@@ -64,13 +77,20 @@ const binding: OutboundBinding = {
   fetch: () => Promise.resolve(new Response("proxied")),
 };
 
-function render(loader: RecordingLoader, outbound?: Parameters<typeof renderPage>[0]["outbound"]) {
-  return renderPage({ files: SITE, pathname: "/", loader, compiler, outbound });
+function render(
+  loader: RecordingLoader,
+  outbound?: Parameters<typeof renderPage>[0]["outbound"],
+  options: Pick<
+    Parameters<typeof renderPage>[0],
+    "compatibilityDate" | "compatibilityFlags" | "env" | "executionNamespace" | "importMetaEnv"
+  > = {},
+) {
+  return renderPage({ files: SITE, pathname: "/", loader, compiler, outbound, ...options });
 }
 
 describe("globalOutbound", () => {
   test("is null when the caller says nothing, so a page reaches nothing", async () => {
-    const loader = new RecordingLoader(files);
+    const loader = new RecordingLoader();
     await render(loader);
     // Present *and* null. An absent field is the one value that inherits the host
     // worker's own network access, so the presence is half the assertion.
@@ -79,19 +99,21 @@ describe("globalOutbound", () => {
   });
 
   test("is null when the caller says so out loud", async () => {
-    const loader = new RecordingLoader(files);
+    const loader = new RecordingLoader();
     await render(loader, { kind: "blocked" });
     expect(loader.lastCode.globalOutbound).toBe(null);
   });
 
   test("is the binding the caller passed, and only then", async () => {
-    const loader = new RecordingLoader(files);
-    await render(loader, { kind: "proxy", binding });
+    const loader = new RecordingLoader();
+    await render(loader, { kind: "proxy", binding }, {
+      executionNamespace: { tenant: "outbound-tests", capabilityGeneration: "proxy-v1" },
+    });
     expect(loader.lastCode.globalOutbound).toBe(binding);
   });
 
   test("is left out only for an explicit inherit", async () => {
-    const loader = new RecordingLoader(files);
+    const loader = new RecordingLoader();
     await render(loader, { kind: "inherit" });
     expect("globalOutbound" in loader.lastCode).toBe(false);
   });
@@ -107,31 +129,66 @@ describe("outboundConfig", () => {
 });
 
 describe("the isolate cache key", () => {
-  test("is the bundle hash for the default, so reuse is unchanged", async () => {
-    const loader = new RecordingLoader(files);
+  test("returns the program hash while caching under the full isolate identity", async () => {
+    const loader = new RecordingLoader();
     const page = await render(loader);
-    expect(loader.lastId).toBe(page.bundleId);
+    expect(loader.lastId).not.toBe(page.bundleId);
+    expect(page.bundleId).toStartWith("program-v1:");
+    expect(loader.lastId).toStartWith("isolate-v1:");
   });
 
   test("separates a proxied isolate from a cut-off one over the same sources", async () => {
     // `env.LOADER.get` runs its code factory once per id, so an id that ignored the
     // outbound configuration would hand whichever render came second the network
     // policy of the one that came first.
-    const loader = new RecordingLoader(files);
+    const loader = new RecordingLoader();
     const cutOff = await render(loader);
     const cutOffId = loader.lastId;
-    const proxied = await render(loader, { kind: "proxy", binding });
+    const proxied = await render(loader, { kind: "proxy", binding }, {
+      executionNamespace: { tenant: "outbound-tests", capabilityGeneration: "proxy-v1" },
+    });
     expect(proxied.bundleId).toBe(cutOff.bundleId);
     expect(loader.lastId).not.toBe(cutOffId);
-    expect(loader.lastId.startsWith(`${proxied.bundleId}.`)).toBe(true);
   });
 
   test("is stable for one configuration, so a proxy does not mint an isolate per render", async () => {
-    const loader = new RecordingLoader(files);
+    const loader = new RecordingLoader();
     for (let n = 0; n < 3; n++) {
       // A fresh stub every render, the way `ctx.exports.X({})` gives one.
-      await render(loader, { kind: "proxy", binding: { fetch: binding.fetch } });
+      await render(loader, { kind: "proxy", binding: { fetch: binding.fetch } }, {
+        executionNamespace: { tenant: "outbound-tests", capabilityGeneration: "proxy-v1" },
+      });
     }
     expect(new Set(loader.ids).size).toBe(1);
+    expect(loader.inner.factoryCounts.get(loader.lastId)).toBe(1);
+  });
+
+  test("partitions every immutable factory input", async () => {
+    const loader = new RecordingLoader();
+    const namespace = { tenant: "tenant-a", capabilityGeneration: "cap-v1" };
+    await render(loader, undefined, { executionNamespace: namespace });
+    const baseline = loader.lastId;
+
+    const variants = [
+      { executionNamespace: { tenant: "tenant-b", capabilityGeneration: "cap-v1" } },
+      { executionNamespace: { tenant: "tenant-a", capabilityGeneration: "cap-v2" } },
+      { executionNamespace: namespace, compatibilityDate: "2026-02-01" },
+      { executionNamespace: namespace, compatibilityFlags: ["nodejs_compat", "streams_enable_constructors"] },
+      { executionNamespace: namespace, env: { server: { TOKEN: "changed" } } },
+      { executionNamespace: namespace, importMetaEnv: { SITE: "changed" } },
+    ];
+    for (const variant of variants) {
+      await render(loader, undefined, variant);
+      expect(loader.lastId).not.toBe(baseline);
+    }
+
+    await render(loader, undefined, { executionNamespace: namespace });
+    expect(loader.lastId).toBe(baseline);
+  });
+
+  test("rejects proxy capability use before asking the Loader when namespace is absent", async () => {
+    const loader = new RecordingLoader();
+    await expect(render(loader, { kind: "proxy", binding })).rejects.toThrow(/executionNamespace/);
+    expect(loader.ids).toEqual([]);
   });
 });

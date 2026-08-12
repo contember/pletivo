@@ -22,7 +22,19 @@
  * concurrent renders cannot see each other.
  */
 
-import { imageContentHash, readImageDimensions } from "@pletivo/core/image";
+import {
+  baseNameOf,
+  extensionOf,
+  imageContentHash,
+  imageContentType,
+  imageOutputPath,
+  readImageDimensions,
+} from "@pletivo/core/image";
+import type {
+  ProjectAssetInfo,
+  ProjectAssetsView,
+  ServedProjectAsset,
+} from "./asset-port.ts";
 
 /**
  * The RPC surface the isolate calls. Structural rather than imported from
@@ -62,23 +74,10 @@ export interface ContentBinding {
  *
  * ## Where the caching belongs
  *
- * On the host, and keyed by the bytes rather than by the path. The isolate is
- * content-addressed by its module map, so it survives content edits by design — an
- * isolate-side cache keyed by path would answer with a stale size after an image was
- * replaced, and would have to read the bytes to find out. `ContentFiles` below caches
- * against the `Uint8Array` it was handed, which is exactly as long-lived as the bytes
- * are: a host that keeps its asset map (a Durable Object, a preview server) probes
- * each image once for the life of the map, and one that rebuilds the array per render
- * pays per render and is never wrong.
+ * On the project-owned asset view. It lives exactly as long as the snapshot whose
+ * bytes it describes, so a new revision cannot inherit metadata keyed only by path.
  */
-export interface ImageInfo {
-  width: number;
-  height: number;
-  /** `png` / `jpeg` / `gif` / `webp` / `svg`, as the file's own header says. */
-  format: string;
-  /** `md5(bytes)`, first 8 hex characters — what names `_astro/<name>.<hash>.<ext>`. */
-  hash: string;
-}
+export type ImageInfo = ProjectAssetInfo;
 
 /**
  * One binary file, as the host holds it.
@@ -90,7 +89,7 @@ export interface ImageInfo {
  * render. Everything downstream needs the four fields and nothing else, which is what
  * makes the substitution possible at all.
  */
-export type ProjectAsset = Uint8Array | ImageInfo;
+export type ProjectAsset = Uint8Array | ProjectAssetInfo;
 
 /** The project's binary files, keyed like its sources. */
 export type ProjectAssets = ReadonlyMap<string, ProjectAsset>;
@@ -115,7 +114,10 @@ export interface ContentStore {
    * its binaries do not, and merging them would force every caller to decide which
    * an unknown extension is.
    */
-  open(files: ReadonlyMap<string, string>, assets?: ProjectAssets): ContentHandle;
+  open(
+    files: ReadonlyMap<string, string>,
+    assets?: ProjectAssets | ProjectAssetsView,
+  ): ContentHandle;
 }
 
 /**
@@ -139,7 +141,7 @@ export interface ContentStore {
  */
 export class ContentFiles implements ContentBinding, ContentStore {
   readonly #open = new Map<string, ReadonlyMap<string, string>>();
-  readonly #openAssets = new Map<string, ProjectAssets>();
+  readonly #openAssets = new Map<string, ProjectAssetsView>();
   #next = 0;
 
   /** How many renders currently hold a handle. A leak shows up here. */
@@ -147,10 +149,13 @@ export class ContentFiles implements ContentBinding, ContentStore {
     return this.#open.size;
   }
 
-  open(files: ReadonlyMap<string, string>, assets?: ProjectAssets): ContentHandle {
+  open(
+    files: ReadonlyMap<string, string>,
+    assets?: ProjectAssets | ProjectAssetsView,
+  ): ContentHandle {
     const ref = `r${++this.#next}`;
     this.#open.set(ref, files);
-    if (assets) this.#openAssets.set(ref, assets);
+    if (assets) this.#openAssets.set(ref, projectAssetsView(assets));
     return {
       ref,
       close: () => {
@@ -181,13 +186,11 @@ export class ContentFiles implements ContentBinding, ContentStore {
     return this.#files(ref).get(path) ?? null;
   }
 
-  image(ref: string, path: string): ImageInfo | null {
+  image(ref: string, path: string): ImageInfo | null | Promise<ImageInfo | null> {
     // `#files` first, so a call against a finished render is the same loud error here
     // as it is for `read` — an asset map is allowed to be absent, a ref is not.
     this.#files(ref);
-    const asset = this.#openAssets.get(ref)?.get(path);
-    if (!asset) return null;
-    return assetInfo(asset, path);
+    return this.#openAssets.get(ref)?.info(path) ?? null;
   }
 
   #files(ref: string): ReadonlyMap<string, string> {
@@ -202,33 +205,165 @@ export class ContentFiles implements ContentBinding, ContentStore {
   }
 }
 
-/**
- * Probed images, keyed by the bytes themselves.
- *
- * Weak, so it cannot outlive the map the caller holds, and keyed by identity, so it
- * can never answer for other bytes — see `ImageInfo` for why the cache lives out here
- * rather than in the isolate. Module-level because both readers want the same answer
- * and both run per render: the binding, for an `image()` schema, and `compileProject`,
- * for an ESM-imported one. Without it a project with 200 images would re-read and
- * re-hash all 200 on every page.
- */
-const probed = new WeakMap<Uint8Array, ImageInfo>();
-
 /** What one asset is, whether the host handed bytes or the answer itself. */
 export function assetInfo(asset: ProjectAsset, path: string): ImageInfo {
   return asset instanceof Uint8Array ? probeImage(asset, path) : asset;
 }
 
-/** Dimensions and content hash of one image, read once per distinct `Uint8Array`. */
+/** Dimensions and content hash of one image. Project-owned views cache this result. */
 export function probeImage(bytes: Uint8Array, path: string): ImageInfo {
-  const cached = probed.get(bytes);
-  if (cached) return cached;
-  const info: ImageInfo = {
+  return {
     ...readImageDimensions(bytes, path),
     hash: imageContentHash(bytes),
   };
-  probed.set(bytes, info);
-  return info;
+}
+
+export type AssetProbe = (bytes: Uint8Array, path: string) => ProjectAssetInfo;
+
+/** Two project sources claim one immutable generated output name. */
+export class ProjectAssetOutputAmbiguityError extends Error {
+  constructor(
+    readonly pathname: string,
+    readonly sources: readonly string[],
+  ) {
+    super(
+      `[pletivo-workers] generated asset ${JSON.stringify(pathname)} is ambiguous: ` +
+        sources.map((source) => JSON.stringify(source)).join(", "),
+    );
+    this.name = "ProjectAssetOutputAmbiguityError";
+  }
+}
+
+/** A map-backed, snapshot-owned asset view with no eager image probing. */
+export function createProjectAssetsView(
+  assets: ProjectAssets,
+  probe: AssetProbe = probeImage,
+): ProjectAssetsView {
+  return new MapProjectAssetsView(ownProjectAssets(assets), probe);
+}
+
+/** Preserve an existing view, or adapt the legacy map input used by direct render callers. */
+export function projectAssetsView(
+  assets: ProjectAssets | ProjectAssetsView,
+): ProjectAssetsView {
+  return isProjectAssetsView(assets) ? assets : createProjectAssetsView(assets);
+}
+
+function isProjectAssetsView(
+  assets: ProjectAssets | ProjectAssetsView,
+): assets is ProjectAssetsView {
+  return "info" in assets && "resolveOutput" in assets;
+}
+
+class MapProjectAssetsView implements ProjectAssetsView {
+  readonly #info = new Map<string, ProjectAssetInfo | null>();
+  readonly #outputs = new Map<string, ServedProjectAsset | null>();
+  readonly #ambiguities = new Map<string, readonly string[]>();
+  readonly #candidates = new Map<string, string[]>();
+
+  constructor(
+    readonly assets: ProjectAssets,
+    readonly probe: AssetProbe,
+  ) {
+    // Keys only: snapshot construction never reads, hashes or probes asset bytes.
+    for (const source of assets.keys()) {
+      const key = outputCandidateKey(source);
+      const candidates = this.#candidates.get(key);
+      if (candidates) candidates.push(source);
+      else this.#candidates.set(key, [source]);
+    }
+    for (const candidates of this.#candidates.values()) candidates.sort(compareStrings);
+  }
+
+  info(source: string): ProjectAssetInfo | null {
+    const cached = this.#info.get(source);
+    if (cached !== undefined || this.#info.has(source)) return cached ?? null;
+    const asset = this.assets.get(source);
+    if (!asset) {
+      this.#info.set(source, null);
+      return null;
+    }
+    try {
+      const info = asset instanceof Uint8Array ? this.probe(asset, source) : asset;
+      this.#info.set(source, info);
+      return info;
+    } catch {
+      this.#info.set(source, null);
+      return null;
+    }
+  }
+
+  resolveOutput(pathname: string): ServedProjectAsset | null {
+    const path = withoutCdnImagePrefix(pathname);
+    const ambiguity = this.#ambiguities.get(path);
+    if (ambiguity !== undefined) {
+      throw new ProjectAssetOutputAmbiguityError(path, ambiguity);
+    }
+    const cached = this.#outputs.get(path);
+    if (cached !== undefined || this.#outputs.has(path)) return cached ?? null;
+    const key = requestedCandidateKey(path);
+    if (key === null) {
+      this.#outputs.set(path, null);
+      return null;
+    }
+    const matches: ServedProjectAsset[] = [];
+    for (const source of this.#candidates.get(key) ?? []) {
+      const info = this.info(source);
+      if (!info || `/${imageOutputPath(source, info.hash)}` !== path) continue;
+      const asset = this.assets.get(source);
+      matches.push({
+        path,
+        contentType: imageContentType(info.format),
+        source,
+        bytes: asset instanceof Uint8Array ? asset : null,
+      });
+    }
+    if (matches.length > 1) {
+      const sources = matches.map((match) => match.source);
+      this.#ambiguities.set(path, sources);
+      throw new ProjectAssetOutputAmbiguityError(path, sources);
+    }
+    const resolved = matches[0] ?? null;
+    this.#outputs.set(path, resolved);
+    return resolved;
+  }
+}
+
+/** Copy caller-owned values once; metadata and bytes then describe one revision. */
+function ownProjectAssets(assets: ProjectAssets): ProjectAssets {
+  const owned = new Map<string, ProjectAsset>();
+  for (const [source, asset] of assets) {
+    owned.set(source, asset instanceof Uint8Array ? new Uint8Array(asset) : { ...asset });
+  }
+  return owned;
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function outputCandidateKey(source: string): string {
+  return `${baseNameOf(source, true)}${extensionOf(source)}`;
+}
+
+function requestedCandidateKey(pathname: string): string | null {
+  if (!pathname.startsWith("/_astro/")) return null;
+  const filename = pathname.slice("/_astro/".length);
+  const extension = extensionOf(filename);
+  if (extension === "") return null;
+  const stem = filename.slice(0, -extension.length);
+  const separator = stem.lastIndexOf(".");
+  if (separator <= 0 || !/^[0-9a-f]{8}$/.test(stem.slice(separator + 1))) return null;
+  return `${stem.slice(0, separator)}${extension}`;
+}
+
+const CDN_IMAGE_PREFIX = "/cdn-cgi/image/";
+
+function withoutCdnImagePrefix(pathname: string): string {
+  if (!pathname.startsWith(CDN_IMAGE_PREFIX)) return pathname;
+  const rest = pathname.slice(CDN_IMAGE_PREFIX.length);
+  const slash = rest.indexOf("/");
+  return slash <= 0 ? pathname : `/${rest.slice(slash + 1)}`;
 }
 
 /**

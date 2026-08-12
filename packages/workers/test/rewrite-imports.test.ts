@@ -3,7 +3,6 @@ import { createAstroCompiler } from "../src/astro-compiler.ts";
 import {
   collectImportedNames,
   collectSpecifiers,
-  prologueEnd,
   resolveSpecifier,
   rewriteImports,
 } from "../src/rewrite-imports.ts";
@@ -52,37 +51,51 @@ describe("resolveSpecifier", () => {
   });
 });
 
-describe("prologueEnd", () => {
-  test("covers a run of imports, comments and blank lines", () => {
-    const code = `// header\nimport a from "./a.ts";\n\n/* block */\nimport "./b.css";\nexport { c } from "./c.ts";\nconst d = 1;\nimport e from "./e.ts";\n`;
-    expect(code.slice(0, prologueEnd(code))).toBe(
-      `// header\nimport a from "./a.ts";\n\n/* block */\nimport "./b.css";\nexport { c } from "./c.ts";\n`,
-    );
-  });
-
-  test("covers a multi-line named import block", () => {
-    const code = `import {\n  a,\n  b as c,\n} from "./x.ts";\nconst d = 1;\n`;
-    expect(prologueEnd(code)).toBe(code.indexOf("const d"));
-  });
-
-  test("is empty when the module opens with something else", () => {
-    expect(prologueEnd(`const a = 1;\nimport b from "./b.ts";\n`)).toBe(0);
-  });
-});
-
 describe("collectSpecifiers", () => {
-  test("keeps prologue imports in source order, dynamic ones after", () => {
+  test("loads and scans with the Bun global absent", async () => {
+    const savedBun: unknown = Reflect.get(globalThis, "Bun");
+    Reflect.deleteProperty(globalThis, "Bun");
+    try {
+      const withoutBun = await import("../src/rewrite-imports.ts?without-bun");
+      expect(withoutBun.collectSpecifiers(`import value from "./value.js";`)).toEqual([
+        "./value.js",
+      ]);
+    } finally {
+      Reflect.set(globalThis, "Bun", savedBun);
+    }
+  });
+
+  test("keeps static and dynamic imports in source order", () => {
     const code = `import a from "./a.ts";\nimport "./b.css";\nexport { c } from "./c.ts";\nconst d = () => import("./d.ts");\n`;
     expect(collectSpecifiers(code)).toEqual(["./a.ts", "./b.css", "./c.ts", "./d.ts"]);
   });
 
-  test("stops where rewriteImports stops, so the two see the same graph", () => {
+  test("finds valid static imports after statements", () => {
     const code = `import a from "./a.ts";\nconst x = 1;\nimport b from "./b.ts";\n`;
-    expect(collectSpecifiers(code)).toEqual(["./a.ts"]);
+    expect(collectSpecifiers(code)).toEqual(["./a.ts", "./b.ts"]);
   });
 
   test("reads a multi-line named import as one specifier", () => {
     expect(collectSpecifiers(`import {\n  a,\n  b as c,\n} from "./x.ts";\n`)).toEqual(["./x.ts"]);
+  });
+
+  test("ignores import-like strings, comments and template text", () => {
+    const code = `const a = 'import x from "./fake-a.ts"';\n// import y from "./fake-b.ts"\n/* import "./fake-c.ts" */\nconst html = \`import z from "./fake-d.ts"\`;\nconst pattern = /import fake from "fake-e"/;\nimport real from "./a.ts";\n`;
+    expect(collectSpecifiers(code)).toEqual(["./a.ts"]);
+  });
+
+  test("ignores import identifiers that are not module syntax", () => {
+    const code = `const value = object.import("./method.ts");\nconst record = { import: "./key.ts" };\nimport "./real.ts";\n`;
+    expect(collectSpecifiers(code)).toEqual(["./real.ts"]);
+  });
+
+  test("decodes escaped module specifiers like the JavaScript parser", () => {
+    expect(collectSpecifiers(`import "./\\u0061.ts";\n`)).toEqual(["./a.ts"]);
+  });
+
+  test("finds dynamic imports inside template expressions but not template text", () => {
+    const code = `const value = \`copy import("./fake.ts") ${"${"}import("./lazy.ts")}\`;\n`;
+    expect(collectSpecifiers(code)).toEqual(["./lazy.ts"]);
   });
 });
 
@@ -110,6 +123,13 @@ describe("rewriteImports", () => {
     const code = `import a from "../components/Doc.astro";\nconst f = () => import("./lazy.ts");\n`;
     expect(rewriteImports(code, options("src/pages/index.astro"))).toBe(
       `import a from "./Doc.astro.js";\nconst f = () => import("./lazy.ts.js");\n`,
+    );
+  });
+
+  test("rewrites imports after statements without touching import-like text", () => {
+    const code = `const copy = 'import x from "../components/Doc.astro"';\n// import y from "../components/Doc.astro"\nimport actual from "../components/Doc.astro";\n`;
+    expect(rewriteImports(code, options("src/pages/index.astro"))).toBe(
+      `const copy = 'import x from "../components/Doc.astro"';\n// import y from "../components/Doc.astro"\nimport actual from "./Doc.astro.js";\n`,
     );
   });
 });
@@ -167,9 +187,7 @@ describe("collectImportedNames", () => {
       .toEqual([]);
   });
 
-  test("reads only the prologue, so page copy contributes no names", () => {
-    // The same bound `rewriteImports` works to, and for the same reason: the compiler
-    // puts the page body in a template literal, where a line can look like an import.
+  test("ignores page copy inside a compiled template literal", () => {
     const code = `import { A } from "astro:env/server";
 const html = \`
 import { LEAKED } from "astro:env/server";

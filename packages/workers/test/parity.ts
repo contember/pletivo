@@ -18,6 +18,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
+import { parsePreparedSite, serializePreparedSite } from "@pletivo/core/artifact";
 import { withoutCdnCgi } from "../src/images.ts";
 import { builtPathname } from "./built-pathname.ts";
 import { imageUrls, readSources, sameBytes, SKIPPED } from "./sources.ts";
@@ -33,9 +34,10 @@ if (process.argv[2] === "--build") {
   // say so before 200 pages are written.
   if (artifactPath) {
     const { prepare } = await import("../../pletivo/src/prepare/index.ts");
+    const prepared = await prepare(root, { pathPrefix: pathPrefix ?? "" });
     await Bun.write(
       artifactPath,
-      JSON.stringify(await prepare(root, { pathPrefix: pathPrefix ?? "" })),
+      serializePreparedSite(prepared.site),
     );
   }
   const { build } = await import("../../pletivo/src/build.ts");
@@ -95,7 +97,7 @@ if ((await child.exited) !== 0) {
  * (`prepare({ pathPrefix })`). In real use both sides sit at the project root and
  * this prefix is empty.
  */
-const artifact: unknown = JSON.parse(await Bun.file(artifactPath).text());
+const artifact = parsePreparedSite(JSON.parse(await Bun.file(artifactPath).text()));
 const sources = await readSources(root);
 const files = new Map([...sources.text].map(([rel, source]) => [`${prefix}/${rel}`, source]));
 /** The fixture's binaries, base64 so they survive the JSON body. */

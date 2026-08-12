@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { compileTailwind, extractCandidates, scanCandidates } from "../src/tailwind.ts";
+import {
+  compileTailwind,
+  extractCandidates,
+  extractHtmlClassCandidates,
+  scanCandidates,
+} from "../src/tailwind.ts";
 import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
 
 /** `tailwindcss` is an optional peer: skip the engine tests where it is not installed. */
@@ -77,6 +82,38 @@ describe("scanCandidates", () => {
   });
 });
 
+describe("extractHtmlClassCandidates", () => {
+  test("decodes class attribute entities and ignores every other HTML context", () => {
+    const found = new Set(extractHtmlClassCandidates(`
+      <!-- <p class="text-red-500"></p> -->
+      <style>.mt-8 { color: red }</style>
+      <script>document.body.className = "italic"</script>
+      <p title="font-bold">text-blue-500</p>
+      <div CLASS="[&amp;&#62svg]:block w-&lbrack;10px&rbrack; [&sol;deep]:block underline"></div>
+    `));
+    expect(found).toContain("[&>svg]:block");
+    expect(found).toContain("w-[10px]");
+    expect(found).toContain("[/deep]:block");
+    expect(found).toContain("underline");
+    expect(found).not.toContain("text-red-500");
+    expect(found).not.toContain("mt-8");
+    expect(found).not.toContain("italic");
+    expect(found).not.toContain("font-bold");
+    expect(found).not.toContain("text-blue-500");
+  });
+
+  test("requires a real raw-text close tag delimiter", () => {
+    const found = new Set(extractHtmlClassCandidates(`
+      <style>x</stylex><i class="mt-8"></i></style>
+      <script>x</script-x><i class="italic"></i></script>
+      <p class="underline"></p>
+    `));
+    expect(found).toContain("underline");
+    expect(found).not.toContain("mt-8");
+    expect(found).not.toContain("italic");
+  });
+});
+
 describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
   test("builds only the utilities the virtual sources use", async () => {
     const files = new Map([
@@ -90,13 +127,17 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       stylesheets: await tailwindStylesheets(),
     });
 
-    expect(css).toContain(".mt-4");
-    expect(css).toContain(".text-red-500");
+    expect(css.css).toContain(".mt-4");
+    expect(css.css).toContain(".text-red-500");
     // Relative @import resolved out of the map, and its theme value used.
-    expect(css).toContain("--spacing-huge");
-    expect(css).toContain(".p-huge");
+    expect(css.css).toContain("--spacing-huge");
+    expect(css.css).toContain(".p-huge");
+    expect(css.consumedStylesheets).toEqual([
+      "src/styles/global.css",
+      "src/styles/tokens.css",
+    ]);
     // Not in any source file, so not emitted.
-    expect(css).not.toContain(".mt-96");
+    expect(css.css).not.toContain(".mt-96");
   });
 
   test("builds the candidates it was handed instead of scanning the files", async () => {
@@ -113,8 +154,8 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       candidates: ["p-2"],
     });
 
-    expect(css).toContain(".p-2");
-    expect(css).not.toContain(".mt-4");
+    expect(css.css).toContain(".p-2");
+    expect(css.css).not.toContain(".mt-4");
   });
 
   test("reports an @import it cannot resolve", async () => {

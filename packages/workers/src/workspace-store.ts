@@ -12,7 +12,10 @@
  * `WorkspaceFiles` as it stands.
  */
 
-import type { ProjectAsset, ProjectAssets } from "./content-files.ts";
+import {
+  createProjectAssetsView,
+  type ProjectAsset,
+} from "./content-files.ts";
 import type { ProjectSnapshot, ProjectStore } from "./project-store.ts";
 
 /** One `readdir` entry, in the `withFileTypes` shape. */
@@ -67,6 +70,20 @@ export interface WorkspaceStoreOptions {
   maxFileBytes?: number;
 }
 
+/** The workspace changed during both attempts to materialize one revision. */
+export class WorkspaceSnapshotChangedError extends Error {
+  constructor(
+    readonly before: string,
+    readonly after: string,
+  ) {
+    super(
+      `[pletivo-workers] workspace changed while taking a project snapshot ` +
+        `(${JSON.stringify(before)} -> ${JSON.stringify(after)})`,
+    );
+    this.name = "WorkspaceSnapshotChangedError";
+  }
+}
+
 /**
  * Build products and dependencies, not sources.
  *
@@ -101,16 +118,14 @@ export function createWorkspaceProjectStore(
   /** Stands in for a revision the workspace will not give, so nothing is reused. */
   let fallback = 0;
 
-  function currentRevision(): string {
+  function currentRevision(): string | undefined {
     const revision = readRevision?.();
-    if (revision === undefined) return `unknown:${++fallback}`;
-    return String(revision);
+    return revision === undefined ? undefined : String(revision);
   }
 
-  function walk(): ProjectSnapshot {
+  function walk(): Omit<ProjectSnapshot, "revision"> {
     const text = new Map<string, string>();
     const assets = new Map<string, ProjectAsset>();
-    const revision = currentRevision();
     const directories = [""];
 
     while (directories.length > 0) {
@@ -136,16 +151,49 @@ export function createWorkspaceProjectStore(
         if (source !== null) text.set(key, source);
       }
     }
-    return { files: text, assets, revision };
+    // SQLite cannot promise that a lazy read after this walk still sees `revision`.
+    // Keep the immutable bytes from this walk; the view indexes keys but probes none.
+    return { files: text, assets: createProjectAssetsView(assets) };
+  }
+
+  function unknownSnapshot(snapshot: Omit<ProjectSnapshot, "revision">): ProjectSnapshot {
+    return { ...snapshot, revision: `unknown:${++fallback}` };
+  }
+
+  function stableSnapshot(
+    snapshot: Omit<ProjectSnapshot, "revision">,
+    revision: string,
+  ): ProjectSnapshot {
+    const stable = { ...snapshot, revision };
+    cached = { revision, snapshot: stable };
+    return stable;
   }
 
   return {
-    snapshot(): Promise<ProjectSnapshot> {
-      const revision = currentRevision();
-      if (cached?.revision === revision) return Promise.resolve(cached.snapshot);
-      const snapshot = walk();
-      cached = { revision: snapshot.revision, snapshot };
-      return Promise.resolve(snapshot);
+    async snapshot(): Promise<ProjectSnapshot> {
+      const before = currentRevision();
+      if (before !== undefined && cached?.revision === before) {
+        return cached.snapshot;
+      }
+
+      const first = walk();
+      const after = currentRevision();
+      if (before === undefined || after === undefined) {
+        // No usable revision means no coherence proof and therefore no cache reuse.
+        return unknownSnapshot(first);
+      }
+      if (before === after) return stableSnapshot(first, before);
+
+      const retryBefore = currentRevision();
+      const retry = walk();
+      const retryAfter = currentRevision();
+      if (retryBefore === undefined || retryAfter === undefined) {
+        return unknownSnapshot(retry);
+      }
+      if (retryBefore !== retryAfter) {
+        throw new WorkspaceSnapshotChangedError(retryBefore, retryAfter);
+      }
+      return stableSnapshot(retry, retryBefore);
     },
   };
 }

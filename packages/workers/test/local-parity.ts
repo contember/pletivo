@@ -11,11 +11,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
-import { parsePreparedSite } from "@pletivo/core/artifact";
+import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
 import { minifyCss } from "../../pletivo/src/css-minify.ts";
 import { serveImage } from "../src/images.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
-import { ContentFiles } from "../src/content-files.ts";
+import { ContentFiles, createProjectAssetsView } from "../src/content-files.ts";
 import { tailwindEntry } from "../src/project-css.ts";
 import { compileTailwind, extractCandidates, scanCandidates } from "../src/tailwind.ts";
 import { projectPaths, renderPage } from "../src/render.ts";
@@ -36,7 +36,7 @@ const root = path.resolve(REPO_ROOT, fixture);
 const prefix = path.relative(REPO_ROOT, root);
 
 const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-local-parity-"));
-/** The child writes the site artifact here — see `parity.ts` for why it is prefixed. */
+/** The child writes the prepare result here — see `parity.ts` for why it is prefixed. */
 const artifactPath = path.join(outDir, "..", `${path.basename(outDir)}-artifact.json`);
 const build = Bun.spawn(
   ["bun", path.join(import.meta.dir, "parity.ts"), "--build", root, outDir, artifactPath, prefix],
@@ -55,15 +55,40 @@ if ((await build.exited) !== 0) {
 const sources = await readSources(root);
 const files = new Map([...sources.text].map(([rel, text]) => [`${prefix}/${rel}`, text]));
 const assets = new Map([...sources.binary].map(([rel, bytes]) => [`${prefix}/${rel}`, bytes]));
+const assetView = createProjectAssetsView(assets);
 
-const artifact = parsePreparedSite(JSON.parse(await Bun.file(artifactPath).text()));
-if (artifact === null) {
-  console.error(`prepare produced an artifact this host cannot read for ${fixture}`);
-  process.exit(1);
+const preparedOutput: unknown = JSON.parse(await Bun.file(artifactPath).text());
+const artifact = prefixProjectImporters(
+  parsePreparedSite(siteFromPrepareOutput(preparedOutput)),
+  prefix,
+);
+
+function siteFromPrepareOutput(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || !Reflect.has(value, "site")) {
+    return value;
+  }
+  return Reflect.get(value, "site");
+}
+
+/** Match the harness's repo-relative file-map namespace without changing producer IDs. */
+function prefixProjectImporters(site: PreparedSite, projectPrefix: string): PreparedSite {
+  if (projectPrefix === "") return site;
+  return {
+    artifact: {
+      ...site.artifact,
+      resolutions: site.artifact.resolutions.map((resolution) => ({
+        ...resolution,
+        importer: resolution.importer.startsWith("project:")
+          ? `project:${path.posix.join(projectPrefix, resolution.importer.slice("project:".length))}`
+          : resolution.importer,
+      })),
+    },
+  };
 }
 
 const compiler = createAstroCompiler(await astroWasmModule());
 const loader = new FileLoader();
+const executionNamespace = { tenant: "local-parity", capabilityGeneration: "content-v1" };
 // On Bun the "binding" and the store are the same object — there is no RPC hop to
 // cross. In workerd they are two halves; see `example/src/index.ts`.
 const contentFiles = new ContentFiles();
@@ -106,7 +131,7 @@ if (projectWide !== null) {
   // The Bun host minifies the finished stylesheet before writing it. Run the same
   // final transform here so this remains a Tailwind parity check, not a whitespace
   // comparison against the pre-minification output.
-  const builtProjectWide = (await minifyCss(projectWide)).trimEnd();
+  const builtProjectWide = (await minifyCss(projectWide.css)).trimEnd();
   const built: string[] = [];
   for await (const rel of new Glob("assets/*.css").scan({ cwd: outDir })) {
     built.push(await Bun.file(path.join(outDir, rel)).text());
@@ -114,10 +139,10 @@ if (projectWide !== null) {
   // A prefix, not the whole file: the Bun host appends the imported source CSS after
   // the compiled Tailwind, and that half was never the thing in question.
   if (built.some((css) => css.startsWith(builtProjectWide))) {
-    console.log(`  = ${projectWide.length} B of Tailwind, byte-identical to pletivo build`);
+    console.log(`  = ${projectWide.css.length} B of Tailwind, byte-identical to pletivo build`);
   } else {
     problems.push(
-      `  ! tailwind — ${projectWide.length} B compiled here match no stylesheet the build wrote` +
+      `  ! tailwind — ${projectWide.css.length} B compiled here match no stylesheet the build wrote` +
         (built.length === 0 ? " (it wrote none)" : `\n${firstDifference(built[0], builtProjectWide)}`),
     );
   }
@@ -157,13 +182,14 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   try {
     page = await renderPage({
       files,
-      assets,
+      assets: assetView,
       pathname,
       loader,
       compiler,
       pagesDir,
       content,
       artifact,
+      executionNamespace,
       tailwind: await tailwindStylesheets(),
     });
   } catch (error) {
@@ -214,7 +240,7 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     // Every utility the page applies has to survive the narrowing. This is the claim
     // the old byte comparison used to carry for free.
     const dropped = [...applied]
-      .filter((token) => hasUtility(projectWide, token) && !hasUtility(sheet, token))
+      .filter((token) => hasUtility(projectWide.css, token) && !hasUtility(sheet, token))
       .sort();
     if (dropped.length > 0) {
       problems.push(`  ! ${rel} — ${dropped.length} utility class(es) missing from the inlined CSS: ${dropped.join(", ")}`);
@@ -243,7 +269,7 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
 // URL names a transform of a file; the file is what the build wrote, and serving the
 // original is this host saying it cannot perform the transform itself.
 for (const url of [...linkedImages].sort()) {
-  const served = serveImage(url, assets);
+  const served = await serveImage(url, assetView);
   if (!served?.bytes) {
     problems.push(`  ! ${url} — a page links to it and this host serves nothing`);
     continue;
@@ -261,7 +287,16 @@ for (const url of [...linkedImages].sort()) {
 // The other half of the dynamic-route API, against the only reference it has: the
 // pages `pletivo build` wrote *are* the pages the project can enumerate.
 const enumerated = new Set(
-  (await projectPaths({ files, assets, loader, compiler, pagesDir, content, artifact })).map(
+  (await projectPaths({
+    files,
+    assets: assetView,
+    loader,
+    compiler,
+    pagesDir,
+    content,
+    artifact,
+    executionNamespace,
+  })).map(
     (path) => path.pathname,
   ),
 );

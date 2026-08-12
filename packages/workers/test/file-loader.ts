@@ -6,6 +6,7 @@ import type {
   DynamicWorkerStub,
   WorkerLoaderBinding,
 } from "../src/render.ts";
+import { programHash } from "../src/execution-identity.ts";
 
 /**
  * A Worker Loader that runs the module bundle on Bun instead of in workerd.
@@ -19,12 +20,22 @@ import type {
  */
 export class FileLoader implements WorkerLoaderBinding {
   readonly bundles = new Map<string, DynamicWorkerCode>();
+  readonly programs = new Map<string, DynamicWorkerCode>();
+  readonly getCounts = new Map<string, number>();
+  readonly factoryCounts = new Map<string, number>();
   #roots: string[] = [];
+  #entries = new Map<string, Promise<{ fetch(request: Request): Promise<Response> }>>();
 
   get(id: string, code: () => DynamicWorkerCode | Promise<DynamicWorkerCode>): DynamicWorkerStub {
+    this.getCounts.set(id, (this.getCounts.get(id) ?? 0) + 1);
     const load = async (): Promise<{ fetch(request: Request): Promise<Response> }> => {
+      this.factoryCounts.set(id, (this.factoryCounts.get(id) ?? 0) + 1);
       const bundle = await code();
       this.bundles.set(id, bundle);
+      this.programs.set(
+        await programHash({ mainModule: bundle.mainModule, modules: bundle.modules }),
+        bundle,
+      );
       const root = await fs.mkdtemp(path.join(os.tmpdir(), `pletivo-loader-${id}-`));
       this.#roots.push(root);
       for (const [name, source] of Object.entries(bundle.modules)) {
@@ -49,9 +60,15 @@ export class FileLoader implements WorkerLoaderBinding {
         fetch: (request) => Promise.resolve(fetchHandler.call(handler, request, bundle.env)),
       };
     };
+    let entry = this.#entries.get(id);
+    if (entry === undefined) {
+      entry = load();
+      this.#entries.set(id, entry);
+    }
+    const cachedEntry = entry;
     return {
       getEntrypoint: () => ({
-        fetch: async (request: Request) => (await load()).fetch(request),
+        fetch: async (request: Request) => (await cachedEntry).fetch(request),
       }),
     };
   }
@@ -59,5 +76,10 @@ export class FileLoader implements WorkerLoaderBinding {
   async cleanup(): Promise<void> {
     for (const root of this.#roots) await fs.rm(root, { recursive: true, force: true });
     this.#roots = [];
+    this.#entries.clear();
+    this.bundles.clear();
+    this.programs.clear();
+    this.getCounts.clear();
+    this.factoryCounts.clear();
   }
 }
