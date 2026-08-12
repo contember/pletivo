@@ -4,10 +4,19 @@
 **Status:** Steps 1–3 plus images implemented; the target site renders **211 of 211**
 **Area:** `@pletivo/workers`
 
-**Status:** design only, no code written.
+**Document role:** historical design and measurements; the implementation status is
+recorded above and the current Artifact V2 contract is called out below.
 **Scope:** how `@pletivo/workers` gets what `astro:config:setup` produces, for the two
 sites in `docs/todos/017` (the static dogfood site) and `docs/todos/018` (the SSR
 dogfood site, built on nua).
+
+> **Current contract:** the concrete V1 shapes and file plan in this document are
+> historical design evidence. The implementation is Artifact V2: a strict, closed,
+> importer-aware module graph. Prepare reports are separate from `PreparedSite`, and a
+> fatal diagnostic prevents emission. Config currently carries only optional `site`;
+> prepare rejects non-default routing/build semantics and unsupported hooks rather than
+> serializing fields the static host ignores. Scripts are limited to `headInline` and
+> `page`. See `packages/core/src/artifact.ts`.
 
 
 > **Verified independently before adopting:** bare specifiers pass through
@@ -65,7 +74,9 @@ Both cost me a wrong conclusion before I checked:
 2. **The pathname must carry the trailing slash.** Asking for `/cookies` rather
    than `/cookies/` makes `Astro.url.pathname` differ, and a site that builds its
    own `canonical` and `og:url` from it diverges on every page. Nothing to do
-   with `trailingSlash: 'ignore'`; the artifact carries that correctly.
+   with `trailingSlash: 'ignore'`; the artifact used by this historical measurement
+   carried it. Artifact V2 now rejects non-default routing semantics until the static
+   host can honor them.
 
 ### One bug the image work uncovered
 
@@ -152,8 +163,9 @@ A Worker Loader isolate has:
 - `globalOutbound: null` (`render.ts:655`) — no network, deliberately.
 
 Everything the isolate can ever run is a string in `modules: Record<string, string>`,
-content-addressed by `bundleHash` (`render.ts:948`). Everything else has to arrive as
-JSON in the request body or as a binding in `env`.
+content-addressed with `ProgramHash`. The separate `IsolateKey` also covers immutable
+factory policy and host compatibility. Everything else has to arrive as JSON in the
+request body or as a binding in `env`.
 
 Integrations are arbitrary npm packages that do arbitrary Node work. There is no
 version of "run integrations in the isolate" that does not first require someone with
@@ -293,7 +305,7 @@ bundle the code, hand both to the Worker.
 - **Buys:** one place where integrations run, and it has a filesystem and npm — which
   is what every integration in both sites assumes. Failures land at deploy, loudly.
   Zero per-render cost. Reuses `runner.ts` verbatim. Isolate identity keeps working:
-  artifact modules go into `modules`, so `bundleHash` changes when the artifact
+  artifact modules go into `modules`, so `ProgramHash` changes when the artifact
   changes and not when content changes.
 - **Costs:** changing an integration, an integration's options, `markdown.*`,
   `site`/`base`/`trailingSlash`, or the npm dependency set needs a redeploy. Any
@@ -540,7 +552,7 @@ For the target use case — an agent editing a site in a Durable Object, preview
 
 | Change | Live? |
 |---|---|
-| Any `.astro` / `.tsx` / `.md` / `.css` / content file | **Live.** It is the file map; content does not even change `bundleHash` (it rides the binding, `content-files.ts:1-22`). |
+| Any `.astro` / `.tsx` / `.md` / `.css` / content file | **Live.** It is the file map; content does not change `ProgramHash` because it rides the request-scoped binding (`content-files.ts:1-22`). |
 | Adding a page, a route, a collection entry | **Live.** |
 | Editing a rehype plugin's *source* (the static dogfood site's `tech-aliases.ts`) | **Not live** — it is in the markdown bundle, not the file map. Could be made live by treating project-source plugins as ordinary modules; worth doing in step 5 if it is cheap. |
 | Adding an icon name to `icon({ include })` | **Not live.** *Mitigation:* freeze the whole `@iconify-json/lucide` pack (552 kB once) instead of the 45-name include list, and every lucide name works live. Per-integration mitigations like this are usually available and worth taking. |
@@ -557,8 +569,9 @@ human is unchanged by this design.
 
 ## 7. What remains unsupported
 
-Listed so nobody re-derives them. Each should appear in `artifact.diagnostics` at
-prepare time rather than being discovered at render time.
+Listed so nobody re-derives them. In the current V2 contract they belong in the
+separate `PrepareReport`; a fatal item throws `PrepareError` and prevents artifact
+emission rather than producing a partially executable site.
 
 **Cannot work at all in the isolate:**
 

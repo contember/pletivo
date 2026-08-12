@@ -418,9 +418,8 @@ Cache-key hazards, both must be handled or the flag silently no-ops:
 - The incremental cache (`node_modules/.pletivo/cache/`) keys compiled `.astro` output. The flag
   changes that output, so it must enter the cache key — otherwise flipping it serves stale
   un-annotated modules.
-- The Workers bundle is content-addressed by `bundleHash`
-  (`/home/matej21/projects/oss/pletivo/packages/workers/src/render.ts:1077`). The flag must be part
-  of the compile inputs feeding that hash.
+- The Workers executable is content-addressed by `ProgramHash`. The flag must be part
+  of the final main-module/module input feeding that hash.
 
 Path-agreement hazard: pletivo's `filename` is **cwd-relative**
 (`astro-css-order.ts:70`, `path.relative(process.cwd(), file)`), while nua resolves against
@@ -578,10 +577,9 @@ in-isolate (`/home/matej21/projects/oss/pletivo/packages/workers/src/astro-compi
 options object passes straight through, and the emitted attributes are literal text in generated
 module code. **No filesystem, no vite, no middleware is involved in producing the mapping.**
 
-It also survives the frozen-artifact design of `docs/todos/020`. Per that doc's own table, any
-`.astro` / `.tsx` / `.md` edit stays **live** — annotations ride the file map, not the artifact.
-The flag is a compile input, so it belongs in the artifact/bundle hash (§6.1), meaning toggling it
-is a redeploy, not a live change. That is the right granularity.
+It also survives the prepared-module design of `docs/todos/020`. Source annotations
+ride the live project modules. The flag is a compile input, so its emitted code enters
+`ProgramHash`; changing it creates a different executable and isolate identity.
 
 What still does **not** work in the Worker is the other half of visual editing — the **write path**.
 `docs/todos/020` §7 is blunt: *"Visual editing does not work under the Workers host. The CMS editor
@@ -694,7 +692,7 @@ byte-identical for `index.ts` and `html-processor.ts`; only `dev-middleware.ts` 
 | `astro:server:setup` | `packages/pletivo/src/astro-host/runner.ts:355-368` (`injectScript` `:239-242`) |
 | connect middleware | `packages/core/src/astro-host/server-shim.ts:45-68`; `packages/pletivo/src/astro-host/connect-bridge.ts:74,103-105` |
 | generated worker runtime | `packages/workers/src/generated/runtime-modules.ts`; `packages/workers/scripts/build-runtime.ts` |
-| bundle hash | `packages/workers/src/render.ts:1077` |
+| executable identity | `packages/workers/src/execution-identity.ts` |
 | dogfood finding | `docs/todos/018-dogfood-ssr-dev-server.md:83-88` |
 | frozen-artifact verdict | `docs/todos/020-workers-integration-phase.md` §7 |
 
