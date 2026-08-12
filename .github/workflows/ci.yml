@@ -52,6 +52,9 @@ jobs:
       - name: Unit & integration tests
         run: bun test tests/unit tests/integration tests/e2e tests/conformance
 
+      - name: Workers host tests
+        run: bun test packages/workers/test
+
       - name: Setup Astro compatibility tests
         working-directory: tests/astro-e2e
         run: |

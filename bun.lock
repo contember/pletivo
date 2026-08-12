@@ -68,7 +68,17 @@
       "name": "@pletivo/core",
       "version": "0.1.0",
       "dependencies": {
+        "@mdx-js/mdx": "^3.1.0",
         "@pletivo/runtime": "workspace:*",
+        "js-yaml": "^4.1.1",
+        "rehype-stringify": "^10.0.1",
+        "remark-gfm": "^4.0.1",
+        "remark-parse": "^11.0.0",
+        "remark-rehype": "^11.1.2",
+        "unified": "^11.0.5",
+      },
+      "devDependencies": {
+        "@types/js-yaml": "^4.0.9",
       },
     },
     "packages/pletivo": {
@@ -108,6 +118,22 @@
     "packages/runtime": {
       "name": "@pletivo/runtime",
       "version": "0.1.0",
+    },
+    "packages/workers": {
+      "name": "@pletivo/workers",
+      "version": "0.1.0",
+      "dependencies": {
+        "@astrojs/compiler": "^3",
+      },
+      "devDependencies": {
+        "tailwindcss": "^4",
+      },
+      "peerDependencies": {
+        "tailwindcss": "^4",
+      },
+      "optionalPeers": [
+        "tailwindcss",
+      ],
     },
   },
   "packages": {
@@ -296,6 +322,8 @@
     "@pletivo/core": ["@pletivo/core@workspace:packages/core"],
 
     "@pletivo/runtime": ["@pletivo/runtime@workspace:packages/runtime"],
+
+    "@pletivo/workers": ["@pletivo/workers@workspace:packages/workers"],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-beta.27", "", {}, "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA=="],
 
@@ -958,6 +986,8 @@
     "style-to-object": ["style-to-object@1.0.14", "", { "dependencies": { "inline-style-parser": "0.2.7" } }, "sha512-LIN7rULI0jBscWQYaSswptyderlarFkjQ+t79nzty8tcIAceVomEVlLzH5VP4Cmsv6MtKhs7qaAiwlcp+Mgaxw=="],
 
     "svgo": ["svgo@4.0.1", "", { "dependencies": { "commander": "^11.1.0", "css-select": "^5.1.0", "css-tree": "^3.0.1", "css-what": "^6.1.0", "csso": "^5.0.5", "picocolors": "^1.1.1", "sax": "^1.5.0" }, "bin": "./bin/svgo.js" }, "sha512-XDpWUOPC6FEibaLzjfe0ucaV0YrOjYotGJO1WpF0Zd+n6ZGEQUsSugaoLq9QkEZtAfQIxT42UChcssDVPP3+/w=="],
+
+    "tailwindcss": ["tailwindcss@4.3.3", "", {}, "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ=="],
 
     "tiny-inflate": ["tiny-inflate@1.0.3", "", {}, "sha512-pkY1fj1cKHb2seWDy0B16HeWyczlJA9/WW3u3c4z/NiWDsO3DOU5D7nhTLE9CF0yXv/QZFY7sEJmj24dK+Rrqw=="],
 

@@ -3,7 +3,7 @@ import fs from "fs";
 import { pathToFileURL } from "url";
 import { Glob } from "bun";
 import { z } from "zod";
-import { renderMarkdown, parseFrontmatter, parseYamlObject } from "./markdown";
+import { renderMarkdown, parseFrontmatter, parseYamlObject } from "@pletivo/core/content/markdown";
 import {
   imageUrlFor,
   makeImageMetadata,

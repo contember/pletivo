@@ -12,7 +12,7 @@ import { hmrClientScript } from "@pletivo/runtime/hmr-client";
 import { devCss } from "./css";
 import { registerAstroPlugin, getAstroCssForPage, extractAstroClasses, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
-import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
+import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
 import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";

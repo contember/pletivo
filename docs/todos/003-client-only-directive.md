@@ -20,5 +20,5 @@ Unclear whether `client:only` works. The island system always SSR-renders the co
 
 ## Files
 
-- `packages/pletivo/src/runtime/island.ts` — island rendering
-- `packages/pletivo/src/runtime/hydration.ts` — client-side hydration
+- `packages/runtime/src/island.ts` — island rendering
+- `packages/runtime/src/hydration.ts` — client-side hydration

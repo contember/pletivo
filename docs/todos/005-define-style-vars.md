@@ -30,4 +30,4 @@ Should produce: `<div class="box" style="--color: red">...</div>`
 
 ## Files
 
-- `packages/pletivo/src/runtime/astro-shim.ts` — `defineStyleVars` stub
+- `packages/runtime/src/astro-shim.ts` — `defineStyleVars` stub
