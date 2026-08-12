@@ -11,6 +11,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
+import { parsePreparedSite } from "@pletivo/core/artifact";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles } from "../src/content-files.ts";
 import { projectPaths, renderPage } from "../src/render.ts";
@@ -31,12 +32,17 @@ const root = path.resolve(REPO_ROOT, fixture);
 const prefix = path.relative(REPO_ROOT, root);
 
 const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-local-parity-"));
-const build = Bun.spawn(["bun", path.join(import.meta.dir, "parity.ts"), "--build", root, outDir], {
-  cwd: REPO_ROOT,
-  env: { ...process.env, NODE_ENV: "production" },
-  stdout: "inherit",
-  stderr: "inherit",
-});
+/** The child writes the site artifact here — see `parity.ts` for why it is prefixed. */
+const artifactPath = path.join(outDir, "..", `${path.basename(outDir)}-artifact.json`);
+const build = Bun.spawn(
+  ["bun", path.join(import.meta.dir, "parity.ts"), "--build", root, outDir, artifactPath, prefix],
+  {
+    cwd: REPO_ROOT,
+    env: { ...process.env, NODE_ENV: "production" },
+    stdout: "inherit",
+    stderr: "inherit",
+  },
+);
 if ((await build.exited) !== 0) {
   console.error(`pletivo build failed for ${fixture}`);
   process.exit(1);
@@ -46,6 +52,12 @@ const files = new Map<string, string>();
 for await (const rel of new Glob("**/*").scan({ cwd: root, dot: false })) {
   if (rel.split("/").some((segment) => SKIPPED.has(segment))) continue;
   files.set(`${prefix}/${rel}`, await Bun.file(path.join(root, rel)).text());
+}
+
+const artifact = parsePreparedSite(JSON.parse(await Bun.file(artifactPath).text()));
+if (artifact === null) {
+  console.error(`prepare produced an artifact this host cannot read for ${fixture}`);
+  process.exit(1);
 }
 
 const compiler = createAstroCompiler(await astroWasmModule());
@@ -74,6 +86,7 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
       compiler,
       pagesDir,
       content,
+      artifact,
       tailwind: await tailwindStylesheets(),
     });
   } catch (error) {
@@ -103,7 +116,9 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
 // The other half of the dynamic-route API, against the only reference it has: the
 // pages `pletivo build` wrote *are* the pages the project can enumerate.
 const enumerated = new Set(
-  (await projectPaths({ files, loader, compiler, pagesDir, content })).map((path) => path.pathname),
+  (await projectPaths({ files, loader, compiler, pagesDir, content, artifact })).map(
+    (path) => path.pathname,
+  ),
 );
 const missing = [...builtPathnames].filter((pathname) => !enumerated.has(pathname)).sort();
 const extra = [...enumerated].filter((pathname) => !builtPathnames.has(pathname)).sort();
@@ -121,6 +136,7 @@ await loader.cleanup();
 console.log(`\n${fixture}: ${identical}/${pages} byte-identical`);
 for (const problem of problems) console.log(`\n${problem}`);
 await fs.rm(outDir, { recursive: true, force: true });
+await fs.rm(artifactPath, { force: true });
 process.exit(problems.length === 0 ? 0 : 1);
 
 function firstDifference(expected: string, actual: string): string {

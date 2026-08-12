@@ -72,6 +72,21 @@ describe("byte parity with pletivo build", () => {
     60_000,
   );
 
+  test(
+    "the vendor fixture renders a page whose components come from npm",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-vendor");
+      // One page, and everything on it arrived through the artifact: a bare specifier
+      // resolved to a package's `.astro`, that component's scoped CSS, a frozen
+      // `virtual:` module, a bundled JS entry, `site` from the frozen config and an
+      // `injectScript('head-inline')` body — all byte-for-byte against `pletivo build`.
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
   test.skipIf(!HAS_TAILWIND)(
     "the Tailwind fixture renders the same HTML and the same stylesheet on both hosts",
     async () => {

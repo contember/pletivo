@@ -1,7 +1,7 @@
 # 020 — Astro integrations in the Workers host
 
 **Priority:** S-tier
-**Status:** Design only — no code written
+**Status:** Steps 1–3 implemented; the target site still renders 0 of 211 pages
 **Area:** `@pletivo/workers`
 
 **Status:** design only, no code written.
@@ -14,6 +14,50 @@ sites in `docs/todos/017` (the static dogfood site) and `docs/todos/018` (the SS
 > npm point below is real. The counts are higher than the design states —
 > **37** files import `astro-icon/components` in the static dogfood site (not 20), 13 import
 > `@nuasite/components` in the nua site.
+
+
+## Outcome of steps 1–3
+
+`pletivo prepare` runs the config phase on Bun and emits the artifact; the
+Worker resolves npm through it. **6/6 parity fixtures byte-identical in real
+workerd**, including a new one whose components come from npm.
+
+the static dogfood site's npm cost: 7 bare specifiers → 4 packages, **97.2 kB of modules** plus
+11.3 kB of carried sources. A 62-component site is ~0.17% of the 64 MiB limit,
+so the module map is not the constraint anyone feared.
+
+**But 0 of 211 pages render, for one reason:** every page reaches
+`BaseLayout → Header.astro`, which imports `astro:assets` — 21 files do. No
+Worker can answer it as things stand: `getImage()` needs image bytes and an
+output-path registry, and the content binding carries text. `prepare` names all
+21 files as diagnostics rather than shipping a stub that would render a broken
+`src`.
+
+A scratch probe with a fake `astro:assets` renders **28/211** — the static pages.
+The other 183 are collection-backed and 404 with `getStaticPaths() returned no
+entry`, because `image()` fails validation for every entry and empties all 9
+collections.
+
+So the remaining wall is **images**, not integrations: binary reads over the
+content binding, `image()` in schemas, and an `astro:assets` the isolate can
+answer. `import.meta.env` is also `undefined` in the isolate, which
+`src/consts.ts` reads.
+
+### Three pre-existing bugs the real site exposed
+
+None were in the design's scope; all are fixed.
+
+1. **`extractCandidates` was super-linear on a distant `]`.** the static dogfood site ships a
+   626 kB `scripts/asset-manifest.json`; scanning it took 449 s, and
+   `projectStylesheet` **509 s per render**. Bounded at 2 KiB → 185 ms. This
+   alone made the target unmeasurable, and it would have hit any site with a
+   large JSON in its tree.
+2. **`Bun.build` on `@iconify/utils`' entry** emits an 83-name export clause and
+   defines only some of them; the Loader refuses the module. Fixed by bundling a
+   generated `export { … } from` entry, which has to live *outside* node_modules
+   or it is tree-shaken identically.
+3. **Extensionless imports and `./x.js` naming `x.ts`** (`016 §7`) blocked every
+   the static dogfood site page through its layout.
 
 ---
 

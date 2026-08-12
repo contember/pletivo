@@ -26,7 +26,8 @@ import {
   type WorkerLoaderBinding,
 } from "../../src/render.ts";
 import { ContentFiles, type ContentBinding, type ContentFileRef } from "../../src/content-files.ts";
-import type { OutboundAccess, OutboundBinding } from "../../src/outbound.ts";
+import type { OutboundBinding } from "../../src/outbound.ts";
+import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
 import type { ProjectEnv } from "../../src/env.ts";
 import { SITE } from "./site.ts";
 import { TAILWIND } from "./tailwind.ts";
@@ -116,6 +117,14 @@ interface RenderRequest {
   site?: string;
   /** `"proxy"` puts `PletivoOutbound` in front of the isolate. Anything else: no network. */
   outbound?: string;
+  /**
+   * What `pletivo prepare` froze, sent with the request rather than bundled in.
+   *
+   * A single-site worker would import its `pletivo-artifact.ts` the way this one
+   * imports `TAILWIND`; a preview server handed a different project per request has to
+   * take the artifact the same way it takes the files, so that is what this does.
+   */
+  artifact?: unknown;
 }
 
 /** One render, as this worker performs it. */
@@ -125,6 +134,7 @@ interface ParsedRender {
   pagesDir?: string;
   site?: string;
   proxyOutbound: boolean;
+  artifact?: PreparedSite;
 }
 
 function isRenderRequest(value: unknown): value is RenderRequest {
@@ -149,9 +159,9 @@ export default {
 
     try {
       if (url.pathname === "/__paths") {
-        const { files, pagesDir } = await readRenderRequest(request);
+        const { files, pagesDir, artifact } = await readRenderRequest(request);
         return Response.json(
-          await projectPaths({ files, pagesDir, loader: env.LOADER, content }),
+          await projectPaths({ files, pagesDir, artifact, loader: env.LOADER, content }),
         );
       }
 
@@ -205,6 +215,13 @@ async function readRenderRequest(request: Request): Promise<ParsedRender> {
   if (!isRenderRequest(body)) {
     throw new Error('POST /__render wants {"files": {path: source}, "pathname": "/"}');
   }
+  // A malformed artifact is dropped rather than half-read: `parsePreparedSite`
+  // returns null, the render proceeds without it, and the bare specifier it would
+  // have answered fails by name at the Loader.
+  const artifact = body.artifact === undefined ? undefined : parsePreparedSite(body.artifact);
+  if (body.artifact !== undefined && artifact === null) {
+    throw new Error("POST /__render was given an artifact this host cannot read");
+  }
   return {
     files: new Map(Object.entries(body.files)),
     pathname: body.pathname ?? "/",
@@ -212,6 +229,7 @@ async function readRenderRequest(request: Request): Promise<ParsedRender> {
     site: body.site,
     // An exact match, so a typo asks for nothing rather than for the network.
     proxyOutbound: body.outbound === "proxy",
+    ...(artifact ? { artifact } : {}),
   };
 }
 

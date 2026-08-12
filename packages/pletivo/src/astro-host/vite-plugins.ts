@@ -185,6 +185,23 @@ async function materializeViteVirtualModule(
   return filePath;
 }
 
+/**
+ * One virtual module's finished body, for `pletivo prepare` to freeze.
+ *
+ * The same `resolveId` → `load` walk `materializeViteVirtualModule` does, without the
+ * file it writes: a Worker has nowhere to put a file, so the artifact carries the text.
+ * A plugin whose `load()` depends on request-time state is exactly the thing this
+ * cannot serve, and it will freeze whatever that state was at prepare time — the
+ * design (`docs/todos/020 §7`) names the one real instance.
+ */
+export async function freezeViteVirtualModule(
+  specifier: string,
+  importer?: string,
+): Promise<{ code: string; loader: string } | null> {
+  const resolvedId = await resolveViteId(specifier, importer);
+  return loadViteId(resolvedId ?? specifier);
+}
+
 async function resolveViteId(specifier: string, importer?: string): Promise<string | null> {
   for (const p of collectedPlugins) {
     if (typeof p.resolveId !== "function") continue;

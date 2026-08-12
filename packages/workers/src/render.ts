@@ -41,6 +41,8 @@ import {
   type RouteParams,
 } from "@pletivo/core/router";
 import { parseMarkdown } from "@pletivo/core/content/markdown";
+import type { InjectedScripts, PreparedSite } from "@pletivo/core/artifact";
+import { artifactModuleNames } from "./artifact.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
@@ -163,6 +165,17 @@ export interface ProjectOptions {
    * `process.env` entry. Capped at 1 MiB; see `env.ts`.
    */
   env?: ProjectEnv;
+  /**
+   * What `pletivo prepare` froze out of `astro:config:setup` — vendored npm packages,
+   * frozen virtual modules, `node_modules` sources, the config fields a render reads,
+   * and the injected script bodies.
+   *
+   * Code, not configuration: its modules go into the map, so a different integration
+   * set is a different `bundleHash` and a different isolate — which is correct, it is
+   * a different program. Without one, a project that imports an npm package fails at
+   * the Loader, which is where every such project stood before. See `artifact.ts`.
+   */
+  artifact?: PreparedSite;
 }
 
 export interface RenderPageOptions extends ProjectOptions {
@@ -300,9 +313,13 @@ const TYPESCRIPT_SYNTAX = [
  * in, it made every isolate failure in a content project blame a file with nothing
  * wrong with it, which is the exact mistake `1101194` was about.
  */
-export function typescriptSuspects(modules: Record<string, string>): string[] {
+export function typescriptSuspects(
+  modules: Record<string, string>,
+  /** Names the artifact supplied — Bun's own bundler output, for the same reason. */
+  vendored: ReadonlySet<string> = new Set(),
+): string[] {
   return Object.keys(modules)
-    .filter((name) => !(name in GENERATED_MODULES))
+    .filter((name) => !(name in GENERATED_MODULES) && !vendored.has(name))
     .filter((name) => TYPESCRIPT_SYNTAX.some((pattern) => pattern.test(modules[name] ?? "")))
     .sort();
 }
@@ -438,7 +455,7 @@ async function isolatePaths(
   prefix: string,
   options: ProjectOptions,
 ): Promise<Map<string, RouteParams[]>> {
-  const project = await compileProject(options.files, options.compiler);
+  const project = await compileProject(options.files, options.compiler, options.artifact ?? null);
   const { payload } = await callIsolate({
     project,
     options,
@@ -459,8 +476,12 @@ async function isolatePaths(
 // ── Rendering ───────────────────────────────────────────────────────
 
 export async function renderPage(options: RenderPageOptions): Promise<RenderedPage> {
-  const { files, pathname, loader, pagesDir = DEFAULT_PAGES_DIR, site } = options;
+  const { files, pathname, loader, pagesDir = DEFAULT_PAGES_DIR } = options;
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
+  // The caller's `site` outranks the artifact's: a preview server serving one project
+  // under several hostnames is naming the origin it is actually being reached at.
+  const site = options.site ?? options.artifact?.artifact.config.site;
+  const scripts = options.artifact?.artifact.scripts;
 
   const match = findRoute(projectRoutes(files, pagesDir), pathname);
   if (!match) throw new RouteNotFoundError(pathname);
@@ -484,16 +505,24 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     // Only when the project has a stylesheet at all: the common CSS-free markdown site
     // still renders without ever touching the wasm compiler.
     const stylesheet = hasStylesheet(files)
-      ? await siteStylesheet(await compileProject(files, options.compiler), options)
+      ? await siteStylesheet(
+          await compileProject(files, options.compiler, options.artifact ?? null),
+          options,
+        )
       : null;
-    const html = finalizeHtml(await renderMarkdownPage(source), "", stylesheet?.href ?? null);
+    const html = finalizeHtml(
+      await renderMarkdownPage(source),
+      "",
+      stylesheet?.href ?? null,
+      scripts,
+    );
     return { html, file, bundleId: "", assets: assetsOf(stylesheet) };
   }
   if (!isExecutableModule(file)) {
     throw new UnsupportedRouteError(file, "only .astro, .tsx and .md pages render here");
   }
 
-  const project = await compileProject(files, options.compiler);
+  const project = await compileProject(files, options.compiler, options.artifact ?? null);
   const stylesheet = await siteStylesheet(project, options);
   const rendered = await renderModule({
     project,
@@ -517,7 +546,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   // puts it on the Bun host.
   const styles = [css, rendered.tsxStyles.join("\n")].filter(Boolean).join("\n");
   return {
-    html: finalizeHtml(rendered.html, styles, stylesheet?.href ?? null),
+    html: finalizeHtml(rendered.html, styles, stylesheet?.href ?? null, scripts),
     file,
     bundleId: rendered.bundleId,
     assets: assetsOf(stylesheet),
@@ -548,7 +577,9 @@ async function siteStylesheet(
     projectRoutes(options.files, pagesDir).map((route) => [prefix + route.file, route.file]),
   );
   return projectStylesheet({
-    files: options.files,
+    // `project.sources`, not `options.files`: a stylesheet imported by an `.astro`
+    // component that lives in `node_modules` is only in the map the artifact merged.
+    files: project.sources,
     srcDir,
     rootDir: options.rootDir ?? parentDir(srcDir),
     cssImports: project.cssImports,
@@ -725,7 +756,7 @@ async function callIsolate(input: {
   try {
     response = await stub.getEntrypoint().fetch(request);
   } catch (error) {
-    throw new IsolateStartError(error, typescriptSuspects(modules));
+    throw new IsolateStartError(error, typescriptSuspects(modules, artifactModuleNames(options.artifact)));
   } finally {
     handle?.close();
   }

@@ -27,7 +27,17 @@ const SKIPPED = new Set(["node_modules", "dist", "tmp", ".astro", ".wrangler"]);
 // ── Child mode: one `pletivo build`, into a directory outside the fixture ──
 
 if (process.argv[2] === "--build") {
-  const [, , , root, outDir] = process.argv;
+  const [, , , root, outDir, artifactPath, pathPrefix] = process.argv;
+  // The config/integration phase, in the same child and before the build: it registers
+  // the same Bun plugins the build needs, and a fixture that cannot be prepared should
+  // say so before 200 pages are written.
+  if (artifactPath) {
+    const { prepare } = await import("../../pletivo/src/prepare/index.ts");
+    await Bun.write(
+      artifactPath,
+      JSON.stringify(await prepare(root, { pathPrefix: pathPrefix ?? "" })),
+    );
+  }
   const { build } = await import("../../pletivo/src/build.ts");
   // The same config every integration test uses (`tests/conformance/corpus.ts`),
   // with the output redirected so nothing is written into the fixture.
@@ -53,7 +63,14 @@ const workerUrl = process.argv[3] ?? "http://localhost:8799";
 const root = path.resolve(REPO_ROOT, fixture);
 
 const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-parity-"));
-const child = Bun.spawn(["bun", import.meta.path, "--build", root, outDir], {
+/**
+ * Where the child leaves the site artifact — the frozen `astro:config:setup`, the
+ * vendored npm modules and the `node_modules` sources. Outside the fixture, because
+ * it is a build product; keyed with `prefix`, for the reason below.
+ */
+const artifactPath = path.join(outDir, "..", `${path.basename(outDir)}-artifact.json`);
+const prefix = path.relative(REPO_ROOT, root);
+const child = Bun.spawn(["bun", import.meta.path, "--build", root, outDir, artifactPath, prefix], {
   // From the repo root, so the fixture's TSX resolves the same JSX runtime the
   // conformance harness gives it, and production so no dev-only path is taken.
   cwd: REPO_ROOT,
@@ -70,10 +87,11 @@ if ((await child.exited) !== 0) {
  * Both hosts must see the same `filename` for a component, because the Astro
  * compiler derives the `astro-{scope}` hash from it. The Bun host names a module by
  * its path relative to `process.cwd()`, and the build above runs from the repo root
- * — so the virtual file map is keyed the same way. In real use both sides sit at the
- * project root and this prefix is empty.
+ * — so the virtual file map is keyed the same way, and so is the artifact
+ * (`prepare({ pathPrefix })`). In real use both sides sit at the project root and
+ * this prefix is empty.
  */
-const prefix = path.relative(REPO_ROOT, root);
+const artifact: unknown = JSON.parse(await Bun.file(artifactPath).text());
 const files = new Map(
   [...(await readSources(root))].map(([rel, source]) => [`${prefix}/${rel}`, source]),
 );
@@ -87,7 +105,7 @@ for (const [outputPath, expected] of bunPages) {
   const pathname = builtPathname(outputPath);
   const response = await fetch(`${workerUrl}/__render`, {
     method: "POST",
-    body: JSON.stringify({ files: Object.fromEntries(files), pathname, pagesDir }),
+    body: JSON.stringify({ files: Object.fromEntries(files), pathname, pagesDir, artifact }),
   });
   const actual = await response.text();
   if (!response.ok) {
@@ -106,7 +124,7 @@ for (const [outputPath, expected] of bunPages) {
 // wrote *are* the pages the project can enumerate.
 const listed = await fetch(`${workerUrl}/__paths`, {
   method: "POST",
-  body: JSON.stringify({ files: Object.fromEntries(files), pagesDir }),
+  body: JSON.stringify({ files: Object.fromEntries(files), pagesDir, artifact }),
 });
 const enumerated = listed.ok ? pathnamesOf(await listed.json()) : null;
 if (enumerated === null) {
@@ -130,6 +148,7 @@ if (enumerated === null) {
 console.log(`\n${fixture}: ${identical}/${bunPages.size} byte-identical`);
 for (const { page, detail } of divergent) console.log(`\n  ! ${page}\n${detail}`);
 await fs.rm(outDir, { recursive: true, force: true });
+await fs.rm(artifactPath, { force: true });
 process.exit(divergent.length === 0 ? 0 : 1);
 
 /** The pathnames out of a `/__paths` response, without trusting its shape. */

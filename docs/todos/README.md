@@ -15,6 +15,7 @@ SSG-relevant gaps in Astro API surface support, ordered by priority.
 ## A-tier — Important for real projects
 
 - [016 — Workers host divergences](016-workers-host-divergences.md) — where `@pletivo/workers` can disagree with the Bun host, measured
+- [021 — CMS source mapping](021-cms-source-mapping.md) — **design**; the mapping is one compiler flag pletivo never passes, and it works in all three hosts
 - [002 — Image Optimization](002-image-optimization.md) — `<Image>`, `<Picture>`, `getImage()` are stubbed
 - [003 — client:only Directive](003-client-only-directive.md) — components needing browser APIs at render crash
 - [005 — defineStyleVars](005-define-style-vars.md) — dynamic CSS custom properties from frontmatter/props
