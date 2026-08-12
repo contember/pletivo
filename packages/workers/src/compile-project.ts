@@ -16,7 +16,9 @@
 
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
+import type { PreparedSite } from "@pletivo/core/artifact";
 import { compileAstro, parseAstro, type AstroCompiler } from "./astro-compiler.ts";
+import { artifactBinder } from "./artifact.ts";
 import {
   ENV_CLIENT_SPECIFIER,
   ENV_MODULES,
@@ -55,6 +57,12 @@ export interface AstroStyles {
 export interface CompiledProject {
   /** Module name -> JavaScript, ready for `env.LOADER`. Includes `@pletivo/runtime`. */
   modules: Record<string, string>;
+  /**
+   * The file map this was compiled from: the caller's, plus whatever the artifact
+   * contributed. Everything downstream that walks the graph — the CSS pipeline above
+   * all — has to see the same map, or a `node_modules` component's edges lead nowhere.
+   */
+  sources: ReadonlyMap<string, string>;
   /** Project path -> its module name, for the files that produced one. */
   moduleNames: ReadonlyMap<string, string>;
   /** Project path -> the `<style>` blocks it declares. */
@@ -191,7 +199,52 @@ function findContentConfig(files: ReadonlyMap<string, string>): string | null {
 
 function extensionOf(file: string): string {
   const at = file.lastIndexOf(".");
-  return at === -1 ? "" : file.slice(at).toLowerCase();
+  const slash = file.lastIndexOf("/");
+  return at === -1 || at < slash ? "" : file.slice(at).toLowerCase();
+}
+
+/**
+ * Extensions tried when a specifier names no file map key on its own, in the order
+ * Bun's resolver tries them — so a project that runs on the Bun host resolves the same
+ * way here.
+ */
+const IMPLIED_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".astro", ".mts", ".cts"];
+
+/**
+ * What a resolved specifier actually names in the file map.
+ *
+ * `import Layout from "../components/Layout"` is ordinary in a TypeScript project and
+ * names no key; so is `import { x } from "./util.js"` when the file on disk is
+ * `util.ts`, which is what `moduleResolution: nodenext` asks authors to write. Both
+ * resolve off the filesystem on the Bun host, and both used to reach the isolate as an
+ * unresolved specifier — `docs/todos/016 §7` listed them as the two smaller edges.
+ *
+ * Every caller that walks the graph goes through here, so the module rewriting, the
+ * import edges and the CSS cascade order all agree on which file was meant.
+ */
+export function resolveInFiles(
+  resolved: string,
+  files: ReadonlyMap<string, string>,
+): string | null {
+  if (files.has(resolved)) return resolved;
+  const extension = extensionOf(resolved);
+  // `./util.js` naming a `util.ts`: TypeScript's own convention, and it has to be
+  // tried before the implied-extension pass or `util.js.ts` would be looked for first.
+  if (extension === ".js" || extension === ".mjs" || extension === ".cjs") {
+    const stem = resolved.slice(0, -extension.length);
+    for (const candidate of [".ts", ".tsx", ".mts", ".cts"]) {
+      if (files.has(stem + candidate)) return stem + candidate;
+    }
+  }
+  if (extension === "") {
+    for (const candidate of IMPLIED_EXTENSIONS) {
+      if (files.has(resolved + candidate)) return resolved + candidate;
+    }
+    for (const candidate of IMPLIED_EXTENSIONS) {
+      if (files.has(`${resolved}/index${candidate}`)) return `${resolved}/index${candidate}`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -286,11 +339,19 @@ export class UnsupportedFileError extends Error {
  * graph) are simply not modules and are skipped; a file that *is* reachable but
  * needs a transpiler throws, because silently omitting it turns into an
  * unresolved import inside the isolate, which is much harder to read.
+ *
+ * `prepared` is what `pletivo prepare` froze: it answers the bare specifiers the file
+ * map cannot, and contributes the `node_modules` sources those specifiers land on.
+ * Without one, a bare specifier is left alone and the Loader reports it — which is
+ * where every project with an npm dependency stood before the artifact existed.
  */
 export async function compileProject(
   files: ReadonlyMap<string, string>,
   compiler: AstroCompiler = bundled,
+  prepared: PreparedSite | null = null,
 ): Promise<CompiledProject> {
+  const artifact = artifactBinder(prepared);
+  files = artifact.sources(files);
   const modules: Record<string, string> = { ...RUNTIME_MODULES };
   const moduleNames = new Map<string, string>();
   const styles = new Map<string, AstroStyles>();
@@ -346,8 +407,12 @@ export async function compileProject(
       usedEnv.add(resolved);
       return `./${envModule}`;
     }
-    const name = moduleNames.get(resolved);
-    return name === undefined ? null : `./${name}`;
+    const file = resolveInFiles(resolved, files);
+    const name = file === null ? undefined : moduleNames.get(file);
+    if (name !== undefined) return `./${name}`;
+    // Last, so a project file always outranks the artifact: everything above this is
+    // a specifier no file map can hold, and everything below it is npm.
+    return artifact.resolve(resolved, moduleNames);
   };
 
   for (const [file, source] of files) {
@@ -408,8 +473,12 @@ export async function compileProject(
     content = { configModule: configFile === null ? null : (moduleNames.get(configFile) ?? null) };
   }
 
+  // After the walk, so only the modules something actually imported are carried —
+  // and transitively, since one artifact module may name another.
+  Object.assign(modules, artifact.modules());
+
   const env = envUse(usedEnv, envNames);
-  return { modules, moduleNames, styles, imports, cssImports, content, env };
+  return { modules, sources: files, moduleNames, styles, imports, cssImports, content, env };
 }
 
 /**
@@ -462,8 +531,8 @@ function resolveEdges(
   const seen = new Set<string>();
   const edges: string[] = [];
   for (const specifier of specifiers) {
-    const resolved = resolveSpecifier(importer, specifier);
-    if (seen.has(resolved) || !files.has(resolved)) continue;
+    const resolved = resolveInFiles(resolveSpecifier(importer, specifier), files);
+    if (resolved === null || seen.has(resolved)) continue;
     if (!keep(resolved)) continue;
     seen.add(resolved);
     edges.push(resolved);

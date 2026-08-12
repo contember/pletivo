@@ -1,7 +1,7 @@
 # 019 — CSS chunking: what Astro does, and the spec pletivo needs
 
 **Priority:** S-tier
-**Status:** Open — specified, not implemented
+**Status:** Implemented in PR #23 (open, not merged) — three items still left, listed at the end
 **Area:** CSS pipeline
 
 Companion to [017](017-dogfood-static-site.md) item 1. That entry records the
@@ -140,6 +140,54 @@ Marked by what each buys.
 - **`augmentChunkHash`** folding `importedCss` into JS chunk hashes has no Bun
   analogue; hashing the CSS reference list into pletivo's own chunk hash
   reproduces the cache-busting effect.
+
+## Landed — PR #23
+
+| | `main` | after items 1–6 | after items 8–9 | Astro |
+|---|---|---|---|---|
+| total CSS | 23,452,896 | 693,620 | **84,278** | 86,593 |
+| worst page | 23,452,896 | 693,620 | **84,278** | 86,593 |
+| stylesheets | 1 | 2 | 2 | 5 (2 written) |
+| fonts | inlined | inlined | **25 files, 442,224 B** | files |
+
+**2,315 B under Astro.** Verified on the emitted output: all 25 `url()` references
+resolve, none orphaned, and the one remaining `data:` URI is a 2,552 B font —
+*below* the 4096 B threshold, so inlining it is parity with Vite, not a leftover.
+
+211/211 pages differ from the pre-fix build only in the stylesheet `<link>`
+block. The `_astro/hoisted-<hash>.js` name also moves when the build directory
+changes, because that hash is `Bun.hash(absolutePath + …)` (`astro-plugin.ts:381`)
+— path-derived, not content-derived. Worth knowing before comparing two builds
+from different directories.
+
+### Why there are two stylesheets and not one
+
+The split is **by pipeline**, not by page-set: `bundleCss()` writes `shared`
+(Tailwind + SCSS + unattributable CSS) as its own file, and `planJsImportedCss`
+groups only the JS-imported modules it can attribute. On this site both end up
+reaching all 211 pages, so by item 1 they should be one group, and Astro does
+emit one chunk for the all-pages set.
+
+Merging is semantically correct — `cssHrefsForPage()` pushes `shared`
+unconditionally, so a group whose pages equal the known set has exactly
+`shared`'s reach. But it is **not order-safe in general**: merging a universal
+group into `shared` appends it after `plan.shared`, so a *narrower* group ranking
+ahead of it would silently move earlier in the cascade. Safe only for universal
+groups that form a prefix of the ranked list.
+
+It also costs cache granularity — today a Tailwind change leaves the 9 kB font
+sheet cached. Worth one request and zero bytes, so it wants its own commit and
+its own test rather than being folded in.
+
+### Still open after the PR
+
+- item 7, inline `<style>` under 4096 B — ~528 B and 3 fewer requests. The
+  plumbing through `cssHrefsForPage` → `writeHtml` → `refreshCachedHtmlCssLink`
+  did not fall out cleanly.
+- merging the two universal sheets, above — 0 B, 1 request.
+- `url()` inside Tailwind-compiled or raw source CSS is still passed through
+  unrewritten. It never reaches `Bun.build`, so it was never inlined either;
+  0 B on this site, but it is a hole.
 
 ## The cheap patch, and why it is not the fix
 

@@ -176,6 +176,21 @@ const DOUBLE_QUOTE = 34;
 const TRAILING = new Set([46, 44, 58, 59, 33, 63]);
 /** Depth limit for re-scanning inside bracket and quote groups. */
 const MAX_DEPTH = 6;
+/**
+ * How long a bracket group may run before it stops being a candidate.
+ *
+ * Nothing in the boundary rules ends a `[`, so an unmatched or merely distant `]`
+ * makes one span out of everything between them — in a 626 kB JSON file, the whole
+ * file. That span is not a utility and never could be, but the nested re-scan below
+ * then launches one sub-scan per bracket and quote inside it, each covering the
+ * remainder: 449 seconds for that one file, measured on the static dogfood site's `asset-manifest.json`.
+ *
+ * Past this length the opening bracket is treated as ordinary punctuation, so the
+ * scan walks into the group instead of swallowing it and the interior is still read.
+ * 2 KiB leaves room for the longest real candidate — an arbitrary value holding a
+ * `data:` URI — with an order of magnitude to spare.
+ */
+const MAX_SPAN = 2048;
 
 function isWord(code: number): boolean {
   return code < 128 && WORD[code] === 1;
@@ -203,7 +218,14 @@ function scan(source: string, from: number, to: number, out: Set<string>, depth:
 
     const start = i;
     const stack: number[] = [];
+    const limit = Math.min(to, start + MAX_SPAN);
     while (i < to) {
+      // A group that runs this long is not a candidate. Give the opener back to the
+      // outer walk, which then reads the interior as ordinary text.
+      if (i >= limit) {
+        i = start + 1;
+        break;
+      }
       const code = source.charCodeAt(i);
       if (code === OPEN_SQUARE || code === OPEN_PAREN) {
         stack.push(code === OPEN_SQUARE ? CLOSE_SQUARE : CLOSE_PAREN);

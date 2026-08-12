@@ -238,3 +238,51 @@ describe("isExecutableModule", () => {
     ]);
   });
 });
+
+describe("compileProject, specifiers that name no file map key on their own", () => {
+  const files = new Map<string, string>([
+    ["src/pages/index.astro", `---
+import Layout from "../layouts/Layout";
+import { NAME } from "../lib/name.js";
+import { helper } from "../lib/util";
+---
+<Layout>{NAME}{helper()}</Layout>
+`],
+    ["src/layouts/Layout.astro", `<html><head><title>t</title></head><body><slot /></body></html>\n`],
+    ["src/lib/name.ts", `export const NAME: string = "pletivo";\n`],
+    ["src/lib/util/index.ts", `export const helper = (): string => "h";\n`],
+  ]);
+
+  test("resolves an extensionless import and a directory index, the way Bun does", async () => {
+    const built = await compileProject(files, compiler);
+    const page = built.modules["src_pages_index.astro.js"];
+    expect(page).toContain(`"./${built.moduleNames.get("src/layouts/Layout.astro")}"`);
+    expect(page).toContain(`"./${built.moduleNames.get("src/lib/util/index.ts")}"`);
+  });
+
+  test("resolves `./x.js` to the `x.ts` it lands on — TypeScript's own convention", async () => {
+    const built = await compileProject(files, compiler);
+    expect(built.modules["src_pages_index.astro.js"]).toContain(
+      `"./${built.moduleNames.get("src/lib/name.ts")}"`,
+    );
+  });
+
+  test("keeps the import graph and the rewritten specifiers on the same edges", async () => {
+    const built = await compileProject(files, compiler);
+    // The CSS cascade is ordered by this list, so a specifier the bundle resolves and
+    // the graph does not would move a component's styles.
+    expect(built.imports.get("src/pages/index.astro")).toEqual([
+      "src/layouts/Layout.astro",
+      "src/lib/name.ts",
+      "src/lib/util/index.ts",
+    ]);
+  });
+
+  test("still leaves a specifier nothing answers alone, so the Loader names it", async () => {
+    const built = await compileProject(
+      new Map([["src/pages/a.astro", `---\nimport "./missing";\n---\n<p>a</p>\n`]]),
+      compiler,
+    );
+    expect(built.modules["src_pages_a.astro.js"]).toContain(`"./missing"`);
+  });
+});

@@ -41,6 +41,25 @@ describe("extractCandidates", () => {
       new Set(["the", "and", "italic"]),
     );
   });
+
+  test("still reads inside a bracket group too long to be a candidate", () => {
+    // A `[` with a distant `]` used to swallow everything between them into one span,
+    // and then re-scan from every quote and bracket inside it. On the static dogfood site's 626 kB
+    // `asset-manifest.json` that took 449 seconds for the one file.
+    const source = `[${", ".repeat(4000)}"mt-4" "text-sm"]`;
+    const started = Bun.nanoseconds();
+    const found = new Set(extractCandidates(source));
+    expect((Bun.nanoseconds() - started) / 1e6).toBeLessThan(500);
+    expect(found).toContain("mt-4");
+    expect(found).toContain("text-sm");
+    // …and the 8 kB span itself is not offered as a utility.
+    for (const candidate of found) expect(candidate.length).toBeLessThan(2048);
+  });
+
+  test("keeps a long arbitrary value that really is a candidate", () => {
+    const value = `bg-[url('data:image/svg+xml;base64,${"A".repeat(1000)}')]`;
+    expect(new Set(extractCandidates(`<div class="${value}">`))).toContain(value);
+  });
 });
 
 describe("scanCandidates", () => {

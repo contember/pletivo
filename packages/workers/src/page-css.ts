@@ -14,6 +14,7 @@
  * That is a depth-first post-order walk of the static import graph rooted at the page.
  */
 
+import type { InjectedScripts } from "@pletivo/core/artifact";
 import type { AstroStyles } from "./compile-project.ts";
 
 export interface PageCssOptions {
@@ -111,11 +112,21 @@ export function extractAstroClasses(html: string): Set<string> {
  * component's scoped rule outranks the bundle. The `<link>` has no `</body>`
  * fallback — a page with no `<head>` gets no stylesheet on either host.
  *
+ * `scripts` are what `injectScript()` produced during `astro:config:setup`, frozen
+ * into the site artifact. They land last and only in `<head>`, which is `writeHtml`'s
+ * own order and its own restriction: a page with no `</head>` gets none of them on
+ * either host. `before-hydration` is deliberately absent — `writeHtml` emits those
+ * only for a page carrying islands, and this host has none.
+ *
  * Not ported from `writeHtml`, because there is no build pipeline behind them here:
- * hashed public-asset rewriting, CSS modules, integration-injected scripts and the
- * island hydration runtime.
+ * hashed public-asset rewriting, CSS modules and the island hydration runtime.
  */
-export function finalizeHtml(html: string, css: string, stylesheet: string | null = null): string {
+export function finalizeHtml(
+  html: string,
+  css: string,
+  stylesheet: string | null = null,
+  scripts?: InjectedScripts,
+): string {
   let out = html;
   if (out.trimStart().startsWith("<html") && !out.trimStart().startsWith("<!")) {
     out = "<!DOCTYPE html>\n" + out;
@@ -123,9 +134,22 @@ export function finalizeHtml(html: string, css: string, stylesheet: string | nul
   if (stylesheet && out.includes("</head>")) {
     out = out.replace("</head>", `<link rel="stylesheet" href="${stylesheet}">\n</head>`);
   }
-  if (!css) return out;
-  const tag = `<style>${css}</style>`;
-  if (out.includes("</head>")) return out.replace("</head>", tag + "\n</head>");
-  if (out.includes("</body>")) return out.replace("</body>", tag + "\n</body>");
-  return tag + "\n" + out;
+  if (css) {
+    const tag = `<style>${css}</style>`;
+    if (out.includes("</head>")) out = out.replace("</head>", tag + "\n</head>");
+    else if (out.includes("</body>")) out = out.replace("</body>", tag + "\n</body>");
+    else out = tag + "\n" + out;
+  }
+  const injected = injectedScriptTags(scripts);
+  if (injected && out.includes("</head>")) out = out.replace("</head>", injected + "\n</head>");
+  return out;
+}
+
+/** The tags `build.ts:1391` writes, in its order: inline first, then module. */
+function injectedScriptTags(scripts: InjectedScripts | undefined): string {
+  if (!scripts) return "";
+  return [
+    ...scripts.headInline.map((code) => `<script>${code}</script>`),
+    ...scripts.page.map((code) => `<script type="module">${code}</script>`),
+  ].join("\n");
 }
