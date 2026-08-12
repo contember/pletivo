@@ -1,0 +1,35 @@
+{
+  "name": "pletivo-playground",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  // The Astro shim's render-tracking store is an AsyncLocalStorage, and both the
+  // compiled bundle and `@cloudflare/computer` want node built-ins.
+  "compatibility_flags": ["nodejs_compat"],
+  // The only way to execute code produced at run time in workerd. This is what turns
+  // an edit in the browser into a rendered page with no build step in between.
+  "worker_loaders": [{ "binding": "LOADER" }],
+  // The project itself: sources in SQLite, owned by the object that renders them.
+  "durable_objects": {
+    "bindings": [{ "name": "PROJECT", "class_name": "ProjectDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectDO"] }],
+  "observability": { "enabled": true },
+  "rules": [
+    // `@astrojs/compiler/astro.wasm` has to arrive as a `WebAssembly.Module` —
+    // workerd forbids `WebAssembly.compile()` at run time.
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
+    // Tailwind's own stylesheets, which the isolate cannot read off disk.
+    { "type": "Text", "globs": ["**/*.css"], "fallthrough": true },
+    // The playground shell, served as-is at `/__playground`.
+    { "type": "Text", "globs": ["**/*.html"], "fallthrough": true },
+    // The seed project. Scoped by directory rather than by extension alone, because
+    // `content.config.mjs` must arrive as text and nothing else in the bundle should.
+    // A rule glob is matched against the module's absolute path, so the `**/` prefix
+    // is load-bearing and a bare `**/*` matches nothing.
+    {
+      "type": "Text",
+      "globs": ["**/project/**/*.astro", "**/project/**/*.md", "**/project/**/*.mjs"],
+      "fallthrough": true
+    }
+  ]
+}

@@ -99,6 +99,24 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
     expect(css).not.toContain(".mt-96");
   });
 
+  test("builds the candidates it was handed instead of scanning the files", async () => {
+    // What the per-page model rides on: the content is the page that just rendered,
+    // not the source tree. `files` is still where `@import` resolves.
+    const files = new Map([
+      ["src/styles/global.css", '@import "tailwindcss";'],
+      ["src/pages/index.astro", '<h1 class="mt-4">hi</h1>'],
+    ]);
+    const css = await compileTailwind({
+      entry: "src/styles/global.css",
+      files,
+      stylesheets: await tailwindStylesheets(),
+      candidates: ["p-2"],
+    });
+
+    expect(css).toContain(".p-2");
+    expect(css).not.toContain(".mt-4");
+  });
+
   test("reports an @import it cannot resolve", async () => {
     const files = new Map([["src/styles/global.css", '@import "tailwindcss";\n@import "./gone.css";']]);
     await expect(

@@ -1,56 +1,76 @@
 /**
- * The project-wide stylesheet: `<link rel="stylesheet" href="/assets/styles.<hash>.css">`.
+ * The CSS a rendered page carries, inlined in a `<style>` — no linked stylesheet.
  *
- * A port of the Bun host's `css.ts` + `js-imported-css.ts`. Both hosts emit **one**
- * stylesheet for the whole site, not one per page, so this walks the whole project's
- * module graph rather than the rendering page's — the same file is linked from every
- * page and its hash has to be stable across them.
+ * The Bun host builds one bundle for the whole site and links it from every page.
+ * This host used to do the same, and that is what forced every render to compile
+ * every module: one sheet needs every route's CSS imports, which needs the whole
+ * module graph. `docs/todos/023 §5` takes the decision the other way — the sheet is
+ * per page and inline, so nothing here reaches past the page being rendered.
  *
  * Three inputs feed it, in the order they concatenate:
  *
  *   1. every `.css` file under `srcDir`, either compiled by Tailwind (when one of
  *      them does `@import "tailwindcss"`) or concatenated verbatim;
- *   2. the CSS side-effect imports reachable from each collection root through the
- *      **JavaScript** module graph — `import "./x.css"` in `.astro` frontmatter, and
- *      the same in any `.ts`/`.js` module that frontmatter imports;
+ *   2. the CSS side-effect imports reachable from **the rendering page** through the
+ *      JavaScript module graph — `import "./x.css"` in `.astro` frontmatter, and the
+ *      same in any module that frontmatter imports;
  *   3. in Tailwind mode only, the source-tree CSS those imports named, verbatim —
  *      the Bun host adds it back because the Tailwind entry is the only source file
  *      the compile pass covered.
  *
- * The filename is `md5(bundle).slice(0, 8)`, which is what makes the `<link>` line
- * byte-comparable at all: a single byte anywhere in the bundle moves it.
+ * **1 stays project-wide, and that is deliberate.** It needs a *key* scan of `files`
+ * plus the `.css` bytes — no module graph, no compile — so it forces nothing. Narrowing
+ * it to the page's graph would break the very common project whose `global.css` is
+ * picked up by the Bun host's `**\/*.css` glob and never `import`ed from any module:
+ * the page would render unstyled, with no error anywhere. It is also what lets
+ * `findTailwindEntry` find an entry nothing imports.
+ *
+ * 2 and 3 are rooted at the page and ordered by `moduleOrder` — the depth-first
+ * post-order the scoped `<style>` blocks already cascade in (`docs/todos/014`), so both
+ * halves of a page's CSS finally agree on one ordering rule.
+ *
+ * ## Tailwind's content is the rendered HTML
+ *
+ * `compileTailwind` is handed `extractCandidates(html)` rather than a scan of the
+ * sources, the way the Tailwind CDN works. Measured on a real project: the source scan
+ * is 22 657 candidates / 83.8 kB / 190 ms per render, a rendered page 961–1 275
+ * candidates / 39.5–50.1 kB / 19–30 ms.
+ *
+ * **The known hole:** a class that only appears once client JS runs —
+ * `classList.add('hidden')`, a `class:list` branch this render did not take — is not in
+ * the HTML, while a source scan finds the string literal. It is theoretical on this
+ * host today, and only because this host ships **no client bundles at all**: islands
+ * render as inert `<pletivo-island>` markup and no hydration script is emitted
+ * (`docs/todos/016 §7`, "What is left"). When islands land, the candidate source
+ * becomes the rendered HTML ∪ the client bundles that page ships.
+ *
+ * The scoped `<style>` blocks are not scanned, and should not be: `finalizeHtml`
+ * injects them *after* the render, so they are not in the HTML this reads. That
+ * sidesteps `border`, one of the two false candidates `docs/todos/016 §1` records the
+ * JS scanner disagreeing with oxide about — it comes from CSS text inside a `<style>`.
  *
  * ## Where this cannot match the Bun host
+ *
+ * The delivery itself, now: the Bun host links `/assets/styles.<hash>.css` and this one
+ * inlines. Permanent, accepted, and recorded in `docs/todos/016 §7` — with the byte
+ * comparison that used to ride on it re-proved one level down in `local-parity.ts`.
  *
  * CSS imported from **outside** `srcDir` (a vendor directory, a package) goes through
  * `Bun.build` on the Bun host, which is a full CSS parse and re-print: `rgb(1, 2, 3)`
  * comes out `#010203`, `margin: 0px` comes out `margin: 0`, nesting is flattened. That
  * is a lightningcss-equivalent engine and there is none in an isolate, so this module
- * emits the same *framing* Bun does — `/* <path> *\/` per file, in the same order —
- * around the file's **original** bytes. Same rules, same cascade; different bytes, and
- * therefore a different hash. Source-tree CSS (1 and 3) is read verbatim on both hosts
- * and does match byte for byte.
+ * emits the same *framing* Bun does — `/* <path> *\/` per file — around the file's
+ * **original** bytes. Same rules, same cascade; different bytes. Source-tree CSS (1 and
+ * 3) is read verbatim on both hosts and does match byte for byte.
  *
  * Also unported, and absent rather than different: `.scss`/`.sass` compilation, CSS
  * modules, and the CSS that hoisted `<script>` bundling contributes.
  */
 
-import { md5Hex } from "./md5.ts";
-import { compileTailwind, type TailwindStylesheets } from "./tailwind.ts";
+import { moduleOrder } from "./page-css.ts";
+import { compileTailwind, extractCandidates, type TailwindStylesheets } from "./tailwind.ts";
 
-/** A module whose CSS imports are collected, and the key the output is ordered by. */
-export interface CssRoot {
-  /**
-   * The Bun host's map key for this module: `astro:<path>` from the loader plugin,
-   * `page:<route file>` from the page-module pass. Only the sort order it produces
-   * is observable.
-   */
-  key: string;
-  /** Project path of the module the walk starts at. */
-  file: string;
-}
-
-export interface ProjectCssOptions {
+export interface PageStylesheetOptions {
   /** The project: path (no leading slash, `/` separators) -> source text. */
   files: ReadonlyMap<string, string>;
   /** Where the source tree starts in `files`, e.g. `src`. `""` when it is the root. */
@@ -61,19 +81,15 @@ export interface ProjectCssOptions {
   cssImports: ReadonlyMap<string, string[]>;
   /** Project path -> the modules it imports. From `compileProject`. */
   imports: ReadonlyMap<string, string[]>;
-  /** The modules to collect from. See `cssRoots`. */
-  roots: readonly CssRoot[];
+  /** The rendering page's project path — the root of the walk. */
+  entry: string;
+  /** The HTML the page just rendered to, which is what Tailwind's content is. */
+  html: string;
   /** Tailwind's own stylesheets, as text. Only needed when a project stylesheet imports it. */
   tailwind?: TailwindStylesheets;
 }
 
-export interface ProjectStylesheet {
-  /** The `href` the page's `<link>` carries, and the path the host must serve. */
-  href: string;
-  css: string;
-}
-
-/** A project stylesheet is wanted but Tailwind's own sources were not handed over. */
+/** A page stylesheet is wanted but Tailwind's own sources were not handed over. */
 export class TailwindNotConfiguredError extends Error {
   constructor(readonly entry: string) {
     super(
@@ -103,24 +119,20 @@ export function isCollectableCss(file: string): boolean {
 }
 
 /**
- * The whole project's stylesheet, or `null` when the project has none.
+ * One page's stylesheet as text, or `null` when the page carries none.
  *
  * `null` is not "empty": the Bun host writes no file and injects no `<link>` when
  * there is neither source CSS nor a collected import, and a page that gained an empty
- * `<link>` here would diverge on every fixture that has no CSS at all.
+ * `<style>` here would diverge on every fixture that has no CSS at all.
  */
-export async function projectStylesheet(
-  options: ProjectCssOptions,
-): Promise<ProjectStylesheet | null> {
+export async function pageStylesheet(options: PageStylesheetOptions): Promise<string | null> {
   const base = await baseCss(options);
   const collected = collectedCss(options, !base.includesAllSourceCss);
 
   // Exactly the Bun host's guard, including its asymmetry: an empty-but-present base
   // still produces a stylesheet, a missing one plus no imports produces nothing.
   if (base.css === null && !collected) return null;
-  const css = [base.css, collected].filter(Boolean).join("\n\n");
-
-  return { href: `/assets/styles.${md5Hex(css).slice(0, 8)}.css`, css };
+  return [base.css, collected].filter(Boolean).join("\n\n");
 }
 
 // ── 1. The source tree ──────────────────────────────────────────────
@@ -135,7 +147,7 @@ interface BaseCss {
   includesAllSourceCss: boolean;
 }
 
-async function baseCss(options: ProjectCssOptions): Promise<BaseCss> {
+async function baseCss(options: PageStylesheetOptions): Promise<BaseCss> {
   const sources = sourceStylesheets(options);
   if (sources.length === 0) return { css: null, includesAllSourceCss: true };
 
@@ -147,6 +159,7 @@ async function baseCss(options: ProjectCssOptions): Promise<BaseCss> {
         entry: entry.file,
         files: options.files,
         stylesheets: options.tailwind,
+        candidates: extractCandidates(options.html),
       }),
       includesAllSourceCss: false,
     };
@@ -167,7 +180,10 @@ interface SourceStylesheet {
 }
 
 /** Every stylesheet under `srcDir`, the way the Bun host's `**\/*.css` glob sees them. */
-function sourceStylesheets(options: ProjectCssOptions): SourceStylesheet[] {
+function sourceStylesheets(options: {
+  files: ReadonlyMap<string, string>;
+  srcDir: string;
+}): SourceStylesheet[] {
   const prefix = withSlash(options.srcDir);
   const sources: SourceStylesheet[] = [];
   for (const [file, content] of options.files) {
@@ -199,30 +215,30 @@ function findTailwindEntry(sources: readonly SourceStylesheet[]): SourceStyleshe
   return ranked.find((source) => IMPORTS_TAILWIND.test(source.content)) ?? null;
 }
 
-// ── 2 and 3. What the module graph imports ──────────────────────────
+/**
+ * The project's Tailwind entry, or `null` when nothing imports Tailwind.
+ *
+ * Exported for `local-parity.ts` alone: with the stylesheet no longer a file, the only
+ * way left to compare this host's Tailwind bytes against the Bun host's is to compile
+ * the same entry with the same candidates and diff. See `docs/todos/016 §7`.
+ */
+export function tailwindEntry(options: {
+  files: ReadonlyMap<string, string>;
+  srcDir: string;
+}): string | null {
+  return findTailwindEntry(sourceStylesheets(options))?.file ?? null;
+}
+
+// ── 2 and 3. What the page's module graph imports ───────────────────
 
 /**
- * The CSS the JavaScript graph pulls in: per-root bundles of everything outside the
- * source tree, then — in Tailwind mode — the source-tree files, once, verbatim.
+ * The CSS the page's JavaScript graph pulls in: everything outside the source tree,
+ * then — in Tailwind mode — the source-tree files it named, verbatim.
  */
-function collectedCss(options: ProjectCssOptions, includeSourceCss: boolean): string {
-  const external = new Map<string, string>();
-  const fromSource = new Set<string>();
-
-  for (const root of options.roots) {
-    const imported = collectCssImports(root.file, options);
-    for (const file of imported.source) fromSource.add(file);
-    if (imported.external.length > 0) {
-      external.set(root.key, externalBundle(imported.external, options.files));
-    }
-  }
-
-  // Sorted by key, not by insertion: the Bun host collects during parallel page
-  // imports, so insertion order there is not a property of the project.
-  const parts = [...external.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([, css]) => css);
-  if (includeSourceCss) parts.push(sourceCssOutput(fromSource, options));
+function collectedCss(options: PageStylesheetOptions, includeSourceCss: boolean): string {
+  const imported = collectCssImports(options.entry, options);
+  const parts = [externalBundle(imported.external, options.files)];
+  if (includeSourceCss) parts.push(sourceCssOutput(imported.source, options));
   return parts.filter(Boolean).join("\n\n");
 }
 
@@ -234,40 +250,35 @@ interface ImportedCss {
 }
 
 /**
- * Every stylesheet reachable from one module through **JavaScript** imports.
+ * Every stylesheet the page reaches through **JavaScript** imports, in cascade order.
  *
- * `.astro` children are not followed, and that is the Bun host's shape, not an
- * omission: its `resolveLocalModule` only resolves `.ts`/`.tsx`/`.js`/`.jsx`/`.mjs`/
- * `.cjs`, and every `.astro` file is a collection root of its own, so following them
- * here would collect the same CSS twice under two keys.
+ * `.astro` children are followed, and that matters: while every `.astro` file was its
+ * own collection root this walk had to skip them or collect the same CSS twice, but
+ * with one root per page a skipped layout takes its `import "../styles/fonts.css"`
+ * with it — which on a real site is most of the CSS.
  *
- * Both lists come out sorted, so the order the walk happens to take is not observable
- * — which is also why the two edge maps can be read separately.
+ * `moduleOrder` is what puts them in order, so a stylesheet an inner component imports
+ * precedes one the page imports itself, exactly as the scoped `<style>` blocks do.
  */
-export function collectCssImports(root: string, options: ProjectCssOptions): ImportedCss {
+export function collectCssImports(entry: string, options: PageStylesheetOptions): ImportedCss {
   const prefix = withSlash(options.srcDir);
-  const source = new Set<string>();
-  const external = new Set<string>();
-  const visited = new Set<string>([root]);
+  const source: string[] = [];
+  const external: string[] = [];
+  const seen = new Set<string>();
 
-  const visit = (file: string): void => {
+  for (const file of moduleOrder(entry, options.imports)) {
     for (const css of options.cssImports.get(file) ?? []) {
-      (css.startsWith(prefix) ? source : external).add(css);
+      if (seen.has(css)) continue;
+      seen.add(css);
+      (css.startsWith(prefix) ? source : external).push(css);
     }
-    for (const child of options.imports.get(file) ?? []) {
-      if (child.endsWith(".astro") || visited.has(child)) continue;
-      visited.add(child);
-      visit(child);
-    }
-  };
-  visit(root);
-
-  return { source: [...source].sort(), external: [...external].sort() };
+  }
+  return { source, external };
 }
 
 /**
- * One root's out-of-tree stylesheets, framed the way `Bun.build` frames a CSS bundle:
- * a `/* <path> *\/` line per file, blocks separated by a blank line. The bytes between
+ * The out-of-tree stylesheets, framed the way `Bun.build` frames a CSS bundle: a
+ * `/* <path> *\/` line per file, blocks separated by a blank line. The bytes between
  * the comments are the file's own, where Bun's would be re-printed — see the header.
  */
 function externalBundle(css: readonly string[], files: ReadonlyMap<string, string>): string {
@@ -281,13 +292,16 @@ function externalBundle(css: readonly string[], files: ReadonlyMap<string, strin
 }
 
 /**
- * The source-tree stylesheets the graph named, deduped across roots and labelled
- * relative to the project root — `readSourceCssOutput` on the Bun host.
+ * The source-tree stylesheets the graph named, labelled relative to the project root —
+ * `readSourceCssOutput` on the Bun host.
  */
-function sourceCssOutput(files: ReadonlySet<string>, options: ProjectCssOptions): string {
+function sourceCssOutput(
+  css: readonly string[],
+  options: { files: ReadonlyMap<string, string>; rootDir: string },
+): string {
   const prefix = withSlash(options.rootDir);
   const parts: string[] = [];
-  for (const file of [...files].sort()) {
+  for (const file of css) {
     const content = options.files.get(file);
     if (content === undefined) continue;
     const label = file.startsWith(prefix) ? file.slice(prefix.length) : file;
@@ -295,51 +309,6 @@ function sourceCssOutput(files: ReadonlySet<string>, options: ProjectCssOptions)
   }
   return parts.join("\n\n");
 }
-
-// ── Roots ───────────────────────────────────────────────────────────
-
-/**
- * The modules the Bun host collects CSS imports from, for the whole project.
- *
- * Two passes there, reproduced here from one graph: the loader plugin fires for every
- * `.astro` file the build loads (`astro:<path>`), and the page loop collects from every
- * page module that is not `.astro` and not `.md` (`page:<route file>`). "Every `.astro`
- * file the build loads" is the set reachable from a page — an orphaned component is
- * never imported, so its CSS never lands in the bundle.
- */
-export function cssRoots(options: {
-  /** Project path -> the route file it was matched as, for every page in the project. */
-  pages: ReadonlyMap<string, string>;
-  /** Project path -> the modules it imports. From `compileProject`. */
-  imports: ReadonlyMap<string, string[]>;
-}): CssRoot[] {
-  const roots = new Map<string, CssRoot>();
-  const seen = new Set<string>();
-
-  const visit = (file: string): void => {
-    if (seen.has(file)) return;
-    seen.add(file);
-    if (file.endsWith(".astro")) roots.set(`astro:${file}`, { key: `astro:${file}`, file });
-    for (const child of options.imports.get(file) ?? []) visit(child);
-  };
-
-  for (const [file, routeFile] of options.pages) {
-    visit(file);
-    if (COLLECTED_PAGE_EXTENSIONS.some((extension) => file.endsWith(extension))) {
-      roots.set(`page:${routeFile}`, { key: `page:${routeFile}`, file });
-    }
-  }
-
-  return [...roots.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-}
-
-/**
- * Page kinds the Bun host reads CSS imports out of directly.
- *
- * `.astro` is already covered by the loader plugin and `.md` has no imports, which is
- * why neither is here — the same two exclusions `collectPageModuleCss` makes.
- */
-const COLLECTED_PAGE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mdx"];
 
 // ── Paths ───────────────────────────────────────────────────────────
 

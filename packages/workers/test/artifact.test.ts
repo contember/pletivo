@@ -77,7 +77,15 @@ import { TONE } from "./tone.js";
   },
 };
 
-const compiled = await compileProject(PROJECT, compiler, PREPARED);
+// Pruned to the page, so the artifact's targets have to be reached and walked rather
+// than named by a pass over the map: `widgets/components` names a *generated source*,
+// and everything it imports is only in the bundle because the walk followed it there.
+const compiled = await compileProject({
+  files: PROJECT,
+  entries: ["src/pages/index.astro"],
+  compiler,
+  artifact: PREPARED,
+});
 
 describe("a prepared artifact inside compileProject", () => {
   test("compiles a package's .astro at the path the artifact names it", () => {
@@ -127,7 +135,9 @@ describe("a prepared artifact inside compileProject", () => {
       modules: {},
     };
     const files = new Map([["src/pages/a.astro", `---\nimport "widgets";\n---\n<p>a</p>\n`]]);
-    expect(compileProject(files, compiler, broken)).rejects.toThrow(ArtifactTargetError);
+    expect(
+      compileProject({ files, entries: ["src/pages/a.astro"], compiler, artifact: broken }),
+    ).rejects.toThrow(ArtifactTargetError);
   });
 
   test("refuses an artifact from another generation rather than half-reading it", () => {
@@ -135,7 +145,9 @@ describe("a prepared artifact inside compileProject", () => {
       artifact: { ...artifactOf({}), version: ARTIFACT_VERSION + 1 },
       modules: {},
     };
-    expect(compileProject(new Map(), compiler, stale)).rejects.toThrow(ArtifactVersionError);
+    expect(compileProject({ files: new Map(), compiler, artifact: stale })).rejects.toThrow(
+      ArtifactVersionError,
+    );
   });
 });
 
@@ -143,7 +155,7 @@ describe("injected scripts in the finished page", () => {
   const page = "<html><head><title>t</title></head><body><p>x</p></body></html>";
 
   test("emits head-inline as a plain script and page as a module, in that order", () => {
-    const html = finalizeHtml(page, "", null, {
+    const html = finalizeHtml(page, [], {
       headInline: ["window.a = 1;"],
       page: ["import 'b';"],
       beforeHydration: ["never()"],
@@ -157,17 +169,21 @@ describe("injected scripts in the finished page", () => {
   });
 
   test("puts them after the page CSS, which is where writeHtml puts them", () => {
-    const html = finalizeHtml(page, ".x{color:red}", "/assets/s.css", {
+    const html = finalizeHtml(page, [".site{color:blue}", ".x{color:red}"], {
       headInline: ["window.a = 1;"],
       page: [],
       beforeHydration: [],
     });
+    // Both stylesheets before the scripts, and the page's own sheet before the scoped
+    // block it has to lose to.
+    expect(html).toContain(
+      "<style>.site{color:blue}</style>\n<style>.x{color:red}</style>\n<script>",
+    );
     expect(html.indexOf("<style>")).toBeLessThan(html.indexOf("<script>"));
-    expect(html.indexOf('<link rel="stylesheet"')).toBeLessThan(html.indexOf("<style>"));
   });
 
   test("leaves a page with no head alone rather than inventing one", () => {
-    const html = finalizeHtml("<p>x</p>", "", null, {
+    const html = finalizeHtml("<p>x</p>", [], {
       headInline: ["window.a = 1;"],
       page: [],
       beforeHydration: [],

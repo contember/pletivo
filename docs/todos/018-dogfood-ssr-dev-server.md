@@ -14,6 +14,11 @@ script, so it was built to be dogfooded.
 Unlike [017](017-dogfood-static-site.md), a static build is the wrong question here.
 The site is SSR; the meaningful comparison is `pletivo dev` against `astro dev`.
 
+The same project through the **Workers host** is
+[022](022-dogfood-ssr-workers.md) — 32 of 35 routes, and a different
+wall list entirely, since `prepare` has to carry npm across the boundary that
+`pletivo dev` simply resolves off disk.
+
 **It serves the site with zero edits.** Boots, runs every integration, renders
 all 26 static pages plus the dynamic and collection routes.
 

@@ -95,22 +95,33 @@ root.
 
 The Workers host renders `.astro`, `.tsx`/`.ts` and `.md` for static routes, end
 to end, in real workerd. Measured HTML parity against `pletivo build` on the same
-sources — nothing normalised on either side:
+sources — nothing normalised on either side, but for the one named exception below:
 
 | fixture | pages | byte-identical | before the transpiler |
 |---|---|---|---|
 | `tests/fixture-astro-styles` | 4 | **4** | 0 |
 | `tests/conformance/fixtures/css-cascade-order` | 4 | **4** | 3 |
-| `packages/workers/test/fixture-tailwind` | 2 | **2** | — |
+| `packages/workers/test/fixture-tailwind` | 2 | **2**, CSS delivery excepted | — |
 | `packages/workers/test/fixture-dynamic-routes` | 8 | **8** | — |
 | `packages/workers/test/fixture-content` | 5 | **5** | — |
+| `packages/workers/test/fixture-vendor` | 1 | **1** | — |
+| `packages/workers/test/fixture-images` | 2 | **2** | — |
 | `tests/fixture-astro-hoisted-imports` | 1 | 0 | 0 |
 
-The Tailwind fixture compares the emitted `assets/styles.*.css` as well as the
-HTML: 8944 bytes, byte-identical against a `pletivo build` running the real
-`@tailwindcss/node` + `@tailwindcss/oxide`. All 16 utilities compiled on both
-sides, so the JS candidate scanner and oxide agreed here — see §1 for where they
-provably do not. It is gated in `bun test` rather than run by hand.
+Only `fixture-tailwind` holds a `.css` file at all, so it is the only row the CSS
+fork touches: one node is removed from each side (the `<link>` there, the leading
+`<style>` here) and the rest of both pages still matches byte for byte. Everything
+else is unnormalised on both sides.
+
+The Tailwind fixture no longer compares an emitted `assets/styles.*.css`, because
+this host emits none. It compares the engine instead: the same entry compiled with
+the same project-wide candidate set is **8744 bytes, byte-identical** to the
+Tailwind portion of what a `pletivo build` running the real `@tailwindcss/node` +
+`@tailwindcss/oxide` wrote. All 16 utilities compile on both sides, so the JS
+candidate scanner and oxide agree here — see §1 for where they provably do not.
+Plus two checks the file comparison never made: every class the rendered page
+applies is found by the scanner, and every one of those that is a utility is in the
+CSS that page carries. All of it gated in `bun test` rather than run by hand.
 
 ### The transpiler seam
 
@@ -143,25 +154,90 @@ the same prologue. With the flag, a module containing no TypeScript comes back
 **byte-identical**, so the transform cannot disturb anything that already
 rendered. Explicit `import type` is still removed.
 
-### The CSS pipeline, and the one divergence left in it
+### The CSS pipeline: the hosts fork here, on purpose
 
-`project-css.ts` walks the module graph `compileProject` already builds, collects
-every `.css` side-effect import in ESM execution order — including ones reached
-transitively through a `.js` module — compiles Tailwind when the result imports
-it, and emits `<link rel="stylesheet" href="/assets/styles.<hash>.css">`.
-`renderPage` returns the asset so the host can serve it.
+**This is the one divergence that is a decision rather than a limitation.** The
+Bun host builds one stylesheet for the whole site and links it from every page.
+The Workers host builds the CSS of **the page it just rendered** and inlines it
+in a `<style>`; it links nothing and returns no stylesheet asset. Taken in
+[023 §5](023-live-workspace-architecture.md), and permanent.
 
-**The hash is not a divergence, and the reason is worth writing down.** It looked
-like one: `js-imported-css.ts:147` names the bundle with `Bun.hash`, which is
-wyhash and has no workerd equivalent. That token turns out to name a *virtual
-entrypoint* that never reaches the output. The real filename comes from
-`css.ts:33-40` — `Bun.CryptoHasher("md5")` over the bundle text, first 8 hex
+The reason is not aesthetics. One project-wide sheet needs every route's CSS
+imports, which needs every module compiled — measured on the static dogfood site, **109 modules
+per request where the page reaches 14**. The CSS model and the compile cost were
+one decision, so the CSS had to move first. What it buys, same project, five
+pages through this host:
+
+| candidates from | count | CSS | build |
+|---|---|---|---|
+| `src/` scan (the old model) | 22 657 | 83.8 kB | 190 ms |
+| the rendered page | 961–1 275 | 39.5–50.1 kB | 19–30 ms |
+
+Tailwind's content is the rendered HTML, the way the Tailwind CDN works.
+`compileTailwind` takes the candidates as an argument and `pageStylesheet` hands
+it `extractCandidates(html)`. Two consequences worth naming:
+
+- The scoped `<style>` blocks are **not** scanned — `finalizeHtml` injects them
+  after the render, so they are not in the HTML that is read. That sidesteps
+  `border`, one of the two false candidates in §1, which comes from CSS text
+  inside a `<style>`.
+- **The known hole:** a class that only appears once client JS runs
+  (`classList.add('hidden')`, a `class:list` branch this render did not take) is
+  not in the HTML, while a source scan finds the string literal. It is theoretical
+  on this host *today*, and only because this host ships **no client bundles at
+  all** — islands render as inert `<pletivo-island>` markup and no hydration
+  script is emitted (see "What is left" below). When islands land, the candidate
+  source becomes the rendered HTML ∪ the client bundles that page ships.
+
+Three inputs still feed the sheet, and only two of them narrowed. **Every `.css`
+file under `src/` stays project-wide**, deliberately: it needs a key scan plus the
+file bytes — no module graph, no compile — so it forces nothing, and narrowing it
+would silently break the very common project whose `global.css` is picked up by
+the Bun host's `**/*.css` glob and never `import`ed from any module. The two that
+did narrow — collected out-of-tree CSS, and the source-CSS re-emit in Tailwind
+mode — are now rooted at the rendering page and ordered by `moduleOrder`, the same
+depth-first post-order the scoped blocks already cascade in ([014](014-astro-css-cascade-order.md)).
+Following `.astro` children is part of that: with one root per page a skipped
+layout would take its `import "../styles/fonts.css"` with it.
+
+**What the fork cost, and what replaced it.** `fixture-tailwind` used to be the
+only assertion anywhere that this host's JS candidate scanner plus Tailwind over a
+virtual file map emits the **same bytes** as the real `@tailwindcss/node` +
+`@tailwindcss/oxide` — and it made that claim by comparing the linked stylesheet
+file, which no longer exists. `local-parity.ts` re-makes it one level down:
+compile the same entry with the **old project-wide candidate set** and assert byte
+equality against the Tailwind portion of what `pletivo build` wrote. **8744 B,
+byte-identical.** Same claim about the engine, independent of delivery.
+
+That comparison never covered the thing the new model actually risks, so two
+per-page checks were added beside it: every class the rendered page applies is
+found by the scanner, and every one of those that compiles to a utility survives
+into the CSS that page carries. HTML parity on the fixture is still asserted, with
+exactly one node removed from each side — the `<link>` there, the leading
+`<style>` here — named as a single-purpose exception rather than a normalizer.
+
+`finalizeHtml` now takes the CSS as an **ordered list and makes one insertion**.
+That is forced: two insertions before the same anchor keep their order in `<head>`
+and reverse it in the fallback that prepends. It also fixes an old asymmetry — the
+`<link>` had no fallback at all, so a page with no `</head>` used to get its scoped
+rules and no stylesheet; both now follow the same head → body → prepend ladder.
+
+A `.md` page no longer compiles the project at all. `compileProject` used to run
+there for nothing but the shared stylesheet, and a markdown page has no JavaScript
+graph, so **the wasm compiler is out of every markdown render**.
+
+**The hash is gone with the file, and the reason it was not a divergence is worth
+keeping.** It looked like one: `js-imported-css.ts:147` names the bundle with
+`Bun.hash`, which is wyhash and has no workerd equivalent. That token turns out to
+name a *virtual entrypoint* that never reaches the output. The real filename came
+from `css.ts:33-40` — `Bun.CryptoHasher("md5")` over the bundle text, first 8 hex
 chars — which is reproducible. `src/md5.ts` is a pure-JS MD5 held to
-`Bun.CryptoHasher` across every padding boundary and the RFC 1321 vectors.
-(`crypto.subtle` was not an option: workerd accepts `"MD5"` as a non-standard
-extension, Bun rejects it, so the two hosts could not share it.)
+`Bun.CryptoHasher` across every padding boundary and the RFC 1321 vectors, and it
+is still what names `?url` assets. (`crypto.subtle` was not an option: workerd
+accepts `"MD5"` as a non-standard extension, Bun rejects it, so the two hosts
+could not share it.)
 
-What does still differ on `fixture-astro-hoisted-imports` is the stylesheet's
+What also still differs on `fixture-astro-hoisted-imports` is the stylesheet's
 **content**. The Bun host pushes CSS imported from *outside* `src/` through
 `Bun.build`, a lightningcss-shaped parse-and-reprint, and leaves CSS from inside
 `src/` verbatim. In one bundle from that fixture:
@@ -176,6 +252,9 @@ no CSS parser to reprint with, so it emits every file verbatim. The framing —
 `/* path */` labels, file order, separators — is byte-identical to Bun's; only
 the declarations inside the reprinted files differ, plus the still-missing
 hoisted-script CSS block. Recorded in `project-css.ts`, not normalised away.
+(Since the fork above, that fixture's bundles also no longer line up one-to-one:
+per-root chunks are gone, so a page's out-of-tree CSS is one bundle in import-graph
+order rather than several keyed by root.)
 
 That asymmetry in the Bun host looks worth questioning on its own terms: both
 forms are valid CSS with identical semantics, but the same file yields different
@@ -265,7 +344,19 @@ one's bytes.
 
 ### What is left
 
-Endpoints, islands, and hoisted-script bundling.
+Endpoints, islands, and hoisted-script bundling. **Islands specifically: this host
+ships no client bundle and emits no hydration script.** A `client:*` directive
+renders the `<pletivo-island>` wrapper and its serialized props and stops there —
+the runtime bundle does not even export the island registry, so the host cannot
+learn which islands a page used. That is what makes the CSS model's known hole
+theoretical for now, and what will end it.
+
+Vite's import suffixes are no longer among them: `?raw`, `?inline` and `?url` are
+answered as of the second dogfood run, which is where they turned up — 28 of that
+site's 29 routes stopped on `?raw` alone. `?inline` follows the Bun host (the
+file's text) rather than Vite (a data: URI); the two hosts agreeing is worth more
+than matching Vite here, but it is a divergence, not an oversight. See
+[022](022-dogfood-ssr-workers.md) items 3 and 4.
 
 `tests/fixture` still cannot run here, and collections are no longer the reason:
 its pages use extensionless imports (`import Layout from "../components/Layout"`,
@@ -278,7 +369,10 @@ rather than at the machine.
 
 Still missing from CSS specifically: the out-of-`src/` reprint above,
 hoisted-script CSS, `.scss`/`.sass`, CSS modules, and CSS-level `@import`
-following inside an external stylesheet.
+following inside an external stylesheet. And the browser cache a linked stylesheet
+would have given across pages — given up knowingly, because in a workspace an agent
+writes to continuously that cache is invalidated on every write anyway
+([023 §5](023-live-workspace-architecture.md)).
 
 Two smaller edges: extensionless imports (`import x from "./foo"`) are not
 resolved, since `resolveSpecifier` needs an exact file-map key — common in TS
@@ -286,9 +380,11 @@ projects, and it fails loudly as an unresolved module. And a `.js`/`.mjs` file i
 the map is carried verbatim, so a mis-named TypeScript file still reaches the
 isolate; that is the one path `typescriptSuspects` can still fire on.
 
-Two mechanical constraints: the whole project is recompiled per request (only the
-*isolate* is content-addressed, by module-map hash), and file-map keys must not
-contain `..`, since `resolveSpecifier` drops a climb past the root.
+Two mechanical constraints: the whole project is still recompiled per request (only
+the *isolate* is content-addressed, by module-map hash) — the CSS no longer forces
+that, but nothing prunes it yet, see [023 §4](023-live-workspace-architecture.md) —
+and file-map keys must not contain `..`, since `resolveSpecifier` drops a climb past
+the root.
 
 ## Parity that does hold
 

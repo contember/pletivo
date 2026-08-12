@@ -4,7 +4,7 @@
  *   bunx wrangler dev --config packages/workers/example/wrangler.jsonc
  *
  *   GET  /            the demo project in src/site.ts
- *   GET  /assets/…    a file a rendered page linked to
+ *   GET  /_astro/…    a file a rendered page linked to
  *   POST /__render    {"files": {...}, "pathname": "/", "site": "..."} — render a
  *                     project handed in with the request, which is what a Durable
  *                     Object holding an agent's edits would do
@@ -110,8 +110,9 @@ export class PletivoOutbound extends WorkerEntrypoint {
 }
 
 /**
- * What the last renders linked to, so the browser's follow-up request for
- * `/assets/styles.<hash>.css` finds bytes.
+ * What the last renders linked to, so the browser's follow-up request for a
+ * `?url`-emitted `/_astro/<name>.<hash>.js` finds bytes. (The page's CSS is not among
+ * them — it is inlined, see `project-css.ts`.)
  *
  * A real host would put these behind its own cache — the names are content hashes, so
  * an entry is never stale. Here the map is bounded by the crudest means available,
@@ -232,6 +233,8 @@ export default {
       // its own files; this one is handed them with the render that named them.
       images = render.assets;
 
+      // No `compileCache`: a project handed in with the request would miss every
+      // lookup, and the entries would be pure heap. See `compile-cache.ts`.
       const page = await renderPage({
         ...render,
         loader: env.LOADER,

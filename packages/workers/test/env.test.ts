@@ -106,7 +106,7 @@ import * as env from "astro:env/server";
 
 describe("the module map", () => {
   test("carries the names and never the values", async () => {
-    const { modules, env } = await compileProject(project(SERVER_PAGE), compiler);
+    const { modules, env } = await compileProject({ files: project(SERVER_PAGE), compiler });
     expect(env).toEqual({ client: null, server: ["API_BASE", "TOKEN"] });
     // The generated module is added per render, since only the caller has the values.
     expect(modules[ENV_SERVER_MODULE_NAME]).toBeUndefined();
@@ -136,7 +136,7 @@ describe("the module map", () => {
     const files = new Map<string, string>([
       ["src/pages/index.astro", `<html><body><p>page</p></body></html>\n`],
     ]);
-    const { env, modules } = await compileProject(files, compiler);
+    const { env, modules } = await compileProject({ files, compiler });
     expect(env).toBe(null);
     expect(Object.keys(modules)).not.toContain(ENV_SERVER_MODULE_NAME);
     // And nothing is handed over, so the isolate keeps the env it always had: none.

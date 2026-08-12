@@ -44,15 +44,10 @@ import { parseMarkdown } from "@pletivo/core/content/markdown";
 import type { InjectedScripts, PreparedSite } from "@pletivo/core/artifact";
 import { artifactModuleNames } from "./artifact.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
+import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
-import {
-  cssRoots,
-  isCollectableCss,
-  parentDir,
-  projectStylesheet,
-  type ProjectStylesheet,
-} from "./project-css.ts";
+import { isCollectableCss, pageStylesheet, parentDir } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
 import type { ContentBinding, ContentStore, ProjectAssets } from "./content-files.ts";
 import {
@@ -161,6 +156,14 @@ export interface ProjectOptions {
    */
   compiler?: AstroCompiler;
   /**
+   * Compiled files kept between renders, keyed by path and checked by `source ===`.
+   *
+   * Absent, every file the page reaches is compiled — which is what a host handed a
+   * different project per request wants, since every lookup would miss. The host that
+   * owns one is `createProjectHost`; see `compile-cache.ts`.
+   */
+  compileCache?: CompileCache;
+  /**
    * Required only when the project has content collections. Without it such a project
    * throws `ContentUnavailableError` rather than rendering a page with empty ones.
    */
@@ -229,14 +232,20 @@ export interface RenderedPage {
   /** Project path of the page that produced it. */
   file: string;
   /**
-   * Content address of the module bundle, and the isolate's id. Identical sources
-   * reuse a warm isolate instead of minting a new dynamic Worker.
+   * Content address of the module bundle, and the isolate's id. The same modules reuse
+   * a warm isolate instead of minting a new dynamic Worker.
+   *
+   * Not a project identity: the bundle is only what the requested page's import graph
+   * reaches, so two pages sharing no module get two of these. That is the trade
+   * `docs/todos/023 §10` records — a page compiles ~14 modules instead of 109, and a
+   * write only cools the pages that can see it.
    */
   bundleId: string;
   /**
-   * Generated files the HTML links to — today, the project stylesheet. Same for every
-   * page of a project, and named by its own content hash, so a host can serve them
-   * from one map and cache them forever.
+   * Generated files the HTML links to — today, what a `?url` import named. Each is
+   * content-hashed, so a host can serve them from one map and cache them forever.
+   *
+   * The page's CSS is not among them: it is inlined, see `project-css.ts`.
    */
   assets: RenderedAsset[];
 }
@@ -479,7 +488,17 @@ async function isolatePaths(
   prefix: string,
   options: ProjectOptions,
 ): Promise<Map<string, RouteParams[]>> {
-  const project = await compileProject(options.files, options.compiler, options.artifact ?? null, options.assets);
+  const project = await compileProject({
+    files: options.files,
+    // The dynamic routes and nothing else: a static route's pathname comes from
+    // `parseRoute` out here and never reaches the isolate.
+    entries: routes.map((route) => prefix + route.file),
+    srcDir: srcDirOf(options),
+    compiler: options.compiler,
+    artifact: options.artifact,
+    assets: options.assets,
+    cache: options.compileCache,
+  });
   const { payload } = await callIsolate({
     project,
     options,
@@ -506,6 +525,8 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   // under several hostnames is naming the origin it is actually being reached at.
   const site = options.site ?? options.artifact?.artifact.config.site;
   const scripts = options.artifact?.artifact.scripts;
+  const srcDir = options.srcDir ?? parentDir(pagesDir);
+  const rootDir = options.rootDir ?? parentDir(srcDir);
 
   const match = findRoute(projectRoutes(files, pagesDir), pathname);
   if (!match) throw new RouteNotFoundError(pathname);
@@ -524,33 +545,46 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     if (match.route.isDynamic) {
       throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
     }
-    // The stylesheet is the whole project's, so a `.md` page links the same one every
-    // other page does — which costs it the project compile it otherwise never needs.
-    // Only when the project has a stylesheet at all: the common CSS-free markdown site
-    // still renders without ever touching the wasm compiler.
-    const compiled = hasStylesheet(files)
-      ? await compileProject(files, options.compiler, options.artifact ?? null, options.assets)
+    const html = await renderMarkdownPage(source);
+    // No `compileProject` here any more: it ran only to feed the project-wide sheet,
+    // and a `.md` page has no JavaScript graph, so its CSS is the source tree and
+    // nothing else — a key scan, not a walk. That takes the wasm compiler out of every
+    // markdown render. `files` rather than a merged map for the same reason: with no
+    // graph, an artifact's `node_modules` sources have nothing to contribute.
+    const stylesheet = hasStylesheet(files)
+      ? await pageStylesheet({
+          files,
+          srcDir,
+          rootDir,
+          cssImports: NO_EDGES,
+          imports: NO_EDGES,
+          entry: file,
+          html,
+          tailwind: options.tailwind,
+        })
       : null;
-    const stylesheet = compiled === null ? null : await siteStylesheet(compiled, options);
-    const html = finalizeHtml(
-      await renderMarkdownPage(source),
-      "",
-      stylesheet?.href ?? null,
-      scripts,
-    );
-    return { html, file, bundleId: "", assets: assetsOf(stylesheet, compiled?.urlAssets) };
+    return {
+      html: finalizeHtml(html, [stylesheet ?? ""], scripts),
+      file,
+      bundleId: "",
+      assets: [],
+    };
   }
   if (!isExecutableModule(file)) {
     throw new UnsupportedRouteError(file, "only .astro, .tsx and .md pages render here");
   }
 
-  const project = await compileProject(
+  const project = await compileProject({
     files,
-    options.compiler,
-    options.artifact ?? null,
-    options.assets,
-  );
-  const stylesheet = await siteStylesheet(project, options);
+    // Just this page: everything it can execute is in its own import graph, this one
+    // included — `getStaticPaths` is an export of the page module. See docs/todos/023 §4.
+    entries: [file],
+    srcDir,
+    compiler: options.compiler,
+    artifact: options.artifact,
+    assets: options.assets,
+    cache: options.compileCache,
+  });
   const rendered = await renderModule({
     project,
     file,
@@ -572,13 +606,30 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   // scoped by the compiler, so it goes after the component CSS — where `writeHtml`
   // puts it on the Bun host.
   const styles = [css, rendered.tsxStyles.join("\n")].filter(Boolean).join("\n");
+  // After the render, because the page's own HTML is what Tailwind's content is. The
+  // scoped blocks above are deliberately not in it — `finalizeHtml` injects them next.
+  const stylesheet = await pageStylesheet({
+    // `project.sources`, not `options.files`: a stylesheet imported by an `.astro`
+    // component that lives in `node_modules` is only in the map the artifact merged.
+    files: project.sources,
+    srcDir,
+    rootDir,
+    cssImports: project.cssImports,
+    imports: project.imports,
+    entry: file,
+    html: rendered.html,
+    tailwind: options.tailwind,
+  });
   return {
-    html: finalizeHtml(rendered.html, styles, stylesheet?.href ?? null, scripts),
+    html: finalizeHtml(rendered.html, [stylesheet ?? "", styles], scripts),
     file,
     bundleId: rendered.bundleId,
-    assets: assetsOf(stylesheet, project.urlAssets),
+    assets: assetsOf(project.urlAssets),
   };
 }
+
+/** The edge maps a page with no module graph has. */
+const NO_EDGES: ReadonlyMap<string, string[]> = new Map();
 
 /** Whether anything in the project could produce a stylesheet at all. */
 function hasStylesheet(files: ReadonlyMap<string, string>): boolean {
@@ -586,48 +637,8 @@ function hasStylesheet(files: ReadonlyMap<string, string>): boolean {
   return false;
 }
 
-/**
- * The project's one stylesheet, built from the graph `compileProject` produced.
- *
- * Every page of a project gets the same file, so the walk covers every route rather
- * than the one being rendered — a page's own `<style>` blocks are the per-page part,
- * and those go through `pageCss`.
- */
-async function siteStylesheet(
-  project: CompiledProject,
-  options: RenderPageOptions,
-): Promise<ProjectStylesheet | null> {
-  const pagesDir = options.pagesDir ?? DEFAULT_PAGES_DIR;
-  const srcDir = options.srcDir ?? parentDir(pagesDir);
-  const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
-  const pages = new Map(
-    projectRoutes(options.files, pagesDir).map((route) => [prefix + route.file, route.file]),
-  );
-  return projectStylesheet({
-    // `project.sources`, not `options.files`: a stylesheet imported by an `.astro`
-    // component that lives in `node_modules` is only in the map the artifact merged.
-    files: project.sources,
-    srcDir,
-    rootDir: options.rootDir ?? parentDir(srcDir),
-    cssImports: project.cssImports,
-    imports: project.imports,
-    roots: cssRoots({ pages, imports: project.imports }),
-    tailwind: options.tailwind,
-  });
-}
-
-function assetsOf(
-  stylesheet: ProjectStylesheet | null,
-  urlAssets: ReadonlyMap<string, string> = new Map(),
-): RenderedAsset[] {
+function assetsOf(urlAssets: ReadonlyMap<string, string>): RenderedAsset[] {
   const assets: RenderedAsset[] = [];
-  if (stylesheet) {
-    assets.push({
-      path: stylesheet.href,
-      contentType: "text/css; charset=utf-8",
-      body: stylesheet.css,
-    });
-  }
   for (const [path, body] of urlAssets) {
     assets.push({ path, contentType: urlAssetContentType(path), body });
   }
@@ -761,9 +772,9 @@ function isPathsPayload(value: unknown): value is PathsPayload {
 /**
  * One round trip to the render isolate, whichever question is being asked.
  *
- * The module map is the whole project and nothing else, so it stays content-addressed
- * — every per-request value rides in the request body, and identical sources keep
- * reusing one warm isolate however many pathnames are rendered from them.
+ * The module map is the page's import graph and nothing else, so it stays
+ * content-addressed — every per-request value rides in the request body, and one warm
+ * isolate keeps serving however many pathnames are rendered from the same modules.
  */
 async function callIsolate(input: {
   project: CompiledProject;
@@ -832,10 +843,14 @@ async function callIsolate(input: {
   return { bundleId, payload: await response.json() };
 }
 
+/** Where the source tree sits in `files`. `compileProject` probes it for the content config. */
+function srcDirOf(options: ProjectOptions): string {
+  return options.srcDir ?? parentDir(options.pagesDir ?? DEFAULT_PAGES_DIR);
+}
+
 /** Where the project root sits in `files`, which is what a collection base resolves against. */
 function projectRoot(options: ProjectOptions): string {
-  const pagesDir = options.pagesDir ?? DEFAULT_PAGES_DIR;
-  return options.rootDir ?? parentDir(options.srcDir ?? parentDir(pagesDir));
+  return options.rootDir ?? parentDir(srcDirOf(options));
 }
 
 async function renderModule(input: {
@@ -889,9 +904,16 @@ const CONTENT_BINDING = "PLETIVO_CONTENT";
 /**
  * The isolate's entry point.
  *
- * Pages are behind thunks rather than static imports so that rendering one route
- * does not evaluate every other page's module — the bundle holds the whole project,
- * and a sibling page that throws at module scope must not take this one down.
+ * Pages are behind thunks rather than static imports so that rendering one route does
+ * not evaluate every other page's module — a sibling page that throws at module scope
+ * must not take this one down. Thunks are also what keeps the table from defeating the
+ * pruned compile: a static `import` here would make every listed page an edge of the
+ * entry, and the walk would be back to the whole project.
+ *
+ * The table is `project.entries` — the pages this bundle was built for — and not every
+ * executable module in it, which is what the page loader is ever called with. Sorted,
+ * because this text is in the bundle and therefore in `bundleHash`: unsorted, two
+ * renders reaching the same modules in different orders would address one program twice.
  *
  * The two page kinds are called differently, and the difference is not cosmetic: a
  * compiled `.astro` default export takes `(result, props, slots)` and a `.tsx` one
@@ -905,9 +927,14 @@ const CONTENT_BINDING = "PLETIVO_CONTENT";
  * params and drops the props on the floor, which is what makes it JSON-safe.
  */
 function entryModule(project: CompiledProject): string {
-  const pages = [...project.moduleNames]
-    .filter(([file]) => isExecutableModule(file))
-    .map(([file, name]) => `  ${JSON.stringify(file)}: () => import(${JSON.stringify(`./${name}`)}),`)
+  const pages = [...project.entries]
+    .filter(isExecutableModule)
+    .sort()
+    .flatMap((file) => {
+      const name = project.moduleNames.get(file);
+      if (name === undefined) return [];
+      return [`  ${JSON.stringify(file)}: () => import(${JSON.stringify(`./${name}`)}),`];
+    })
     .join("\n");
 
   return `import { createPaginate, isAstroComponent, redirectPageHtml, renderAstroPage, runWithRenderTracking } from ${JSON.stringify(`./${RUNTIME_MODULE_NAME}`)};

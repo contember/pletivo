@@ -105,12 +105,21 @@ describe("byte parity with pletivo build", () => {
   );
 
   test.skipIf(!HAS_TAILWIND)(
-    "the Tailwind fixture renders the same HTML and the same stylesheet on both hosts",
+    "the Tailwind fixture agrees on every byte except how the CSS is delivered",
     async () => {
       const { ok, output } = await localParity("packages/workers/test/fixture-tailwind");
-      // Two pages and the stylesheet each of them links, all byte-for-byte.
+      // The two hosts fork here on purpose: `pletivo build` links one stylesheet for
+      // the site, this host inlines the page's own (docs/todos/023 §5). One node is
+      // removed from each side and the rest of both pages still has to match.
       expect(output).toContain("2/2 byte-identical");
-      expect(output).toContain("= /assets/styles.");
+      expect(output).toContain("2 with the CSS delivery excepted");
+      // What the removed comparison used to prove, kept: the JS candidate scanner plus
+      // Tailwind over a virtual file map still emit the same bytes as the real
+      // `@tailwindcss/node` + `@tailwindcss/oxide`, given the same candidates.
+      expect(output).toMatch(/= \d{4,} B of Tailwind, byte-identical to pletivo build/);
+      // And what it never proved, which the per-page model now needs: every utility
+      // class the rendered page applies survives into the CSS that page carries.
+      expect(output).toMatch(/= index\.html — \d+ applied class\(es\) covered by \d+ B inline/);
       expect(ok).toBe(true);
     },
     60_000,

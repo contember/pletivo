@@ -1,0 +1,29 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout title="About" description="What this playground is.">
+  <section class="flex flex-col gap-4">
+    <h1 class="text-3xl font-bold tracking-tight">About</h1>
+    <p class="text-ink/80">
+      This is a small blog whose sources live in a database, not on a disk. A Durable
+      Object holds every file you see in the editor and hands them to a renderer running
+      in the same isolate.
+    </p>
+    <p class="text-ink/80">
+      There is no build step between your edit and the page. Save a file and the next
+      request compiles it, runs it and returns HTML — usually in a few tens of
+      milliseconds.
+    </p>
+    <ul class="flex flex-col gap-2 text-ink/80">
+      <li><span class="font-medium text-ink">Pages</span> — file-based routes under src/pages</li>
+      <li><span class="font-medium text-ink">Content</span> — markdown validated by a Zod schema</li>
+      <li><span class="font-medium text-ink">Styles</span> — Tailwind v4, plus scoped CSS per component</li>
+    </ul>
+    <p class="text-ink/80">
+      Try it: open <code class="rounded bg-ink/5 px-1 py-0.5 text-sm">src/styles/global.css</code>
+      and change <code class="rounded bg-ink/5 px-1 py-0.5 text-sm">--color-signal</code> to
+      something loud.
+    </p>
+  </section>
+</BaseLayout>

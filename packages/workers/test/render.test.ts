@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { createAstroCompiler } from "../src/astro-compiler.ts";
+import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
 import {
   RouteNotFoundError,
   RoutePathNotFoundError,
@@ -116,7 +116,7 @@ describe("renderPage, .astro through the Worker Loader", () => {
     expect(html).toBe("<!DOCTYPE html>\n<html><body><p>plain</p></body></html>");
   });
 
-  test("hands the isolate one bundle for the whole project", async () => {
+  test("hands the isolate one bundle, entered at the generated module", async () => {
     const page = await render("/");
     const bundle = loader.bundles.get(page.bundleId);
     expect(bundle?.mainModule).toBe("pletivo-entry.js");
@@ -124,10 +124,23 @@ describe("renderPage, .astro through the Worker Loader", () => {
     expect(Object.keys(bundle?.modules ?? {})).toContain("pletivo-runtime.js");
   });
 
-  test("addresses the bundle by content, so identical sources reuse the isolate", async () => {
-    const first = await render("/");
-    const second = await render("/plain");
-    expect(first.bundleId).toBe(second.bundleId);
+  test("addresses the bundle by content, so the same page reuses the isolate", async () => {
+    expect((await render("/")).bundleId).toBe((await render("/")).bundleId);
+  });
+
+  test("gives two pages that share no module two bundles", async () => {
+    // The cost of pruning the compile to the page: one project is no longer one
+    // isolate. Recorded rather than prevented — see docs/todos/023 §10, and the other
+    // side of it, which is that a write only cools the pages that reach the file.
+    expect((await render("/")).bundleId).not.toBe((await render("/plain")).bundleId);
+  });
+
+  test("compiles only what the page reaches, so a sibling page is not in its bundle", async () => {
+    const page = await render("/plain");
+    const modules = Object.keys(loader.bundles.get(page.bundleId)?.modules ?? {});
+    expect(modules).toContain("src_pages_plain.astro.js");
+    expect(modules).not.toContain("src_pages_index.astro.js");
+    expect(modules).not.toContain("src_components_Layout.astro.js");
   });
 });
 
@@ -428,68 +441,100 @@ describe("projectPaths", () => {
 });
 
 describe("isolate reuse across route kinds", () => {
-  test("one bundle serves enumeration, a static route and every dynamic one", async () => {
-    // The module map is the project and nothing else — params and route travel in the
-    // request. If a per-request value ever leaked into the map this count would climb.
+  const at = (pathname: string, loaderFor: FileLoader) =>
+    renderPage({ files: DYNAMIC, pathname, loader: loaderFor, compiler });
+
+  test("every pathname of one route shares an isolate — params travel in the request", async () => {
+    // What the module map may not hold: anything per request. The route and its params
+    // ride in the request body, so two slugs of one route are one program — and if a
+    // per-request value ever leaked into the map, these counts would climb.
     const reused = new FileLoader();
-    const at = (pathname: string) => renderPage({ files: DYNAMIC, pathname, loader: reused, compiler });
+    const posts = [
+      (await at("/posts/hello", reused)).bundleId,
+      (await at("/posts/world", reused)).bundleId,
+    ];
+    const list = [
+      (await at("/list", reused)).bundleId,
+      (await at("/list/2", reused)).bundleId,
+    ];
+    expect(new Set(posts).size).toBe(1);
+    expect(new Set(list).size).toBe(1);
+    // One isolate per distinct module set: the two routes above, and nothing else.
+    expect(reused.bundles.size).toBe(2);
+    await reused.cleanup();
+  });
+
+  test("a page whose graph differs gets an isolate of its own, enumeration included", async () => {
+    // The fragmentation the pruned compile buys the cheap render with. Enumeration
+    // compiles every dynamic route at once, so it is a module set no single page has.
+    const reused = new FileLoader();
     await projectPaths({ files: DYNAMIC, loader: reused, compiler });
     const ids = [
-      (await at("/")).bundleId,
-      (await at("/posts/hello")).bundleId,
-      (await at("/posts/world")).bundleId,
-      (await at("/list/2")).bundleId,
-      (await at("/live/anything")).bundleId,
+      (await at("/", reused)).bundleId,
+      (await at("/posts/hello", reused)).bundleId,
+      (await at("/live/anything", reused)).bundleId,
     ];
-    expect(new Set(ids).size).toBe(1);
-    expect(reused.bundles.size).toBe(1);
+    expect(new Set(ids).size).toBe(3);
+    expect(reused.bundles.size).toBe(4);
     await reused.cleanup();
   });
 });
 
-describe("renderPage, the project stylesheet", () => {
+describe("renderPage, the page's stylesheet", () => {
   // A page importing CSS from its frontmatter, a `.js` module importing more of it,
-  // and a page that imports none of it but still links the same site-wide bundle.
+  // and a second page reaching a stylesheet of its own — out of `src/`, because that
+  // is the half the page's own graph decides. See `project-css.ts`.
   const styled = new Map<string, string>([
     [
       "src/pages/index.astro",
-      '---\nimport "../styles/page.css";\nimport { N } from "../lib/util.js";\n---\n' +
+      '---\nimport "../styles/page.css";\nimport "../../vendor/index.css";\n' +
+        'import { N } from "../lib/util.js";\n---\n' +
         "<html><head><title>{N}</title></head><body><p>hi</p></body></html>\n",
     ],
-    ["src/lib/util.js", 'import "../styles/util.css";\nexport const N = "n";\n'],
+    ["src/lib/util.js", 'import "../../vendor/util.css";\nexport const N = "n";\n'],
     ["src/styles/page.css", ".page { color: red }\n"],
     ["src/styles/util.css", ".util { color: blue }\n"],
-    ["src/pages/bare.astro", "<html><body><p>bare</p></body></html>\n"],
+    ["vendor/index.css", ".from-index {}\n"],
+    ["vendor/util.css", ".from-util {}\n"],
+    ["vendor/bare.css", ".from-bare {}\n"],
+    ["src/pages/bare.astro", '---\nimport "../../vendor/bare.css";\n---\n<html><body><p>bare</p></body></html>\n'],
     ["src/pages/nohead.astro", "<p>no head at all</p>\n"],
     ["src/pages/note.md", "---\ntitle: Note\n---\n\ntext\n"],
   ]);
   const renderStyled = (pathname: string) => renderPage({ files: styled, pathname, loader, compiler });
 
-  test("links the bundle from the head and hands it back as an asset to serve", async () => {
+  /** The `<style>` blocks of a finished page, in document order. */
+  function styleBlocks(html: string): string[] {
+    return [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((match) => match[1]);
+  }
+
+  test("inlines the CSS in the head and hands back no asset for it", async () => {
     const page = await renderStyled("/");
-    expect(page.assets).toHaveLength(1);
-    const [asset] = page.assets;
-    expect(asset.contentType).toBe("text/css; charset=utf-8");
-    expect(page.html).toContain(`<link rel="stylesheet" href="${asset.path}">`);
+    expect(page.assets).toEqual([]);
+    expect(page.html).not.toContain('<link rel="stylesheet"');
+    const [css] = styleBlocks(page.html);
     // Every source stylesheet, labelled and sorted — no import walk needed for these,
-    // the glob over src/ already has them.
-    expect(asset.body).toBe(
+    // the glob over src/ already has them — then what the page's graph reached.
+    expect(css).toStartWith(
       "/* styles/page.css */\n.page { color: red }\n\n\n/* styles/util.css */\n.util { color: blue }\n",
     );
+    expect(css).toContain("/* vendor/index.css */");
   });
 
-  test("gives every page of the project the same stylesheet, .md included", async () => {
-    const [index, bare, note] = await Promise.all([
-      renderStyled("/"),
-      renderStyled("/bare"),
-      renderStyled("/note"),
-    ]);
-    expect(bare.assets[0].path).toBe(index.assets[0].path);
-    expect(note.assets[0].path).toBe(index.assets[0].path);
-    expect(note.html).toContain(`<link rel="stylesheet" href="${index.assets[0].path}">`);
+  test("holds only what the page's own graph reaches", async () => {
+    const [index, bare] = await Promise.all([renderStyled("/"), renderStyled("/bare")]);
+
+    // Reached transitively through the `.js` module, and never from the other page.
+    expect(index.html).toContain(".from-util");
+    expect(index.html).not.toContain(".from-bare");
+    expect(bare.html).toContain(".from-bare");
+    expect(bare.html).not.toContain(".from-index");
+    // The source tree is the half that stays project-wide, on purpose: a stylesheet
+    // nothing imports has no graph to be found through.
+    expect(bare.html).toContain("/* styles/page.css */");
   });
 
-  test("puts the link before the page's own <style>, so a scoped rule still wins", async () => {
+  test("puts the page's sheet before its own <style>, so a scoped rule still wins", async () => {
     const files = new Map(styled);
     files.set(
       "src/pages/index.astro",
@@ -498,20 +543,45 @@ describe("renderPage, the project stylesheet", () => {
         "<style>p { color: green }</style>\n",
     );
     const { html } = await renderPage({ files, pathname: "/", loader, compiler });
-    expect(html.indexOf('<link rel="stylesheet"')).toBeLessThan(html.indexOf("<style>"));
+    const blocks = styleBlocks(html);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toContain("/* styles/page.css */");
+    expect(blocks[1]).toContain("color:green");
   });
 
-  test("leaves a page with no </head> unlinked, exactly as writeHtml does", async () => {
+  test("gives a page with no </head> its CSS too, which the <link> never had", async () => {
+    // The old model inserted the `<link>` only before `</head>` and had no fallback, so
+    // such a page got its scoped rules and no stylesheet at all. One insertion fixes it.
     const page = await renderStyled("/nohead");
-    expect(page.html).not.toContain("<link rel=\"stylesheet\"");
-    // The asset is still produced — the project has one stylesheet either way.
-    expect(page.assets).toHaveLength(1);
+    expect(page.html).toStartWith("<style>/* styles/page.css */");
+    expect(page.html).toEndWith("</style>\n<p>no head at all</p>");
   });
 
-  test("produces no asset and no link for a project with no CSS", async () => {
-    const page = await render("/");
+  test("inlines the source tree into a .md page without compiling the project", async () => {
+    let transforms = 0;
+    const counting: AstroCompiler = {
+      transform: (source, transformOptions) => {
+        transforms++;
+        return compiler.transform(source, transformOptions);
+      },
+      parse: (source, parseOptions) => compiler.parse(source, parseOptions),
+    };
+    const page = await renderPage({ files: styled, pathname: "/note", loader, compiler: counting });
+
+    // The whole reason the wasm compiler used to run for a markdown page was the
+    // project-wide stylesheet. There is none now, and a `.md` page has no graph.
+    expect(transforms).toBe(0);
+    expect(page.bundleId).toBe("");
     expect(page.assets).toEqual([]);
-    expect(page.html).not.toContain("<link rel=\"stylesheet\"");
+    expect(page.html).toContain("<style>/* styles/page.css */");
+    expect(page.html).not.toContain(".from-index");
+  });
+
+  test("produces no asset and no <style> for a project with no CSS", async () => {
+    const page = await render("/plain");
+    expect(page.assets).toEqual([]);
+    expect(page.html).not.toContain('<link rel="stylesheet"');
+    expect(page.html).not.toContain("<style>");
   });
 });
 

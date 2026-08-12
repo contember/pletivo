@@ -50,10 +50,14 @@ export interface ArtifactBinder {
   sources(files: ReadonlyMap<string, string>): ReadonlyMap<string, string>;
   /**
    * The bundle name a resolved specifier lands on, or `null` when the artifact does
-   * not answer it. `moduleNames` is consulted first for the artifact's own targets,
-   * so a generated source resolves exactly like a project file.
+   * not answer it.
+   *
+   * `nameOf` is `compileProject`'s own resolver, and it is asked first: a target that
+   * names a generated source is a file in the map, so it has to be named *and walked*
+   * exactly like a project file. Only a target it declines — a module the artifact
+   * pre-bundled, which is in `modules` and in no file map — is answered from here.
    */
-  resolve(resolved: string, moduleNames: ReadonlyMap<string, string>): string | null;
+  resolve(resolved: string, nameOf: (file: string) => string | null): string | null;
   /** Every artifact module `resolve` reached, plus everything those import. */
   modules(): Record<string, string>;
 }
@@ -89,11 +93,11 @@ export function artifactBinder(prepared: PreparedSite | null | undefined): Artif
       return new Map([...entries, ...files]);
     },
 
-    resolve(resolved, moduleNames) {
+    resolve(resolved, nameOf) {
       const target = vendor[resolved] ?? virtualModules[resolved];
       if (target === undefined) return null;
-      const name = moduleNames.get(target);
-      if (name !== undefined) return `./${name}`;
+      const name = nameOf(target);
+      if (name !== null) return `./${name}`;
       if (!(target in available)) throw new ArtifactTargetError(resolved, target);
       used.add(target);
       return `./${target}`;
