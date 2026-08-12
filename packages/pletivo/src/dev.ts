@@ -15,6 +15,7 @@ import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./cont
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
 import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";
+import { createSnapshotStore } from "./dev-snapshots";
 import { describeConfigChange, isSupervisedChild, RESTART_EXIT_CODE } from "./dev-supervisor";
 import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
@@ -524,10 +525,10 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     return null;
   }
 
-  // Per-pathname snapshot of the last HTML successfully served to a user.
-  // Populated on successful user renders; read when a later render for the
-  // same path throws and stale mode is on.
-  const snapshots = new Map<string, string>();
+  // Per-pathname snapshot of the last HTML successfully served to a user, read when a later
+  // render for the same path throws. Bounded, and stores nothing at all unless stale mode is
+  // on to read it back — see dev-snapshots.ts.
+  const snapshots = createSnapshotStore({ enabled: !!config.dev?.stale });
 
   const errorPagePath = config.dev?.errorPage
     ? path.resolve(projectRoot, config.dev.errorPage)
@@ -644,7 +645,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
     if (outcome.ok) {
       if ("raw" in outcome) return outcome.raw;
-      if (!seesRawErrors(req)) snapshots.set(pathname, outcome.html);
+      if (!seesRawErrors(req)) snapshots.remember(pathname, outcome.html);
       // Merge anything the page wrote to `Astro.response` / `Astro.cookies`.
       // Content-Type stays ours unless the page overrode it explicitly.
       const headers = new Headers(htmlHeaders);
