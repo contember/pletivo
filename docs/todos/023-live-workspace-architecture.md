@@ -344,4 +344,4 @@ used deliberately when the host's own wiring moves.
    but `pletivo prepare` still has to produce it somewhere else.
 
 The measurements on the demo project (30–70 ms a render) say nothing about any of this:
-it has five files. The numbers that matter are still the the static dogfood site ones in §4.
+it has five files. The numbers that matter are still those from the static dogfood site in §4.

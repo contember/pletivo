@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
 import { parsePreparedSite } from "@pletivo/core/artifact";
+import { minifyCss } from "../../pletivo/src/css-minify.ts";
 import { serveImage } from "../src/images.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles } from "../src/content-files.ts";
@@ -102,24 +103,28 @@ const projectWide =
         candidates: scanCandidates(files),
       });
 if (projectWide !== null) {
+  // The Bun host minifies the finished stylesheet before writing it. Run the same
+  // final transform here so this remains a Tailwind parity check, not a whitespace
+  // comparison against the pre-minification output.
+  const builtProjectWide = (await minifyCss(projectWide)).trimEnd();
   const built: string[] = [];
   for await (const rel of new Glob("assets/*.css").scan({ cwd: outDir })) {
     built.push(await Bun.file(path.join(outDir, rel)).text());
   }
   // A prefix, not the whole file: the Bun host appends the imported source CSS after
   // the compiled Tailwind, and that half was never the thing in question.
-  if (built.some((css) => css.startsWith(projectWide))) {
+  if (built.some((css) => css.startsWith(builtProjectWide))) {
     console.log(`  = ${projectWide.length} B of Tailwind, byte-identical to pletivo build`);
   } else {
     problems.push(
       `  ! tailwind — ${projectWide.length} B compiled here match no stylesheet the build wrote` +
-        (built.length === 0 ? " (it wrote none)" : `\n${firstDifference(built[0], projectWide)}`),
+        (built.length === 0 ? " (it wrote none)" : `\n${firstDifference(built[0], builtProjectWide)}`),
     );
   }
 }
 
-/** The `<link>` the Bun host injects, and the `<style>` this host injects in its place. */
-const LINKED_STYLESHEET = /<link rel="stylesheet" href="[^"]+\.css">\n?/;
+/** The `<link>` cluster the Bun host injects, and the `<style>` this host injects in its place. */
+const LINKED_STYLESHEETS = /(?:<link rel="stylesheet" href="[^"]+\.css">\n?)+/;
 const INLINED_STYLESHEET = /<style>([\s\S]*?)<\/style>\n?/;
 
 /** Every class name the markup applies. */
@@ -166,22 +171,22 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     continue;
   }
   // The one divergence the two hosts keep on purpose: the Bun host links the project
-  // stylesheet, this one inlines the page's own. Exactly one node is removed from each
-  // side — the `<link>` there, the leading `<style>` here — so every other byte of the
-  // page, the scoped `<style>` included, is still compared. Not a normalizer: it fires
-  // only where the build actually linked a sheet, and a missing counterpart is a
-  // reported difference rather than a silent pass.
+  // stylesheets, this one inlines the page's own. Exactly one cluster is removed from
+  // each side — the adjacent `<link>` tags there, the leading `<style>` here — so every
+  // other byte of the page, the scoped `<style>` included, is still compared. Not a
+  // normalizer: it fires only where the build actually linked a sheet, and a missing
+  // counterpart is a reported difference rather than a silent pass.
   let expectedHtml = expected;
   let actualHtml = page.html;
   let inlined: string | null = null;
-  if (LINKED_STYLESHEET.test(expected)) {
+  if (LINKED_STYLESHEETS.test(expected)) {
     const match = INLINED_STYLESHEET.exec(page.html);
     if (match === null) {
       problems.push(`  ! ${rel} — pletivo build linked a stylesheet and this host inlined none`);
       continue;
     }
     inlined = match[1];
-    expectedHtml = expected.replace(LINKED_STYLESHEET, "");
+    expectedHtml = expected.replace(LINKED_STYLESHEETS, "");
     actualHtml = page.html.replace(INLINED_STYLESHEET, "");
     excepted++;
   }

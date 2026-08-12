@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 /**
  * The config phase, doing what real ones do: reading the filesystem before any hook
- * runs. the static dogfood site's own config walks 93 YAML files at module scope; this reads one JSON
+ * runs. The static dogfood site's own config walks 93 YAML files at module scope; this reads one JSON
  * file. Either way an isolate cannot run it, which is why `pletivo prepare` exists.
  */
 const tones = JSON.parse(
