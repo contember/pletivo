@@ -13,7 +13,10 @@
     "./*": "./src/*.ts"
   },
   "dependencies": {
-    "@astrojs/compiler": "^3"
+    "@astrojs/compiler": "^3",
+    "@pletivo/core": "workspace:*",
+    "@pletivo/runtime": "workspace:*",
+    "sucrase": "^3"
   },
   "peerDependencies": {
     "tailwindcss": "^4"

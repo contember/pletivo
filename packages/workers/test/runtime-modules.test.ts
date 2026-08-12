@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { generateRuntimeModules } from "../scripts/build-runtime.ts";
-import { RUNTIME_MODULES, RUNTIME_MODULE_NAME } from "../src/generated/runtime-modules.ts";
+import {
+  JSX_RUNTIME_MODULE_NAME,
+  RUNTIME_MODULES,
+  RUNTIME_MODULE_NAME,
+} from "../src/generated/runtime-modules.ts";
 
 /**
  * `src/generated/runtime-modules.ts` is @pletivo/runtime, transpiled. The Worker
@@ -17,14 +21,33 @@ describe("generated runtime modules", () => {
     expect(committed).toBe(generated);
   });
 
-  test("hold the module compiled .astro output imports", () => {
-    expect(Object.keys(RUNTIME_MODULES)).toEqual([RUNTIME_MODULE_NAME]);
+  test("hold the modules compiled .astro and compiled JSX import", () => {
+    expect(Object.keys(RUNTIME_MODULES)).toEqual([RUNTIME_MODULE_NAME, JSX_RUNTIME_MODULE_NAME]);
   });
 
   test("export what the generated entry module calls", () => {
     const source = RUNTIME_MODULES[RUNTIME_MODULE_NAME];
     expect(source).toContain("renderAstroPage");
     expect(source).toContain("runWithRenderTracking");
+    expect(source).toContain("isAstroComponent");
+    expect(source).toContain("redirectPageHtml");
+  });
+
+  test("give the isolate one render-tracking store, not one per half", () => {
+    // Two bundles would mean two AsyncLocalStorage instances, and a .tsx page's
+    // <style> blocks would be pushed into a store the host never reads.
+    const source = RUNTIME_MODULES[RUNTIME_MODULE_NAME];
+    expect(source.match(/new AsyncLocalStorage/g)).toHaveLength(1);
+  });
+
+  test("rename the JSX Fragment rather than shipping a second copy of the runtime", () => {
+    // Both halves export `Fragment` and they are different functions: the Astro
+    // shim's honours `set:html`, the JSX one renders children.
+    const shim = RUNTIME_MODULES[JSX_RUNTIME_MODULE_NAME];
+    expect(shim).toBe(
+      'export { jsx, jsxs, jsxDEV, jsxFragment as Fragment } from "./pletivo-runtime.js";\n',
+    );
+    expect(RUNTIME_MODULES[RUNTIME_MODULE_NAME]).toContain("jsxFragment");
   });
 
   test("keep node:async_hooks external, since workerd provides it", () => {
