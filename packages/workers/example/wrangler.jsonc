@@ -8,6 +8,13 @@
   // The only way to execute code produced at run time in workerd. Open beta since
   // 2026-03-24; runs locally in `wrangler dev` with no account.
   "worker_loaders": [{ "binding": "LOADER" }],
+  // What a rendered page reads through `astro:env/server`. On a real host the token
+  // would be a secret rather than a var; it reaches the isolate the same way either
+  // way. Both must match the constants in src/api.ts, which is what serves them.
+  "vars": {
+    "PLETIVO_API_BASE": "https://api.pletivo.test",
+    "PLETIVO_API_TOKEN": "demo-token"
+  },
   "rules": [
     // `@astrojs/compiler/astro.wasm` has to arrive as a `WebAssembly.Module` —
     // workerd forbids `WebAssembly.compile()` at run time.

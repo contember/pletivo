@@ -17,7 +17,18 @@
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import { compileAstro, parseAstro, type AstroCompiler } from "./astro-compiler.ts";
-import { collectSpecifiers, resolveSpecifier, rewriteImports } from "./rewrite-imports.ts";
+import {
+  ENV_CLIENT_SPECIFIER,
+  ENV_MODULES,
+  ENV_SERVER_SPECIFIER,
+  type ProjectEnvUse,
+} from "./env.ts";
+import {
+  collectImportedNames,
+  collectSpecifiers,
+  resolveSpecifier,
+  rewriteImports,
+} from "./rewrite-imports.ts";
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
@@ -65,6 +76,15 @@ export interface CompiledProject {
    * no collections.
    */
   content: ProjectContent | null;
+  /**
+   * Set when something in the project imports `astro:env`, with the names it takes
+   * from each half. `null` otherwise, and then the bundle carries neither module.
+   *
+   * The values themselves are not here and never enter the module map: they ride in
+   * the isolate's `env`, so rotating a secret does not recompile the project. See
+   * `env.ts`.
+   */
+  env: ProjectEnvUse | null;
 }
 
 export interface ProjectContent {
@@ -277,12 +297,22 @@ export async function compileProject(
   const imports = new Map<string, string[]>();
   const cssImports = new Map<string, string[]>();
   const takenNames = new Map<string, string>();
+  /** Names taken from `astro:env/client` and `astro:env/server`, project-wide. */
+  const envNames = new Map<string, Set<string>>(
+    [...ENV_MODULES.keys()].map((specifier) => [specifier, new Set<string>()]),
+  );
 
   /** Both edge sets a module contributes, read from the one specifier list. */
-  const recordEdges = (file: string, code: string): void => {
+  const recordImports = (file: string, code: string): void => {
     const specifiers = collectSpecifiers(code);
     imports.set(file, resolveEdges(file, specifiers, files, isExecutableModule));
     cssImports.set(file, resolveEdges(file, specifiers, files, isCollectableCss));
+    // The names, not just the specifier: a generated module's exports are static, so
+    // `astro:env/server` has to be built knowing what this project asks of it.
+    for (const [specifier, names] of envNames) {
+      if (!specifiers.includes(specifier)) continue;
+      for (const name of collectImportedNames(code, specifier)) names.add(name);
+    }
   };
 
   // Names first: rewriting an import needs the target's name, whichever order the
@@ -294,6 +324,7 @@ export async function compileProject(
   }
 
   let usesContent = false;
+  const usedEnv = new Set<string>();
 
   const resolve = (resolved: string): string | null => {
     // The one bare specifier the bundle answers to on its own: sucrase writes it into
@@ -305,6 +336,15 @@ export async function compileProject(
     if (isContentApi(resolved)) {
       usesContent = true;
       return `./${CONTENT_MODULE_NAME}`;
+    }
+    // `astro:env` is Astro's own specifier and the Bun host answers to it too, so a
+    // project that reads its configuration renders on either host unchanged. The
+    // module it lands on is generated per render, because only the caller knows the
+    // values — see `envModules` in env.ts.
+    const envModule = ENV_MODULES.get(resolved);
+    if (envModule !== undefined) {
+      usedEnv.add(resolved);
+      return `./${envModule}`;
     }
     const name = moduleNames.get(resolved);
     return name === undefined ? null : `./${name}`;
@@ -322,7 +362,7 @@ export async function compileProject(
 
     if (VERBATIM.includes(extension)) {
       modules[name] = rewriteImports(source, { importer: file, resolve });
-      recordEdges(file, source);
+      recordImports(file, source);
       continue;
     }
 
@@ -330,7 +370,7 @@ export async function compileProject(
       const code = transpile(source, { file, jsx: WITH_JSX.includes(extension) });
       // The JSX import sucrase prepends is not a project edge, and `resolveEdges`
       // drops it for the same reason it drops any specifier outside the file map.
-      recordEdges(file, code);
+      recordImports(file, code);
       modules[name] = rewriteImports(code, { importer: file, resolve });
       continue;
     }
@@ -357,7 +397,7 @@ export async function compileProject(
     // Types out before the graph is read: `import type` is not an edge, and with
     // `keepUnusedImports` nothing else in the prologue moves.
     const code = transpile(stripStyleImports(result.code), { file });
-    recordEdges(file, code);
+    recordImports(file, code);
     modules[name] = rewriteImports(code, { importer: file, resolve });
   }
 
@@ -368,7 +408,22 @@ export async function compileProject(
     content = { configModule: configFile === null ? null : (moduleNames.get(configFile) ?? null) };
   }
 
-  return { modules, moduleNames, styles, imports, cssImports, content };
+  const env = envUse(usedEnv, envNames);
+  return { modules, moduleNames, styles, imports, cssImports, content, env };
+}
+
+/**
+ * Which `astro:env` modules the bundle needs, and the names each has to export.
+ *
+ * A specifier that was resolved but named nothing — a namespace import, a dynamic
+ * `import()` — still yields an entry, with an empty list: the module has to exist, it
+ * just takes its whole surface from what the host provided.
+ */
+function envUse(used: Set<string>, names: Map<string, Set<string>>): ProjectEnvUse | null {
+  if (used.size === 0) return null;
+  const of = (specifier: string): string[] | null =>
+    used.has(specifier) ? [...(names.get(specifier) ?? [])].sort() : null;
+  return { client: of(ENV_CLIENT_SPECIFIER), server: of(ENV_SERVER_SPECIFIER) };
 }
 
 /**

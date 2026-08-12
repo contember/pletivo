@@ -5,6 +5,10 @@ SSG-relevant gaps in Astro API surface support, ordered by priority.
 ## S-tier — Core, must work
 
 - [001 — Scoped Style Injection](001-scoped-style-injection.md) — `renderHead()` is no-op, scoped `<style>` never reaches the page
+- [019 — CSS chunking](019-css-chunking.md) — **open**; the 23.4 MB bundle accounted to the byte, plus the spec Astro follows and pletivo needs
+- [020 — Integrations in the Workers host](020-workers-integration-phase.md) — **design**; npm resolution turns out to be the first blocker, not integrations
+- [017 — Dogfood: a real production Astro site](017-dogfood-static-site.md) — **open**; it built with zero edits, but a 23.4 MB CSS bundle, hashed `public/` assets and dropped `srcset` would break the live site
+- [018 — Dogfood: an SSR site on the dev server](018-dogfood-ssr-dev-server.md) — **open**; serves the site (better than `astro dev` here), but 7 of 8 endpoints 404 and POST handlers are unsupported everywhere
 - [013 — SSR hooks stub leaks into island bundles](013-preact-hooks-ssr-stub-leak.md) — done; every hydrated island shipped no-op hooks and was inert, and pre-fix benchmark numbers are void
 - [014 — Hoisted `.astro` CSS emission order](014-astro-css-cascade-order.md) — done; cascade order was nondeterministic, and the fix changes rendered output
 

@@ -97,6 +97,38 @@ export function collectSpecifiers(code: string): string[] {
   return specifiers;
 }
 
+/** The `{ A, B as C }` clause of an import statement, if it has one. */
+const NAMED_CLAUSE = /\{([^}]*)\}/;
+
+/** What a name has to look like to be re-exported by a generated module. */
+const IMPORTED_NAME = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * The names a module imports from one specifier, as that specifier exports them.
+ *
+ * `import { A, B as C } from "x"` yields `["A", "B"]` — the export's name, not the
+ * local one, because the caller's use for this is generating the module that has to
+ * export them. A default or namespace import yields nothing: neither names anything.
+ *
+ * Same bounds as `collectSpecifiers`: the prologue only, so a line of page copy that
+ * looks like an import cannot contribute a name. Dynamic `import()` is not read
+ * either — there is no clause to read.
+ */
+export function collectImportedNames(code: string, specifier: string): string[] {
+  const names: string[] = [];
+  walkPrologue(code, (statement) => {
+    const found = STATEMENT_SPECIFIER.exec(statement);
+    if (!found || found[2] !== specifier) return;
+    const clause = NAMED_CLAUSE.exec(statement);
+    if (!clause) return;
+    for (const entry of clause[1].split(",")) {
+      const name = entry.trim().split(/\s+as\s+/)[0].trim();
+      if (IMPORTED_NAME.test(name)) names.push(name);
+    }
+  });
+  return names;
+}
+
 /**
  * Join a relative specifier onto the importer's directory. Bare and absolute
  * specifiers are returned unchanged — there is no node_modules to walk here.

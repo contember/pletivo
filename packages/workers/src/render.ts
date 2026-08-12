@@ -54,6 +54,23 @@ import {
 import type { TailwindStylesheets } from "./tailwind.ts";
 import type { ContentBinding, ContentStore } from "./content-files.ts";
 import {
+  assertEnvFits,
+  envModules,
+  envPayload,
+  ENV_BINDING,
+  ENV_CLIENT_MODULE_NAME,
+  ENV_INSTALL,
+  ENV_SERVER_MODULE_NAME,
+  type EnvPayload,
+  type ProjectEnv,
+} from "./env.ts";
+import {
+  outboundConfig,
+  outboundKind,
+  type OutboundAccess,
+  type OutboundBinding,
+} from "./outbound.ts";
+import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
   RUNTIME_MODULE_NAME,
@@ -70,8 +87,12 @@ export interface DynamicWorkerCode {
   compatibilityFlags?: string[];
   mainModule: string;
   modules: Record<string, string>;
-  /** `null` cuts the isolate off from the network. Rendering never needs it. */
-  globalOutbound?: null;
+  /**
+   * `null` cuts the isolate off from the network, a binding proxies it — and *absent*
+   * inherits the host worker's own access. `ProjectOptions.outbound` is what decides
+   * which; nothing here ever leaves the field out by accident. See `outbound.ts`.
+   */
+  globalOutbound?: OutboundBinding | null;
   /**
    * Bindings the isolate gets, independent of `globalOutbound` — a capability is not
    * the network. Set once, when the isolate is created: `get()` only calls the code
@@ -127,6 +148,21 @@ export interface ProjectOptions {
    * throws `ContentUnavailableError` rather than rendering a page with empty ones.
    */
   content?: ContentAccess;
+  /**
+   * What the isolate may reach over the network. Omitted, it reaches nothing — a page
+   * that calls `fetch()` throws rather than quietly getting out. See `outbound.ts`
+   * for the three states and why they are named rather than optional.
+   */
+  outbound?: OutboundAccess;
+  /**
+   * What `astro:env/client` and `astro:env/server` export inside the isolate.
+   *
+   * The host's own configuration — its `vars` and secrets — not the project's, since
+   * nothing here evaluates `astro.config.*`. A name the project imports and this does
+   * not carry arrives as `undefined`, which is what the Bun host gives for an unset
+   * `process.env` entry. Capped at 1 MiB; see `env.ts`.
+   */
+  env?: ProjectEnv;
 }
 
 export interface RenderPageOptions extends ProjectOptions {
@@ -272,12 +308,17 @@ export function typescriptSuspects(modules: Record<string, string>): string[] {
 }
 
 /**
- * The isolate refused the module bundle.
+ * The isolate refused the module bundle — it never got as far as running a page.
  *
  * An unresolvable specifier fails here identically to unparseable syntax, so the
  * TypeScript note is only attached when a module actually carries some. Blaming it
  * unconditionally sends whoever reads this hunting for annotations that may not
  * exist — which is what it used to do, and it cost a verification round.
+ *
+ * A page that throws *while rendering* does not come here: the generated entry catches
+ * it and answers with a 500, so the two are told apart rather than guessed at. Denied
+ * network access is the case that made this matter — workerd's own message names the
+ * cause precisely, and it used to arrive under a headline blaming the bundle.
  */
 export class IsolateStartError extends Error {
   constructor(
@@ -639,22 +680,36 @@ async function callIsolate(input: {
   body: Record<string, unknown>;
 }): Promise<{ bundleId: string; payload: unknown }> {
   const { project, options, label, body } = input;
-  const modules = { ...project.modules, [ENTRY_MODULE]: entryModule(project) };
+  // The env values are not in the map — only the names their modules export, which is
+  // forced: ESM decides its exports statically. Rotating a secret leaves the bundle,
+  // and therefore the warm isolate, exactly where it was.
+  const env = project.env === null ? null : envPayload(options.env);
+  assertEnvFits(env);
+  const modules = {
+    ...project.modules,
+    ...(project.env === null ? {} : envModules(project.env, env)),
+    [ENTRY_MODULE]: entryModule(project),
+  };
   const bundleId = await bundleHash(modules);
 
   const content = project.content === null ? null : options.content;
   if (project.content !== null && !content) throw new ContentUnavailableError();
 
-  const stub = options.loader.get(bundleId, () => ({
+  const isolateEnv = {
+    ...(content ? { [CONTENT_BINDING]: content.binding } : {}),
+    ...(env ? { [ENV_BINDING]: env } : {}),
+  };
+
+  const stub = options.loader.get(await isolateId(bundleId, options, env), () => ({
     compatibilityDate: options.compatibilityDate ?? DEFAULT_COMPATIBILITY_DATE,
     compatibilityFlags: ["nodejs_compat"],
     mainModule: ENTRY_MODULE,
     modules,
-    // The render is a pure function of the sources. Nothing it runs should reach
-    // the network, and the isolate is running code the host just generated. The
-    // content binding below is unaffected: it is a capability, not the network.
-    globalOutbound: null,
-    ...(content ? { env: { [CONTENT_BINDING]: content.binding } } : {}),
+    // Cut off unless the caller said otherwise, because a render is a pure function
+    // of its sources and this is code the host generated a millisecond ago. The
+    // bindings below are unaffected either way: a capability is not the network.
+    ...outboundConfig(options.outbound),
+    ...(Object.keys(isolateEnv).length > 0 ? { env: isolateEnv } : {}),
   }));
 
   // Opened per render, not per isolate: the isolate outlives the request that made
@@ -759,7 +814,7 @@ function entryModule(project: CompiledProject): string {
     .join("\n");
 
   return `import { createPaginate, isAstroComponent, redirectPageHtml, renderAstroPage, runWithRenderTracking } from ${JSON.stringify(`./${RUNTIME_MODULE_NAME}`)};
-${contentPrelude(project)}
+${contentPrelude(project)}${envPrelude(project)}
 const PAGES = {
 ${pages}
 };
@@ -864,11 +919,54 @@ async function render({ file, params, route, url, site }) {
 
 export default {
   async fetch(request, env) {
-    const body = await request.json();
-    await openContent(env, body);
-    return body.op === "paths" ? listPaths(body.routes) : render(body);
+    // Everything below this line is a *render* failure, not a bundle that would not
+    // run — the bundle plainly ran, it is running now. Reported as a response rather
+    // than as a throw because an exception crossing the Loader boundary looks
+    // identical to one thrown while starting, and the host would have to guess.
+    // \`await\` on both branches, or the rejection leaves the try block unseen.
+    try {
+      const body = await request.json();
+      openEnv(env);
+      await openContent(env, body);
+      return body.op === "paths" ? await listPaths(body.routes) : await render(body);
+    } catch (error) {
+      return new Response((error && error.stack) || String(error), { status: 500 });
+    }
   },
 };
+`;
+}
+
+/**
+ * The isolate's `astro:env` wiring, emitted only for a project that imports it.
+ *
+ * Before anything else, and before the first page module is loaded: a page reads its
+ * configuration in frontmatter, which runs the moment the module is imported.
+ *
+ * Unlike the content prelude, this one is safe to leave as module state. The values
+ * come out of the isolate's own `env`, which is fixed when the isolate is created, so
+ * every request installs the identical thing — there is no per-request value here for
+ * an overlapping render to see. What makes that true is the isolate id covering the
+ * env values: two different sets of values are two different isolates.
+ */
+function envPrelude(project: CompiledProject): string {
+  if (project.env === null) return "\nfunction openEnv() {}\n";
+  const imports: string[] = [];
+  const installs: string[] = [];
+  const use = (names: string[] | null, local: string, module: string): void => {
+    if (names === null) return;
+    imports.push(`import * as ${local} from ${JSON.stringify(`./${module}`)};`);
+    installs.push(`  ${local}.${ENV_INSTALL}(values);`);
+  };
+  use(project.env.client, "$$envClient", ENV_CLIENT_MODULE_NAME);
+  use(project.env.server, "$$envServer", ENV_SERVER_MODULE_NAME);
+
+  return `${imports.join("\n")}
+
+function openEnv(env) {
+  const values = (env && env[${JSON.stringify(ENV_BINDING)}]) || {};
+${installs.join("\n")}
+}
 `;
 }
 
@@ -950,9 +1048,43 @@ export async function bundleHash(modules: Record<string, string>): Promise<strin
     .sort()
     .map((name) => `${name} ${modules[name]}`)
     .join(" ");
+  return digestHex(text, 16);
+}
+
+async function digestHex(text: string, bytes: number): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)]
-    .slice(0, 16)
+    .slice(0, bytes)
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/**
+ * What the isolate is cached under: the sources, plus the configuration that cannot
+ * be changed after it is created.
+ *
+ * `env.LOADER.get(id, code)` runs `code` on a cache miss and never again, so
+ * everything in it — `globalOutbound`, `env` — belongs to the *first* render that
+ * asked for that id. The module map is content-addressed, which takes care of the
+ * sources; the rest of the code object is not in the map, and an id that ignored it
+ * would hand the second caller the first caller's network policy.
+ *
+ * A default configuration adds nothing: cut off, with no env values, the id is
+ * exactly `bundleHash(modules)`, so identical sources keep reusing one isolate the
+ * way they always have. Only a caller asking for something else pays for a second
+ * one, and pays once — the suffix is a hash of the configuration, not of the request.
+ *
+ * The one thing it cannot cover is *which* proxy: a stub is a fresh object every
+ * request and nothing in it identifies the service behind it. A host serving several
+ * tenants with different proxies over identical sources therefore has to vary
+ * something this id does see — a tenant id among the env values is enough.
+ */
+async function isolateId(
+  bundleId: string,
+  options: ProjectOptions,
+  env: EnvPayload | null,
+): Promise<string> {
+  const outbound = outboundKind(options.outbound);
+  if (outbound === "blocked" && env === null) return bundleId;
+  return `${bundleId}.${await digestHex(JSON.stringify({ outbound, env }), 8)}`;
 }

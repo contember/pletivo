@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import {
+  collectImportedNames,
   collectSpecifiers,
   prologueEnd,
   resolveSpecifier,
@@ -149,5 +150,36 @@ export * from "../components/Doc.astro";
     expect(out).toContain(`import Doc from "../components/Doc.astro";`);
     expect(out).toContain(`export * from "../components/Doc.astro";`);
     expect(out).not.toContain(`"./Doc.astro.js"`);
+  });
+});
+
+describe("collectImportedNames", () => {
+  test("gives the exported name, not the local one", () => {
+    const code = `import { API_BASE, TOKEN as t } from "astro:env/server";\n`;
+    // `t` is this module's name for it; the generated module has to export `TOKEN`.
+    expect(collectImportedNames(code, "astro:env/server")).toEqual(["API_BASE", "TOKEN"]);
+  });
+
+  test("names nothing for a namespace or default import, because neither does", () => {
+    expect(collectImportedNames(`import * as env from "astro:env/server";\n`, "astro:env/server"))
+      .toEqual([]);
+    expect(collectImportedNames(`import env from "astro:env/server";\n`, "astro:env/server"))
+      .toEqual([]);
+  });
+
+  test("reads only the prologue, so page copy contributes no names", () => {
+    // The same bound `rewriteImports` works to, and for the same reason: the compiler
+    // puts the page body in a template literal, where a line can look like an import.
+    const code = `import { A } from "astro:env/server";
+const html = \`
+import { LEAKED } from "astro:env/server";
+\`;
+`;
+    expect(collectImportedNames(code, "astro:env/server")).toEqual(["A"]);
+  });
+
+  test("ignores every other specifier", () => {
+    const code = `import { A } from "astro:env/client";\nimport { B } from "astro:env/server";\n`;
+    expect(collectImportedNames(code, "astro:env/server")).toEqual(["B"]);
   });
 });
