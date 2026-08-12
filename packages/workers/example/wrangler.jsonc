@@ -11,6 +11,8 @@
   "rules": [
     // `@astrojs/compiler/astro.wasm` has to arrive as a `WebAssembly.Module` —
     // workerd forbids `WebAssembly.compile()` at run time.
-    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
+    // Tailwind's own stylesheets, which the isolate cannot read off disk.
+    { "type": "Text", "globs": ["**/*.css"], "fallthrough": true }
   ]
 }

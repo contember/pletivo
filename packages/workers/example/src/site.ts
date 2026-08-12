@@ -5,9 +5,21 @@
  * row, or an agent's edit buffer. Nothing here ever touches a filesystem.
  */
 export const SITE = new Map<string, string>([
+  // Imported below, which is the only reason it reaches the bundle: the project
+  // stylesheet is built from the CSS the module graph pulls in.
+  [
+    "src/styles/global.css",
+    `@import "tailwindcss";
+
+@theme {
+  --color-brand: oklch(0.62 0.19 259);
+}
+`,
+  ],
   [
     "src/components/Layout.astro",
     `---
+import "../styles/global.css";
 const { title } = Astro.props;
 ---
 <html lang="en">
@@ -15,13 +27,13 @@ const { title } = Astro.props;
     <meta charset="utf-8" />
     <title>{title}</title>
   </head>
-  <body>
-    <h1>{title}</h1>
+  <body class="mx-auto max-w-2xl p-8">
+    <h1 class="text-3xl font-bold text-brand">{title}</h1>
     <slot />
   </body>
 </html>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 40rem; }
+  body { font-family: system-ui, sans-serif; }
 </style>
 `,
   ],
@@ -30,8 +42,8 @@ const { title } = Astro.props;
     `---
 const { heading } = Astro.props;
 ---
-<article class="card">
-  <h2>{heading}</h2>
+<article class="card mt-4">
+  <h2 class="text-lg tracking-tight">{heading}</h2>
   <slot />
 </article>
 <style>

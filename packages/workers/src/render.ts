@@ -25,6 +25,14 @@ import { parseMarkdown } from "@pletivo/core/content/markdown";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
+import {
+  cssRoots,
+  isCollectableCss,
+  parentDir,
+  projectStylesheet,
+  type ProjectStylesheet,
+} from "./project-css.ts";
+import type { TailwindStylesheets } from "./tailwind.ts";
 import { RUNTIME_MODULE_NAME } from "./generated/runtime-modules.ts";
 
 // ── The Worker Loader binding ───────────────────────────────────────
@@ -60,15 +68,34 @@ export interface RenderPageOptions {
   loader: WorkerLoaderBinding;
   /** Where pages live in `files`. */
   pagesDir?: string;
+  /** Where the source tree starts in `files`. Defaults to the parent of `pagesDir`. */
+  srcDir?: string;
+  /** Where the project root starts in `files`. Defaults to the parent of `srcDir`. */
+  rootDir?: string;
   /** `site` from the project config. Sets the origin of `Astro.url`. */
   site?: string;
   /** `compatibility_date` for the render isolate. */
   compatibilityDate?: string;
   /**
+   * Tailwind's own stylesheets, as text. Needed only when a project stylesheet does
+   * `@import "tailwindcss"`; without them that project throws rather than rendering
+   * unstyled. The isolate cannot read them off disk, so the host worker's bundler has
+   * to embed them — see `packages/workers/example/src/index.ts`.
+   */
+  tailwind?: TailwindStylesheets;
+  /**
    * Overrides the compiler bound to the bundled `astro.wasm`. Only a test outside
    * a Worker needs this — see `compileProject`.
    */
   compiler?: AstroCompiler;
+}
+
+/** A file the rendered HTML references, which the host has to serve for the page to work. */
+export interface RenderedAsset {
+  /** Root-absolute URL path, exactly as the HTML spells it. */
+  path: string;
+  contentType: string;
+  body: string;
 }
 
 export interface RenderedPage {
@@ -80,6 +107,12 @@ export interface RenderedPage {
    * reuse a warm isolate instead of minting a new dynamic Worker.
    */
   bundleId: string;
+  /**
+   * Generated files the HTML links to — today, the project stylesheet. Same for every
+   * page of a project, and named by its own content hash, so a host can serve them
+   * from one map and cache them forever.
+   */
+  assets: RenderedAsset[];
 }
 
 /** No route in the project matches the pathname. */
@@ -205,13 +238,22 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   if (source === undefined) throw new RouteNotFoundError(pathname);
 
   if (file.endsWith(".md")) {
-    return { html: await renderMarkdownPage(source), file, bundleId: "" };
+    // The stylesheet is the whole project's, so a `.md` page links the same one every
+    // other page does — which costs it the project compile it otherwise never needs.
+    // Only when the project has a stylesheet at all: the common CSS-free markdown site
+    // still renders without ever touching the wasm compiler.
+    const stylesheet = hasStylesheet(files)
+      ? await siteStylesheet(await compileProject(files, options.compiler), options)
+      : null;
+    const html = finalizeHtml(await renderMarkdownPage(source), "", stylesheet?.href ?? null);
+    return { html, file, bundleId: "", assets: assetsOf(stylesheet) };
   }
   if (!isExecutableModule(file)) {
     throw new UnsupportedRouteError(file, "only .astro, .tsx and .md pages render here");
   }
 
   const project = await compileProject(files, options.compiler);
+  const stylesheet = await siteStylesheet(project, options);
   const rendered = await renderModule({ project, file, params: match.params, loader, site, options });
   const css = pageCss({
     entry: file,
@@ -224,7 +266,51 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   // scoped by the compiler, so it goes after the component CSS — where `writeHtml`
   // puts it on the Bun host.
   const styles = [css, rendered.tsxStyles.join("\n")].filter(Boolean).join("\n");
-  return { html: finalizeHtml(rendered.html, styles), file, bundleId: rendered.bundleId };
+  return {
+    html: finalizeHtml(rendered.html, styles, stylesheet?.href ?? null),
+    file,
+    bundleId: rendered.bundleId,
+    assets: assetsOf(stylesheet),
+  };
+}
+
+/** Whether anything in the project could produce a stylesheet at all. */
+function hasStylesheet(files: ReadonlyMap<string, string>): boolean {
+  for (const file of files.keys()) if (isCollectableCss(file)) return true;
+  return false;
+}
+
+/**
+ * The project's one stylesheet, built from the graph `compileProject` produced.
+ *
+ * Every page of a project gets the same file, so the walk covers every route rather
+ * than the one being rendered — a page's own `<style>` blocks are the per-page part,
+ * and those go through `pageCss`.
+ */
+async function siteStylesheet(
+  project: CompiledProject,
+  options: RenderPageOptions,
+): Promise<ProjectStylesheet | null> {
+  const pagesDir = options.pagesDir ?? DEFAULT_PAGES_DIR;
+  const srcDir = options.srcDir ?? parentDir(pagesDir);
+  const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
+  const pages = new Map(
+    projectRoutes(options.files, pagesDir).map((route) => [prefix + route.file, route.file]),
+  );
+  return projectStylesheet({
+    files: options.files,
+    srcDir,
+    rootDir: options.rootDir ?? parentDir(srcDir),
+    cssImports: project.cssImports,
+    imports: project.imports,
+    roots: cssRoots({ pages, imports: project.imports }),
+    tailwind: options.tailwind,
+  });
+}
+
+function assetsOf(stylesheet: ProjectStylesheet | null): RenderedAsset[] {
+  if (!stylesheet) return [];
+  return [{ path: stylesheet.href, contentType: "text/css; charset=utf-8", body: stylesheet.css }];
 }
 
 /**

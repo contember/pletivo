@@ -93,21 +93,24 @@ root.
 
 ## 7. Where the MVP stops
 
-The Workers host renders `.astro` and `.md` for static routes, end to end, in real
-workerd. Measured HTML parity against `pletivo build` on the same sources —
-nothing normalised on either side:
+The Workers host renders `.astro`, `.tsx`/`.ts` and `.md` for static routes, end
+to end, in real workerd. Measured HTML parity against `pletivo build` on the same
+sources — nothing normalised on either side:
 
-| fixture | pages | byte-identical |
-|---|---|---|
-| `tests/conformance/fixtures/css-cascade-order` | 4 | 3 |
-| `tests/fixture-astro-hoisted-imports` | 1 | 0 |
-| `tests/fixture-astro-styles` | 4 | 0 |
+| fixture | pages | byte-identical | before the transpiler |
+|---|---|---|---|
+| `tests/fixture-astro-styles` | 4 | **4** | 0 |
+| `tests/conformance/fixtures/css-cascade-order` | 4 | **4** | 3 |
+| `tests/fixture-astro-hoisted-imports` | 1 | 0 | 0 |
 
-**The first wall is TypeScript in `.astro` frontmatter.** `interface Props` is the
-documented Astro idiom, so this hits nearly every real project (15 of this repo's
-own 142 `.astro` files). `@astrojs/compiler` copies frontmatter into its output
-verbatim and the Worker Loader takes JavaScript, so the module does not parse.
-The fix is a pure-JS transpiler in the *host* worker, ahead of the Loader.
+### The transpiler seam
+
+`@astrojs/compiler` copies `.astro` frontmatter into its output verbatim and the
+Worker Loader takes JavaScript, so `export interface Props` — the documented
+Astro idiom, in 15 of this repo's own 142 `.astro` files — used to arrive as
+unparseable JavaScript. `src/transpile.ts` now runs sucrase over every generated
+module in the **host** worker, ahead of the Loader. The same seam compiles JSX,
+which is what put `.tsx` pages in reach.
 
 Sizes, measured rather than guessed — `bun build --target=node --minify`, gzipped:
 
@@ -118,22 +121,33 @@ Sizes, measured rather than guessed — `bun build --target=node --minify`, gzip
 
 `ts-blank-space` looks like the minimal choice — it only blanks out type syntax —
 but it depends on the whole `typescript` package for the parse, so it is 16×
-larger on the wire. Against a Worker's 10 MB gzip deploy limit that is not fatal,
-but it buys nothing: sucrase is self-contained and also handles JSX, which is the
-same seam `.tsx` pages need. Watch its Node-only CLI deps (`mz`, `pirates`,
-`commander`, `tinyglobby`) — the transform entry must not drag them in.
+larger on the wire, and it cannot do JSX. Its Node-only CLI deps (`mz`,
+`pirates`, `commander`, `tinyglobby`) stay out of the bundle: esbuild takes
+sucrase's `module` field, and `test/transpile.test.ts` fails if any of them or a
+>150 KB gzip ever appears.
 
-Delete only the `export interface Props` blocks from `tests/fixture-astro-styles`
-and the same fixture renders **4/4 byte-identical**. So scoped CSS, the
-`is:global` gating that runs through the render tracker, the no-`<head>` fallback
-and cascade order already match — TypeScript is the only thing between that
-fixture and full parity.
+**`keepUnusedImports: true` is load-bearing, not a preference.** Sucrase's
+default TypeScript transform elides unused imports, including the
+`import * as $$module1` the Astro compiler emits and never references by name.
+Dropping it would silently move the CSS cascade, since `collectSpecifiers` reads
+the same prologue. With the flag, a module containing no TypeScript comes back
+**byte-identical**, so the transform cannot disturb anything that already
+rendered. Explicit `import type` is still removed.
 
-Behind that wall, in the order a project would hit them: `.tsx`/`.ts` pages
-(same transpiler problem), dynamic routes (`getStaticPaths()` needs the page
-module executed on the host), endpoints, islands, hoisted-script bundling, the
-CSS bundle-and-hash pipeline, and Tailwind — `tailwind.ts` exists but is not
-wired into `renderPage`.
+### What is left
+
+In the order a project would hit it: dynamic routes (`getStaticPaths()` needs the
+page module executed on the host — the isolate can do it, so this is an extra
+entrypoint rather than a redesign), endpoints, islands, hoisted-script bundling,
+the CSS bundle-and-hash pipeline (the sole remaining `hoisted-imports`
+divergence), and Tailwind — `tailwind.ts` is built and verified byte-identical in
+workerd but is not wired into `renderPage`.
+
+Two smaller edges: extensionless imports (`import x from "./foo"`) are not
+resolved, since `resolveSpecifier` needs an exact file-map key — common in TS
+projects, and it fails loudly as an unresolved module. And a `.js`/`.mjs` file in
+the map is carried verbatim, so a mis-named TypeScript file still reaches the
+isolate; that is the one path `typescriptSuspects` can still fire on.
 
 Two mechanical constraints: the whole project is recompiled per request (only the
 *isolate* is content-addressed, by module-map hash), and file-map keys must not
