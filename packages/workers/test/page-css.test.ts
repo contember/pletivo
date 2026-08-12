@@ -119,30 +119,50 @@ describe("extractAstroClasses", () => {
 
 describe("finalizeHtml", () => {
   test("adds a doctype when the template starts at <html>", () => {
-    expect(finalizeHtml("<html><body>x</body></html>", "")).toBe(
+    expect(finalizeHtml("<html><body>x</body></html>", [])).toBe(
       "<!DOCTYPE html>\n<html><body>x</body></html>",
     );
   });
 
   test("leaves a doctype the template already wrote", () => {
     const html = "<!doctype html>\n<html><body>x</body></html>";
-    expect(finalizeHtml(html, "")).toBe(html);
+    expect(finalizeHtml(html, [])).toBe(html);
   });
 
   test("adds nothing to a fragment", () => {
-    expect(finalizeHtml("<p>x</p>", "")).toBe("<p>x</p>");
+    expect(finalizeHtml("<p>x</p>", [])).toBe("<p>x</p>");
   });
 
   test("puts the CSS in the head", () => {
-    expect(finalizeHtml("<html><head></head><body>x</body></html>", "a{}")).toBe(
+    expect(finalizeHtml("<html><head></head><body>x</body></html>", ["a{}"])).toBe(
       "<!DOCTYPE html>\n<html><head><style>a{}</style>\n</head><body>x</body></html>",
     );
   });
 
   test("falls back to the body, then to the front, when there is no head", () => {
-    expect(finalizeHtml("<html><body>x</body></html>", "a{}")).toBe(
+    expect(finalizeHtml("<html><body>x</body></html>", ["a{}"])).toBe(
       "<!DOCTYPE html>\n<html><body>x<style>a{}</style>\n</body></html>",
     );
-    expect(finalizeHtml("<p>x</p>", "a{}")).toBe("<style>a{}</style>\n<p>x</p>");
+    expect(finalizeHtml("<p>x</p>", ["a{}"])).toBe("<style>a{}</style>\n<p>x</p>");
+  });
+
+  test("keeps the parts in order down every branch, including the prepend", () => {
+    // The reason the parts arrive as a list: two separate insertions before the same
+    // anchor come out in the order they were made in `<head>`, and in the *reverse*
+    // order when there is no head and each one prepends.
+    const ordered = "<style>site{}</style>\n<style>scoped{}</style>";
+    expect(finalizeHtml("<html><head></head><body>x</body></html>", ["site{}", "scoped{}"])).toBe(
+      `<!DOCTYPE html>\n<html><head>${ordered}\n</head><body>x</body></html>`,
+    );
+    expect(finalizeHtml("<html><body>x</body></html>", ["site{}", "scoped{}"])).toBe(
+      `<!DOCTYPE html>\n<html><body>x${ordered}\n</body></html>`,
+    );
+    expect(finalizeHtml("<p>x</p>", ["site{}", "scoped{}"])).toBe(`${ordered}\n<p>x</p>`);
+  });
+
+  test("skips an empty part rather than emitting an empty <style>", () => {
+    expect(finalizeHtml("<html><head></head><body>x</body></html>", ["", "a{}"])).toBe(
+      "<!DOCTYPE html>\n<html><head><style>a{}</style>\n</head><body>x</body></html>",
+    );
   });
 });

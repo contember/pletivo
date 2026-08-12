@@ -6,8 +6,22 @@
  * resolves `@import`s off disk, `@tailwindcss/oxide` is a native scanner that walks
  * the filesystem, and `optimize()` needs lightningcss. Only the scanner is load
  * bearing, so this module keeps `compile()` and replaces the rest — stylesheets are
- * resolved out of a virtual file map, and candidates are extracted from that same
- * map by `extractCandidates` below.
+ * resolved out of a virtual file map, and candidates are extracted with
+ * `extractCandidates` below, from whatever the caller decides the content is.
+ *
+ * ## `compiler.build()` accumulates, so a compiler cannot be shared across renders
+ *
+ * Verified in `tailwindcss/dist/lib.mjs`: the compiler closes over one `Set`, every
+ * `build(candidates)` call adds into it, and the CSS returned is compiled from the
+ * *union* of everything that instance has ever been handed — a call that adds nothing
+ * new even returns the previous result memoized. (`--custom-property` candidates go
+ * the same way, through `theme.markUsedVariable`.)
+ *
+ * Nothing here caches a compiler today, so nothing here is wrong. It is written down
+ * because the obvious optimisation is: reuse the compiler and skip the parse. Do that
+ * and page A's utilities appear in page B's stylesheet, which is the exact thing
+ * per-page CSS exists to stop. A cache has to be keyed by the candidate set, or it has
+ * to re-create the compiler.
  */
 
 /** The slice of `tailwindcss` this host uses. Validated at run time by `loadTailwind`. */
@@ -30,7 +44,7 @@ interface TailwindCompiler {
   /** Where Tailwind decided content lives: `"none"` disables scanning entirely. */
   root: null | "none" | { base: string; pattern: string };
   sources: { base: string; pattern: string; negated: boolean }[];
-  build(candidates: string[]): string;
+  build(candidates: readonly string[]): string;
 }
 
 /**
@@ -48,9 +62,18 @@ export interface TailwindStylesheets {
 export interface CompileTailwindOptions {
   /** Key in `files` of the stylesheet that imports Tailwind. */
   entry: string;
-  /** The whole project: stylesheets resolve `@import` against it, everything else is scanned. */
+  /** Where `@import` resolves. Also the default content, when `candidates` is absent. */
   files: ReadonlyMap<string, string>;
   stylesheets: TailwindStylesheets;
+  /**
+   * What to build, when the caller knows the content better than a scan of `files` does
+   * — the Workers host hands over the candidates of the page it just rendered.
+   *
+   * Defaulting to the scan keeps `files` doing the one job it always did for callers
+   * that have no better answer, and keeps `scanCandidates` as the reference input the
+   * `@tailwindcss/oxide` comparison in `docs/todos/016 §7` is stated against.
+   */
+  candidates?: readonly string[];
 }
 
 /** Extensions that only ever hold CSS, never class names. */
@@ -95,9 +118,10 @@ function join(base: string, id: string): string {
  * Compile the entry stylesheet against the virtual project.
  *
  * `root === "none"` (`@source not inline` / an explicit opt-out) disables scanning.
- * Otherwise every non-CSS file in `files` is scanned; the `@source` globs Tailwind
- * reports in `sources` are not applied yet, so a project that narrows its content
- * with `@source` gets a superset — extra candidates, never missing ones.
+ * Otherwise the caller's `candidates` are built, or every non-CSS file in `files` is
+ * scanned for them; the `@source` globs Tailwind reports in `sources` are not applied
+ * yet, so a project that narrows its content with `@source` gets a superset — extra
+ * candidates, never missing ones.
  */
 export async function compileTailwind(options: CompileTailwindOptions): Promise<string> {
   const { entry, files, stylesheets } = options;
@@ -134,7 +158,9 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
     },
   });
 
-  return compiler.build(compiler.root === "none" ? [] : scanCandidates(files));
+  return compiler.build(
+    compiler.root === "none" ? [] : (options.candidates ?? scanCandidates(files)),
+  );
 }
 
 /** Every candidate in the project, from the virtual file map rather than a filesystem walk. */

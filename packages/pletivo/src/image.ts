@@ -16,6 +16,7 @@ import { recordRuntimeDep } from "./incremental/dep-tracker";
 import type { ImageMetadata } from "@pletivo/core/image-service";
 import {
   getImageMode,
+  imageContentType,
   imageOutputPath,
   readImageDimensions as readImageDimensionsFromBuffer,
   setImageHost,

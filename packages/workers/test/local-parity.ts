@@ -2,7 +2,7 @@
  * The same comparison `parity.ts` runs, with the Workers host on Bun instead of in
  * workerd — `FileLoader` in place of `env.LOADER`. Not a substitute for `parity.ts`:
  * it cannot see anything workerd does differently. It is the fast loop for the parts
- * that are pure host-side string work, above all the project stylesheet.
+ * that are pure host-side string work, above all the page's CSS.
  *
  *   bun packages/workers/test/local-parity.ts tests/fixture-astro-hoisted-imports
  */
@@ -15,6 +15,8 @@ import { parsePreparedSite } from "@pletivo/core/artifact";
 import { serveImage } from "../src/images.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles } from "../src/content-files.ts";
+import { tailwindEntry } from "../src/project-css.ts";
+import { compileTailwind, extractCandidates, scanCandidates } from "../src/tailwind.ts";
 import { projectPaths, renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { builtPathname } from "./built-pathname.ts";
@@ -65,13 +67,81 @@ const loader = new FileLoader();
 // cross. In workerd they are two halves; see `example/src/index.ts`.
 const contentFiles = new ContentFiles();
 const content = { binding: contentFiles, store: contentFiles };
-const pagesDir = `${prefix}/src/pages`;
+const srcDir = `${prefix}/src`;
+const pagesDir = `${srcDir}/pages`;
 let identical = 0;
 let pages = 0;
+/** Pages whose CSS delivery was excepted from the byte comparison — see below. */
+let excepted = 0;
 const problems: string[] = [];
 const builtPathnames = new Set<string>();
 /** Every image URL the rendered pages linked to, checked against dist afterwards. */
 const linkedImages = new Set<string>();
+
+/**
+ * The proof that inlining took away, re-made one level down.
+ *
+ * `fixture-tailwind` used to be the only assertion anywhere that this host's JS
+ * candidate scanner plus Tailwind-over-a-virtual-file-map produces the **same bytes**
+ * as the real `@tailwindcss/node` + `@tailwindcss/oxide` (`docs/todos/016 §7`), and it
+ * made it by comparing the linked stylesheet file. This host inlines now
+ * (`docs/todos/023 §5`) so there is no file — but the claim was always about the
+ * engine, not the delivery. Same entry, same candidates in, same bytes out.
+ *
+ * What it no longer covers: that the *page* gets those bytes. That is what the two
+ * per-page checks below are for.
+ */
+const entry = tailwindEntry({ files, srcDir });
+const projectWide =
+  entry === null
+    ? null
+    : await compileTailwind({
+        entry,
+        files,
+        stylesheets: await tailwindStylesheets(),
+        candidates: scanCandidates(files),
+      });
+if (projectWide !== null) {
+  const built: string[] = [];
+  for await (const rel of new Glob("assets/*.css").scan({ cwd: outDir })) {
+    built.push(await Bun.file(path.join(outDir, rel)).text());
+  }
+  // A prefix, not the whole file: the Bun host appends the imported source CSS after
+  // the compiled Tailwind, and that half was never the thing in question.
+  if (built.some((css) => css.startsWith(projectWide))) {
+    console.log(`  = ${projectWide.length} B of Tailwind, byte-identical to pletivo build`);
+  } else {
+    problems.push(
+      `  ! tailwind — ${projectWide.length} B compiled here match no stylesheet the build wrote` +
+        (built.length === 0 ? " (it wrote none)" : `\n${firstDifference(built[0], projectWide)}`),
+    );
+  }
+}
+
+/** The `<link>` the Bun host injects, and the `<style>` this host injects in its place. */
+const LINKED_STYLESHEET = /<link rel="stylesheet" href="[^"]+\.css">\n?/;
+const INLINED_STYLESHEET = /<style>([\s\S]*?)<\/style>\n?/;
+
+/** Every class name the markup applies. */
+function classTokens(html: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const match of html.matchAll(/class="([^"]*)"/g)) {
+    for (const token of match[1].split(/\s+/)) if (token) tokens.add(token);
+  }
+  return tokens;
+}
+
+/**
+ * Whether a stylesheet carries the rule for one utility class.
+ *
+ * Tailwind escapes a selector the way `CSS.escape` does, and the trailing boundary is
+ * load bearing: without it `.mt-4` is found inside `.mt-40`.
+ */
+function hasUtility(css: string, token: string): boolean {
+  const selector = `.${token.replace(/[^A-Za-z0-9_-]/g, (character) => `\\${character}`)}`;
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`${escaped}(?![A-Za-z0-9_-])`).test(css);
+}
 
 for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   pages++;
@@ -95,11 +165,57 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     problems.push(`  ! ${rel}\n    ${error instanceof Error ? error.message : String(error)}`);
     continue;
   }
-  if (page.html === expected) {
+  // The one divergence the two hosts keep on purpose: the Bun host links the project
+  // stylesheet, this one inlines the page's own. Exactly one node is removed from each
+  // side — the `<link>` there, the leading `<style>` here — so every other byte of the
+  // page, the scoped `<style>` included, is still compared. Not a normalizer: it fires
+  // only where the build actually linked a sheet, and a missing counterpart is a
+  // reported difference rather than a silent pass.
+  let expectedHtml = expected;
+  let actualHtml = page.html;
+  let inlined: string | null = null;
+  if (LINKED_STYLESHEET.test(expected)) {
+    const match = INLINED_STYLESHEET.exec(page.html);
+    if (match === null) {
+      problems.push(`  ! ${rel} — pletivo build linked a stylesheet and this host inlined none`);
+      continue;
+    }
+    inlined = match[1];
+    expectedHtml = expected.replace(LINKED_STYLESHEET, "");
+    actualHtml = page.html.replace(INLINED_STYLESHEET, "");
+    excepted++;
+  }
+
+  if (actualHtml === expectedHtml) {
     identical++;
-    console.log(`  = ${rel}`);
+    console.log(`  = ${rel}${inlined === null ? "" : " (CSS delivery excepted)"}`);
   } else {
-    problems.push(`  ! ${rel}\n${firstDifference(expected, page.html)}`);
+    problems.push(`  ! ${rel}\n${firstDifference(expectedHtml, actualHtml)}`);
+  }
+
+  // What the per-page model needs to hold, on the page that just made it. The markup
+  // without the injected `<style>` blocks is what the candidate scan actually saw —
+  // they are added after the render, which is why the CSS text in them cannot feed
+  // back in as candidates.
+  const markup = page.html.replace(/<style>[\s\S]*?<\/style>\n?/g, "");
+  const applied = classTokens(markup);
+  const scanned = new Set(extractCandidates(markup));
+  const unseen = [...applied].filter((token) => !scanned.has(token)).sort();
+  if (unseen.length > 0) {
+    problems.push(`  ! ${rel} — the scanner missed ${unseen.length} applied class(es): ${unseen.join(", ")}`);
+  }
+  const sheet = inlined;
+  if (sheet !== null && projectWide !== null) {
+    // Every utility the page applies has to survive the narrowing. This is the claim
+    // the old byte comparison used to carry for free.
+    const dropped = [...applied]
+      .filter((token) => hasUtility(projectWide, token) && !hasUtility(sheet, token))
+      .sort();
+    if (dropped.length > 0) {
+      problems.push(`  ! ${rel} — ${dropped.length} utility class(es) missing from the inlined CSS: ${dropped.join(", ")}`);
+    } else if (applied.size > 0) {
+      console.log(`  = ${rel} — ${applied.size} applied class(es) covered by ${sheet.length} B inline`);
+    }
   }
 
   for (const url of imageUrls(page.html)) linkedImages.add(url);
@@ -157,7 +273,10 @@ if (missing.length === 0 && extra.length === 0) {
 }
 
 await loader.cleanup();
-console.log(`\n${fixture}: ${identical}/${pages} byte-identical`);
+console.log(
+  `\n${fixture}: ${identical}/${pages} byte-identical` +
+    (excepted === 0 ? "" : ` (${excepted} with the CSS delivery excepted — docs/todos/023 §5)`),
+);
 for (const problem of problems) console.log(`\n${problem}`);
 await fs.rm(outDir, { recursive: true, force: true });
 await fs.rm(artifactPath, { force: true });

@@ -3,15 +3,40 @@
  *
  * This is the whole of the "no filesystem" problem in one place. The Bun host lets
  * Bun's loader compile `.astro` on import and resolve the rest off disk; here every
- * module the isolate will ever see has to be named up front, so the project is
- * compiled as a unit: `.astro` through `@astrojs/compiler`, `.js` verbatim, and the
- * import specifiers rewritten to point at each other by bundle name.
+ * module the isolate will ever see has to be named in the bundle, so each one is
+ * compiled here: `.astro` through `@astrojs/compiler`, `.js` verbatim, and the import
+ * specifiers rewritten to point at each other by bundle name.
  *
  * The Loader takes JavaScript, and the compiler copies `.astro` frontmatter into its
  * output verbatim — `export interface Props` included. So every module goes through
  * `stripTypes` on the way out, which also compiles the JSX in a `.tsx` page. That
  * runs *here*, in the host worker, which is the only place it can: workerd has no
  * `eval`, so nothing in the isolate could do it.
+ *
+ * ## The walk is demand-driven
+ *
+ * Given `entries`, only what those pages' import graphs reach is compiled. Measured on
+ * a real project (`docs/todos/023 §4`): 109 modules compiled per request against a
+ * median of 14 the requested page can reach.
+ *
+ * `resolve` is the single place that decides a module has to be in the bundle, so
+ * naming it there is also how the walk discovers it — `nameOf` names and enqueues in
+ * one step. Two things follow. The queue is drained with an index cursor rather than
+ * `shift()`, because `resolve` runs *inside* `rewriteImports` and appends mid-walk.
+ * And `bundleName` has to be a pure function of the path, because two pages reach a
+ * shared module in orders of their own and a name that moved with discovery would
+ * address one program twice.
+ *
+ * Without `entries` every module-shaped file is compiled, which is what a full
+ * `pletivo build` wants and what every caller did before pruning existed.
+ *
+ * ## The per-file work is cacheable, the walk is not
+ *
+ * `compileFile` is everything that depends only on `(path, source, compiler)` — the
+ * wasm transform, sucrase, the specifiers — and it is what `options.cache` holds.
+ * `applyCompiled` is everything the file *set* decides, and it runs on a hit too,
+ * which is why every side effect that lives inside `resolve` needs no storing. See
+ * `compile-cache.ts`.
  */
 
 import { is } from "@astrojs/compiler/utils";
@@ -26,6 +51,7 @@ import {
   ASSETS_SPECIFIER,
   IMAGE_RUNTIME_SPECIFIER,
 } from "./astro-assets.ts";
+import type { CompileCache, CompiledFile } from "./compile-cache.ts";
 import { assetInfo, type ImageInfo, type ProjectAssets, type ProjectAsset } from "./content-files.ts";
 import {
   ENV_CLIENT_SPECIFIER,
@@ -76,6 +102,15 @@ export interface CompiledProject {
   sources: ReadonlyMap<string, string>;
   /** Project path -> its module name, for the files that produced one. */
   moduleNames: ReadonlyMap<string, string>;
+  /**
+   * The pages the bundle was built for: `options.entries`, or every module-shaped
+   * file when the caller named none.
+   *
+   * `render.ts` builds the isolate's page table from this rather than from
+   * `moduleNames`, which also holds the components and libraries those pages import —
+   * modules the page loader is never called with.
+   */
+  entries: readonly string[];
   /** Project path -> the `<style>` blocks it declares. */
   styles: ReadonlyMap<string, AstroStyles>;
   /** Project path -> the project paths it imports, in execution order. */
@@ -202,28 +237,47 @@ export function isContentApi(resolved: string): boolean {
 }
 
 /**
- * Where a project's collection definitions live, in the order the Bun host looks —
- * `initCollections` takes the first that exists, so a project with both gets the same
- * one on either host.
- *
- * Matched as a suffix rather than resolved against a root, because `compileProject`
- * is handed the file map alone and the root only arrives with the request.
+ * Where a project's collection definitions live *relative to `srcDir`*, in the order
+ * the Bun host looks — `initCollections` takes the first that exists, so a project with
+ * both gets the same one on either host.
  */
 const CONTENT_CONFIG_CANDIDATES = [
-  "src/content.config.ts",
-  "src/content.config.mts",
-  "src/content.config.mjs",
-  "src/content.config.js",
-  "src/content/config.ts",
-  "src/content/config.mts",
-  "src/content/config.mjs",
-  "src/content/config.js",
+  "content.config.ts",
+  "content.config.mts",
+  "content.config.mjs",
+  "content.config.js",
+  "content/config.ts",
+  "content/config.mts",
+  "content/config.mjs",
+  "content/config.js",
 ];
 
-function findContentConfig(files: ReadonlyMap<string, string>): string | null {
+/** Where the source tree sits in a project that did not say. */
+const DEFAULT_SRC_DIR = "src";
+
+/**
+ * The project's content config, or `null`.
+ *
+ * Eight `files.has()` probes when the caller said where the source tree starts. Without
+ * a `srcDir` there is no root to resolve against, so each candidate is matched as a
+ * suffix over every key instead — which is what this did throughout, back when
+ * `compileProject` was handed the file map alone.
+ */
+function findContentConfig(
+  files: ReadonlyMap<string, string>,
+  srcDir: string | undefined,
+): string | null {
+  if (srcDir !== undefined) {
+    const prefix = srcDir === "" ? "" : `${srcDir}/`;
+    for (const candidate of CONTENT_CONFIG_CANDIDATES) {
+      if (files.has(prefix + candidate)) return prefix + candidate;
+    }
+    return null;
+  }
   for (const candidate of CONTENT_CONFIG_CANDIDATES) {
+    const suffix = `${DEFAULT_SRC_DIR}/${candidate}`;
     for (const file of files.keys()) {
-      if (file === candidate || file.endsWith(`/${candidate}`)) return file;
+      if (file === suffix || file.endsWith(`/${suffix}`)) return file;
     }
   }
   return null;
@@ -325,16 +379,38 @@ export function resolveInFiles(
  *
  * Every module sits at the bundle root, so a relative specifier is always
  * `./<name>` no matter how deep the importer was — the isolate never has to
- * resolve a path. `seen` keeps two project paths that flatten to the same name
- * apart.
+ * resolve a path. A pure function of the path, deliberately: a compile pruned to
+ * one page's graph reaches files in an order of its own, and a name that moved
+ * with discovery order would give one program two bundles.
  */
-function bundleName(file: string, seen: Map<string, string>): string {
-  const base = file.replace(/[^A-Za-z0-9._-]/g, "_") + ".js";
-  let name = base;
-  for (let n = 2; seen.has(name) && seen.get(name) !== file; n++) {
-    name = `${base.slice(0, -3)}.${n}.js`;
+function bundleName(file: string): string {
+  const flat = file.replace(/[^A-Za-z0-9._-]/g, "_");
+  // `/` -> `_` is injective only for a path that holds no `_` and no other illegal
+  // character; anything else needs the path itself to disambiguate.
+  const ambiguous = /[^A-Za-z0-9._\-/]/.test(file) || file.includes("_");
+  // Ten hex digits, not six: every `node_modules/…` path holds a `_` and so takes this
+  // branch, and a large artifact contributes thousands of them. 24 bits puts a birthday
+  // collision at roughly one project in four at that size; 40 bits puts it out of reach.
+  return ambiguous ? `${flat}.${md5Hex(file).slice(0, 10)}.js` : `${flat}.js`;
+}
+
+/**
+ * `bundleName`, with the collision it cannot rule out turned into an error.
+ *
+ * The hash makes one unlikely, not impossible, and an unnoticed collision would silently
+ * overwrite a module in the bundle — the failure would surface as an unresolvable import
+ * somewhere else entirely.
+ */
+function claimBundleName(file: string, taken: Map<string, string>): string {
+  const name = bundleName(file);
+  const other = taken.get(name);
+  if (other !== undefined && other !== file) {
+    throw new Error(
+      `[pletivo-workers] ${JSON.stringify(file)} and ${JSON.stringify(other)} both compile to ` +
+        `the bundle name ${JSON.stringify(name)}`,
+    );
   }
-  seen.set(name, file);
+  taken.set(name, file);
   return name;
 }
 
@@ -405,23 +481,34 @@ export class UnsupportedFileError extends Error {
   }
 }
 
-/**
- * Compile every module-shaped file in the map.
- *
- * Files the bundle has no use for (`.md`, images, `astro.config.mjs` outside the
- * graph) are simply not modules and are skipped; a file that *is* reachable but
- * needs a transpiler throws, because silently omitting it turns into an
- * unresolved import inside the isolate, which is much harder to read.
- *
- * `prepared` is what `pletivo prepare` froze: it answers the bare specifiers the file
- * map cannot, and contributes the `node_modules` sources those specifiers land on.
- * Without one, a bare specifier is left alone and the Loader reports it — which is
- * where every project with an npm dependency stood before the artifact existed.
- */
-export async function compileProject(
-  files: ReadonlyMap<string, string>,
-  compiler: AstroCompiler = bundled,
-  prepared: PreparedSite | null = null,
+export interface CompileProjectOptions {
+  /** The project: path (no leading slash, `/` separators) -> source text. */
+  files: ReadonlyMap<string, string>;
+  /**
+   * The pages the bundle has to serve. Only what their import graphs reach is
+   * compiled — see the walk in the header.
+   *
+   * Absent, every module-shaped file in the map is compiled. That is what a caller
+   * wanting the whole project gets, and it is the behaviour every caller had before
+   * pruning existed.
+   */
+  entries?: readonly string[];
+  /** Overrides the compiler bound to the bundled `astro.wasm` — see `bundled` above. */
+  compiler?: AstroCompiler;
+  /**
+   * Where the source tree starts in `files`, e.g. `src`.
+   *
+   * Only the content config needs it, and only to be probed for rather than scanned
+   * after: nothing in a project imports it, so a pruned walk has to seed it by path.
+   */
+  srcDir?: string;
+  /**
+   * What `pletivo prepare` froze: it answers the bare specifiers the file map cannot,
+   * and contributes the `node_modules` sources those specifiers land on. Without one,
+   * a bare specifier is left alone and the Loader reports it — which is where every
+   * project with an npm dependency stood before the artifact existed.
+   */
+  artifact?: PreparedSite | null;
   /**
    * The project's binary files. An image *something imports* becomes a metadata
    * module, so `import hero from "./hero.png"` resolves to the same `{src, width,
@@ -432,10 +519,39 @@ export async function compileProject(
    * of images and a page reaches a handful. The rest are named by the collections that
    * carry them, over the binding, one entry at a time.
    */
-  assets: ProjectAssets = new Map(),
-): Promise<CompiledProject> {
-  const artifact = artifactBinder(prepared);
-  files = withAssetSources(artifact.sources(files));
+  assets?: ProjectAssets;
+  /**
+   * Compiled files kept between calls, keyed by path and checked by `source ===`.
+   * Absent, every file is compiled. See `compile-cache.ts` for what an entry carries
+   * and why the rest is reproduced on a hit rather than stored.
+   */
+  cache?: CompileCache;
+}
+
+/** One file the walk has claimed a name for and has still to compile. */
+interface Pending {
+  file: string;
+  name: string;
+  source: string;
+}
+
+/**
+ * Compile what `entries` reaches, or every module-shaped file when it names none.
+ *
+ * Files the bundle has no use for (`.md`, images, `astro.config.mjs` outside the
+ * graph) are simply not modules and are skipped; a file that *is* reachable but
+ * needs a transpiler throws, because silently omitting it turns into an
+ * unresolved import inside the isolate, which is much harder to read.
+ *
+ * A file nothing reaches is now never read, so a syntax error in it never surfaces.
+ * That is the point for an on-demand render and it is a real behaviour change; see
+ * `docs/todos/023 §10`.
+ */
+export async function compileProject(options: CompileProjectOptions): Promise<CompiledProject> {
+  const { compiler = bundled, assets = new Map(), cache } = options;
+  const artifact = artifactBinder(options.artifact ?? null);
+  // Reassigned once, if `resolve` ever asks for `astro:assets` — see `withAssetSources`.
+  let files = artifact.sources(options.files);
   /** Image path -> its metadata module, filled as `resolve` reaches each one. */
   const images = new Map<string, string>();
   /** `<file>?raw` / `<file>?url` -> the module that default-exports its value, same. */
@@ -448,42 +564,41 @@ export async function compileProject(
   const imports = new Map<string, string[]>();
   const cssImports = new Map<string, string[]>();
   const takenNames = new Map<string, string>();
-  /** Names taken from `astro:env/client` and `astro:env/server`, project-wide. */
+  /** Named and not yet compiled. Appended to *while* it is walked; see the header. */
+  const queue: Pending[] = [];
+  /** Names taken from `astro:env/client` and `astro:env/server`, across the whole walk. */
   const envNames = new Map<string, Set<string>>(
     [...ENV_MODULES.keys()].map((specifier) => [specifier, new Set<string>()]),
   );
 
-  /** Both edge sets a module contributes, read from the one specifier list. */
-  const recordImports = (file: string, code: string): void => {
-    const specifiers = collectSpecifiers(code);
-    imports.set(file, resolveEdges(file, specifiers, files, isExecutableModule));
-    cssImports.set(file, resolveEdges(file, specifiers, files, isCollectableCss));
-    // The names, not just the specifier: a generated module's exports are static, so
-    // `astro:env/server` has to be built knowing what this project asks of it.
-    for (const [specifier, names] of envNames) {
-      if (!specifiers.includes(specifier)) continue;
-      for (const name of collectImportedNames(code, specifier)) names.add(name);
-    }
+  /**
+   * The bundle name of a project file, claimed on first sight — which is also how the
+   * file joins the walk. `null` for anything the bundle cannot hold as a module.
+   *
+   * Naming lazily is what makes a forward reference work: `rewriteImports` runs while
+   * compiling A and has to emit `./<name-of-B>` before B has been read, and the name
+   * is a pure function of B's path, so it can be claimed without reading it.
+   */
+  const nameOf = (file: string): string | null => {
+    if (!MODULE_EXTENSIONS.includes(extensionOf(file))) return null;
+    const source = files.get(file);
+    // Not in the map is not an error here: the artifact's targets come through this
+    // too, and a pre-bundled module of its own is answered by `artifact.resolve`.
+    if (source === undefined) return null;
+    const known = moduleNames.get(file);
+    if (known !== undefined) return known;
+    const name = claimBundleName(file, takenNames);
+    moduleNames.set(file, name);
+    queue.push({ file, name, source });
+    return name;
   };
 
-  // Names first: rewriting an import needs the target's name, whichever order the
-  // files come in.
-  for (const file of files.keys()) {
-    if (MODULE_EXTENSIONS.includes(extensionOf(file))) {
-      moduleNames.set(file, bundleName(file, takenNames));
-    }
-  }
   let usesContent = false;
+  /** The content config, seeded the moment something reaches for the content API. */
+  let contentConfig: string | null = null;
   let usesImages = false;
   let usesImportMetaEnv = false;
   const usedEnv = new Set<string>();
-
-  /** `import.meta.env` -> the global the entry installs, recorded so the entry knows to. */
-  const withImportMetaEnv = (code: string): string => {
-    const substituted = substituteImportMetaEnv(code);
-    if (substituted.used) usesImportMetaEnv = true;
-    return substituted.code;
-  };
 
   const resolve = (resolved: string): string | null => {
     // The one bare specifier the bundle answers to on its own: sucrase writes it into
@@ -493,7 +608,15 @@ export async function compileProject(
     // module and every page that queries a collection — has to land on the *same*
     // module, or `initCollections` would fill a store the page never reads.
     if (isContentApi(resolved)) {
-      usesContent = true;
+      if (!usesContent) {
+        usesContent = true;
+        // Nothing in a project imports the content config — the isolate's prelude
+        // reaches it through a thunk — so a pruned walk has to seed it by path. From
+        // here rather than after the walk, because it has a graph of its own (the
+        // loaders, the schema modules) that still has to be walked.
+        contentConfig = findContentConfig(files, options.srcDir);
+        if (contentConfig !== null) nameOf(contentConfig);
+      }
       return `./${CONTENT_MODULE_NAME}`;
     }
     // `astro:assets` is Astro's own specifier and the Bun host answers it too. Here it
@@ -501,8 +624,9 @@ export async function compileProject(
     // be pre-built, since only the host worker has the compiler. See `astro-assets.ts`.
     if (resolved === ASSETS_SPECIFIER) {
       usesImages = true;
-      const name = moduleNames.get(`${ASSETS_DIR}/index.ts`);
-      return name === undefined ? null : `./${name}`;
+      files = withAssetSources(files);
+      const name = nameOf(`${ASSETS_DIR}/index.ts`);
+      return name === null ? null : `./${name}`;
     }
     if (resolved === IMAGE_RUNTIME_SPECIFIER) {
       usesImages = true;
@@ -518,7 +642,7 @@ export async function compileProject(
         // Unreadable header: left out, so the import fails at the Loader by name
         // rather than resolving to a module with made-up dimensions in it.
         if (module === null) return null;
-        name = bundleName(resolved, takenNames);
+        name = claimBundleName(resolved, takenNames);
         moduleNames.set(resolved, name);
         images.set(resolved, module);
       }
@@ -540,7 +664,7 @@ export async function compileProject(
         const target = resolveInFiles(query.file, files);
         const source = target === null ? undefined : files.get(target);
         if (source === undefined || target === null) return null;
-        name = bundleName(resolved, takenNames);
+        name = claimBundleName(resolved, takenNames);
         queried.set(resolved, name);
         moduleNames.set(resolved, name);
         const value = query.kind === "text" ? source : urlAssetHref(target, source, urlAssets);
@@ -549,36 +673,27 @@ export async function compileProject(
       return `./${name}`;
     }
     const file = resolveInFiles(resolved, files);
-    const name = file === null ? undefined : moduleNames.get(file);
-    if (name !== undefined) return `./${name}`;
+    const name = file === null ? null : nameOf(file);
+    if (name !== null) return `./${name}`;
     // Last, so a project file always outranks the artifact: everything above this is
     // a specifier no file map can hold, and everything below it is npm.
-    return artifact.resolve(resolved, moduleNames);
+    return artifact.resolve(resolved, nameOf);
   };
 
-  for (const [file, source] of files) {
+  /**
+   * Everything about one file that depends only on its path, its bytes and the
+   * compiler — which is all of the expensive work, and therefore all a cache holds.
+   * What the file *set* decides is `applyCompiled` below.
+   */
+  const compileFile = async (file: string, source: string): Promise<CompiledFile> => {
     const extension = extensionOf(file);
-    const name = moduleNames.get(file);
-    if (name === undefined) continue;
 
-    if (EMPTY.includes(extension)) {
-      modules[name] = "export {};\n";
-      continue;
-    }
-
-    if (VERBATIM.includes(extension)) {
-      modules[name] = rewriteImports(withImportMetaEnv(source), { importer: file, resolve });
-      recordImports(file, source);
-      continue;
-    }
+    if (VERBATIM.includes(extension)) return fileEntry(source, source, null);
 
     if (TRANSPILED.includes(extension)) {
-      const code = transpile(source, { file, jsx: WITH_JSX.includes(extension) });
       // The JSX import sucrase prepends is not a project edge, and `resolveEdges`
       // drops it for the same reason it drops any specifier outside the file map.
-      recordImports(file, code);
-      modules[name] = rewriteImports(withImportMetaEnv(code), { importer: file, resolve });
-      continue;
+      return fileEntry(source, transpile(source, { file, jsx: WITH_JSX.includes(extension) }), null);
     }
 
     const result = await compiler.transform(source, {
@@ -595,16 +710,70 @@ export async function compileProject(
       );
     }
 
+    let declared: AstroStyles | null = null;
     if (result.css.length > 0) {
       const blocks = await classifyStyles(result.css, source, compiler);
-      if (blocks.length > 0) styles.set(file, { scope: result.scope, blocks });
+      if (blocks.length > 0) declared = { scope: result.scope, blocks };
     }
 
     // Types out before the graph is read: `import type` is not an edge, and with
     // `keepUnusedImports` nothing else in the prologue moves.
-    const code = transpile(stripStyleImports(result.code), { file });
-    recordImports(file, code);
-    modules[name] = rewriteImports(withImportMetaEnv(code), { importer: file, resolve });
+    return fileEntry(source, transpile(stripStyleImports(result.code), { file }), declared);
+  };
+
+  /**
+   * The half a cache hit still pays: everything that reads the file map rather than
+   * one file's bytes. Measured at 2 ms for a whole project, which is why it is out
+   * here — and why every side effect that rides on `resolve` is free on a hit.
+   */
+  const applyCompiled = (file: string, name: string, entry: CompiledFile): void => {
+    if (entry.importMetaEnv) usesImportMetaEnv = true;
+    if (entry.styles !== null) styles.set(file, entry.styles);
+    // The names, not just the specifier: a generated module's exports are static, so
+    // `astro:env/server` has to be built knowing what this project asks of it.
+    if (entry.envNames !== null) {
+      for (const [specifier, names] of entry.envNames) {
+        const into = envNames.get(specifier);
+        if (into !== undefined) for (const imported of names) into.add(imported);
+      }
+    }
+    // Recorded before the rewrite for every extension, where `.js` alone used to do it
+    // after: resolving an edge reads the file map and nothing else, so the order
+    // between the two cannot matter.
+    imports.set(file, resolveEdges(file, entry.specifiers, files, isExecutableModule));
+    cssImports.set(file, resolveEdges(file, entry.specifiers, files, isCollectableCss));
+    modules[name] = rewriteImports(entry.code ?? entry.source, { importer: file, resolve });
+  };
+
+  const compileOne = async (pending: Pending): Promise<void> => {
+    const { file, name, source } = pending;
+
+    // A resolvable stub: no code to compile, no edges to record, nothing to cache.
+    if (EMPTY.includes(extensionOf(file))) {
+      modules[name] = "export {};\n";
+      return;
+    }
+
+    const held = cache?.get(file);
+    let entry = held !== undefined && held.source === source ? held : undefined;
+    if (entry === undefined) {
+      entry = await compileFile(file, source);
+      // Written only once the file has fully compiled, so a compiler diagnostic or a
+      // sucrase failure never poisons an entry.
+      cache?.set(file, entry);
+    }
+    applyCompiled(file, name, entry);
+  };
+
+  // Materialised before the walk, because `files` can gain the `astro:assets` sources
+  // part-way through it.
+  const seeds = options.entries ?? [...files.keys()];
+  const entries = seeds.filter((seed) => nameOf(seed) !== null);
+
+  // An index cursor rather than `shift()`: `resolve` runs inside `rewriteImports`, so
+  // compiling one file appends the files it imports to the queue being walked.
+  for (let index = 0; index < queue.length; index++) {
+    await compileOne(queue[index]);
   }
 
   for (const [file, code] of images) {
@@ -615,7 +784,7 @@ export async function compileProject(
   let content: ProjectContent | null = null;
   if (usesContent) {
     modules[CONTENT_MODULE_NAME] = GENERATED_MODULES[CONTENT_MODULE_NAME];
-    const configFile = findContentConfig(files);
+    const configFile = contentConfig;
     content = { configModule: configFile === null ? null : (moduleNames.get(configFile) ?? null) };
   }
   // The content runtime needs it too: an `image()` schema names the output file, and
@@ -631,6 +800,7 @@ export async function compileProject(
     modules,
     sources: files,
     moduleNames,
+    entries,
     styles,
     imports,
     cssImports,
@@ -661,6 +831,48 @@ function substituteImportMetaEnv(code: string): { code: string; used: boolean } 
   if (!IMPORT_META_ENV.test(code)) return { code, used: false };
   IMPORT_META_ENV.lastIndex = 0;
   return { code: code.replace(IMPORT_META_ENV, `globalThis.${IMPORT_META_ENV_GLOBAL}`), used: true };
+}
+
+/**
+ * One cache entry, from the two texts the rest of the compile needs.
+ *
+ * `text` is the file's JavaScript *before* substitution — the raw source for `.js`, the
+ * transpiled code for the rest — and it is what the specifiers and the `astro:env`
+ * names are read off. `code` is the substituted one, which is what `rewriteImports`
+ * runs over. Two texts, not one: the specifier collection must not see
+ * `import.meta.env` rewritten. `code` is `null` when substitution did not fire and the
+ * text *is* the source, so a plain `.js` module costs a pointer.
+ */
+function fileEntry(source: string, text: string, styles: AstroStyles | null): CompiledFile {
+  const substituted = substituteImportMetaEnv(text);
+  const specifiers = collectSpecifiers(text);
+  return {
+    source,
+    code: substituted.code === source ? null : substituted.code,
+    importMetaEnv: substituted.used,
+    specifiers,
+    envNames: envNamesOf(text, specifiers),
+    styles,
+  };
+}
+
+/**
+ * The names one file takes from `astro:env/client` and `astro:env/server`.
+ *
+ * Carried per file rather than accumulated in the walk, because the walk is what a
+ * cache hit skips — and these are the generated module's export list, so a dropped
+ * name is the isolate refusing to start rather than an undefined value.
+ */
+function envNamesOf(
+  text: string,
+  specifiers: readonly string[],
+): ReadonlyMap<string, readonly string[]> | null {
+  let names: Map<string, readonly string[]> | null = null;
+  for (const specifier of ENV_MODULES.keys()) {
+    if (!specifiers.includes(specifier)) continue;
+    (names ??= new Map()).set(specifier, collectImportedNames(text, specifier));
+  }
+  return names;
 }
 
 /**
@@ -695,20 +907,21 @@ function imageModule(file: string, asset: ProjectAsset): string | null {
 }
 
 /**
- * The `astro:assets` sources, added only for a project that names the specifier.
+ * The `astro:assets` sources, merged the first time `resolve` is asked for them.
  *
- * A substring test rather than a parse, and deliberately generous: it runs before any
- * module has been read, and the cost of a false positive is three unreferenced modules
- * that nothing imports, while the cost of a false negative is a page that cannot
- * resolve `astro:assets` at all.
+ * This used to be a substring scan of every source, run before any module was read,
+ * because nothing else could tell whether the project would need them. The demand-driven
+ * walk answers it exactly instead: a project that only mentions `astro:assets` in prose
+ * no longer carries them.
+ *
+ * Merged in rather than kept beside `files`, so `resolveInFiles` and the CSS pipeline
+ * see one map — and only for a project that got here, because `sources` is what
+ * `sourceStylesheets` reads for the base stylesheet.
  */
 function withAssetSources(files: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
-  for (const source of files.values()) {
-    if (source.includes(ASSETS_SPECIFIER)) {
-      return new Map([...Object.entries(ASSETS_SOURCES), ...files]);
-    }
-  }
-  return files;
+  if (files.has(`${ASSETS_DIR}/index.ts`)) return files;
+  // Generated sources first, so a project file of the same name would win.
+  return new Map([...Object.entries(ASSETS_SOURCES), ...files]);
 }
 
 /**
@@ -754,7 +967,7 @@ function transpile(code: string, options: { file: string; jsx?: boolean }): stri
  */
 function resolveEdges(
   importer: string,
-  specifiers: string[],
+  specifiers: readonly string[],
   files: ReadonlyMap<string, string>,
   keep: (file: string) => boolean,
 ): string[] {

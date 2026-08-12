@@ -1,0 +1,27 @@
+---
+import { getCollection, render } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import Prose from "../../components/Prose.astro";
+
+export async function getStaticPaths() {
+  const posts = await getCollection("posts", (post) => !post.data.draft);
+  return posts.map((post) => ({ params: { slug: post.id }, props: { post } }));
+}
+
+const { post } = Astro.props;
+const { Content } = await render(post);
+const day = post.data.date.toISOString().slice(0, 10);
+---
+
+<BaseLayout title={post.data.title} description={post.data.description}>
+  <article class="flex flex-col gap-6">
+    <header class="flex flex-col gap-2">
+      <h1 class="text-3xl font-bold tracking-tight">{post.data.title}</h1>
+      <time datetime={day} class="text-sm text-ink/50">{day}</time>
+    </header>
+
+    <Prose><Content /></Prose>
+
+    <a href="/" class="text-sm text-signal hover:underline">Back to all posts</a>
+  </article>
+</BaseLayout>

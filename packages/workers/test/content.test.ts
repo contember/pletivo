@@ -180,21 +180,40 @@ const { note } = Astro.props;
 });
 
 describe("the content module in the bundle", () => {
+  /**
+   * Pruned to the page, which is what makes these tests about the *seed*.
+   *
+   * Nothing in a project imports `src/content.config.ts` — the isolate's prelude reaches
+   * it through a thunk — so under a walk from the page it is only in the bundle because
+   * `compileProject` puts it there on seeing the content API. Compiled whole, it would
+   * be there whether that worked or not.
+   */
+  const ENTRIES = ["src/pages/index.astro"];
+
   test("is added only when a project reaches for the API", async () => {
-    const bare = await compileProject(
-      new Map([["src/pages/index.astro", "<html><body>hi</body></html>\n"]]),
+    const bare = await compileProject({
+      files: new Map([["src/pages/index.astro", "<html><body>hi</body></html>\n"]]),
+      entries: ENTRIES,
       compiler,
-    );
+    });
     expect(bare.content).toBeNull();
     expect(bare.modules[CONTENT_MODULE_NAME]).toBeUndefined();
 
-    const withContent = await compileProject(project({ "a.md": note("Alpha") }), compiler);
+    const withContent = await compileProject({
+      files: project({ "a.md": note("Alpha") }),
+      entries: ENTRIES,
+      compiler,
+    });
     expect(withContent.content).not.toBeNull();
     expect(withContent.modules[CONTENT_MODULE_NAME]).toBeString();
   });
 
   test("names the config module for the isolate to execute", async () => {
-    const compiled = await compileProject(project({ "a.md": note("Alpha") }), compiler);
+    const compiled = await compileProject({
+      files: project({ "a.md": note("Alpha") }),
+      entries: ENTRIES,
+      compiler,
+    });
     const configModule = compiled.content?.configModule;
     expect(configModule).toBe(compiled.moduleNames.get("src/content.config.ts"));
     // The isolate imports it behind a thunk, so a throw at its module scope fails the
@@ -202,8 +221,26 @@ describe("the content module in the bundle", () => {
     expect(compiled.modules[configModule ?? ""]).toContain("defineCollection");
   });
 
+  test("finds the config under the srcDir the caller named", async () => {
+    // Eight `has()` probes instead of a scan of every key, which is what a lazy file
+    // store needs. The suffix scan stays for a caller that names no srcDir.
+    const files = new Map<string, string>();
+    for (const [file, source] of project({ "a.md": note("Alpha") })) files.set(`site/${file}`, source);
+    const compiled = await compileProject({
+      files,
+      entries: ["site/src/pages/index.astro"],
+      srcDir: "site/src",
+      compiler,
+    });
+    expect(compiled.content?.configModule).toBe(compiled.moduleNames.get("site/src/content.config.ts"));
+  });
+
   test("is reached from a page and from the config through one specifier", async () => {
-    const compiled = await compileProject(project({ "a.md": note("Alpha") }), compiler);
+    const compiled = await compileProject({
+      files: project({ "a.md": note("Alpha") }),
+      entries: ENTRIES,
+      compiler,
+    });
     const config = compiled.modules[compiled.moduleNames.get("src/content.config.ts") ?? ""];
     const page = compiled.modules[compiled.moduleNames.get("src/pages/index.astro") ?? ""];
     // Two compilers (`@astrojs/compiler` and sucrase) and two specifiers

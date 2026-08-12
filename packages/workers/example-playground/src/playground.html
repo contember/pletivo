@@ -1,0 +1,984 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pletivo playground</title>
+    <style>
+      :root {
+        --bg: #0d0f13;
+        --panel: #111419;
+        --head: #151920;
+        --raised: #1a1f27;
+        --border: #232935;
+        --border-soft: #1b2029;
+        --text: #ccd3dd;
+        --text-dim: #8a93a1;
+        --text-faint: #626b78;
+        --accent: #7aa2f7;
+        --accent-bg: #1b2740;
+        --accent-border: #33456e;
+        --danger: #f7768e;
+        --ok: #9ece6a;
+        --sans: ui-sans-serif, system-ui, sans-serif;
+        --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.5 var(--sans);
+      }
+
+      :focus-visible {
+        outline: 1px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      /* header */
+
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        min-height: 48px;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--head);
+      }
+
+      .brand {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        white-space: nowrap;
+      }
+
+      .brand-name {
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+
+      .brand-sub {
+        color: var(--text-faint);
+        font-size: 12px;
+      }
+
+      .field {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .field-label {
+        color: var(--text-faint);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      select {
+        max-width: 22rem;
+        padding: 5px 8px;
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        background: var(--raised);
+        color: var(--text);
+        font: 12px var(--mono);
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .btn {
+        padding: 5px 10px;
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        background: var(--raised);
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+
+        &:hover:not(:disabled) {
+          background: #212836;
+          border-color: #2e3746;
+        }
+
+        &:disabled {
+          opacity: 0.4;
+          cursor: default;
+        }
+      }
+
+      .btn-accent {
+        border-color: var(--accent-border);
+        background: var(--accent-bg);
+        color: var(--accent);
+
+        &:hover:not(:disabled) {
+          background: #223055;
+          border-color: #3f5486;
+        }
+      }
+
+      kbd {
+        margin-left: 7px;
+        color: var(--text-faint);
+        font: 11px var(--mono);
+      }
+
+      .status {
+        display: grid;
+        gap: 2px;
+        margin-left: auto;
+        min-width: 0;
+        max-width: min(48ch, 42vw);
+        text-align: right;
+      }
+
+      .status-text {
+        margin: 0;
+        max-height: 2.9em;
+        overflow-y: auto;
+        color: var(--text-dim);
+        font: 12px/1.45 var(--mono);
+        white-space: pre-wrap;
+
+        &.error {
+          color: var(--danger);
+        }
+
+        &.ok {
+          color: var(--ok);
+        }
+      }
+
+      .status-meta {
+        margin: 0;
+        color: var(--text-faint);
+        font: 11px/1.4 var(--mono);
+      }
+
+      /* panes */
+
+      main {
+        display: grid;
+        grid-template-columns: 15rem minmax(0, 0.85fr) minmax(0, 1.5fr);
+        min-height: 0;
+      }
+
+      .pane {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        min-width: 0;
+        min-height: 0;
+        border-right: 1px solid var(--border);
+        background: var(--panel);
+
+        &:last-child {
+          border-right: 0;
+        }
+      }
+
+      .pane-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 31px;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--text-dim);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .pane-head .count {
+        margin-left: auto;
+        color: var(--text-faint);
+        font-family: var(--mono);
+      }
+
+      .path {
+        overflow: hidden;
+        color: var(--text);
+        font: 12px var(--mono);
+        letter-spacing: 0;
+        text-overflow: ellipsis;
+        text-transform: none;
+        white-space: nowrap;
+      }
+
+      .dot {
+        flex: none;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+
+      /* file list */
+
+      .scroll {
+        overflow: auto;
+        padding: 6px 0 18px;
+      }
+
+      /*
+       * One indent step per directory, as a custom property on the row. The guide rules
+       * are drawn on the row itself with a repeating gradient, so a deep file costs one
+       * element rather than one per ancestor.
+       */
+      .row {
+        --indent: calc(10px + var(--depth) * 13px);
+        position: relative;
+        display: flex;
+        align-items: center;
+        background-image: repeating-linear-gradient(
+          to right,
+          transparent 0 12px,
+          var(--border) 12px 13px
+        );
+        background-size: calc(var(--depth) * 13px) 100%;
+        background-repeat: no-repeat;
+
+        &:hover {
+          background-color: #171c24;
+        }
+
+        &.active {
+          background-color: var(--accent-bg);
+        }
+      }
+
+      .row > .label {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        padding: 3px 4px 3px var(--indent);
+        border: 0;
+        border-left: 2px solid transparent;
+        background: none;
+        color: var(--text-dim);
+        font: 12px/1.7 var(--mono);
+        text-align: left;
+        cursor: pointer;
+
+        & > .name {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .row:hover & {
+          color: var(--text);
+        }
+      }
+
+      .row.folder > .label {
+        color: var(--text-dim);
+
+        &:hover {
+          color: var(--text);
+        }
+      }
+
+      .row.active > .label {
+        border-left-color: var(--accent);
+        color: var(--accent);
+      }
+
+      /* The disclosure triangle, rotated rather than swapped for a second glyph. */
+      .twisty {
+        flex: none;
+        width: 9px;
+        color: var(--text-faint);
+        font-size: 9px;
+        line-height: 1;
+        transition: transform 90ms ease;
+
+        .row.open & {
+          transform: rotate(90deg);
+        }
+      }
+
+      /*
+       * A file's extension, as a colour. Enough to find the stylesheet or the config in
+       * a list of twelve without spending a column on an icon.
+       */
+      .kind {
+        flex: none;
+        width: 5px;
+        height: 5px;
+        border-radius: 1px;
+        background: var(--text-faint);
+
+        &.astro {
+          background: #ff7b72;
+        }
+        &.md {
+          background: #9ece6a;
+        }
+        &.css {
+          background: #7aa2f7;
+        }
+        &.mjs,
+        &.js,
+        &.ts {
+          background: #e0af68;
+        }
+      }
+
+      .row-delete {
+        flex: none;
+        width: 22px;
+        padding: 2px 0;
+        border: 0;
+        background: none;
+        color: var(--text-faint);
+        font: 13px/1 var(--mono);
+        opacity: 0;
+        cursor: pointer;
+
+        .row:hover &,
+        &:focus-visible {
+          opacity: 1;
+        }
+
+        &:hover {
+          color: var(--danger);
+        }
+      }
+
+      .group-name {
+        padding: 12px 12px 3px;
+        color: var(--text-faint);
+        font: 11px/1.4 var(--mono);
+      }
+
+      .asset {
+        padding: 3px 12px 3px 20px;
+        color: var(--text-faint);
+        font: 12px/1.6 var(--mono);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* editor */
+
+      #editor {
+        width: 100%;
+        height: 100%;
+        padding: 12px 14px;
+        border: 0;
+        background: var(--panel);
+        color: var(--text);
+        font: 12.5px/1.6 var(--mono);
+        tab-size: 2;
+        resize: none;
+
+        &:focus-visible {
+          outline-offset: -1px;
+        }
+
+        &::selection {
+          background: #2b3a5c;
+        }
+      }
+
+      /* preview */
+
+      #preview {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: #fff;
+      }
+
+      .scroll,
+      #editor,
+      .status-text {
+        scrollbar-width: thin;
+        scrollbar-color: #2b333f transparent;
+      }
+
+      @media (max-width: 900px) {
+        body {
+          height: auto;
+          min-height: 100%;
+          grid-template-rows: auto auto;
+          overflow: auto;
+        }
+
+        .bar {
+          flex-wrap: wrap;
+          gap: 12px;
+        }
+
+        .status {
+          width: 100%;
+          max-width: 100%;
+          margin-left: 0;
+          text-align: left;
+        }
+
+        main {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .pane {
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .pane-files {
+          max-height: 30vh;
+        }
+
+        .pane-editor {
+          height: 45vh;
+        }
+
+        .pane-preview {
+          height: 80vh;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">
+        <span class="brand-name">pletivo</span>
+        <span class="brand-sub">playground</span>
+      </div>
+
+      <label class="field">
+        <span class="field-label">route</span>
+        <select id="route"></select>
+      </label>
+
+      <div class="actions">
+        <button id="save" class="btn btn-accent" type="button" disabled>
+          Save<kbd>Ctrl+S</kbd>
+        </button>
+        <button id="reset" class="btn" type="button">Reset</button>
+      </div>
+
+      <div class="status">
+        <p id="status" class="status-text"></p>
+        <p id="meta" class="status-meta"></p>
+      </div>
+    </header>
+
+    <main>
+      <section class="pane pane-files">
+        <div class="pane-head">
+          <span>Files</span><span id="file-count" class="count"></span>
+        </div>
+        <div id="files" class="scroll"></div>
+      </section>
+
+      <section class="pane pane-editor">
+        <div class="pane-head">
+          <span id="current" class="path">no file</span>
+          <span id="dirty" class="dot" title="Unsaved changes" hidden></span>
+        </div>
+        <textarea
+          id="editor"
+          spellcheck="false"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          placeholder="Select a file"
+          disabled
+        ></textarea>
+      </section>
+
+      <section class="pane pane-preview">
+        <div class="pane-head">
+          <span id="preview-path" class="path">/</span>
+        </div>
+        <iframe id="preview" title="Preview" src="about:blank"></iframe>
+      </section>
+    </main>
+
+    <script>
+      const els = {
+        route: document.getElementById("route"),
+        save: document.getElementById("save"),
+        reset: document.getElementById("reset"),
+        status: document.getElementById("status"),
+        meta: document.getElementById("meta"),
+        files: document.getElementById("files"),
+        fileCount: document.getElementById("file-count"),
+        current: document.getElementById("current"),
+        dirty: document.getElementById("dirty"),
+        editor: document.getElementById("editor"),
+        preview: document.getElementById("preview"),
+        previewPath: document.getElementById("preview-path"),
+      };
+
+      const INITIAL_FILE = "src/pages/index.astro";
+
+      const state = {
+        revision: null,
+        files: [],
+        assets: [],
+        routes: new Map(),
+        current: null,
+        saved: "",
+        pathname: "/",
+        navStart: null,
+        renderMs: null,
+        /** Folder paths the visitor closed. Everything starts open. */
+        collapsed: new Set(),
+      };
+
+      /* transport */
+
+      async function request(path, init) {
+        let response;
+        try {
+          response = await fetch(path, init);
+        } catch {
+          // `fetch` rejects with a bare TypeError when the worker is not there, which
+          // reads as a broken button rather than a stopped server. Say which it is.
+          throw new Error(
+            "the playground worker is not responding — is `wrangler dev` still running?",
+          );
+        }
+        if (!response.ok) {
+          const body = (await response.text()).trim();
+          const method = (init && init.method) || "GET";
+          throw new Error(
+            `${method} ${path} → ${response.status}` +
+              (body ? `\n${body}` : ""),
+          );
+        }
+        return response;
+      }
+
+      // Project-relative paths keep their separators; only the segments are escaped.
+      const fileUrl = (path) =>
+        "/__files/" + path.split("/").map(encodeURIComponent).join("/");
+
+      async function refreshIndex() {
+        const index = await (await request("/__files")).json();
+        state.revision = index.revision;
+        state.files = Array.isArray(index.files)
+          ? index.files.slice().sort()
+          : [];
+        state.assets = Array.isArray(index.assets)
+          ? index.assets.slice().sort()
+          : [];
+        renderFiles();
+        renderMeta();
+      }
+
+      async function refreshPaths() {
+        const paths = await (await request("/__paths")).json();
+        state.routes = new Map();
+        for (const entry of Array.isArray(paths) ? paths : []) {
+          if (entry && typeof entry.pathname === "string")
+            state.routes.set(entry.pathname, entry.file);
+        }
+        renderRoutes();
+      }
+
+      /* rendering */
+
+      function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function setStatus(text, kind) {
+        els.status.textContent = text;
+        els.status.className = "status-text" + (kind ? " " + kind : "");
+      }
+
+      function showError(error) {
+        setStatus(
+          error instanceof Error ? error.message : String(error),
+          "error",
+        );
+      }
+
+      const guard = (promise) => promise.catch(showError);
+
+      function renderMeta() {
+        const parts = [];
+        if (state.revision !== null && state.revision !== undefined)
+          parts.push(`rev ${state.revision}`);
+        if (state.renderMs !== null)
+          parts.push(`rendered in ${state.renderMs} ms`);
+        els.meta.textContent = parts.join(" · ");
+      }
+
+      /** Paths to a tree. A folder carries `children`; a file carries none. */
+      function buildTree(paths) {
+        const root = { name: "", path: "", children: new Map() };
+        for (const path of paths) {
+          const segments = path.split("/");
+          let node = root;
+          for (let index = 0; index < segments.length; index++) {
+            const name = segments[index];
+            const last = index === segments.length - 1;
+            const here = segments.slice(0, index + 1).join("/");
+            if (last) {
+              node.children.set(name, { name, path, children: null });
+              break;
+            }
+            let next = node.children.get(name);
+            if (!next || !next.children) {
+              next = { name, path: here, children: new Map() };
+              node.children.set(name, next);
+            }
+            node = next;
+          }
+        }
+        return root;
+      }
+
+      /**
+       * `src/content` + its only child `posts` become one `content/posts` row.
+       *
+       * A project this shape is mostly chains of single directories, and drawing each
+       * one on its own line spends four rows saying where two files are.
+       */
+      function compact(node) {
+        let current = node;
+        const names = [node.name];
+        while (current.children && current.children.size === 1) {
+          const only = [...current.children.values()][0];
+          if (!only.children) break;
+          names.push(only.name);
+          current = only;
+        }
+        return { ...current, name: names.join("/") };
+      }
+
+      /** Folders first, then by name — the order a file tree is read in. */
+      function compareNodes(a, b) {
+        const aDir = a.children ? 0 : 1;
+        const bDir = b.children ? 0 : 1;
+        return aDir - bDir || a.name.localeCompare(b.name);
+      }
+
+      const extensionOf = (name) => {
+        const dot = name.lastIndexOf(".");
+        return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
+      };
+
+      function row(depth, className) {
+        const element = el("div", "row" + (className ? " " + className : ""));
+        element.style.setProperty("--depth", String(depth));
+        return element;
+      }
+
+      function folderRow(node, depth) {
+        const open = !state.collapsed.has(node.path);
+        const element = row(depth, "folder" + (open ? " open" : ""));
+
+        const label = el("button", "label");
+        label.type = "button";
+        label.title = node.path;
+        label.setAttribute("aria-expanded", String(open));
+        label.append(el("span", "twisty", "▶"), el("span", "name", node.name));
+        label.addEventListener("click", () => {
+          if (open) state.collapsed.add(node.path);
+          else state.collapsed.delete(node.path);
+          renderFiles();
+        });
+
+        element.append(label);
+        return element;
+      }
+
+      function fileRow(node, depth) {
+        const current = node.path === state.current;
+        const element = row(depth, current ? "active" : "");
+
+        const label = el("button", "label");
+        label.type = "button";
+        label.title = node.path;
+        if (current) label.setAttribute("aria-current", "true");
+        label.append(
+          el("span", "kind " + extensionOf(node.name)),
+          el("span", "name", node.name),
+        );
+        label.addEventListener("click", () => guard(openFile(node.path)));
+
+        const remove = el("button", "row-delete", "×");
+        remove.type = "button";
+        remove.title = `Delete ${node.path}`;
+        remove.setAttribute("aria-label", `Delete ${node.path}`);
+        remove.addEventListener("click", () => guard(deleteFile(node.path)));
+
+        element.append(label, remove);
+        return element;
+      }
+
+      function renderBranch(node, depth, into) {
+        for (const child of [...node.children.values()].sort(compareNodes)) {
+          if (!child.children) {
+            into.append(fileRow(child, depth));
+            continue;
+          }
+          const folder = compact(child);
+          into.append(folderRow(folder, depth));
+          if (!state.collapsed.has(folder.path)) {
+            renderBranch(folder, depth + 1, into);
+          }
+        }
+      }
+
+      function renderFiles() {
+        els.files.replaceChildren();
+        els.fileCount.textContent = String(state.files.length);
+        renderBranch(buildTree(state.files), 0, els.files);
+        if (state.assets.length) {
+          els.files.append(el("div", "group-name", "assets"));
+          for (const path of state.assets) {
+            const asset = el("div", "asset", path);
+            asset.title = path;
+            els.files.append(asset);
+          }
+        }
+      }
+
+      function renderRoutes() {
+        const known = [...state.routes.keys()].sort();
+        const options = known.includes(state.pathname)
+          ? known
+          : [state.pathname, ...known];
+        els.route.replaceChildren();
+        for (const pathname of options) {
+          const option = el("option", null, pathname);
+          option.value = pathname;
+          const file = state.routes.get(pathname);
+          if (file) option.title = file;
+          els.route.append(option);
+        }
+        els.route.value = state.pathname;
+      }
+
+      /* preview */
+
+      function loadPreview(url) {
+        // `location.replace` keeps every save out of the browser's back history;
+        // it throws once the frame has navigated cross-origin, hence the fallback.
+        try {
+          els.preview.contentWindow.location.replace(url);
+        } catch {
+          els.preview.src = url;
+        }
+      }
+
+      function navigate(pathname, bust) {
+        state.pathname = pathname;
+        els.previewPath.textContent = pathname;
+        if (els.route.value !== pathname) renderRoutes();
+        state.navStart = performance.now();
+        loadPreview(bust ? `${pathname}?v=${Date.now()}` : pathname);
+      }
+
+      /**
+       * Where the preview actually is, which is not always where we sent it.
+       *
+       * Clicking a link inside the page navigates the frame without telling us, and the
+       * next save would re-render whatever we last chose from the picker — the home page,
+       * usually. The frame is same-origin, so its own location is the answer and no
+       * `postMessage` handshake is needed; a cross-origin frame throws and we keep what
+       * we had.
+       */
+      function syncPathnameFromPreview() {
+        let pathname;
+        try {
+          pathname = els.preview.contentWindow.location.pathname;
+        } catch {
+          return;
+        }
+        if (!pathname || pathname === state.pathname) return;
+        state.pathname = pathname;
+        els.previewPath.textContent = pathname;
+        renderRoutes();
+      }
+
+      els.preview.addEventListener("load", () => {
+        syncPathnameFromPreview();
+        if (state.navStart === null) return;
+        state.renderMs = Math.round(performance.now() - state.navStart);
+        state.navStart = null;
+        renderMeta();
+      });
+
+      /* editor */
+
+      const isDirty = () =>
+        state.current !== null && els.editor.value !== state.saved;
+
+      function syncDirty() {
+        const dirty = isDirty();
+        els.dirty.hidden = !dirty;
+        els.save.disabled = !dirty;
+      }
+
+      function confirmDiscard() {
+        if (!isDirty()) return true;
+        return confirm(`${state.current} has unsaved changes. Discard them?`);
+      }
+
+      async function openFile(path) {
+        if (!confirmDiscard()) return;
+        const source = await (await request(fileUrl(path))).text();
+        state.current = path;
+        state.saved = source;
+        els.editor.value = source;
+        els.editor.disabled = false;
+        els.current.textContent = path;
+        renderFiles();
+        syncDirty();
+        setStatus(`opened ${path}`);
+      }
+
+      async function openInitialFile() {
+        const path = state.files.includes(INITIAL_FILE)
+          ? INITIAL_FILE
+          : state.files[0];
+        if (!path) {
+          state.current = null;
+          state.saved = "";
+          els.editor.value = "";
+          els.editor.disabled = true;
+          els.current.textContent = "no file";
+          syncDirty();
+          return;
+        }
+        await openFile(path);
+      }
+
+      async function save() {
+        if (!state.current || !isDirty()) return;
+        const path = state.current;
+        const source = els.editor.value;
+        setStatus(`saving ${path}…`);
+        await request(fileUrl(path), {
+          method: "PUT",
+          headers: { "content-type": "text/plain; charset=utf-8" },
+          body: source,
+        });
+        state.saved = source;
+        syncDirty();
+        navigate(state.pathname, true);
+        setStatus(`saved ${path}`, "ok");
+        // A new page file changes the file list and the route list alike.
+        await Promise.all([refreshIndex(), refreshPaths()]);
+      }
+
+      async function deleteFile(path) {
+        if (!confirm(`Delete ${path}?`)) return;
+        await request(fileUrl(path), { method: "DELETE" });
+        if (state.current === path) {
+          state.current = null;
+          state.saved = "";
+          els.editor.value = "";
+        }
+        await Promise.all([refreshIndex(), refreshPaths()]);
+        if (!state.current) await openInitialFile();
+        navigate(state.pathname, true);
+        setStatus(`deleted ${path}`, "ok");
+      }
+
+      async function resetProject() {
+        if (!confirm("Discard every edit and re-seed the original project?"))
+          return;
+        setStatus("resetting…");
+        await request("/__reset", { method: "POST" });
+        state.current = null;
+        state.saved = "";
+        els.editor.value = "";
+        await Promise.all([refreshIndex(), refreshPaths()]);
+        await openInitialFile();
+        navigate("/", true);
+        setStatus("project reset", "ok");
+      }
+
+      function onEditorKeydown(event) {
+        if (event.key !== "Tab") return;
+        event.preventDefault();
+        const start = els.editor.selectionStart;
+        if (!event.shiftKey) {
+          // execCommand keeps the textarea's native undo stack; nothing standard replaces it.
+          document.execCommand("insertText", false, "  ");
+          return;
+        }
+        if (start !== els.editor.selectionEnd) return;
+        if (start < 2 || els.editor.value.slice(start - 2, start) !== "  ")
+          return;
+        els.editor.setSelectionRange(start - 2, start);
+        document.execCommand("delete");
+      }
+
+      /* wiring */
+
+      els.editor.addEventListener("input", syncDirty);
+      els.editor.addEventListener("keydown", onEditorKeydown);
+      els.route.addEventListener("change", () =>
+        navigate(els.route.value, false),
+      );
+      els.save.addEventListener("click", () => guard(save()));
+      els.reset.addEventListener("click", () => guard(resetProject()));
+
+      document.addEventListener("keydown", (event) => {
+        if (
+          !(event.ctrlKey || event.metaKey) ||
+          event.key.toLowerCase() !== "s"
+        )
+          return;
+        event.preventDefault();
+        guard(save());
+      });
+
+      async function boot() {
+        const platform =
+          navigator.userAgentData?.platform ?? navigator.platform ?? "";
+        if (/Mac|iP(hone|ad)/.test(platform))
+          els.save.querySelector("kbd").textContent = "⌘S";
+        setStatus("loading…");
+        await Promise.all([refreshIndex(), refreshPaths()]);
+        await openInitialFile();
+        navigate("/", false);
+        setStatus(`${state.files.length} files · ${state.routes.size} routes`);
+      }
+
+      guard(boot());
+    </script>
+  </body>
+</html>

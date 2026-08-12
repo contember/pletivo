@@ -1,0 +1,23 @@
+{
+  "name": "pletivo-workspace-example",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  // The Astro shim's render-tracking store is an AsyncLocalStorage, and both the
+  // compiled bundle and `@cloudflare/computer` want node built-ins.
+  "compatibility_flags": ["nodejs_compat"],
+  // The only way to execute code produced at run time in workerd — and, as this example
+  // demonstrates, reachable from inside a Durable Object.
+  "worker_loaders": [{ "binding": "LOADER" }],
+  // The project itself: sources in SQLite, owned by the object that renders them.
+  "durable_objects": {
+    "bindings": [{ "name": "PROJECT", "class_name": "ProjectDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectDO"] }],
+  "rules": [
+    // `@astrojs/compiler/astro.wasm` has to arrive as a `WebAssembly.Module` —
+    // workerd forbids `WebAssembly.compile()` at run time.
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
+    // Tailwind's own stylesheets, which the isolate cannot read off disk.
+    { "type": "Text", "globs": ["**/*.css"], "fallthrough": true }
+  ]
+}

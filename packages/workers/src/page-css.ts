@@ -104,13 +104,16 @@ export function extractAstroClasses(html: string): Set<string> {
 
 /**
  * The last step the Bun host's `writeHtml` takes before a page hits disk: give it a
- * doctype if the template did not, link the project stylesheet, then put the page's
- * own CSS in the head.
+ * doctype if the template did not, then put the page's CSS in the head.
  *
- * The two go in that order, and it is the order `writeHtml` produces: both insert
- * before `</head>`, the `<link>` first, so the `<style>` lands after it and a
- * component's scoped rule outranks the bundle. The `<link>` has no `</body>`
- * fallback — a page with no `<head>` gets no stylesheet on either host.
+ * `css` is every stylesheet the page carries, already in cascade order — the page's own
+ * sheet first, its components' scoped blocks after, so a scoped rule outranks it. They
+ * arrive as a list rather than one string each because **there is exactly one
+ * insertion**: two insertions before the same anchor keep their order in `<head>` and
+ * *reverse* it in the fallback that prepends, so a page with no `</head>` would come
+ * out with its cascade upside down. One insertion also fixes the old asymmetry — the
+ * `<link>` had no fallback at all, so such a page got its scoped rules and no
+ * stylesheet; now both follow the same head → body → prepend ladder.
  *
  * `scripts` are what `injectScript()` produced during `astro:config:setup`, frozen
  * into the site artifact. They land last and only in `<head>`, which is `writeHtml`'s
@@ -119,23 +122,21 @@ export function extractAstroClasses(html: string): Set<string> {
  * only for a page carrying islands, and this host has none.
  *
  * Not ported from `writeHtml`, because there is no build pipeline behind them here:
- * hashed public-asset rewriting, CSS modules and the island hydration runtime.
+ * hashed public-asset rewriting, CSS modules and the island hydration runtime. Nor is
+ * the `<link rel="stylesheet">` itself — this host inlines, see `project-css.ts`.
  */
 export function finalizeHtml(
   html: string,
-  css: string,
-  stylesheet: string | null = null,
+  css: readonly string[],
   scripts?: InjectedScripts,
 ): string {
   let out = html;
   if (out.trimStart().startsWith("<html") && !out.trimStart().startsWith("<!")) {
     out = "<!DOCTYPE html>\n" + out;
   }
-  if (stylesheet && out.includes("</head>")) {
-    out = out.replace("</head>", `<link rel="stylesheet" href="${stylesheet}">\n</head>`);
-  }
-  if (css) {
-    const tag = `<style>${css}</style>`;
+  const parts = css.filter(Boolean);
+  if (parts.length > 0) {
+    const tag = parts.map((part) => `<style>${part}</style>`).join("\n");
     if (out.includes("</head>")) out = out.replace("</head>", tag + "\n</head>");
     else if (out.includes("</body>")) out = out.replace("</body>", tag + "\n</body>");
     else out = tag + "\n" + out;
