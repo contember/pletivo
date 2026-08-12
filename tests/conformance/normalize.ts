@@ -13,34 +13,20 @@
  * and the mapping is shared across every file of a case. That keeps the
  * cross-reference checkable — if a page stops pointing at the asset the build
  * actually emitted, the ordinals diverge and the snapshot fails.
+ *
+ * Every rule here applies to every case. A rule that one project needs and the
+ * others don't is a claim that its output has a degree of freedom theirs lack,
+ * which is nearly always a bug wearing a disguise: the two that used to be
+ * here — sorting hoisted `<style>` chunks and sorting `<url>` blocks in
+ * sitemap.xml — were both hiding nondeterministic emission, and both are gone
+ * now that the emission itself is ordered.
  */
-
-export interface CaseNormalizeOptions {
-  /**
-   * Canonicalize the order of CSS chunks inside hoisted `<style>` elements.
-   *
-   * Opt-in per case, because it is a workaround for a real bug rather than a
-   * legitimate degree of freedom: the astro CSS pipeline emits chunks in
-   * `scopedCssMap` / `globalCssMap` insertion order, which is the order Bun's
-   * `onLoad` hook happened to compile each `.astro` component. Page renders run
-   * concurrently, so that order flips between builds (measured: ~1 run in 10 on
-   * `tests/fixture-astro-styles`). Until emission order is made deterministic
-   * there is nothing stable to lock down, so sort it.
-   *
-   * Blind spot this creates: a change in CSS *cascade order* is invisible for
-   * cases that enable it. Everything else — a rule appearing, disappearing,
-   * changing, or leaking onto the wrong page — is still caught. Remove the flag
-   * from a case as soon as its emission order is deterministic.
-   */
-  sortStyleBlocks?: boolean;
-}
 
 export interface NormalizeContext {
   /** Absolute path to the repo checkout. */
   repoRoot: string;
   /** Absolute path to the scratch directory the adapter rendered into. */
   workRoot: string;
-  options?: CaseNormalizeOptions;
 }
 
 /**
@@ -103,53 +89,10 @@ export function createNormalizer(ctx: NormalizeContext): (file: string, raw: str
       if (abs) text = text.split(abs).join(token);
     }
 
-    // `<url>` order in sitemap.xml comes from `fs.readdir` over dist/, so it is
-    // filesystem-dependent — the same build lands in a different order on tmpfs
-    // than on ext4. Sorting keeps "which pages are in the sitemap" locked while
-    // dropping the part no consumer relies on.
-    if (file === "sitemap.xml") text = sortSitemapUrls(text);
-
-    if (ctx.options?.sortStyleBlocks) text = sortStyleBlocks(text);
-
     text = text.replace(HASHED_ASSET_RE, (_m, hash: string, ext: string) => `.${ordinal("hash", hash.toLowerCase())}.${ext}`);
     text = text.replace(HOISTED_BUNDLE_RE, (_m, hash: string) => `hoisted-${ordinal("bundle", hash)}.js`);
     text = text.replace(ASTRO_SCOPE_RE, (_m, scope: string) => `astro-${ordinal("scope", scope)}`);
 
     return text;
   };
-}
-
-function sortSitemapUrls(xml: string): string {
-  const blocks = xml.match(/ {2}<url>[\s\S]*?<\/url>/g);
-  if (!blocks || blocks.length < 2) return xml;
-  const sorted = [...blocks].sort();
-  let i = 0;
-  return xml.replace(/ {2}<url>[\s\S]*?<\/url>/g, () => sorted[i++]!);
-}
-
-/**
- * Sort the chunks inside every `<style>` element. Chunks are split at newlines
- * that sit at brace depth 0, so a rule spanning several lines stays intact.
- * CSS strings/comments are not tracked — the corpus has none inside a `<style>`
- * block, and a false split would only reorder, never corrupt, since the same
- * transform runs on both sides of the comparison.
- */
-function sortStyleBlocks(html: string): string {
-  return html.replace(/<style([^>]*)>([\s\S]*?)<\/style>/g, (_m, attrs: string, css: string) => {
-    const chunks: string[] = [];
-    let depth = 0;
-    let start = 0;
-    for (let i = 0; i < css.length; i++) {
-      const c = css[i];
-      if (c === "{") depth++;
-      else if (c === "}") depth--;
-      else if (c === "\n" && depth === 0) {
-        chunks.push(css.slice(start, i));
-        start = i + 1;
-      }
-    }
-    chunks.push(css.slice(start));
-    if (chunks.length < 2) return `<style${attrs}>${css}</style>`;
-    return `<style${attrs}>${chunks.sort().join("\n")}</style>`;
-  });
 }

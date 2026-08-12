@@ -23,42 +23,50 @@ import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import { imageUrlFor, probeAndRegisterImage } from "./image";
 import { registerUrlAsset } from "./url-asset";
-import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
+import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { stripTypes } from "./transpile";
 import { collectCssSideEffectImports } from "./js-imported-css";
 import { materializeViteVirtualImports } from "./astro-host/vite-plugins";
-import { setScriptUrlResolver } from "./runtime/script-registry";
+import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
+import {
+  clearAstroImportGraph,
+  moduleIdFor,
+  moduleOrderForEntry,
+  recordAstroImports,
+} from "./astro-css-order";
 
 let registered = false;
 
 /**
- * Scoped CSS collected from `<style>` blocks in `.astro` files.
- * The Astro compiler returns scoped (`:where(.astro-xxxx)`) CSS in
- * `result.css[]` and the component's scope hash in `result.scope`.
+ * CSS collected from `<style>` blocks in `.astro` files.
  *
  * Keyed by the component's module id (the relative path the Astro
  * compiler is given as `filename`, which matches the `moduleId` passed
- * to `$$createComponent`). We store the scope so `getScopedCssForPage()`
- * can match by scope class in the HTML — not just by CSS content. This
- * is essential because some CSS rules (e.g. `body`, `html`, `*`)
- * are NOT scoped by the compiler even though the component's
- * elements receive the scope class attribute.
+ * to `$$createComponent`). Blocks keep the compiler's `result.css[]`
+ * order, which is the order they were written in, and scoped and
+ * `is:global` blocks share one list: a file's blocks cascade in source
+ * order, and bucketing them by kind would silently reorder them.
+ *
+ * Emission is gated per block, because the two kinds are visible in
+ * different ways:
+ *  - scoped — the component's `astro-{scope}` class is in the page HTML.
+ *    Matching by class rather than by CSS content is essential: some
+ *    rules (`body`, `html`, `*`) are not scoped by the compiler even
+ *    though the component's elements do get the scope class.
+ *  - global — the component's render function ran during the page's
+ *    render pass, tracked by the shim's rendered-module registry. An
+ *    `is:global` block may emit no scoped DOM at all, so class presence
+ *    cannot see it.
  */
-interface ScopedCssEntry {
-  scope: string; // e.g. "jn3ixs4m" → class "astro-jn3ixs4m"
-  css: string[];
+export interface AstroStyleBlock {
+  global: boolean;
+  css: string;
 }
-const scopedCssMap = new Map<string, ScopedCssEntry>();
-
-/**
- * Global CSS collected from `<style is:global>` blocks in `.astro` files.
- * Keyed by the same module id as `scopedCssMap`. Unlike scoped CSS,
- * global CSS can't be gated by scope-class presence — an `is:global`
- * block may not emit any scoped DOM at all. Instead, emission is gated
- * by whether the component was actually rendered on the page, tracked
- * at render time via the shim's rendered-module registry.
- */
-const globalCssMap = new Map<string, string[]>();
+interface AstroCssEntry {
+  scope: string; // e.g. "jn3ixs4m" → class "astro-jn3ixs4m"
+  blocks: AstroStyleBlock[];
+}
+const astroCssMap = new Map<string, AstroCssEntry>();
 
 /**
  * Hoisted scripts collected from `<script>` tags (non-inline) in `.astro`
@@ -175,35 +183,66 @@ export function hoistedScriptBunPlugin(): BunPlugin {
   };
 }
 
-export function getScopedCss(): string {
+/**
+ * The `.astro` CSS a page needs, concatenated in cascade order.
+ *
+ * A component contributes when the page shows it: its scope class is in
+ * the HTML, or its render function ran (see `astroCssMap`). Which of its
+ * blocks come along is decided per block by the same two gates.
+ *
+ * Components are ordered by the page's static import graph rather than by
+ * the order Bun's loader happened to compile them in — see
+ * `astro-css-order.ts` for why that is the order the cascade requires.
+ * `entryFile` is the page module the walk starts from; without it (a
+ * route with no module of its own) only the fallback ordering is left.
+ */
+export async function getAstroCssForPage(opts: {
+  entryFile?: string;
+  astroClasses: Set<string>;
+  renderedModules: Set<string>;
+}): Promise<string> {
+  const { entryFile, astroClasses, renderedModules } = opts;
+  const contributions = new Map<string, string[]>();
+  for (const [moduleId, entry] of astroCssMap) {
+    const scoped = astroClasses.has(`astro-${entry.scope}`);
+    const rendered = renderedModules.has(moduleId);
+    if (!scoped && !rendered) continue;
+    const css = entry.blocks
+      .filter((block) => (block.global ? rendered : scoped))
+      .map((block) => block.css);
+    if (css.length > 0) contributions.set(moduleId, css);
+  }
+  if (contributions.size === 0) return "";
+
   const parts: string[] = [];
-  for (const entry of scopedCssMap.values()) {
-    parts.push(...entry.css);
+  for (const moduleId of await orderContributors([...contributions.keys()], entryFile, renderedModules)) {
+    parts.push(...contributions.get(moduleId)!);
   }
   return parts.join("\n");
 }
 
-/**
- * Return scoped CSS entries for components actually rendered on a page.
- *
- * Matching is done by scope class: if `astro-{scope}` appears anywhere
- * in the page HTML (as a class attribute on an element), ALL CSS entries
- * from that component are included — even rules that the compiler didn't
- * scope (e.g. `body`, `html`, `*` selectors). This prevents unscoped
- * rules from being silently dropped.
- *
- * Pass the set of `astro-XXXXX` class names extracted from the page HTML.
- */
-export function getScopedCssForPage(astroClasses: Set<string>): string {
-  if (astroClasses.size === 0) return "";
-  const parts: string[] = [];
-  for (const entry of scopedCssMap.values()) {
-    const scopeClass = `astro-${entry.scope}`;
-    if (astroClasses.has(scopeClass)) {
-      parts.push(...entry.css);
+async function orderContributors(
+  moduleIds: string[],
+  entryFile: string | undefined,
+  renderedModules: Set<string>,
+): Promise<string[]> {
+  if (moduleIds.length < 2) return moduleIds;
+  const remaining = new Set(moduleIds);
+  const ordered: string[] = [];
+  if (entryFile) {
+    for (const moduleId of await moduleOrderForEntry(entryFile)) {
+      if (remaining.delete(moduleId)) ordered.push(moduleId);
     }
+    if (remaining.size === 0) return ordered;
   }
-  return parts.join("\n");
+  // Whatever the walk could not reach — a component imported from `.mdx`, or
+  // through a specifier that does not resolve statically. Fall back to the
+  // order the components rendered in, which is at least a real property of
+  // this page, then to the module id, so the result never depends on the
+  // order the loader happened to compile them in.
+  const rendered = [...renderedModules].filter((moduleId) => remaining.has(moduleId));
+  const rest = [...remaining].filter((moduleId) => !renderedModules.has(moduleId)).sort();
+  return [...ordered, ...rendered, ...rest];
 }
 
 /** Extract all `astro-XXXXX` scope class names from an HTML string. */
@@ -217,29 +256,9 @@ export function extractAstroClasses(html: string): Set<string> {
   return classes;
 }
 
-export function clearScopedCss(): void {
-  scopedCssMap.clear();
-}
-
-/**
- * Return global CSS for components actually rendered on a page.
- * `renderedModules` contains the `moduleId` values passed to
- * `$$createComponent` for each component whose render function ran
- * during this page's render pass (populated by the shim).
- */
-export function getGlobalCssForPage(renderedModules: Set<string>): string {
-  if (renderedModules.size === 0) return "";
-  const parts: string[] = [];
-  for (const [modulePath, css] of globalCssMap.entries()) {
-    if (renderedModules.has(modulePath)) {
-      parts.push(...css);
-    }
-  }
-  return parts.join("\n");
-}
-
-export function clearGlobalCss(): void {
-  globalCssMap.clear();
+export function clearAstroCss(): void {
+  astroCssMap.clear();
+  clearAstroImportGraph();
 }
 
 /**
@@ -253,12 +272,17 @@ export function clearGlobalCss(): void {
  * text for a `:where(.astro-{scope})` marker: the compiler omits that
  * marker for selectors it can't scope (e.g. `body`, `html`, `:root`),
  * which would otherwise misclassify non-global rules as global.
+ *
+ * `blocks` is the classification the emitter uses — every block in
+ * source order, each tagged with its kind. `scoped` and `global` are the
+ * same data split by kind, for callers that only care about one.
  */
 export async function classifyCompilerCss(
   css: string[],
   source: string,
-): Promise<{ scoped: string[]; global: string[] }> {
+): Promise<{ scoped: string[]; global: string[]; blocks: AstroStyleBlock[] }> {
   const { ast } = await parse(source);
+  const blocks: AstroStyleBlock[] = [];
   const scoped: string[] = [];
   const global: string[] = [];
   let i = 0;
@@ -277,7 +301,9 @@ export async function classifyCompilerCss(
         );
       }
       const isGlobal = node.attributes.some((a) => a.name === "is:global");
-      (isGlobal ? global : scoped).push(css[i++]);
+      const block = css[i++];
+      blocks.push({ global: isGlobal, css: block });
+      (isGlobal ? global : scoped).push(block);
       return;
     }
     if (is.parent(node)) for (const child of node.children) visit(child);
@@ -290,7 +316,7 @@ export async function classifyCompilerCss(
         `The @astrojs/compiler output contract may have changed.`,
     );
   }
-  return { scoped, global };
+  return { scoped, global, blocks };
 }
 
 export async function registerAstroPlugin(): Promise<void> {
@@ -327,7 +353,7 @@ export async function registerAstroPlugin(): Promise<void> {
         if (process.env.PLETIVO_DEBUG) console.log("[pletivo-astro] onLoad:", args.path);
         const cleanPath = stripQuery(args.path);
         const source = await Bun.file(cleanPath).text();
-        const rel = path.relative(process.cwd(), cleanPath);
+        const rel = moduleIdFor(cleanPath);
 
         const result = await transform(source, {
           filename: rel,
@@ -349,27 +375,27 @@ export async function registerAstroPlugin(): Promise<void> {
         // user removes a `<style>` or `<script>` block: the compiler
         // stops emitting it but our maps still hold the old entry, so
         // stale CSS/scripts keep landing on pages until restart.
-        scopedCssMap.delete(rel);
-        globalCssMap.delete(rel);
+        astroCssMap.delete(rel);
         const scriptPrefix = `${rel}?astro&type=script&index=`;
         for (const id of hoistedScriptMap.keys()) {
           if (id.startsWith(scriptPrefix)) deleteHoistedScript(id);
         }
 
+        // The module's imports, taken from the compiler's own output so the
+        // list is the one Bun will execute. Feeds the cascade ordering of the
+        // CSS collected below — see astro-css-order.ts.
+        recordAstroImports(cleanPath, result.code);
+
         // Collect CSS emitted by the Astro compiler. Each `result.css[]`
-        // entry is the compiled output of one `<style>` block. Scoped
-        // blocks contain `:where(.astro-{scope})` selectors; `is:global`
-        // blocks are emitted as-is (no scope selector). We split them:
-        // scoped entries go to `scopedCssMap` (class-presence gated),
-        // global entries go to `globalCssMap` (render-gated).
+        // entry is the compiled output of one `<style>` block, in source
+        // order. Scoped blocks contain `:where(.astro-{scope})` selectors;
+        // `is:global` blocks are emitted as-is (no scope selector), and the
+        // two are gated differently at emission time (see `astroCssMap`).
         if (result.css && result.css.length > 0) {
           const scope = (result as unknown as { scope?: string }).scope ?? "";
-          const { scoped, global } = await classifyCompilerCss(result.css, source);
-          if (scoped.length > 0) {
-            scopedCssMap.set(rel, { scope, css: scoped });
-          }
-          if (global.length > 0) {
-            globalCssMap.set(rel, global);
+          const { blocks } = await classifyCompilerCss(result.css, source);
+          if (blocks.length > 0) {
+            astroCssMap.set(rel, { scope, blocks });
           }
         }
 

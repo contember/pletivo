@@ -5,6 +5,8 @@ SSG-relevant gaps in Astro API surface support, ordered by priority.
 ## S-tier — Core, must work
 
 - [001 — Scoped Style Injection](001-scoped-style-injection.md) — `renderHead()` is no-op, scoped `<style>` never reaches the page
+- [013 — SSR hooks stub leaks into island bundles](013-preact-hooks-ssr-stub-leak.md) — **open**; every hydrated island ships no-op hooks and is inert
+- [014 — Hoisted `.astro` CSS emission order](014-astro-css-cascade-order.md) — done; cascade order was nondeterministic, and the fix changes rendered output
 
 ## A-tier — Important for real projects
 
@@ -25,3 +27,4 @@ SSG-relevant gaps in Astro API surface support, ordered by priority.
 ## C-tier — Low priority / consider skipping
 
 - [011 — View Transitions](011-view-transitions.md) — SPA-like navigation, better solved by dedicated libs
+- [015 — Router param type hole](015-router-param-type-hole.md) — a missing param throws from `path.join` with a message that names nothing useful

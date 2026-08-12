@@ -1,0 +1,81 @@
+# pletivo conformance snapshot
+# case:    css-cascade-order
+# project: tests/conformance/fixtures/css-cascade-order
+# covers:
+#   - component CSS before the CSS of the module importing it (page wins over layout)
+#   - a component imported through a layout emitted before the layout itself
+#   - sibling components in the importer's import order, not their render order
+#   - scoped and is:global blocks of one file kept in source order
+#   - a .tsx page's .astro imports ordered by reading the page off disk
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=css-cascade-order bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+import-order/index.html
+index.html
+one-file/index.html
+sitemap.xml
+tsx-entry/index.html
+
+--- pletivo:conformance import-order/index.html ---
+<!DOCTYPE html>
+<html lang="en">
+  <head><title>import order</title><style>.cascade{--winner: second}
+.cascade{--winner: first}</style>
+</head>
+  <body>
+    <div class="first astro-[scope:1]">first</div>
+    <div class="second astro-[scope:2]">second</div>
+  </body></html>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html lang="en" class="astro-[scope:3]">
+  <head><title>cascade</title><style>.cascade{--winner: header}
+.cascade{--winner: layout}
+.cascade{--winner: card}
+.cascade{--winner: page}</style>
+</head>
+  <body class="astro-[scope:3]">
+    <header class="hdr astro-[scope:4]">header</header>
+    
+  <div class="card astro-[scope:5]">card</div>
+  <p class="cascade astro-[scope:6]">page</p>
+</body></html>
+
+--- pletivo:conformance one-file/index.html ---
+<!DOCTYPE html>
+<html lang="en">
+  <head><title>one file</title><style>.mixed:where(.astro-[scope:7]){--block: scoped}
+.cascade { --winner: mixed-global; }</style>
+</head>
+  <body><div class="mixed astro-[scope:7]">mixed</div></body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+  <url>
+    <loc>/import-order</loc>
+  </url>
+  <url>
+    <loc>/one-file</loc>
+  </url>
+  <url>
+    <loc>/tsx-entry</loc>
+  </url>
+</urlset>
+
+
+--- pletivo:conformance tsx-entry/index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><title>tsx entry</title><style>.cascade{--winner: first}
+.cascade{--winner: second}</style>
+</head><body><div class="second astro-[scope:2]">second</div><div class="first astro-[scope:1]">first</div></body></html>

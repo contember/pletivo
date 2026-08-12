@@ -19,9 +19,9 @@ import { fileURLToPath } from "url";
 import { compile, nodeTypes, type CompileOptions } from "@mdx-js/mdx";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
-import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
+import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import type { PletivoConfig } from "./config";
-import type { AstroIntegration } from "./astro-host/types";
+import type { AstroIntegration } from "@pletivo/core/astro-host/types";
 
 // Resolve absolute path to pletivo's jsx-runtime so compiled MDX can
 // import it even when pletivo isn't installed as a node_modules dep

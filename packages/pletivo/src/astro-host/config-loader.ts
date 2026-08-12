@@ -8,7 +8,7 @@
 import path from "path";
 import { pathToFileURL } from "url";
 import { existsSync } from "fs";
-import type { AstroConfig, AstroIntegration } from "./types";
+import type { AstroConfig, AstroIntegration } from "@pletivo/core/astro-host/types";
 
 const CONFIG_NAMES = [
   "astro.config.ts",

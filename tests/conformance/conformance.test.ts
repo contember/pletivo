@@ -108,7 +108,7 @@ describe(`conformance (${adapter.name})`, () => {
 });
 
 function buildSections(entry: CorpusEntry, result: CaseRender): Map<string, string> {
-  const normalize = createNormalizer({ repoRoot, workRoot, options: entry.normalize });
+  const normalize = createNormalizer({ repoRoot, workRoot });
   const sections = new Map<string, string>();
 
   // The manifest is normalized first so asset-hash ordinals are numbered by the

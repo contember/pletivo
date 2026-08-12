@@ -1,3 +1,1 @@
-export function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+export * from "@pletivo/core/escape-regex";

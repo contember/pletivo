@@ -123,13 +123,13 @@ function hydrateIslands() {
     <loc>/about</loc>
   </url>
   <url>
+    <loc>/blog</loc>
+  </url>
+  <url>
     <loc>/blog/post-one</loc>
   </url>
   <url>
     <loc>/blog/post-two</loc>
-  </url>
-  <url>
-    <loc>/blog</loc>
   </url>
   <url>
     <loc>/styled</loc>

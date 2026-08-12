@@ -1,0 +1,11 @@
+---
+import Layout from "../components/Layout.astro";
+import Card from "../components/Card.astro";
+---
+<Layout>
+  <Card />
+  <p class="cascade">page</p>
+</Layout>
+<style>
+  :global(.cascade) { --winner: page; }
+</style>

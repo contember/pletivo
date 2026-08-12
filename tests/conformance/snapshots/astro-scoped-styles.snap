@@ -8,6 +8,7 @@
 #   - :global() inside a scoped block
 #   - CSS injected into a page that has no <head>
 #   - no cross-page leakage of scoped or global CSS
+#   - cascade order: components in the page's import order, blocks in source order
 #
 # Recorded from the "bun-build" adapter, but this file is not tied to it:
 # any runtime claiming pletivo rendering parity must reproduce it exactly.
@@ -28,10 +29,10 @@ standalone/index.html
 <html lang="en">
   <head>
     <title>is:global test</title>
-  <style>  .is-global-marker { color: seagreen; }
-.mixed-global-marker { letter-spacing: 0.05em; }
+  <style>body { background: papayawhip; }
+  .is-global-marker { color: seagreen; }
 .mixed-scoped:where(.astro-[scope:1]){font-weight:bold}.global-wrapper-target{text-decoration:underline}
-body { background: papayawhip; }</style>
+.mixed-global-marker { letter-spacing: 0.05em; }</style>
 </head>
   <body>
     <h1>Global-only page</h1>
@@ -46,8 +47,8 @@ body { background: papayawhip; }</style>
   <head>
     <meta charset="utf-8">
     <title>Scoped Styles Test</title>
-  <style>.card:where(.astro-[scope:3]){padding:1rem;border:1px solid #ccc;border-radius:8px}.card:where(.astro-[scope:3]) h2:where(.astro-[scope:3]){color:navy}
-body{margin:0;font-family:system-ui,sans-serif}</style>
+  <style>body{margin:0;font-family:system-ui,sans-serif}
+.card:where(.astro-[scope:3]){padding:1rem;border:1px solid #ccc;border-radius:8px}.card:where(.astro-[scope:3]) h2:where(.astro-[scope:3]){color:navy}</style>
 </head>
   <body class="astro-[scope:2]">
     

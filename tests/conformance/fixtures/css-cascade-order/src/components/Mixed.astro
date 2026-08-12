@@ -1,0 +1,11 @@
+---
+// One file, two blocks: scoped first, global second. They must stay in that
+// order — bucketing by kind would hoist the global block above the scoped one.
+---
+<div class="mixed">mixed</div>
+<style>
+  .mixed { --block: scoped; }
+</style>
+<style is:global>
+  .cascade { --winner: mixed-global; }
+</style>

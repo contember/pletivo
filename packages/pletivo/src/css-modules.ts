@@ -14,8 +14,8 @@
  */
 
 import path from "path";
-import { stripQuery } from "./dev-cache";
-import { escapeRegex } from "./escape-regex";
+import { stripQuery } from "@pletivo/core/dev-cache";
+import { escapeRegex } from "@pletivo/core/escape-regex";
 
 let registered = false;
 

@@ -17,7 +17,7 @@
  */
 
 import path from "path";
-import { stripQuery } from "./dev-cache";
+import { stripQuery } from "@pletivo/core/dev-cache";
 
 let registered = false;
 

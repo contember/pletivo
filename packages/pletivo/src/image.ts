@@ -11,21 +11,21 @@
 import path from "path";
 import fs from "fs/promises";
 import { createRequire } from "module";
-import { withBase } from "./base";
+import { withBase } from "@pletivo/runtime/base";
 import { recordRuntimeDep } from "./incremental/dep-tracker";
 import {
   resolveImageService,
   type ImageProcessing,
   type ImageService,
   type ImageServiceConfig,
-} from "./image-service";
+} from "@pletivo/core/image-service";
 
 export {
   buildCdnCgiImageUrl,
   cloudflareImageService,
   passthroughImageService,
   sharpImageService,
-} from "./image-service";
+} from "@pletivo/core/image-service";
 
 // ── Types ──────────────────────────────────────────────────────────────
 

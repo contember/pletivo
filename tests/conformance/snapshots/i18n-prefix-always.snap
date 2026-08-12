@@ -56,10 +56,10 @@ start/index.html
     <loc>/</loc>
   </url>
   <url>
-    <loc>/en/start</loc>
+    <loc>/en</loc>
   </url>
   <url>
-    <loc>/en</loc>
+    <loc>/en/start</loc>
   </url>
   <url>
     <loc>/pt</loc>

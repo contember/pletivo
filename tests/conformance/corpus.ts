@@ -14,7 +14,6 @@
  */
 import path from "path";
 import type { PletivoConfig } from "../../packages/pletivo/src/config";
-import type { CaseNormalizeOptions } from "./normalize";
 
 export const repoRoot = path.resolve(import.meta.dir, "../..");
 
@@ -40,8 +39,6 @@ export interface CorpusEntry {
    * a comment saying why.
    */
   excludeRoutes?: string[];
-  /** Case-scoped normalizations on top of the always-on ones. */
-  normalize?: CaseNormalizeOptions;
   /** Overrides merged over `defaultConfig`. */
   config?: Partial<PletivoConfig>;
 }
@@ -87,10 +84,8 @@ export const corpus: CorpusEntry[] = [
       ":global() inside a scoped block",
       "CSS injected into a page that has no <head>",
       "no cross-page leakage of scoped or global CSS",
+      "cascade order: components in the page's import order, blocks in source order",
     ],
-    // See CaseNormalizeOptions.sortStyleBlocks — emission order flips between
-    // builds on this fixture.
-    normalize: { sortStyleBlocks: true },
   },
   {
     id: "astro-hoisted-scripts",
@@ -196,6 +191,28 @@ export const corpus: CorpusEntry[] = [
       ".md and .mdx entries in one collection, rendered through entry.render()",
       "YAML data collection with anchors, folded and literal scalars, flow style",
       "GFM tables and autolinks in markdown output",
+    ],
+  },
+  {
+    id: "css-cascade-order",
+    root: "tests/conformance/fixtures/css-cascade-order",
+    tier: "fast",
+    // Owned by the harness: the order hoisted CSS is emitted in is what the
+    // cascade resolves ties by, and no existing fixture pins it. Every page
+    // here separates the import graph from something that could be mistaken
+    // for it, so a regression to load order or to render order fails loudly.
+    //
+    // Astro 5.18 built from the same sources emits `index.html` and
+    // `import-order/index.html` in exactly this order. It differs on
+    // `one-file`, where it emits the file's `is:global` block before its
+    // scoped one: @astrojs/compiler 2.13 hands `result.css[]` back in reverse
+    // source order, which compiler 3 — the one pletivo pins — fixed.
+    covers: [
+      "component CSS before the CSS of the module importing it (page wins over layout)",
+      "a component imported through a layout emitted before the layout itself",
+      "sibling components in the importer's import order, not their render order",
+      "scoped and is:global blocks of one file kept in source order",
+      "a .tsx page's .astro imports ordered by reading the page off disk",
     ],
   },
   {
