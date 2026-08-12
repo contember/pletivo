@@ -41,8 +41,38 @@ async function localParity(fixture: string): Promise<{ ok: boolean; output: stri
   return { ok: code === 0, output: stdout + stderr };
 }
 
-describe.skipIf(!HAS_TAILWIND)("byte parity with pletivo build", () => {
+describe("byte parity with pletivo build", () => {
   test(
+    "the dynamic-route fixture renders every path the build emitted",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-dynamic-routes");
+      // One static page, three getStaticPaths slugs, two paginate() pages and two
+      // .tsx slugs — every one of them byte-for-byte against `pletivo build`.
+      expect(output).toContain("8/8 byte-identical");
+      // And the enumeration half agrees with the build's own page list.
+      expect(output).toContain("= 8 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test(
+    "the content fixture renders every collection-backed path the build emitted",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-content");
+      // A listing page, two `getStaticPaths` slugs off a markdown collection (one of
+      // them nested), and two off a JSON one — the markdown rendered by
+      // `entry.render()`, the ids resolved through `reference()`.
+      expect(output).toContain("5/5 byte-identical");
+      // The draft post is loaded and filtered out on both hosts, so the enumeration
+      // agreeing is also the schema default agreeing.
+      expect(output).toContain("= 5 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test.skipIf(!HAS_TAILWIND)(
     "the Tailwind fixture renders the same HTML and the same stylesheet on both hosts",
     async () => {
       const { ok, output } = await localParity("packages/workers/test/fixture-tailwind");

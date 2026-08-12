@@ -42,7 +42,12 @@ export class FileLoader implements WorkerLoaderBinding {
       if (typeof fetchHandler !== "function") {
         throw new Error(`${bundle.mainModule} default export has no fetch()`);
       }
-      return { fetch: (request) => Promise.resolve(fetchHandler.call(handler, request)) };
+      // `env` is the second argument a Worker's fetch takes, and the content binding
+      // arrives that way — so it has to be handed over here too, or the collection
+      // path would only ever be exercised in workerd.
+      return {
+        fetch: (request) => Promise.resolve(fetchHandler.call(handler, request, bundle.env)),
+      };
     };
     return {
       getEntrypoint: () => ({

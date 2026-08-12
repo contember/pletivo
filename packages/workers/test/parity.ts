@@ -5,6 +5,9 @@
  *   bunx wrangler@4 dev --config packages/workers/example/wrangler.jsonc --port 8799
  *   bun packages/workers/test/parity.ts tests/conformance/fixtures/css-cascade-order
  *
+ * Route enumeration is compared too, and the build is its reference as well: the
+ * pages `pletivo build` wrote are exactly the pages the project can enumerate.
+ *
  * The left side is `pletivo build` on Bun, run in a child process because a build
  * registers process-global Bun plugins. The right side is the example worker, handed
  * the same sources as a file map. Nothing is normalized on either side: the whole
@@ -15,6 +18,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
+import { builtPathname } from "./built-pathname.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 /** Directories that hold build products or dependencies, not sources. */
@@ -80,7 +84,7 @@ let identical = 0;
 const divergent: { page: string; detail: string }[] = [];
 
 for (const [outputPath, expected] of bunPages) {
-  const pathname = "/" + outputPath.replace(/(^|\/)index\.html$/, "");
+  const pathname = builtPathname(outputPath);
   const response = await fetch(`${workerUrl}/__render`, {
     method: "POST",
     body: JSON.stringify({ files: Object.fromEntries(files), pathname, pagesDir }),
@@ -98,10 +102,46 @@ for (const [outputPath, expected] of bunPages) {
   divergent.push({ page: outputPath, detail: firstDifference(expected, actual) });
 }
 
+// Route enumeration, against the only reference it has: the pages `pletivo build`
+// wrote *are* the pages the project can enumerate.
+const listed = await fetch(`${workerUrl}/__paths`, {
+  method: "POST",
+  body: JSON.stringify({ files: Object.fromEntries(files), pagesDir }),
+});
+const enumerated = listed.ok ? pathnamesOf(await listed.json()) : null;
+if (enumerated === null) {
+  divergent.push({ page: "__paths", detail: `    HTTP ${listed.status}: ${firstLine(await listed.text())}` });
+} else {
+  const built = new Set([...bunPages.keys()].map(builtPathname));
+  const missing = [...built].filter((pathname) => !enumerated.has(pathname)).sort();
+  const extra = [...enumerated].filter((pathname) => !built.has(pathname)).sort();
+  if (missing.length === 0 && extra.length === 0) {
+    console.log(`  = ${enumerated.size} enumerated path(s)`);
+  } else {
+    divergent.push({
+      page: "__paths",
+      detail:
+        (missing.length ? `    built but not listed: ${missing.join(", ")}\n` : "") +
+        (extra.length ? `    listed but not built: ${extra.join(", ")}` : ""),
+    });
+  }
+}
+
 console.log(`\n${fixture}: ${identical}/${bunPages.size} byte-identical`);
 for (const { page, detail } of divergent) console.log(`\n  ! ${page}\n${detail}`);
 await fs.rm(outDir, { recursive: true, force: true });
 process.exit(divergent.length === 0 ? 0 : 1);
+
+/** The pathnames out of a `/__paths` response, without trusting its shape. */
+function pathnamesOf(body: unknown): Set<string> {
+  if (!Array.isArray(body)) return new Set();
+  const pathnames = new Set<string>();
+  for (const entry of body) {
+    const pathname: unknown = entry === null ? null : Reflect.get(Object(entry), "pathname");
+    if (typeof pathname === "string") pathnames.add(pathname);
+  }
+  return pathnames;
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 

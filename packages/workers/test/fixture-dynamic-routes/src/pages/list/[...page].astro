@@ -1,0 +1,28 @@
+---
+import { POSTS } from "../../data/posts.ts";
+
+// `[...page]` puts the first page at `/list/` with no number — the case where the
+// param value is `undefined`, which is exactly the key `JSON.stringify` drops.
+export async function getStaticPaths({ paginate }) {
+  return paginate(POSTS, { pageSize: 2 });
+}
+
+const { page } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Page {page.currentPage} of {page.lastPage}</title>
+  </head>
+  <body>
+    <ul id="items">
+      {page.data.map((post) => <li>{post.title}</li>)}
+    </ul>
+    <p id="range">{page.start}–{page.end} of {page.total}</p>
+    <p id="current">{page.url.current}</p>
+    <p id="prev">{page.url.prev}</p>
+    <p id="next">{page.url.next}</p>
+  </body>
+</html>

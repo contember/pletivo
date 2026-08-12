@@ -12,8 +12,10 @@ import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
-import { renderPage } from "../src/render.ts";
+import { ContentFiles } from "../src/content-files.ts";
+import { projectPaths, renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
+import { builtPathname } from "./built-pathname.ts";
 import { FileLoader } from "./file-loader.ts";
 import { tailwindStylesheets } from "./tailwind-sources.ts";
 
@@ -48,13 +50,20 @@ for await (const rel of new Glob("**/*").scan({ cwd: root, dot: false })) {
 
 const compiler = createAstroCompiler(await astroWasmModule());
 const loader = new FileLoader();
+// On Bun the "binding" and the store are the same object — there is no RPC hop to
+// cross. In workerd they are two halves; see `example/src/index.ts`.
+const contentFiles = new ContentFiles();
+const content = { binding: contentFiles, store: contentFiles };
+const pagesDir = `${prefix}/src/pages`;
 let identical = 0;
 let pages = 0;
 const problems: string[] = [];
+const builtPathnames = new Set<string>();
 
 for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   pages++;
-  const pathname = "/" + rel.replace(/(^|\/)index\.html$/, "");
+  const pathname = builtPathname(rel);
+  builtPathnames.add(pathname);
   const expected = await Bun.file(path.join(outDir, rel)).text();
   let page;
   try {
@@ -63,7 +72,8 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
       pathname,
       loader,
       compiler,
-      pagesDir: `${prefix}/src/pages`,
+      pagesDir,
+      content,
       tailwind: await tailwindStylesheets(),
     });
   } catch (error) {
@@ -88,6 +98,23 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
       console.log(`  = ${asset.path}`);
     }
   }
+}
+
+// The other half of the dynamic-route API, against the only reference it has: the
+// pages `pletivo build` wrote *are* the pages the project can enumerate.
+const enumerated = new Set(
+  (await projectPaths({ files, loader, compiler, pagesDir, content })).map((path) => path.pathname),
+);
+const missing = [...builtPathnames].filter((pathname) => !enumerated.has(pathname)).sort();
+const extra = [...enumerated].filter((pathname) => !builtPathnames.has(pathname)).sort();
+if (missing.length === 0 && extra.length === 0) {
+  console.log(`  = ${enumerated.size} enumerated path(s)`);
+} else {
+  problems.push(
+    `  ! projectPaths\n` +
+      (missing.length ? `    built but not listed: ${missing.join(", ")}\n` : "") +
+      (extra.length ? `    listed but not built: ${extra.join(", ")}` : ""),
+  );
 }
 
 await loader.cleanup();
