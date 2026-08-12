@@ -4,7 +4,7 @@ import { build } from "./build";
 import { dev } from "./dev";
 import { isSupervisedChild, superviseDev } from "./dev-supervisor";
 import { loadConfig } from "./config";
-import { applyCliOverrides, readArgvOptions } from "./cli-args";
+import { applyCliOverrides, readArgvOptions, readFlag } from "./cli-args";
 import { createRequire } from "module";
 
 const require_ = createRequire(import.meta.url);
@@ -31,7 +31,7 @@ switch (command) {
     // comes out is what `@pletivo/workers` renders with — see packages/pletivo/src/prepare.
     const { prepare, PrepareError } = await import("./prepare/index");
     const { emitArtifact } = await import("./prepare/emit");
-    const outDir = readFlag(["--out"]) ?? ".pletivo";
+    const outDir = readFlag(process.argv, ["--out"]) ?? ".pletivo";
     let prepared: Awaited<ReturnType<typeof prepare>>;
     try {
       prepared = await prepare(projectRoot);
