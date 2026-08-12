@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
-import { compileProject, needsTranspiler } from "../src/compile-project.ts";
+import { compileProject, isExecutableModule } from "../src/compile-project.ts";
+import { typescriptSuspects } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 
 const compiler = createAstroCompiler(await astroWasmModule());
@@ -127,6 +128,95 @@ describe("compileProject, blocks in source order", () => {
   });
 });
 
+describe("compileProject, TypeScript in frontmatter", () => {
+  const TYPED = new Map<string, string>([
+    [
+      "src/pages/index.astro",
+      `---
+import Card from "../components/Card.astro";
+import type { Extra } from "../lib/types.ts";
+export interface Props {
+  title: string;
+}
+type Heading = 1 | 2;
+const level: Heading = 2;
+const { title }: Props = Astro.props;
+---
+<Card><h2>{title}{level}</h2></Card>
+`,
+    ],
+    [
+      "src/components/Card.astro",
+      `---
+export interface Props {}
+---
+<div class="card"><slot /></div>
+<style>.card { color: navy; }</style>
+`,
+    ],
+  ]);
+
+  /**
+   * Bun's `js` loader rejects TypeScript, so this is the same question the Worker
+   * Loader asks — does the module parse as JavaScript — asked without an isolate.
+   */
+  const asJavaScript = new Bun.Transpiler({ loader: "js" });
+
+  test("every generated module parses as JavaScript", async () => {
+    const typed = await compileProject(TYPED, compiler);
+    for (const [name, source] of Object.entries(typed.modules)) {
+      expect(() => asJavaScript.transformSync(source), name).not.toThrow();
+    }
+  });
+
+  test("leaves no TypeScript for the isolate's diagnostic to find", async () => {
+    const typed = await compileProject(TYPED, compiler);
+    expect(typescriptSuspects(typed.modules)).toEqual([]);
+  });
+
+  test("keeps the import graph the cascade order walks", async () => {
+    const typed = await compileProject(TYPED, compiler);
+    // The component import survives; the `import type` does not, and never was an edge.
+    expect(typed.imports.get("src/pages/index.astro")).toEqual(["src/components/Card.astro"]);
+    expect(typed.modules["src_pages_index.astro.js"]).toContain(
+      '"./src_components_Card.astro.js"',
+    );
+    expect(typed.modules["src_pages_index.astro.js"]).not.toContain("../lib/types.ts");
+  });
+
+  test("renders the same page body as the same file without the annotations", async () => {
+    // Stripping types must change nothing but the types: the compiled module for the
+    // annotated page is the untyped one's, modulo the blanked-out lines.
+    const untyped = new Map(TYPED);
+    untyped.set(
+      "src/pages/index.astro",
+      `---
+import Card from "../components/Card.astro";
+const level = 2;
+const { title } = Astro.props;
+---
+<Card><h2>{title}{level}</h2></Card>
+`,
+    );
+    const a = await compileProject(TYPED, compiler);
+    const b = await compileProject(untyped, compiler);
+    const blank = (code: string): string =>
+      code
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .join("\n");
+    expect(blank(a.modules["src_pages_index.astro.js"])).toBe(
+      blank(b.modules["src_pages_index.astro.js"]),
+    );
+  });
+
+  test("names the file when the frontmatter does not parse at all", () => {
+    expect(
+      compileProject(new Map([["src/pages/index.astro", "---\nconst = ;\n---\n<p>x</p>\n"]]), compiler),
+    ).rejects.toThrow(/src\/pages\/index\.astro.*position is in the compiled output/s);
+  });
+});
+
 describe("compileProject, refusals", () => {
   test("throws with the file name when the compiler reports an error", () => {
     expect(
@@ -135,15 +225,12 @@ describe("compileProject, refusals", () => {
   });
 });
 
-describe("needsTranspiler", () => {
-  test("names the extensions that would need one inside the isolate", () => {
-    expect(["a.ts", "a.tsx", "a.jsx", "a.mts"].map(needsTranspiler)).toEqual([
-      true,
-      true,
-      true,
-      true,
-    ]);
-    expect(["a.astro", "a.js", "a.mjs", "a.md"].map(needsTranspiler)).toEqual([
+describe("isExecutableModule", () => {
+  test("names the extensions the isolate can be handed code for", () => {
+    expect(["a.astro", "a.tsx", "a.ts", "a.jsx", "a.mts", "a.js", "a.mjs"].map(isExecutableModule))
+      .toEqual([true, true, true, true, true, true, true]);
+    // `.css` becomes a resolvable stub, not code; `.md` never becomes a module.
+    expect(["a.css", "a.md", "a.mdx", "a.png"].map(isExecutableModule)).toEqual([
       false,
       false,
       false,

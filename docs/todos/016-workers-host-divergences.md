@@ -91,6 +91,54 @@ resolves to the same key. Forgiving rather than wrong, but undocumented in the
 function's own comment, which only mentions dropping a `..` that climbs past the
 root.
 
+## 7. Where the MVP stops
+
+The Workers host renders `.astro` and `.md` for static routes, end to end, in real
+workerd. Measured HTML parity against `pletivo build` on the same sources —
+nothing normalised on either side:
+
+| fixture | pages | byte-identical |
+|---|---|---|
+| `tests/conformance/fixtures/css-cascade-order` | 4 | 3 |
+| `tests/fixture-astro-hoisted-imports` | 1 | 0 |
+| `tests/fixture-astro-styles` | 4 | 0 |
+
+**The first wall is TypeScript in `.astro` frontmatter.** `interface Props` is the
+documented Astro idiom, so this hits nearly every real project (15 of this repo's
+own 142 `.astro` files). `@astrojs/compiler` copies frontmatter into its output
+verbatim and the Worker Loader takes JavaScript, so the module does not parse.
+The fix is a pure-JS transpiler in the *host* worker, ahead of the Loader.
+
+Sizes, measured rather than guessed — `bun build --target=node --minify`, gzipped:
+
+| candidate | minified | gzipped |
+|---|---|---|
+| `ts-blank-space` | 3.65 MB | 1.01 MB |
+| `sucrase` | 298 KB | **62 KB** |
+
+`ts-blank-space` looks like the minimal choice — it only blanks out type syntax —
+but it depends on the whole `typescript` package for the parse, so it is 16×
+larger on the wire. Against a Worker's 10 MB gzip deploy limit that is not fatal,
+but it buys nothing: sucrase is self-contained and also handles JSX, which is the
+same seam `.tsx` pages need. Watch its Node-only CLI deps (`mz`, `pirates`,
+`commander`, `tinyglobby`) — the transform entry must not drag them in.
+
+Delete only the `export interface Props` blocks from `tests/fixture-astro-styles`
+and the same fixture renders **4/4 byte-identical**. So scoped CSS, the
+`is:global` gating that runs through the render tracker, the no-`<head>` fallback
+and cascade order already match — TypeScript is the only thing between that
+fixture and full parity.
+
+Behind that wall, in the order a project would hit them: `.tsx`/`.ts` pages
+(same transpiler problem), dynamic routes (`getStaticPaths()` needs the page
+module executed on the host), endpoints, islands, hoisted-script bundling, the
+CSS bundle-and-hash pipeline, and Tailwind — `tailwind.ts` exists but is not
+wired into `renderPage`.
+
+Two mechanical constraints: the whole project is recompiled per request (only the
+*isolate* is content-addressed, by module-map hash), and file-map keys must not
+contain `..`, since `resolveSpecifier` drops a climb past the root.
+
 ## Parity that does hold
 
 - **compiler, Bun-side:** 114/114 `.astro` files across every fixture in this
@@ -98,6 +146,20 @@ root.
   `propagation` and `diagnostics`
 - **compiler, in workerd:** 32/32 byte-identical against the Bun host
 - **Tailwind output, in workerd:** identical bytes (4979 B) for the same input
+- **a full page, in workerd:** `.astro` layout + component + slots + scoped CSS,
+  and a `.md` route rendered on the host, both served from an in-memory file map
+
+## A diagnostic that lied, and what it teaches
+
+`IsolateStartError` used to report TypeScript as the cause of *every* Loader
+start failure. Handing the host a file map with `..` in its keys produced
+unresolvable specifiers and the same message, pointing at annotations that were
+not in the sources. Fixed in `1101194`: the note is attached only when a
+generated module actually carries statement-level TypeScript, and names which.
+
+Worth remembering when adding the next diagnostic here — the isolate boundary
+hides the real error, so it is tempting to guess, and a confident wrong guess
+costs more than no guess.
 
 ## Files
 

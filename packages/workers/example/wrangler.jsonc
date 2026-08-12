@@ -1,0 +1,16 @@
+{
+  "name": "pletivo-workers-example",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  // The Astro shim's render-tracking store is an AsyncLocalStorage, and the
+  // compiled bundle imports `node:async_hooks` for it.
+  "compatibility_flags": ["nodejs_compat"],
+  // The only way to execute code produced at run time in workerd. Open beta since
+  // 2026-03-24; runs locally in `wrangler dev` with no account.
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "rules": [
+    // `@astrojs/compiler/astro.wasm` has to arrive as a `WebAssembly.Module` —
+    // workerd forbids `WebAssembly.compile()` at run time.
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
+  ]
+}

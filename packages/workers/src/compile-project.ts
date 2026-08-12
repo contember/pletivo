@@ -7,17 +7,23 @@
  * compiled as a unit: `.astro` through `@astrojs/compiler`, `.js` verbatim, and the
  * import specifiers rewritten to point at each other by bundle name.
  *
- * What is deliberately *not* here: any TypeScript. The Loader takes JavaScript and
- * workerd has no `eval`, so `.ts` / `.tsx` — including TypeScript inside `.astro`
- * frontmatter — cannot be compiled at request time. `compileProject` reports those
- * files rather than emitting something that will fail to parse inside the isolate.
+ * The Loader takes JavaScript, and the compiler copies `.astro` frontmatter into its
+ * output verbatim — `export interface Props` included. So every module goes through
+ * `stripTypes` on the way out, which also compiles the JSX in a `.tsx` page. That
+ * runs *here*, in the host worker, which is the only place it can: workerd has no
+ * `eval`, so nothing in the isolate could do it.
  */
 
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import { compileAstro, parseAstro, type AstroCompiler } from "./astro-compiler.ts";
 import { collectSpecifiers, resolveSpecifier, rewriteImports } from "./rewrite-imports.ts";
-import { RUNTIME_MODULES, RUNTIME_MODULE_NAME } from "./generated/runtime-modules.ts";
+import {
+  JSX_RUNTIME_MODULE_NAME,
+  RUNTIME_MODULES,
+  RUNTIME_MODULE_NAME,
+} from "./generated/runtime-modules.ts";
+import { JSX_IMPORT_SPECIFIER, stripTypes, TranspileError } from "./transpile.ts";
 
 /** One `<style>` block from a `.astro` file, in the order it was written. */
 export interface StyleBlock {
@@ -64,8 +70,21 @@ const VERBATIM = [".js", ".mjs"];
  * module and the CSS is dropped — see `docs/todos/016`.
  */
 const EMPTY = [".css", ".scss", ".sass"];
-/** Needs a transpiler in the isolate, which there is not one of. */
-const NEEDS_TRANSPILER = [".ts", ".tsx", ".jsx", ".mts", ".cts"];
+/** Compiled by sucrase rather than by `@astrojs/compiler`. */
+const TRANSPILED = [".ts", ".tsx", ".jsx", ".mts", ".cts"];
+/** Of those, the ones whose `<` is an element and not a type assertion. */
+const WITH_JSX = [".tsx", ".jsx"];
+
+/** Every extension that becomes a module in the bundle. */
+const MODULE_EXTENSIONS = [COMPILED, ...VERBATIM, ...TRANSPILED, ...EMPTY];
+
+/** Extensions that carry executable code, as opposed to a resolvable stub. */
+const EXECUTABLE = [COMPILED, ...VERBATIM, ...TRANSPILED];
+
+/** Whether a project path becomes a module the isolate can run. */
+export function isExecutableModule(file: string): boolean {
+  return EXECUTABLE.includes(extensionOf(file));
+}
 
 function extensionOf(file: string): string {
   const at = file.lastIndexOf(".");
@@ -178,13 +197,15 @@ export async function compileProject(
   // Names first: rewriting an import needs the target's name, whichever order the
   // files come in.
   for (const file of files.keys()) {
-    const extension = extensionOf(file);
-    if (extension === COMPILED || VERBATIM.includes(extension) || EMPTY.includes(extension)) {
+    if (MODULE_EXTENSIONS.includes(extensionOf(file))) {
       moduleNames.set(file, bundleName(file, takenNames));
     }
   }
 
   const resolve = (resolved: string): string | null => {
+    // The one bare specifier the bundle answers to: sucrase writes it into every
+    // module that holds JSX, and it names a package, not a project file.
+    if (resolved === JSX_IMPORT_SPECIFIER) return `./${JSX_RUNTIME_MODULE_NAME}`;
     const name = moduleNames.get(resolved);
     return name === undefined ? null : `./${name}`;
   };
@@ -202,6 +223,15 @@ export async function compileProject(
     if (VERBATIM.includes(extension)) {
       modules[name] = rewriteImports(source, { importer: file, resolve });
       imports.set(file, resolveEdges(file, collectSpecifiers(source), files));
+      continue;
+    }
+
+    if (TRANSPILED.includes(extension)) {
+      const code = transpile(source, { file, jsx: WITH_JSX.includes(extension) });
+      // The JSX import sucrase prepends is not a project edge, and `resolveEdges`
+      // drops it for the same reason it drops any specifier outside the file map.
+      imports.set(file, resolveEdges(file, collectSpecifiers(code), files));
+      modules[name] = rewriteImports(code, { importer: file, resolve });
       continue;
     }
 
@@ -224,12 +254,34 @@ export async function compileProject(
       if (blocks.length > 0) styles.set(file, { scope: result.scope, blocks });
     }
 
-    const code = stripStyleImports(result.code);
+    // Types out before the graph is read: `import type` is not an edge, and with
+    // `keepUnusedImports` nothing else in the prologue moves.
+    const code = transpile(stripStyleImports(result.code), { file });
     imports.set(file, resolveEdges(file, collectSpecifiers(code), files));
     modules[name] = rewriteImports(code, { importer: file, resolve });
   }
 
   return { modules, moduleNames, styles, imports };
+}
+
+/**
+ * `stripTypes`, reported as an unsupported file.
+ *
+ * For `.astro` the position sucrase reports counts lines in the *compiled* module,
+ * not in the source the author wrote — and the compiler puts the whole template on
+ * one line — so an unqualified "(3:14)" points at a file nobody has. Say so.
+ */
+function transpile(code: string, options: { file: string; jsx?: boolean }): string {
+  try {
+    return stripTypes(code, options);
+  } catch (error) {
+    if (!(error instanceof TranspileError)) throw error;
+    const detail = error.cause instanceof Error ? error.cause.message : String(error.cause);
+    const where = options.file.endsWith(COMPILED)
+      ? " (position is in the compiled output, not the .astro source)"
+      : "";
+    throw new UnsupportedFileError(options.file, detail + where);
+  }
 }
 
 /**
@@ -250,15 +302,9 @@ function resolveEdges(
   for (const specifier of specifiers) {
     const resolved = resolveSpecifier(importer, specifier);
     if (seen.has(resolved) || !files.has(resolved)) continue;
-    const extension = extensionOf(resolved);
-    if (!(extension === COMPILED || VERBATIM.includes(extension))) continue;
+    if (!isExecutableModule(resolved)) continue;
     seen.add(resolved);
     edges.push(resolved);
   }
   return edges;
-}
-
-/** Whether `file` needs a transpiler the isolate does not have. */
-export function needsTranspiler(file: string): boolean {
-  return NEEDS_TRANSPILER.includes(extensionOf(file));
 }
