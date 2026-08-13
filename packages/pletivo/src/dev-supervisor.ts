@@ -23,6 +23,29 @@ export const RESTART_EXIT_CODE = 75;
 /** Set on the child so it runs the server instead of supervising again. */
 export const CHILD_ENV_FLAG = "PLETIVO_DEV_CHILD";
 
+/**
+ * Extra bun runtime flags for the child, space-separated — e.g. `--smol`.
+ *
+ * An env channel exists because the command line is not always reachable. `bunx pletivo@latest`
+ * execs the package bin as a *fresh* `bun <bin>` command, so a flag given to the outer
+ * `bun --smol x pletivo@latest dev` is gone before this process even starts. Callers who can
+ * only invoke us through bunx — which is how the redo agent runs the dev server — have no other
+ * way to reach the runtime. Env survives both hops.
+ */
+export const BUN_ARGS_ENV = "PLETIVO_DEV_BUN_ARGS";
+
+/**
+ * Runtime flags to put in front of the child's script path.
+ *
+ * `process.argv` cannot supply these: bun keeps runtime flags out of argv entirely and exposes
+ * them as `process.execArgv`. Rebuilding the child's command line from argv alone therefore
+ * dropped every one of them — `--smol`, `--inspect`, `--heap-prof` — so the process that
+ * actually serves could never be tuned or profiled, only the supervisor in front of it.
+ */
+export function childRuntimeFlags(env: Record<string, string | undefined> = process.env): string[] {
+  return [...process.execArgv, ...(env[BUN_ARGS_ENV] ?? "").split(" ").filter(Boolean)];
+}
+
 /** Consecutive crashes tolerated before the parent gives up. */
 const MAX_CRASH_RETRIES = 5;
 const CRASH_BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
@@ -36,6 +59,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export interface SupervisorOptions {
   /** argv for the child, minus the runtime — defaults to this process's own. */
   argv?: string[];
+  /** Bun runtime flags placed before the script — defaults to {@link childRuntimeFlags}. */
+  runtimeFlags?: string[];
   /** Consecutive crashes tolerated before giving up. */
   maxCrashRetries?: number;
   /** Delay per consecutive crash; the last entry repeats. */
@@ -51,6 +76,7 @@ export interface SupervisorOptions {
  */
 export async function superviseDev(options: SupervisorOptions = {}): Promise<number> {
   const argv = options.argv ?? process.argv.slice(1);
+  const runtimeFlags = options.runtimeFlags ?? childRuntimeFlags();
   const now = options.now ?? (() => Date.now());
   const maxCrashRetries = options.maxCrashRetries ?? MAX_CRASH_RETRIES;
   const backoffMs = options.backoffMs ?? CRASH_BACKOFF_MS;
@@ -72,7 +98,7 @@ export async function superviseDev(options: SupervisorOptions = {}): Promise<num
   try {
     for (;;) {
       const startedAt = now();
-      current = Bun.spawn([process.execPath, ...argv], {
+      current = Bun.spawn([process.execPath, ...runtimeFlags, ...argv], {
         cwd: process.cwd(),
         env: { ...process.env, [CHILD_ENV_FLAG]: "1" },
         stdio: ["inherit", "inherit", "inherit"],
