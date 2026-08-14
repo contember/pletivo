@@ -1,12 +1,14 @@
 /**
  * Replace the serving process once it has been idle for a while.
  *
- * A dev server's memory is three layers deep and only one of them is a cache. The JS heap
- * plateaus. The allocator's arenas sawtooth — they grow under load and are handed back later.
- * Underneath both sits one mapping that only ever grows: WebAssembly linear memory, which has
- * no shrink operation at all. Measured on a real site, five identical passes over the same 17
- * pages moved that region 70 → 296 MB while the heap stayed flat, so no amount of waiting or
- * collecting brings it back. A fresh process does, and nothing else does.
+ * A dev server's memory is three layers deep and only one of them comes back. The JS heap
+ * plateaus. JSC's arenas (WKFastMalloc) sawtooth — they grow under load and are handed back
+ * later. Underneath both sits bun's mimalloc arena (1 GiB reserved up front, committed page
+ * by page), which only ever grows: five identical passes over the same 17 pages of a real
+ * site moved it 70 → 296 MB while the heap stayed flat. What it retains is live — bun's
+ * native caches — plus fragmentation, not unpurged free pages: MIMALLOC_PURGE_DELAY=0 and
+ * 64 MiB arenas were both measured and neither returned a megabyte, idle included. A fresh
+ * process does, and nothing else does.
  *
  * That matters where several dev servers share one machine — a preview sandbox running one
  * server per editing session — and the sum of their idle footprints is what runs it out of
