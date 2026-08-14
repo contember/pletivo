@@ -16,6 +16,7 @@ import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
 import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";
 import { createSnapshotStore } from "./dev-snapshots";
+import { createIdleRecycler, resolveIdleRecycleMs, type IdleRecycler } from "./dev-idle-recycle";
 import { describeConfigChange, isSupervisedChild, RESTART_EXIT_CODE } from "./dev-supervisor";
 import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
@@ -834,6 +835,9 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     return (await pletivoHandler(req, url, pathname)) ?? new Response("Not Found", { status: 404 });
   }
 
+  // Assigned below, once we know whether a supervisor is there to bring the server back.
+  let idleRecycler: IdleRecycler | null = null;
+
   const server = Bun.serve({
     port: config.port,
     hostname: config.host,
@@ -841,13 +845,18 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       const url = new URL(req.url);
       const pathname = stripBase(url.pathname);
       const start = Date.now();
-      const response = await dispatchRequest(req, server, url, pathname);
-      if (response) {
-        const logPath = pathname ?? url.pathname;
-        const sub = isSubrequest(req, url.origin, logPath);
-        logRequest(req.method, logPath, response.status, Date.now() - start, sub);
+      idleRecycler?.requestStarted();
+      try {
+        const response = await dispatchRequest(req, server, url, pathname);
+        if (response) {
+          const logPath = pathname ?? url.pathname;
+          const sub = isSubrequest(req, url.origin, logPath);
+          logRequest(req.method, logPath, response.status, Date.now() - start, sub);
+        }
+        return response;
+      } finally {
+        idleRecycler?.requestFinished();
       }
-      return response;
     },
 
     websocket: {
@@ -1432,6 +1441,16 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         void shutdown(RESTART_EXIT_CODE);
       });
     }
+
+    // Same reasoning, same restart path: a server that has been idle for a while is holding
+    // memory it can no longer give back, and only a new process returns it.
+    idleRecycler = createIdleRecycler({
+      thresholdMs: resolveIdleRecycleMs(config.dev?.idleRecycleMs),
+      onRecycle: idleMs => {
+        console.log(`\n  idle for ${Math.round(idleMs / 1000)}s → recycling dev server\n`);
+        void shutdown(RESTART_EXIT_CODE);
+      },
+    });
   }
 }
 
