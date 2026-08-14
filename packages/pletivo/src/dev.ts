@@ -16,7 +16,7 @@ import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
 import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";
 import { createSnapshotStore } from "./dev-snapshots";
-import { createIdleRecycler, resolveIdleRecycleMs, type IdleRecycler } from "./dev-idle-recycle";
+import { createIdleRecycler, isHmrTransportPath, resolveIdleRecycleMs, type IdleRecycler } from "./dev-idle-recycle";
 import { describeConfigChange, isSupervisedChild, RESTART_EXIT_CODE } from "./dev-supervisor";
 import { resolveI18nConfig } from "./i18n/config";
 import { detectRouteLocale } from "./i18n/route-expansion";
@@ -845,7 +845,8 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       const url = new URL(req.url);
       const pathname = stripBase(url.pathname);
       const start = Date.now();
-      idleRecycler?.requestStarted();
+      const countsAsActivity = idleRecycler !== null && !isHmrTransportPath(pathname ?? url.pathname);
+      if (countsAsActivity) idleRecycler?.requestStarted();
       try {
         const response = await dispatchRequest(req, server, url, pathname);
         if (response) {
@@ -855,7 +856,7 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
         }
         return response;
       } finally {
-        idleRecycler?.requestFinished();
+        if (countsAsActivity) idleRecycler?.requestFinished();
       }
     },
 

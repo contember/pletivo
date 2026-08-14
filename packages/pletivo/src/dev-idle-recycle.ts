@@ -14,9 +14,9 @@
  *
  * Two rules keep this from being disruptive:
  *
- *  - Only requests count as activity. HMR sockets stay connected in a forgotten browser tab
- *    for days; treating that as "in use" would defeat the whole thing, and a dropped HMR
- *    socket reconnects on its own.
+ *  - Only what a person asked for counts as activity. A forgotten browser tab keeps talking
+ *    to the server on its own — see `isHmrTransportPath` — and counting that as "in use"
+ *    would mean the server never recycles at all.
  *  - A server that has never served a request is never recycled. It is already at its boot
  *    footprint, so there is nothing to reclaim — and recycling it would loop forever on a
  *    machine where nobody is working.
@@ -24,6 +24,23 @@
 
 /** Env override for hosts that spawn `pletivo dev` but do not own the project's config. */
 export const IDLE_RECYCLE_ENV = "PLETIVO_DEV_IDLE_RECYCLE_MS";
+
+/**
+ * HMR transport, which an open tab drives by itself and which therefore says nothing about
+ * whether anyone is there.
+ *
+ * Two of these would defeat idle detection outright rather than merely blur it: `/__hmr_ping`
+ * is a liveness probe on a timer, so every tick would look like fresh traffic, and
+ * `/__hmr_poll` deliberately hangs for up to 30s before the client immediately re-issues it,
+ * so a request is in flight essentially always. Both fallbacks exist for proxies that break
+ * WebSockets, which is exactly the setup a hosted preview sandbox runs behind.
+ *
+ * Everything else a page pulls in — islands, styles, images — is left counting, because a
+ * browser only fetches those when someone loaded a page.
+ */
+export function isHmrTransportPath(pathname: string): boolean {
+  return pathname === "/__hmr" || pathname === "/__hmr_ping" || pathname === "/__hmr_sse" || pathname === "/__hmr_poll";
+}
 
 /** How often to check. Fine relative to any sane threshold, and costs nothing. */
 const DEFAULT_CHECK_INTERVAL_MS = 15_000;

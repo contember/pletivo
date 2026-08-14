@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { createIdleRecycler, IDLE_RECYCLE_ENV, resolveIdleRecycleMs } from "../../packages/pletivo/src/dev-idle-recycle";
+import {
+  createIdleRecycler,
+  IDLE_RECYCLE_ENV,
+  isHmrTransportPath,
+  resolveIdleRecycleMs,
+} from "../../packages/pletivo/src/dev-idle-recycle";
 
 /** Drives the recycler's clock and its check timer by hand, so nothing here waits on real time. */
 function harness(thresholdMs: number, checkIntervalMs = 100) {
@@ -46,6 +51,32 @@ describe("resolveIdleRecycleMs", () => {
   test("junk in the environment is ignored rather than treated as zero delay", () => {
     expect(resolveIdleRecycleMs(undefined, { [IDLE_RECYCLE_ENV]: "soon" })).toBe(0);
     expect(resolveIdleRecycleMs(undefined, { [IDLE_RECYCLE_ENV]: "-5" })).toBe(0);
+  });
+});
+
+describe("isHmrTransportPath", () => {
+  // Both of these would defeat idle detection outright, not merely blur it: the ping is on a
+  // timer, so every tick looks like traffic, and the long-poll hangs for 30s before the client
+  // immediately re-issues it, so something is in flight essentially always.
+  test("excludes the HMR transport an open tab drives by itself", () => {
+    expect(isHmrTransportPath("/__hmr")).toBe(true);
+    expect(isHmrTransportPath("/__hmr_ping")).toBe(true);
+    expect(isHmrTransportPath("/__hmr_sse")).toBe(true);
+    expect(isHmrTransportPath("/__hmr_poll")).toBe(true);
+  });
+
+  // A browser fetches these only because someone loaded a page, so they are real activity.
+  test("counts everything a page pull brings with it", () => {
+    expect(isHmrTransportPath("/")).toBe(false);
+    expect(isHmrTransportPath("/__styles.css")).toBe(false);
+    expect(isHmrTransportPath("/_islands/counter.js")).toBe(false);
+    expect(isHmrTransportPath("/@image/hero.jpg")).toBe(false);
+    expect(isHmrTransportPath("/__pletivo/morphdom.js")).toBe(false);
+  });
+
+  test("does not match on prefix — a page route may start the same way", () => {
+    expect(isHmrTransportPath("/__hmr_pingback")).toBe(false);
+    expect(isHmrTransportPath("/__hmrx")).toBe(false);
   });
 });
 
