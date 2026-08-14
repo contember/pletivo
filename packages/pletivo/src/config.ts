@@ -38,6 +38,20 @@ export interface DevHybridConfig {
    * `stale` is enabled. With both off, no filtering happens and every request is in debug view.
    */
   debugHeader?: string;
+  /**
+   * Replace the serving process after this many ms without a request. Off by default.
+   *
+   * A dev server does not give all of its memory back. Most of it is allocator arenas that
+   * do come back eventually, but the runtime's native side (bun's mimalloc arena — live
+   * caches plus fragmentation) only ever grows, so a long-lived server ratchets upwards no
+   * matter how idle it is. Where several dev servers share one machine, the only way to
+   * return that memory is a fresh process.
+   *
+   * Needs a supervisor; without a parent to bring the server back, exiting would just kill
+   * it. `PLETIVO_DEV_IDLE_RECYCLE_MS` sets the same thing for hosts that spawn `pletivo dev`
+   * but do not own the project's config file.
+   */
+  idleRecycleMs?: number;
 }
 
 export interface PletivoConfig {
