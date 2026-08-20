@@ -138,7 +138,7 @@ const HMR_TEMPLATE = `
 
       ws.onopen = function () {
         clearTimeout(timer);
-        transport = "ws";
+        transportEstablished("ws");
         console.log("[pletivo] HMR connected (WebSocket)");
         resolve(true);
       };
@@ -170,7 +170,7 @@ const HMR_TEMPLATE = `
 
       es.onopen = function () {
         clearTimeout(timer);
-        transport = "sse";
+        transportEstablished("sse");
         console.log("[pletivo] HMR connected (SSE)");
         resolve(true);
       };
@@ -201,8 +201,19 @@ const HMR_TEMPLATE = `
   function poll() {
     if (transport !== "poll") return;
     fetch(BASE + "__BASE__/__hmr_poll", { cache: "no-store" })
-      .then(function (r) { return r.text(); })
+      .then(function (r) {
+        // An error response is NOT a message. fetch only rejects on a network failure, so
+        // without this check the body of a 5xx reached handleMessage, matched none of the known
+        // types, and fell through to a full page reload. Behind a proxy that parks a sleeping
+        // workspace, that reload is ordinary page traffic — so the client woke the very thing
+        // the proxy had just declined to wake, and did it again every time it went back to sleep.
+        if (!r.ok) throw new Error("poll " + r.status);
+        return r.text();
+      })
       .then(function (data) {
+        // A poll the server actually answered is the proof of life; connectPoll setting
+        // transport is not, because the very first poll may be the one that fails.
+        reconnectDelay = RECONNECT_MIN_MS;
         handleMessage(data);
         poll();
       })
@@ -220,19 +231,38 @@ const HMR_TEMPLATE = `
     await connectPoll();
   }
 
+  // Probe an unreachable server on a widening interval instead of once a second forever. A
+  // workspace parked behind a proxy can stay down for as long as nobody is editing, and the old
+  // fixed retry meant a single forgotten tab kept talking the whole time. Deliberately a backoff
+  // rather than a suspend: this recovers on its own when the server returns, whereas suspending
+  // would leave a developer with silently dead HMR until they happened to click something.
+  const RECONNECT_MIN_MS = 1000;
+  const RECONNECT_MAX_MS = 30000;
+  let reconnectDelay = RECONNECT_MIN_MS;
+
+  function transportEstablished(kind) {
+    transport = kind;
+    reconnectDelay = RECONNECT_MIN_MS;
+  }
+
   function reconnect() {
     if (suspended) return;
     console.log("[pletivo] Connection lost. Reconnecting…");
+    const delay = reconnectDelay;
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
     setTimeout(async function () {
       if (suspended) return;
-      // Check if server is alive before attempting transport
+      // Reachable is not the same as ready: a proxy fronting a paused workspace answers the ping
+      // with an error, and fetch resolves for those. Without reading the status we would walk
+      // the whole transport ladder against a server that has already said no.
       try {
-        await fetch(BASE + "__BASE__/__hmr_ping", { cache: "no-store" });
+        const res = await fetch(BASE + "__BASE__/__hmr_ping", { cache: "no-store" });
+        if (!res.ok) throw new Error("ping " + res.status);
         connect();
       } catch {
         reconnect();
       }
-    }, 1000);
+    }, delay);
   }
 
   // ── L1: CSS hot swap ────────────────────────────────────────────
