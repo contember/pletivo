@@ -44,8 +44,24 @@ so the bundle contains genuine preact core next to fake hooks.
 - the shipped `Counter.js` carries preact-core markers but none of the
   hooks-specific ones (`__H`, `__N`)
 
-Origin: commit `adc1e30`. `packages/pletivo/package.json` has no `files` field,
-so that tsconfig ships to npm and the mapping reaches installed projects.
+Origin: commit `adc1e30`. Up to and including `pletivo@0.1.35`,
+`packages/pletivo/package.json` had no `files` field, so that tsconfig shipped
+to npm and the mapping reached installed projects too.
+
+## What the packaging change already closed
+
+The release packager stages a `files: ["src", "README.md"]` manifest, so the
+tarball no longer carries a tsconfig. Measured in a project that installs it:
+
+| call, from inside `node_modules/pletivo/src` | 0.1.35 | packaged tarball |
+|---|---|---|
+| `require.resolve("preact/hooks")` | the stub | the real `preact/hooks` |
+
+That leaves the bug repo-local. `islandPlugin()` resolves `preact/hooks` from
+the project root first and only falls back to a pletivo-relative resolve, and
+in an installed project the first branch already returns real preact — so what
+still hijacks the specifier is this repo's own `tsconfig.json`, which is where
+examples and benchmarks build.
 
 ## Consequences beyond the bug
 
