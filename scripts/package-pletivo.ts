@@ -80,13 +80,18 @@ async function stagedManifest(version: string): Promise<Record<string, unknown>>
   const manifest: Record<string, unknown> = {};
   for (const field of [
     "name", "description", "type", "license", "repository", "homepage", "bugs",
-    "bin", "exports", "peerDependencies", "peerDependenciesMeta", "engines", "publishConfig",
+    "files", "bin", "exports", "peerDependencies", "peerDependenciesMeta", "engines",
+    "publishConfig",
   ]) {
     const value = Reflect.get(pletivo, field);
     if (value !== undefined) manifest[field] = value;
   }
+  // Read, not hardcoded: a second copy of the published file list here would let
+  // the two drift, and the drift ships the whole directory rather than failing.
+  if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
+    throw new Error("pletivo package.json must declare a non-empty files array");
+  }
   manifest.version = version;
-  manifest.files = ["src", "README.md"];
   manifest.imports = {
     "#pletivo/core/*": "./src/_internal/core/*.ts",
     "#pletivo/runtime/*": "./src/_internal/runtime/*.ts",

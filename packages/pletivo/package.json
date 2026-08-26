@@ -1,6 +1,5 @@
 {
   "name": "pletivo",
-  "private": false,
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -51,6 +50,7 @@
       "optional": true
     }
   },
+  "//": "README.md is copied in from the repo root when the release tarball is staged; it is not a file in this directory.",
   "files": [
     "src",
     "README.md"
