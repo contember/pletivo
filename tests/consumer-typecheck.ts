@@ -99,6 +99,7 @@ async function assertInstalledShape(project: string): Promise<object> {
 
 async function writeConsumer(project: string, tarball: string): Promise<void> {
   await fs.mkdir(path.join(project, "src/pages"), { recursive: true });
+  await fs.mkdir(path.join(project, "src/scripts"), { recursive: true });
   await fs.writeFile(
     path.join(project, "package.json"),
     `${JSON.stringify({
@@ -143,6 +144,52 @@ export default function Page() {
 }
 `,
   );
+  await fs.writeFile(
+    path.join(project, "src/scripts/hoisted.js"),
+    `export const HOISTED = "hoisted-ok";
+document.documentElement.dataset.hoisted = HOISTED;
+`,
+  );
+  await fs.writeFile(
+    path.join(project, "src/pages/astro-page.astro"),
+    `---
+const title = "packaged astro";
+---
+<html>
+  <head><title>{title}</title></head>
+  <body><h1 class="astro-heading">{title}</h1></body>
+</html>
+
+<style>
+  .astro-heading { color: rgb(1, 2, 3); }
+</style>
+
+<script>
+  import "../scripts/hoisted.js";
+</script>
+`,
+  );
+}
+
+/**
+ * A TSX page never touches the `.astro` path, and that path is the one the
+ * package ships through wrappers: compiled output imports the shim by the
+ * `src/runtime/astro-shim.ts` file path, and `renderScript()` answers only if
+ * the host registered its hoisted-script resolver. Both fail silently — a
+ * missing resolver emits no tag at all — so assert on the emitted page.
+ */
+async function assertAstroPageBuilt(project: string): Promise<void> {
+  const page = path.join(project, "dist/astro-page/index.html");
+  const html = await fs.readFile(page, "utf8");
+  if (!html.includes("packaged astro")) throw new Error("astro page did not render its content");
+
+  const script = /<script type="module" src="([^"]+)"><\/script>/.exec(html);
+  if (!script) throw new Error("astro hoisted script was not emitted");
+  await fs.access(path.join(project, "dist", script[1].replace(/^\//, "")));
+
+  if (!/<style>[^<]*:where\(\.astro-/.test(html)) {
+    throw new Error("astro scoped style was not emitted");
+  }
 }
 
 async function assertRuntimeIdentity(project: string): Promise<void> {
@@ -207,6 +254,7 @@ try {
   requireSuccess("minimal pletivo build", run(["./node_modules/.bin/pletivo", "build"], project));
   const output = await fs.readFile(path.join(project, "dist/index.html"), "utf8");
   if (!output.includes("packaged pletivo")) throw new Error("minimal build output is incomplete");
+  await assertAstroPageBuilt(project);
   await assertRuntimeIdentity(project);
   await assertExportBoundary(project);
   await assertImportsMapIsRequired(project, manifest);
