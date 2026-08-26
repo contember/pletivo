@@ -1,5 +1,6 @@
 {
   "name": "pletivo",
+  "private": false,
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -10,6 +11,9 @@
   },
   "homepage": "https://github.com/contember/pletivo",
   "bugs": "https://github.com/contember/pletivo/issues",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "pletivo": "./src/cli.ts"
   },
@@ -47,6 +51,10 @@
       "optional": true
     }
   },
+  "files": [
+    "src",
+    "README.md"
+  ],
   "devDependencies": {
     "preact": "^10.29.1"
   }

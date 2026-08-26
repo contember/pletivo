@@ -1,5 +1,6 @@
 {
   "name": "@pletivo/runtime",
+  "private": true,
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",

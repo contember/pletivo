@@ -5,6 +5,7 @@
     "examples/*"
   ],
   "scripts": {
+    "package:pletivo": "bun scripts/package-pletivo.ts",
     "typecheck": "tsc --noEmit -p packages/pletivo/tsconfig.json && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
