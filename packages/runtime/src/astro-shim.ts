@@ -471,7 +471,10 @@ export function createComponent(
     result: AstroResult,
     props: Record<string, unknown>,
     slots: SlotsRecord,
-    // Compiled modules may return a structural raw-HTML carrier.
+    // `RawHtml`, not `HtmlString`: compiled .astro modules and hand-written
+    // factories return plain `{ __html }` objects, which the shim normalizes
+    // below. Requiring the class here would reject the output pletivo's own
+    // astro compiler emits.
   ) => RawHtml | Promise<RawHtml>,
   moduleId: string = "",
   _propagation?: unknown,
@@ -512,6 +515,9 @@ export function createComponent(
 
     const out = fn(result, props, slots);
     const rendered = out instanceof Promise ? await out : out;
+    // Normalize a plain `{ __html }` carrier into an HtmlString. Anything else
+    // passes through untouched — a frontmatter `Astro.redirect()` returns a
+    // Response, which callers detect further up.
     if (rendered instanceof HtmlString || !isHtmlString(rendered)) {
       return rendered as HtmlString;
     }

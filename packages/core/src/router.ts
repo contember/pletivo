@@ -126,6 +126,10 @@ export function routeToOutputPath(route: Route, params: RouteParams): string {
     if (seg.type === "static") {
       parts.push(seg.value);
     } else if (seg.type === "param") {
+      // `matchRoute` always fills a required `[param]`, but `getStaticPaths`
+      // (and the JSON-restored incremental cache) can hand us a missing one.
+      // Dropping it would silently emit a colliding path and `path.join`
+      // would throw an unattributable TypeError — so fail with the route named.
       const value = params[seg.value];
       if (!value) {
         throw new Error(

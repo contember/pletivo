@@ -140,7 +140,13 @@ function extractStyleChildren(children: unknown): string {
   return "";
 }
 
-/** A component function accepted by the automatic JSX runtime. */
+/**
+ * A component function accepted by the automatic JSX runtime. The parameter is
+ * `any` on purpose: page authors write concretely-typed components
+ * (`(props: { name: string })`), and under `strictFunctionTypes` those are not
+ * assignable to a parameter typed `(props: Props)` — so a `Props` signature
+ * here rejects every real component.
+ */
 export type ComponentFn = (props: any) => HtmlString | string | Promise<HtmlString | string>;
 
 export function jsx(
@@ -277,7 +283,15 @@ function renderIsland(tag: ComponentFn, props: Props, hydrate: string): HtmlStri
   return createHtml(renderIslandWrapper(componentName, effectiveHydrate, componentProps, innerHtml));
 }
 
-/** The JSX namespace resolved by `jsxImportSource: "pletivo"`. */
+/**
+ * The JSX namespace resolved by `jsxImportSource: "pletivo"`.
+ *
+ * Declared here, in a `.ts` file the typecheck gate compiles, rather than in a
+ * shipped `.d.ts` — `skipLibCheck` would exclude a `.d.ts` from that gate, and
+ * an ambient global declaration inside node_modules is never loaded by a
+ * consumer's program at all. Exporting it from the jsx-runtime module is the
+ * mechanism TS actually looks up for the automatic JSX transform.
+ */
 export namespace JSX {
   export type Element = HtmlString | Promise<HtmlString>;
 
@@ -289,10 +303,16 @@ export namespace JSX {
     children: {};
   }
 
+  /**
+   * Hydration directives are accepted on every component in addition to its
+   * own props — `getClientDirective` strips them before the component is
+   * called, so they never appear in the props type. Without this a perfectly
+   * valid `<Counter client="load" initial={0} />` is a type error.
+   */
   export type LibraryManagedAttributes<_C, P> = P & ClientDirectives;
 }
 
-/** Both accepted island directive syntaxes. */
+/** Both accepted island syntaxes: pletivo's `client="load"` and Astro's `client:load`. */
 export interface ClientDirectives {
   client?: "load" | "idle" | "visible" | "only" | (string & {});
   "client:load"?: boolean;
