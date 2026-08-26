@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { jsx, jsxs, jsxDEV, Fragment, type HtmlString } from "../../packages/pletivo/src/runtime/jsx-runtime";
-import { resetIslandRegistry, getUsedIslands } from "../../packages/pletivo/src/runtime/island";
-import { runWithRenderTracking } from "../../packages/pletivo/src/runtime/astro-shim";
+import { jsx, jsxs, jsxDEV, Fragment, type HtmlString } from "@pletivo/runtime/jsx-runtime";
+import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
+import { runWithRenderTracking } from "@pletivo/runtime/astro-shim";
 
 function html(result: HtmlString | Promise<HtmlString>): string {
   if (result instanceof Promise) throw new Error("Unexpected promise");

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { resolveI18nConfig } from "../../packages/pletivo/src/i18n/config";
+import { resolveI18nConfig } from "@pletivo/core/i18n/config";
 
 describe("resolveI18nConfig", () => {
   test("returns null when i18n is undefined", () => {

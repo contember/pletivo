@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { setBase, getBase, withBase, stripBase } from "../../packages/pletivo/src/base";
+import { setBase, getBase, withBase, stripBase } from "@pletivo/runtime/base";
 
 afterEach(() => setBase("/"));
 

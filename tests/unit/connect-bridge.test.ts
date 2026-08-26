@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { dispatchMiddlewares } from "../../packages/pletivo/src/astro-host/connect-bridge";
-import type { ConnectMiddleware } from "../../packages/pletivo/src/astro-host/types";
+import type { ConnectMiddleware } from "@pletivo/core/astro-host/types";
 
 function get(url = "http://localhost/"): Request {
   return new Request(url);

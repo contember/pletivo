@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { resolveI18nConfig } from "../../packages/pletivo/src/i18n/config";
+import { resolveI18nConfig } from "@pletivo/core/i18n/config";
 import {
   getPathByLocale,
   getLocaleByPath,
@@ -8,7 +8,7 @@ import {
   getRelativeLocaleUrlList,
   getAbsoluteLocaleUrlList,
   fallbackChain,
-} from "../../packages/pletivo/src/i18n/helpers";
+} from "@pletivo/core/i18n/helpers";
 
 const cfgSimple = resolveI18nConfig({
   defaultLocale: "en",

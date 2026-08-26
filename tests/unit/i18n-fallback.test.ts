@@ -1,12 +1,12 @@
 import { describe, test, expect } from "bun:test";
-import { parseRoute, type Route } from "../../packages/pletivo/src/router";
-import { resolveI18nConfig } from "../../packages/pletivo/src/i18n/config";
+import { parseRoute, type Route } from "@pletivo/core/router";
+import { resolveI18nConfig } from "@pletivo/core/i18n/config";
 import {
   generateFallbackEmissions,
   resolveFallbackRoute,
   resolveDefaultLocaleRedirect,
   type FallbackEmission,
-} from "../../packages/pletivo/src/i18n/fallback";
+} from "@pletivo/core/i18n/fallback";
 
 const makeRoutes = (files: string[]): Route[] => files.map(parseRoute);
 

@@ -3,7 +3,7 @@ import {
   createComponent,
   renderAstroPage,
   type AstroGlobal,
-} from "../../packages/pletivo/src/runtime/astro-shim";
+} from "@pletivo/runtime/astro-shim";
 
 /**
  * End-to-end plumbing test: build a minimal Astro-compiler-shaped

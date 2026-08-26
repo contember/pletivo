@@ -6,7 +6,7 @@ import {
   getUrlAssets,
   clearUrlAssets,
 } from "../../packages/pletivo/src/url-asset";
-import { setBase } from "../../packages/pletivo/src/base";
+import { setBase } from "@pletivo/runtime/base";
 
 // Any real file works — build mode reads + content-hashes it.
 const fixture = path.join(import.meta.dir, "../fixture-image/src/assets/test.png");

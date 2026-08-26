@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { experimental_AstroContainer } from "../../packages/pletivo/src/runtime/astro-container";
-import { createComponent } from "../../packages/pletivo/src/runtime/astro-shim";
+import { experimental_AstroContainer } from "@pletivo/runtime/astro-container";
+import { createComponent } from "@pletivo/runtime/astro-shim";
 
 describe("experimental_AstroContainer", () => {
   test("create() returns an instance", async () => {

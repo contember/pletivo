@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyDevCacheBust } from "../../packages/pletivo/src/dev-cache";
+import { applyDevCacheBust } from "@pletivo/core/dev-cache";
 
 describe("applyDevCacheBust", () => {
   test("is a no-op when version is 0", () => {
