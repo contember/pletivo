@@ -58,7 +58,7 @@ jobs:
         run: bun run typecheck
 
       - name: Unit & integration tests
-        run: bun test tests/unit tests/integration tests/e2e
+        run: bun test tests/unit tests/integration tests/e2e tests/conformance
 
       - name: Package pletivo
         id: package
