@@ -35,6 +35,13 @@ switch (command) {
     await dev(projectRoot, config);
     break;
 
+  // Bare, so `$(pletivo --version)` needs no stripping.
+  case "--version":
+  case "-v":
+  case "version":
+    console.log(version);
+    break;
+
   case "--help":
   case "-h":
   case "help":
@@ -59,6 +66,7 @@ switch (command) {
     --no-restart             Do not supervise the dev server: no restart when a config
                              file changes, no backed-off restart after a crash
     --help                   Show this help
+    --version                Print the version and exit
 
   Env vars: PLETIVO_404_PAGE, PLETIVO_ERROR_PAGE, PLETIVO_STALE=1,
             PLETIVO_DEBUG_HEADER, PLETIVO_IMAGE_SERVICE=sharp|passthrough|cloudflare
