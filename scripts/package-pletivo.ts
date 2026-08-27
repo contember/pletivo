@@ -68,14 +68,19 @@ export async function stagePackage(stage: string, version: string): Promise<void
 async function stagedManifest(version: string): Promise<Record<string, unknown>> {
   const pletivo = await readJson(path.join(PLETIVO_DIR, "package.json"));
   const core = await readJson(path.join(CORE_DIR, "package.json"));
+  const runtime = await readJson(path.join(RUNTIME_DIR, "package.json"));
   const dependencies = dependencyMap(Reflect.get(pletivo, "dependencies"), "pletivo dependencies");
   delete dependencies["@pletivo/core"];
   delete dependencies["@pletivo/runtime"];
-  mergeDependencies(
-    dependencies,
-    dependencyMap(Reflect.get(core, "dependencies"), "core dependencies"),
-  );
-  delete dependencies["@pletivo/runtime"];
+  // Both inlined trees, not just core: runtime declares nothing today, and a
+  // dependency added to it later has to reach the staged manifest the same way.
+  for (const [label, inlined] of [["core", core], ["runtime", runtime]] as const) {
+    assertOnlyHandledDependencyFields(label, inlined);
+    mergeDependencies(
+      dependencies,
+      dependencyMap(Reflect.get(inlined, "dependencies"), `${label} dependencies`),
+    );
+  }
 
   const manifest: Record<string, unknown> = {};
   for (const field of [
@@ -250,6 +255,7 @@ async function readJson(file: string): Promise<object> {
 }
 
 function dependencyMap(value: unknown, label: string): Record<string, string> {
+  if (value === undefined) return {};
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`${label} is not an object`);
   }
@@ -260,6 +266,24 @@ function dependencyMap(value: unknown, label: string): Record<string, string> {
     dependencies[name] = range;
   }
   return dependencies;
+}
+
+/**
+ * `dependencies` is merged into the staged manifest; `devDependencies` is
+ * dropped the way npm drops it. Every other dependency field — peers above
+ * all — would vanish here without a trace and surface as a missing module in
+ * the consumer's project, so refuse to stage instead of publishing the hole.
+ */
+const HANDLED_DEPENDENCY_FIELDS = ["dependencies", "devDependencies"];
+
+export function assertOnlyHandledDependencyFields(label: string, manifest: object): void {
+  for (const [field, value] of Object.entries(manifest)) {
+    if (!/dependencies/i.test(field) || HANDLED_DEPENDENCY_FIELDS.includes(field)) continue;
+    if (typeof value !== "object" || value === null || Object.keys(value).length === 0) continue;
+    throw new Error(
+      `${label} declares ${field}, which the staged manifest cannot carry — teach stagedManifest() to merge it`,
+    );
+  }
 }
 
 export function mergeDependencies(
