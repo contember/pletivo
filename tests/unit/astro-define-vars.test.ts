@@ -3,7 +3,7 @@ import {
   defineStyleVars,
   defineScriptVars,
   addAttribute,
-} from "../../packages/pletivo/src/runtime/astro-shim";
+} from "@pletivo/runtime/astro-shim";
 
 describe("defineStyleVars", () => {
   test("single object generates CSS custom properties", () => {

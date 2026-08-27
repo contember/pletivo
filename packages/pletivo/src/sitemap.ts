@@ -22,6 +22,13 @@ export async function generateSitemap(
     return fullUrl;
   });
 
+  // `scanHtmlFiles` walks with `fs.readdir`, which hands back whatever order
+  // the filesystem holds — the same build lands in a different order on tmpfs
+  // than on ext4. Sort so the file's bytes depend on the site, not on the disk
+  // it was built on. Sitemap consumers treat `<url>` order as meaningless, so
+  // any total order will do; sorted URLs are the one a reader can predict.
+  urls.sort();
+
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls.map((url) => `  <url>\n    <loc>${escapeXml(url)}</loc>\n  </url>`).join("\n")}

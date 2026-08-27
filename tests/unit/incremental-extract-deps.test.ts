@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { extractEntryFilePaths } from "../../packages/pletivo/src/incremental/extract-deps";
+import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 
 describe("extractEntryFilePaths", () => {
 	it("returns empty for primitives and null", () => {

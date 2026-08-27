@@ -1,26 +1,27 @@
 import path from "path";
 import fs from "fs/promises";
-import { scanRoutes, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "./router";
-import { createPaginate } from "./paginate";
+import { scanRoutes } from "./router";
+import { routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { createPaginate } from "@pletivo/core/paginate";
 import { initCollections, getValidationFailures } from "./content/collection";
-import { resetIslandRegistry } from "./runtime/island";
-import { runWithRenderTracking, redirectPageHtml, AstroCookies, type AstroResponse } from "./runtime/astro-shim";
-import { hydrationScript } from "./runtime/hydration";
+import { resetIslandRegistry } from "@pletivo/runtime/island";
+import { runWithRenderTracking, redirectPageHtml, AstroCookies, type AstroResponse } from "@pletivo/runtime/astro-shim";
+import { hydrationScript } from "@pletivo/runtime/hydration";
 import { bundleCss, cssHrefsForPage, type CssBundle } from "./css";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { generateSitemap } from "./sitemap";
-import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, clearScopedCss, getGlobalCssForPage, clearGlobalCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
+import { registerAstroPlugin, getAstroCssForPage, extractAstroClasses, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
-import { resolveI18nConfig } from "./i18n/config";
-import { detectRouteLocale } from "./i18n/route-expansion";
-import { setI18nRuntimeState } from "./i18n/virtual-module";
-import { generateFallbackEmissions, type FallbackEmission } from "./i18n/fallback";
+import { resolveI18nConfig } from "@pletivo/core/i18n/config";
+import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
+import { generateFallbackEmissions, type FallbackEmission } from "@pletivo/core/i18n/fallback";
 import { setImageMode, setImageService, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
 import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
-import { setBase } from "./base";
+import { setBase } from "@pletivo/runtime/base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs, registerCssPageEntry } from "./js-imported-css";
@@ -30,8 +31,8 @@ import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, ha
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture } from "./incremental/dep-tracker";
 import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
-import { extractEntryFilePaths } from "./incremental/extract-deps";
-import { phase, timeSync, timeAsync, flushProfile } from "./profile";
+import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
+import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
 
 /** Shape a dynamic page module is used through: its default export + getStaticPaths. */
 interface DynamicMod {
@@ -49,6 +50,12 @@ interface PageResult {
    * makes the page link every group (the pre-grouping behaviour).
    */
   pageEntry?: string;
+  /**
+   * Absolute path of the page's own module — the root of the import graph
+   * that orders this page's hoisted `.astro` CSS. Left unset by results with
+   * no module behind them (an i18n redirect stub), which have no CSS either.
+   */
+  entryFile?: string;
   /**
    * Rendered HTML when this page was freshly rendered this build.
    * Empty string for `source === "cached"` pages — they didn't go
@@ -516,7 +523,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
             tsxStyles: [],
           }),
         });
-        return { file: route.file, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
+        return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
       }
 
       const mod = await import(fullPath);
@@ -566,7 +573,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
         console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
         return null;
       }
-      return { file: route.file, label: route.file, pageEntry: fullPath, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
+      return { file: route.file, entryFile: fullPath, label: route.file, pageEntry: fullPath, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
     }),
   );
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
@@ -669,7 +676,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       if (outcome.source === "rendered" && outcome.html === "") continue;
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
-      results.push({ file: route.file, label, pageEntry: fullPath, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size });
+      results.push({ file: route.file, entryFile: fullPath, label, pageEntry: fullPath, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size });
     }
   }
   phase("dynamic routes", tDynamic);
@@ -739,6 +746,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
       if (html === null) continue;
       results.push({
         file: emission.sourceRoute.file,
+        entryFile: srcFullPath,
         label,
         pageEntry: srcFullPath,
         outPath,
@@ -783,6 +791,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
           if (html !== null) {
             results.push({
               file: injected.entrypoint,
+              entryFile: entrypoint,
               label: `[injected] ${injected.pattern}`,
               pageEntry: entrypoint,
               outPath,
@@ -812,7 +821,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
     }),
   );
   if (result404) {
-    results.push({ file: result404.file, label: result404.file, pageEntry: result404.entry, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles });
+    results.push({ file: result404.file, entryFile: path.join(pagesDir, result404.file), label: result404.file, pageEntry: result404.entry, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles });
   }
 
   // Deduplicate by output path — later entries win. The main use case
@@ -898,7 +907,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
         return;
       }
-      const size = await writeHtml(result.outPath, result.html, base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, result.renderedModules, result.tsxStyles);
+      const size = await writeHtml(result.outPath, result.html, base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, result.renderedModules, result.tsxStyles, result.entryFile);
       totalSize += size;
       renderedCount++;
       // Now that we know the final byte count, patch it onto the
@@ -911,8 +920,7 @@ export async function build(projectRoot: string, config: PletivoConfig, options:
   );
   phase("writeHtml all pages", tWrite);
   flushProfile("writeHtml");
-  clearScopedCss();
-  clearGlobalCss();
+  clearAstroCss();
   clearCssModules();
   clearScss();
   clearJsImportedCss();
@@ -1355,6 +1363,7 @@ async function writeHtml(
   publicManifest: Map<string, string>,
   renderedModules?: Set<string>,
   tsxStyles?: string[],
+  entryFile?: string,
 ): Promise<number> {
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
     html = "<!DOCTYPE html>\n" + html;
@@ -1369,19 +1378,19 @@ async function writeHtml(
     html = html.replace("</head>", `${stylesheetLinks(base, cssHrefs)}</head>`);
   }
 
-  // Inject per-page CSS from <style> blocks in .astro components:
-  //   - scoped blocks: matched by astro scope class in the HTML,
-  //     avoiding cross-page leaks from unscoped rules inside a
-  //     regular <style> (`:global()`, `body`, etc.).
-  //   - `is:global` blocks: gated by whether the component was actually
-  //     rendered on this page (the scope class may be absent from the
-  //     DOM when a component emits only global styles).
-  const combinedCss = timeSync("pageCss", () => {
-    const astroClasses = extractAstroClasses(html);
-    const pageScopedCss = getScopedCssForPage(astroClasses);
-    const pageGlobalCss = renderedModules ? getGlobalCssForPage(renderedModules) : "";
+  // Inject per-page CSS from <style> blocks in .astro components, in the
+  // cascade order the page's import graph dictates. Scoped blocks are matched
+  // by astro scope class in the HTML (so unscoped rules inside a regular
+  // <style> — `:global()`, `body` — can't leak onto other pages), `is:global`
+  // blocks by whether the component rendered.
+  const combinedCss = await timeAsync("pageCss", async () => {
+    const pageAstroCss = await getAstroCssForPage({
+      entryFile,
+      astroClasses: extractAstroClasses(html),
+      renderedModules: renderedModules ?? new Set(),
+    });
     const pageTsxCss = tsxStyles && tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
-    return [pageGlobalCss, pageScopedCss, pageTsxCss].filter(Boolean).join("\n");
+    return [pageAstroCss, pageTsxCss].filter(Boolean).join("\n");
   });
   if (combinedCss) {
     const styleTag = `<style>${combinedCss}</style>`;

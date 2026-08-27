@@ -38,9 +38,9 @@ import type {
   InjectedRoute,
   InjectScriptStage,
   ViteLikePlugin,
-} from "./types";
-import { createLogger } from "./logger";
-import { isOverridden } from "./overrides";
+} from "@pletivo/core/astro-host/types";
+import { createLogger } from "@pletivo/core/astro-host/logger";
+import { isOverridden } from "@pletivo/core/astro-host/overrides";
 import { loadAstroConfig } from "./config-loader";
 import {
   captureMdxIntegrationOptions,
@@ -48,7 +48,7 @@ import {
   type PluggableList,
   MDX_INTEGRATION_OPTIONS_KEY,
 } from "../mdx-plugin";
-import { createServerShim, type ServerShim, type HmrBroadcast } from "./server-shim";
+import { createServerShim, type ServerShim, type HmrBroadcast } from "@pletivo/core/astro-host/server-shim";
 import {
   __resetForTests as resetVitePluginHost,
   addVitePlugins,

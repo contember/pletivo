@@ -4,7 +4,7 @@
  * Exposed as a function so `__BASE__` resolves at emission time.
  */
 
-import { substituteBase } from "../base";
+import { substituteBase } from "./base";
 
 const HYDRATION_TEMPLATE = `
 <script type="module">

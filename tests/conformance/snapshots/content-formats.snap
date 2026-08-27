@@ -1,0 +1,107 @@
+# pletivo conformance snapshot
+# case:    content-formats
+# project: tests/conformance/fixtures/content-formats
+# covers:
+#   - .mdx page route with frontmatter and a layout
+#   - .md and .mdx entries in one collection, rendered through entry.render()
+#   - YAML data collection with anchors, folded and literal scalars, flow style
+#   - GFM tables and autolinks in markdown output
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=content-formats bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+docs/guide/index.html
+docs/intro/index.html
+handbook/index.html
+index.html
+sitemap.xml
+
+--- pletivo:conformance docs/guide/index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Guide</title></head><body><article><p>MDX body: markdown prose plus an expression — 3 — evaluated at build time.</p>
+<p class="mdx-element">A JSX element written inline in MDX.</p>
+<ol>
+<li>ordered item</li>
+<li>ordered item with <code>inline code</code></li>
+</ol></article></body></html>
+
+--- pletivo:conformance docs/intro/index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Introduction</title></head><body><article><p>Plain markdown with <strong>bold</strong>, <em>emphasis</em> and <code>code</code>.</p>
+<p>A GFM table:</p>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>Frontmatter</th>
+<th>Body compiled by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.md</code></td>
+<td>yes</td>
+<td>remark/rehype</td>
+</tr>
+<tr>
+<td><code>.mdx</code></td>
+<td>yes</td>
+<td>@mdx-js/mdx</td>
+</tr>
+</tbody>
+</table>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" checked disabled> task list item, done</li>
+<li class="task-list-item"><input type="checkbox" disabled> task list item, open</li>
+</ul>
+<p>An autolink: <a href="https://example.com/intro">https://example.com/intro</a> and <del>struck through</del> text.</p>
+<div class="raw-html-passthrough">raw HTML in markdown</div></article></body></html>
+
+--- pletivo:conformance handbook/index.html ---
+<h1>Handbook</h1>
+<p>An <code>.mdx</code> file used as a page route, not as a collection entry.</p>
+<p class="from-jsx">Inline JSX inside an MDX page.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Column</th><th>Value</th></tr></thead><tbody><tr><td>routed</td><td>yes</td></tr></tbody></table>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Content formats</title></head><body><nav><a href="/">Home</a><a href="/handbook">Handbook</a></nav><h1>Content formats</h1><p class="tagline">A folded scalar that spans several source lines and collapses into one.
+</p><pre class="banner">literal line one
+literal line two
+</pre><dl class="staging"><dt>adapter</dt><dd>postgres</dd><dt>host</dt><dd>localhost</dd><dt>database</dt><dd>formats_staging</dd></dl><ul class="flags"><li>alpha</li><li>beta</li><li>gamma</li></ul><ul class="docs"><li><a href="/docs/intro">Introduction</a><span class="tags">markdown, gfm</span></li><li><a href="/docs/guide">Guide</a><span class="tags">mdx</span></li></ul></body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+  <url>
+    <loc>/docs/guide</loc>
+  </url>
+  <url>
+    <loc>/docs/intro</loc>
+  </url>
+  <url>
+    <loc>/handbook</loc>
+  </url>
+</urlset>
+

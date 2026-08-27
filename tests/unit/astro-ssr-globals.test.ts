@@ -7,8 +7,8 @@ import {
   renderComponent,
   type AstroGlobal,
   type AstroResponse,
-} from "../../packages/pletivo/src/runtime/astro-shim";
-import { createHtml } from "../../packages/pletivo/src/runtime/html-string";
+} from "@pletivo/runtime/astro-shim";
+import { createHtml } from "@pletivo/runtime/html-string";
 
 /**
  * Astro's SSR-shaped globals — `response`, `locals`, `cookies`, `redirect`,

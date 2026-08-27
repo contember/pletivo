@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createComponent, renderAstroPage } from "../../packages/pletivo/src/runtime/astro-shim";
+import { createComponent, renderAstroPage } from "@pletivo/runtime/astro-shim";
 
 async function getSlotResult(slotHtml: string): Promise<string> {
   let captured = "";

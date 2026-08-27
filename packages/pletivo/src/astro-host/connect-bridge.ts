@@ -20,7 +20,7 @@
 
 import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
-import type { ConnectMiddleware } from "./types";
+import type { ConnectMiddleware } from "@pletivo/core/astro-host/types";
 
 interface MockReq extends Readable {
   url?: string;

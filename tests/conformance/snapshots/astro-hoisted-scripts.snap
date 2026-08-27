@@ -1,0 +1,43 @@
+# pletivo conformance snapshot
+# case:    astro-hoisted-scripts
+# project: tests/fixture-astro-scripts
+# covers:
+#   - hoisted <script> bundled to _astro/hoisted-<hash>.js and referenced by src
+#   - TypeScript stripped from hoisted scripts
+#   - integration injectScript('page') and injectScript('head-inline') placement
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=astro-hoisted-scripts bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+_astro/hoisted-[bundle:1].js
+index.html
+sitemap.xml
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html>
+  <head><title>Scripts Test</title><script>const injectedHeadValue = "head-ok";
+document.documentElement.dataset.injectedHead = injectedHeadValue;
+</script>
+<script type="module">const injectedPageValue = 42;
+document.documentElement.dataset.injectedPage = String(injectedPageValue);
+</script>
+</head>
+  <body>
+    <h1>Scripts Test</h1>
+    <button id="hoisted-btn">Click</button>
+  <script type="module" src="/_astro/hoisted-[bundle:1].js"></script></body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+</urlset>
+

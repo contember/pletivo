@@ -1,0 +1,16 @@
+{
+  "name": "@pletivo/runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/contember/pletivo.git",
+    "directory": "packages/runtime"
+  },
+  "//": "No build step, by design. `exports` points at source. A dist/ build would give modules that hold process-global state (base, the island registry, the render-tracking store) two module records when one importer resolves through exports and another through a relative path.",
+  "exports": {
+    "./*": "./src/*.ts"
+  }
+}

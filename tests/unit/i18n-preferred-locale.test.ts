@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { resolveI18nConfig } from "../../packages/pletivo/src/i18n/config";
-import { parsePreferredLocales } from "../../packages/pletivo/src/i18n/helpers";
+import { resolveI18nConfig } from "@pletivo/core/i18n/config";
+import { parsePreferredLocales } from "@pletivo/core/i18n/helpers";
 
 const cfg = resolveI18nConfig({
   defaultLocale: "en",

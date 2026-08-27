@@ -33,15 +33,39 @@ No linter or formatter is configured.
 
 ## Project Structure
 
-Bun workspace monorepo:
+Bun workspace monorepo. The engine is split by *what host it can run on*, so a
+non-Bun host can reuse everything that is not tied to Bun:
 
-- **`packages/pletivo`** — Core SSG engine: CLI, router, JSX runtime (SSR), island hydration, content collections, CSS pipeline (Tailwind v4), dev server with HMR, astro-host shim.
+- **`packages/runtime`** — `@pletivo/runtime`. What ships into the output and runs at render time: JSX runtime (SSR), astro shim, islands, hydration, base path. Zero host dependencies; the only import outside itself is `node:async_hooks`.
+- **`packages/core`** — `@pletivo/core`. Host-agnostic logic: router, i18n, astro-host types, routes adapter, paginate, image service, incremental-cache primitives. May use `node:path`/`url`/`events`/`crypto` and pure-JS npm deps, but never `Bun.*`, `node:fs`, or `node:child_process`.
+- **`packages/pletivo`** — the Bun host, and the only package published to npm: CLI, build, dev server with HMR, Bun loader plugins, CSS pipeline (Tailwind v4), content collections, markdown pipeline, incremental cache, astro-host runner.
 - **`packages/astro-jsx-pages`** — Babel+Vite plugin enabling TSX pages inside Astro. Built with tsc.
 - **`examples/`** — `basic` (pletivo-native), `basic-astro`, `basic-astro-native`.
 
+Neither `runtime` nor `core` has a build step; their `exports` point at source. A
+`dist/` build would give modules that hold process-global state two module
+records when one importer resolves through `exports` and another through a
+relative path.
+
+`tests/unit/package-boundaries.test.ts` enforces the split. If it fires, the
+layering is broken — do not weaken it.
+
+Re-export stubs in `packages/pletivo/src/runtime/` and `src/content/index.ts`
+stay on purpose: they are named in the package's `exports`, and Node forbids an
+`exports` target outside the package directory. `runtime/astro-container.ts` and
+`i18n/virtual-module.ts` are pinned by `pletivoSrcDir` string paths in
+`astro-plugin.ts`.
+
 ## Release
 
-Only `pletivo` is published to npm. Release is triggered by pushing a `v*` tag — the CI workflow (`.github/workflows/release.yml`) runs tests and publishes automatically via npm OIDC.
+Only `pletivo` is published to npm. Core, runtime, and Astro JSX pages are
+private workspace packages. Release stages a self-contained tarball — core and
+runtime source copied under `pletivo/src/_internal/`, their specifiers rewritten
+to package-private `#pletivo/*` imports — typechecks it as an external npm
+consumer, then publishes that exact tarball via npm OIDC. It never publishes a
+live workspace directory.
+
+Release is triggered by pushing a `v*` tag (`.github/workflows/release.yml`).
 
 ```bash
 # 1. Check existing tags to determine the next version

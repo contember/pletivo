@@ -20,8 +20,8 @@ import fs from "fs/promises";
 import path from "path";
 import { pathToFileURL } from "url";
 import type { Loader } from "bun";
-import type { ServerShim } from "./server-shim";
-import type { LoadResult, ResolveIdResult, ViteLikePlugin } from "./types";
+import type { ServerShim } from "@pletivo/core/astro-host/server-shim";
+import type { LoadResult, ResolveIdResult, ViteLikePlugin } from "@pletivo/core/astro-host/types";
 
 let bunPluginRegistered = false;
 const collectedPlugins: ViteLikePlugin[] = [];

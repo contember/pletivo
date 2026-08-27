@@ -14,11 +14,23 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Repository rules must also protect v* tags; this check independently blocks
+      # publishing a tag whose commit is not reachable from main.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is reachable from main
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tagged commit is not reachable from origin/main: $GITHUB_SHA" >&2
+            exit 1
+          fi
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - uses: actions/setup-node@v6
         with:
@@ -29,6 +41,10 @@ jobs:
         id: tag
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid release tag: $GITHUB_REF" >&2
+            exit 1
+          fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Publishing v${VERSION}"
 
@@ -38,20 +54,21 @@ jobs:
       - name: Build astro-jsx-pages
         run: bun run --cwd packages/astro-jsx-pages build
 
-      - name: Unit & integration tests
-        run: bun test tests/unit tests/integration tests/e2e
+      - name: Typecheck
+        run: bun run typecheck
 
-      - name: Set version
+      - name: Unit & integration tests
+        run: bun test tests/unit tests/integration tests/e2e tests/conformance
+
+      - name: Package pletivo
+        id: package
         run: |
-          node -e "
-            const fs = require('fs');
-            const version = '${{ steps.tag.outputs.version }}';
-            const p = 'packages/pletivo/package.json';
-            const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
-            pkg.version = version;
-            fs.writeFileSync(p, JSON.stringify(pkg, null, '\t') + '\n');
-          "
+          OUTPUT="$RUNNER_TEMP/pletivo-package"
+          TARBALL="$(bun run package:pletivo --version "${{ steps.tag.outputs.version }}" --output "$OUTPUT")"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Test the exact tarball as a consumer
+        run: bun run tests/consumer-typecheck.ts --tarball "${{ steps.package.outputs.tarball }}"
 
       - name: Publish pletivo
-        working-directory: packages/pletivo
-        run: npm publish --provenance --access public
+        run: npm publish "${{ steps.package.outputs.tarball }}" --provenance --access public

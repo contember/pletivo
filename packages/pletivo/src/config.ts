@@ -3,7 +3,7 @@ import type { CompileOptions } from "@mdx-js/mdx";
 import {
   imageServiceConfigFromEnv,
   type ImageServiceConfig,
-} from "./image-service";
+} from "@pletivo/core/image-service";
 
 // `unified`'s `PluggableList` isn't re-exported by @mdx-js/mdx and `unified`
 // itself isn't a direct dependency (only resolvable transitively), so derive

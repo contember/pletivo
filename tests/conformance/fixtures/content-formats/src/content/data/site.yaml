@@ -1,0 +1,18 @@
+title: Content formats
+nav:
+  - { label: Home, href: / }
+  - { label: Handbook, href: /handbook }
+defaults: &defaults
+  adapter: postgres
+  host: localhost
+staging:
+  <<: *defaults
+  database: formats_staging
+tagline: >
+  A folded scalar that spans
+  several source lines and
+  collapses into one.
+banner: |
+  literal line one
+  literal line two
+flags: [alpha, beta, gamma]

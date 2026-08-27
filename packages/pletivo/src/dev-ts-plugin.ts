@@ -11,8 +11,8 @@
  */
 
 import path from "path";
-import { applyDevCacheBust, getDevVersion, stripQuery } from "./dev-cache";
-import { escapeRegex } from "./escape-regex";
+import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
+import { escapeRegex } from "@pletivo/core/escape-regex";
 
 const registeredScopes = new Set<string>();
 

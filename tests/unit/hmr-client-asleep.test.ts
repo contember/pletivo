@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hmrClientScript } from "../../packages/pletivo/src/runtime/hmr-client";
+import { hmrClientScript } from "@pletivo/runtime/hmr-client";
 
 /**
  * The HMR client is browser JS shipped as a string, so it is exercised here by evaluating it

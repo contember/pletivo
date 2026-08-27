@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base-branch filter: a stacked PR targets the branch below it, not main,
+  # and must still be tested.
   pull_request:
-    branches: [main]
 
 jobs:
   test:
@@ -14,14 +15,14 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - uses: actions/setup-node@v6
         with:
           node-version: 22
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build astro-jsx-pages
         run: bun run --cwd packages/astro-jsx-pages build
@@ -34,15 +35,22 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      # The package tsconfig can only see pletivo's own devDependencies. A real
-      # consumer installs `dependencies` only, so this rebuilds that environment
-      # from the packed tarball and typechecks a page against it — the check
-      # that actually reproduces what a downstream site compiles.
-      - name: Typecheck as a consumer
-        run: bun run tests/consumer-typecheck.ts
+      - name: Package distribution tests
+        run: bun test tests/unit/package-distribution.test.ts tests/unit/package-boundaries.test.ts
+
+      - name: Package pletivo
+        id: package
+        run: |
+          OUTPUT="$RUNNER_TEMP/pletivo-package"
+          TARBALL="$(bun run package:pletivo --version 0.0.0 --output "$OUTPUT")"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      # npm installs only the staged pletivo tarball and public dependencies.
+      - name: Test the exact tarball as a consumer
+        run: bun run tests/consumer-typecheck.ts --tarball "${{ steps.package.outputs.tarball }}"
 
       - name: Unit & integration tests
-        run: bun test tests/unit tests/integration tests/e2e
+        run: bun test tests/unit tests/integration tests/e2e tests/conformance
 
       - name: Setup Astro compatibility tests
         working-directory: tests/astro-e2e
@@ -69,10 +77,10 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build basic example
         run: bun run --cwd examples/basic build

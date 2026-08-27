@@ -1,0 +1,69 @@
+# pletivo conformance snapshot
+# case:    astro-native-example
+# project: examples/basic-astro-native
+# covers:
+#   - the .astro example project built by pletivo end to end
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=astro-native-example bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+about/index.html
+index.html
+sitemap.xml
+
+--- pletivo:conformance about/index.html ---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>About</title>
+  </head>
+  <body>
+    <header><a href="/">Home</a> · <a href="/about">About</a></header>
+    <main>
+      
+  <h1>About</h1>
+  <p>Second page, proves routing works.</p>
+
+    </main>
+    <footer>Built with pletivo</footer>
+  </body></html>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Home</title>
+  </head>
+  <body>
+    <header><a href="/">Home</a> · <a href="/about">About</a></header>
+    <main>
+      
+  <h1>Hello from .astro in pletivo — edited!</h1>
+  <p>This file is a native <code>.astro</code> component compiled by <code>@astrojs/compiler</code> and rendered through pletivo's runtime shim.</p>
+  <ul>
+    <li>one</li><li>two</li><li>three</li>
+  </ul>
+  <p><strong>Raw HTML</strong> via set:html</p>
+
+    </main>
+    <footer>Built with pletivo</footer>
+  </body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+  <url>
+    <loc>/about</loc>
+  </url>
+</urlset>
+

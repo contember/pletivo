@@ -1,0 +1,56 @@
+# pletivo conformance snapshot
+# case:    endpoints
+# project: tests/fixture-endpoint-routes
+# covers:
+#   - endpoint routes in src/pages: .json.ts, .xml.ts, .txt.ts
+#   - endpoint output emitted at its own path, not wrapped in HTML
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=endpoints bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+data.json
+feed.xml
+index.html
+robots.txt
+sitemap.xml
+
+--- pletivo:conformance data.json ---
+{
+  "site": "https://example.com/",
+  "items": [
+    1,
+    2,
+    3
+  ]
+}
+
+--- pletivo:conformance feed.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Feed</title></channel></rss>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html class="astro-[scope:1]">
+  <head><title>Home Page</title><style>h1:where(.astro-[scope:1]){color:rebeccapurple}</style>
+</head>
+  <body class="astro-[scope:1]">
+    <h1 class="astro-[scope:1]">Home Page</h1></body></html>
+
+--- pletivo:conformance robots.txt ---
+User-agent: *
+Allow: /
+
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+</urlset>
+

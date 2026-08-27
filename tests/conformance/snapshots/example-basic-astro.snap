@@ -1,0 +1,103 @@
+# pletivo conformance snapshot
+# case:    example-basic-astro
+# project: examples/basic-astro
+# covers:
+#   - the astro example project built by pletivo rather than by astro
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=example-basic-astro bun test tests/conformance
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Astro - Home</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <nav>
+      <a href="/">Home</a>
+       | 
+      <a href="/about">About</a>
+       | 
+      <a href="/blog">Blog</a>
+       | 
+      <a href="/docs">Docs</a>
+       | 
+      <a href="/notes">Notes</a>
+    </nav>
+    <main>
+      
+  <h1>Astro Benchmark</h1>
+  <p>Native Astro version of the pletivo benchmark.</p>
+  <h2>Features</h2>
+  <ul>
+    <li>Astro components rendered to static HTML</li><li>Islands architecture for interactivity</li><li>Content collections with Zod validation</li><li>File-based routing with dynamic params</li><li>Dev server with HMR</li>
+  </ul>
+
+    </main>
+  </body></html>
+
+--- pletivo:conformance about/index.html ---
+<!DOCTYPE html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>About</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <nav>
+      <a href="/">Home</a>
+       | 
+      <a href="/about">About</a>
+       | 
+      <a href="/blog">Blog</a>
+       | 
+      <a href="/docs">Docs</a>
+       | 
+      <a href="/notes">Notes</a>
+    </nav>
+    <main>
+      
+  <h1>About</h1>
+  <p>This is the Astro benchmark twin of the pletivo basic example.</p>
+
+    </main>
+  </body></html>
+
+--- pletivo:conformance 404.html ---
+<!DOCTYPE html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Not found</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <nav>
+      <a href="/">Home</a>
+       | 
+      <a href="/about">About</a>
+       | 
+      <a href="/blog">Blog</a>
+       | 
+      <a href="/docs">Docs</a>
+       | 
+      <a href="/notes">Notes</a>
+    </nav>
+    <main>
+      
+  <h1>404</h1>
+  <p>Page not found.</p>
+
+    </main>
+  </body></html>

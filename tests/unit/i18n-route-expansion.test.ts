@@ -1,9 +1,9 @@
 import { describe, test, expect } from "bun:test";
-import { parseRoute } from "../../packages/pletivo/src/router";
-import { resolveI18nConfig } from "../../packages/pletivo/src/i18n/config";
-import { detectRouteLocale } from "../../packages/pletivo/src/i18n/route-expansion";
-import { buildAstroRoutes } from "../../packages/pletivo/src/astro-host/routes-adapter";
-import type { AstroConfig } from "../../packages/pletivo/src/astro-host/types";
+import { parseRoute } from "@pletivo/core/router";
+import { resolveI18nConfig } from "@pletivo/core/i18n/config";
+import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { buildAstroRoutes } from "@pletivo/core/astro-host/routes-adapter";
+import type { AstroConfig } from "@pletivo/core/astro-host/types";
 
 const i18nSimple = {
   defaultLocale: "en",

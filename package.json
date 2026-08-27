@@ -5,6 +5,7 @@
     "examples/*"
   ],
   "scripts": {
+    "package:pletivo": "bun scripts/package-pletivo.ts",
     "typecheck": "tsc --noEmit -p packages/pletivo/tsconfig.json && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
@@ -12,6 +13,8 @@
     "@nuasite/agent-summary": "^0.36.0",
     "@nuasite/components": "^0.36.0",
     "@pletivo/astro-jsx-pages": "workspace:*",
+    "@pletivo/core": "workspace:*",
+    "@pletivo/runtime": "workspace:*",
     "@types/bun": "^1.3.14",
     "morphdom": "^2.7.8",
     "pletivo": "workspace:*",

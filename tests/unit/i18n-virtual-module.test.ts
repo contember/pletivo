@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { resolveI18nConfig } from "../../packages/pletivo/src/i18n/config";
+import { resolveI18nConfig } from "@pletivo/core/i18n/config";
 import {
   setI18nRuntimeState,
   __resetI18nRuntimeState,
@@ -13,7 +13,7 @@ import {
   redirectToDefaultLocale,
   redirectToFallback,
   notFound,
-} from "../../packages/pletivo/src/i18n/virtual-module";
+} from "@pletivo/core/i18n/virtual-module";
 
 describe("astro:i18n virtual module", () => {
   beforeEach(() => {

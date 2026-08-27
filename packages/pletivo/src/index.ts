@@ -22,9 +22,9 @@ export type {
   ImageService,
   ImageServiceConfig,
   ImageServiceUrlOptions,
-} from "./image-service";
+} from "@pletivo/core/image-service";
 export { defineConfig } from "./config";
 export type { PletivoConfig } from "./config";
-export { useState } from "./runtime/hooks";
-export type { HtmlString } from "./runtime/html-string";
-export type { StaticPath, RouteParams } from "./router";
+export { useState } from "@pletivo/runtime/hooks";
+export type { HtmlString } from "@pletivo/runtime/html-string";
+export type { StaticPath, RouteParams } from "@pletivo/core/router";

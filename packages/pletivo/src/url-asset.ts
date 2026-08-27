@@ -11,7 +11,7 @@
  */
 
 import path from "path";
-import { withBase } from "./base";
+import { withBase } from "@pletivo/runtime/base";
 import { recordRuntimeDep } from "./incremental/dep-tracker";
 
 let mode: "dev" | "build" = "dev";

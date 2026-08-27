@@ -1,0 +1,14 @@
+---
+// Imports Second before First, renders First before Second. The cascade
+// follows the imports, so `--winner: first` loses to `--winner: second`
+// even though First is rendered first.
+import Second from "../components/Second.astro";
+import First from "../components/First.astro";
+---
+<html lang="en">
+  <head><title>import order</title></head>
+  <body>
+    <First />
+    <Second />
+  </body>
+</html>

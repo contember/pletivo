@@ -16,7 +16,7 @@
  * identity across morph so their hydrated Preact state survives as long
  * as their component + serialized props are unchanged.
  */
-import { substituteBase } from "../base";
+import { substituteBase } from "./base";
 
 const HMR_TEMPLATE = `
 <script type="module">

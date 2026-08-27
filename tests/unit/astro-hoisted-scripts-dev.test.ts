@@ -7,7 +7,7 @@ import {
   clearHoistedScripts,
   hoistedScriptId,
 } from "../../packages/pletivo/src/astro-plugin";
-import { bumpDevVersion } from "../../packages/pletivo/src/dev-cache";
+import { bumpDevVersion } from "@pletivo/core/dev-cache";
 
 const fixtureRoot = path.join(import.meta.dir, "__hoisted-scripts-dev-fixture__");
 const fixtureFile = path.join(fixtureRoot, "page.astro");

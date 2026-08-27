@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
-import { bumpDevVersion } from "../../packages/pletivo/src/dev-cache";
+import { bumpDevVersion } from "@pletivo/core/dev-cache";
 import { registerDevTsPlugin } from "../../packages/pletivo/src/dev-ts-plugin";
 
 const fixtureRoot = path.join(

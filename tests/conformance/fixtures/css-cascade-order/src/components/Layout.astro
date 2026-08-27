@@ -1,0 +1,13 @@
+---
+import Header from "./Header.astro";
+---
+<html lang="en">
+  <head><title>cascade</title></head>
+  <body>
+    <Header />
+    <slot />
+  </body>
+</html>
+<style>
+  :global(.cascade) { --winner: layout; }
+</style>

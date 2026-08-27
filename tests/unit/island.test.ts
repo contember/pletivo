@@ -4,7 +4,7 @@ import {
   getUsedIslands,
   registerIsland,
   renderIslandWrapper,
-} from "../../packages/pletivo/src/runtime/island";
+} from "@pletivo/runtime/island";
 
 describe("island registry", () => {
   beforeEach(() => {

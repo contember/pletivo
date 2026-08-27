@@ -121,7 +121,7 @@ describe("is:global CSS classification", () => {
     // A scoped <style> block with only `:global()` rules emits a CSS entry
     // with no scope markers. It still classifies as `scoped` (no is:global
     // attr) and the compiler still attaches the scope class to template
-    // elements, so `getScopedCssForPage()` finds it on any page rendering
+    // elements, so `getAstroCssForPage()` finds it on any page rendering
     // the component.
     const { scoped, global } = await classify(`
       <p class="external">y</p>

@@ -1,16 +1,17 @@
 import path from "path";
 import fs from "fs";
 import { watch } from "fs";
-import { scanRoutes, matchRoute, type Route, type RouteParams, type StaticPath } from "./router";
-import { createPaginate } from "./paginate";
+import { scanRoutes } from "./router";
+import { matchRoute, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { createPaginate } from "@pletivo/core/paginate";
 import { getContentBaseDirs, initCollections } from "./content/collection";
-import { resetIslandRegistry, getUsedIslands } from "./runtime/island";
-import { runWithRenderTracking, AstroCookies, type AstroResponse } from "./runtime/astro-shim";
-import { hydrationScript } from "./runtime/hydration";
-import { hmrClientScript } from "./runtime/hmr-client";
+import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
+import { runWithRenderTracking, AstroCookies, type AstroResponse } from "@pletivo/runtime/astro-shim";
+import { hydrationScript } from "@pletivo/runtime/hydration";
+import { hmrClientScript } from "@pletivo/runtime/hmr-client";
 import { devCss } from "./css";
-import { registerAstroPlugin, getScopedCssForPage, extractAstroClasses, getGlobalCssForPage, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
-import { bumpDevVersion, getDevVersion } from "./dev-cache";
+import { registerAstroPlugin, getAstroCssForPage, extractAstroClasses, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
+import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
@@ -18,10 +19,10 @@ import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from ".
 import { createSnapshotStore } from "./dev-snapshots";
 import { createIdleRecycler, isHmrTransportPath, resolveIdleRecycleMs, type IdleRecycler } from "./dev-idle-recycle";
 import { describeConfigChange, isSupervisedChild, RESTART_EXIT_CODE } from "./dev-supervisor";
-import { resolveI18nConfig } from "./i18n/config";
-import { detectRouteLocale } from "./i18n/route-expansion";
-import { parsePreferredLocales } from "./i18n/helpers";
-import { setI18nRuntimeState } from "./i18n/virtual-module";
+import { resolveI18nConfig } from "@pletivo/core/i18n/config";
+import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { parsePreferredLocales } from "@pletivo/core/i18n/helpers";
+import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import {
   setImageMode,
   parseCdnCgiImageUrl,
@@ -34,11 +35,11 @@ import {
   setSharpResolveBase,
 } from "./image";
 import { setUrlAssetMode } from "./url-asset";
-import { setBase, withBase, stripBase } from "./base";
+import { setBase, withBase, stripBase } from "@pletivo/runtime/base";
 import {
   resolveFallbackRoute,
   resolveDefaultLocaleRedirect,
-} from "./i18n/fallback";
+} from "@pletivo/core/i18n/fallback";
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
 import { registerDevTsPlugin } from "./dev-ts-plugin";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
@@ -417,11 +418,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
       // astro scope classes present in this page's HTML to include only
       // relevant entries, avoiding cross-page leaks from unscoped rules.
       const styleLink = `<link rel="stylesheet" href="${withBase("/__styles.css")}">`;
-      const pageAstroClasses = extractAstroClasses(html);
-      const pageScopedCss = getScopedCssForPage(pageAstroClasses);
-      const pageGlobalCss = getGlobalCssForPage(renderedModules);
+      const pageAstroCss = await getAstroCssForPage({
+        entryFile: fullPath,
+        astroClasses: extractAstroClasses(html),
+        renderedModules,
+      });
       const pageTsxCss = tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
-      const combinedCss = [pageGlobalCss, pageScopedCss, pageTsxCss].filter(Boolean).join("\n");
+      const combinedCss = [pageAstroCss, pageTsxCss].filter(Boolean).join("\n");
       const scopedStyleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
       const beforeHydration = astroHost?.injectedBeforeHydrationScripts
         ?.map((s) => `<script type="module">${s}</script>`)
@@ -557,11 +560,13 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
     else return null;
 
-    const classes = extractAstroClasses(html);
-    const scopedCss = getScopedCssForPage(classes);
-    const globalCss = getGlobalCssForPage(renderedModules);
+    const astroCss = await getAstroCssForPage({
+      entryFile: fullPath,
+      astroClasses: extractAstroClasses(html),
+      renderedModules,
+    });
     const tsxCss = tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
-    const combinedCss = [globalCss, scopedCss, tsxCss].filter(Boolean).join("\n");
+    const combinedCss = [astroCss, tsxCss].filter(Boolean).join("\n");
     const styleLink = `<link rel="stylesheet" href="${withBase("/__styles.css")}">`;
     const styleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
     const headInjection = `${styleLink}\n${styleTag}\n${hmrClientScript()}`;

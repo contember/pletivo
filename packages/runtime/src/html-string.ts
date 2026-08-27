@@ -17,10 +17,11 @@ export class HtmlString extends String {
 }
 
 /**
- * The structural raw-HTML contract: an `HtmlString`, or any `{ __html }`
- * carrier. Compiled `.astro` output and content-collection loaders construct
- * plain objects, and `isHtmlString` accepts them — signatures that take
- * rendered output type it this way so they match what actually flows through.
+ * The structural raw-HTML contract accepted by both rendering runtimes: an
+ * `HtmlString`, or any `{ __html }` carrier. Compiled `.astro` output and
+ * content-collection loaders construct plain objects, and `isHtmlString`
+ * accepts them — signatures that take rendered output type it this way so
+ * they match what actually flows through.
  */
 export interface RawHtml {
   readonly __html: string;

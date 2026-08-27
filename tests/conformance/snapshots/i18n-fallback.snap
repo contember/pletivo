@@ -1,0 +1,99 @@
+# pletivo conformance snapshot
+# case:    i18n-fallback
+# project: tests/fixture-i18n-fallback
+# covers:
+#   - locale fallback emission for routes missing in a locale
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=i18n-fallback bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+en/blog/index.html
+en/start/index.html
+it/blog/index.html
+it/start/index.html
+pt/blog/index.html
+pt/start/index.html
+sitemap.xml
+
+--- pletivo:conformance en/blog/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Blog</title></head>
+<body>
+<h1>Blog</h1>
+<p data-test="current-locale">en</p>
+</body></html>
+
+--- pletivo:conformance en/start/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Start</title></head>
+<body>
+<h1>Start</h1>
+<p data-test="current-locale">en</p>
+</body></html>
+
+--- pletivo:conformance it/blog/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Blog</title></head>
+<body>
+<h1>Blog</h1>
+<p data-test="current-locale">it</p>
+</body></html>
+
+--- pletivo:conformance it/start/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Start</title></head>
+<body>
+<h1>Start</h1>
+<p data-test="current-locale">it</p>
+</body></html>
+
+--- pletivo:conformance pt/blog/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Blog</title></head>
+<body>
+<h1>Blog</h1>
+<p data-test="current-locale">pt</p>
+</body></html>
+
+--- pletivo:conformance pt/start/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Oi, Start</title></head>
+<body>
+<h1>Oi, Start</h1>
+<p data-test="current-locale">pt</p>
+</body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/en/blog</loc>
+  </url>
+  <url>
+    <loc>/en/start</loc>
+  </url>
+  <url>
+    <loc>/it/blog</loc>
+  </url>
+  <url>
+    <loc>/it/start</loc>
+  </url>
+  <url>
+    <loc>/pt/blog</loc>
+  </url>
+  <url>
+    <loc>/pt/start</loc>
+  </url>
+</urlset>
+

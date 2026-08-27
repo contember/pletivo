@@ -1,4 +1,4 @@
-import { withBase } from "./base";
+import { withBase } from "@pletivo/runtime/base";
 
 export type ImageProcessing = "transform" | "passthrough";
 

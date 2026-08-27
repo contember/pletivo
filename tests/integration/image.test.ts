@@ -15,7 +15,7 @@ import {
   getTransforms,
   processImages,
 } from "../../packages/pletivo/src/image";
-import { setBase } from "../../packages/pletivo/src/base";
+import { setBase } from "@pletivo/runtime/base";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-image");
 const distDir = path.join(fixtureRoot, "dist");

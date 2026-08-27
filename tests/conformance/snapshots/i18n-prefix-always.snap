@@ -1,0 +1,74 @@
+# pletivo conformance snapshot
+# case:    i18n-prefix-always
+# project: tests/fixture-i18n-prefix-always
+# covers:
+#   - prefixDefaultLocale routing, including the generated root redirect
+#
+# Recorded from the "bun-build" adapter, but this file is not tied to it:
+# any runtime claiming pletivo rendering parity must reproduce it exactly.
+# Values in [brackets] are normalized — see tests/conformance/normalize.ts.
+#
+# Regenerate:  UPDATE_SNAPSHOTS=1 bun test tests/conformance
+# Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=i18n-prefix-always bun test tests/conformance
+
+--- pletivo:conformance emitted ---
+en/index.html
+en/start/index.html
+index.html
+pt/index.html
+sitemap.xml
+start/index.html
+
+--- pletivo:conformance en/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>English Home</title></head>
+<body>
+<h1>English Home</h1>
+<p data-test="current-locale">en</p>
+</body></html>
+
+--- pletivo:conformance en/start/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Start</title></head>
+<body>
+<h1>Start</h1>
+<p data-test="current-locale">en</p>
+</body></html>
+
+--- pletivo:conformance index.html ---
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/new-site/en"><link rel="canonical" href="/new-site/en"></head><body></body></html>
+
+--- pletivo:conformance pt/index.html ---
+<!DOCTYPE html>
+<html>
+<head><title>Home PT</title></head>
+<body>
+<h1>Home PT</h1>
+<p data-test="current-locale">pt</p>
+</body></html>
+
+--- pletivo:conformance sitemap.xml ---
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>/</loc>
+  </url>
+  <url>
+    <loc>/en</loc>
+  </url>
+  <url>
+    <loc>/en/start</loc>
+  </url>
+  <url>
+    <loc>/pt</loc>
+  </url>
+  <url>
+    <loc>/start</loc>
+  </url>
+</urlset>
+
+
+--- pletivo:conformance start/index.html ---
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/new-site/en/start"><link rel="canonical" href="/new-site/en/start"></head><body></body></html>

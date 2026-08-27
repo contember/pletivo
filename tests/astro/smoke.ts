@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { registerAstroPlugin } from "../../packages/pletivo/src/astro-plugin";
-import { renderAstroPage, isAstroComponent } from "../../packages/pletivo/src/runtime/astro-shim";
+import { renderAstroPage, isAstroComponent } from "@pletivo/runtime/astro-shim";
 
 await registerAstroPlugin();
 
