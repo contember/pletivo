@@ -13,6 +13,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "//scripts": "This directory is never the thing published — its dependencies name workspace packages that do not exist on the registry. Release stages a tarball with `bun run package:pletivo`; see scripts/package-pletivo.ts.",
+  "scripts": {
+    "prepublishOnly": "echo 'publish the staged tarball from scripts/package-pletivo.ts, not this directory' >&2 && exit 1"
+  },
   "bin": {
     "pletivo": "./src/cli.ts"
   },
