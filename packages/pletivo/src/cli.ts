@@ -79,6 +79,43 @@ switch (command) {
     break;
   }
 
+  case "prepare": {
+    // The config/integration phase, run once where a filesystem and npm exist. What
+    // comes out is what `@pletivo/workers` renders with — see packages/pletivo/src/prepare.
+    const { prepare, PrepareError } = await import("./prepare/index");
+    const { emitArtifact } = await import("./prepare/emit");
+    const outDir = readFlag(["--out"]) ?? ".pletivo";
+    let prepared: Awaited<ReturnType<typeof prepare>>;
+    try {
+      prepared = await prepare(projectRoot);
+    } catch (error) {
+      if (!(error instanceof PrepareError)) throw error;
+      for (const diagnostic of error.report.diagnostics) {
+        console.error(
+          `  ✗ ${diagnostic.source} (${diagnostic.hook}): ${diagnostic.reason}`,
+        );
+      }
+      process.exitCode = 1;
+      break;
+    }
+    const written = await emitArtifact(
+      outDir.startsWith("/") ? outDir : `${projectRoot}/${outDir}`,
+      prepared.site,
+    );
+    const virtualCount = prepared.site.artifact.modules.filter((module) =>
+      module.id.startsWith("virtual:"),
+    ).length;
+    console.log(`  artifact v${prepared.site.artifact.version}`);
+    console.log(`    ${prepared.site.artifact.modules.length} carried module(s)`);
+    console.log(`    ${prepared.site.artifact.resolutions.length} frozen resolution(s)`);
+    console.log(`    ${virtualCount} frozen virtual module(s)`);
+    console.log(`    ${(written.moduleBytes / 1024).toFixed(1)} kB of modules → ${written.modulePath}`);
+    for (const diagnostic of prepared.report.diagnostics) {
+      console.warn(`  ⚠ ${diagnostic.source} (${diagnostic.hook}): ${diagnostic.reason}`);
+    }
+    break;
+  }
+
   case "dev":
     // The parent supervises, the child serves. `--no-restart` opts out of both,
     // which also switches the config watcher off — nothing would restart it.
@@ -98,6 +135,8 @@ switch (command) {
   Usage:
     pletivo build [--incremental] [--clean]  Build static site (full rebuild by default)
     pletivo dev [--port=3000] [--host]       Start dev server with HMR
+    pletivo prepare [--out=.pletivo]         Freeze astro.config + integrations + npm
+                                             into a site artifact for @pletivo/workers
 
   Options:
     --incremental            Reuse the build cache to skip unchanged pages (off by default)

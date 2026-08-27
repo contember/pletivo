@@ -1,0 +1,21 @@
+---
+// ESM-imported images: `import hero from "./hero.png"` is a value, so the host worker
+// writes the metadata module from the file's own bytes, exactly as the Bun host's
+// loader does. The two agree on the name, which is `md5(bytes)` either way.
+//
+// `astro:assets` is deliberately absent, and the reason is worth writing down: the Bun
+// host answers that specifier by re-exporting `astro/components/Image.astro` out of
+// node_modules, and `astro` is not installed in this repo — so *no* page here can
+// import it and still have a reference build. The Workers host ships its own
+// components and needs no such dependency. `test/images.test.ts` covers them directly.
+import hero from "../assets/hero.png";
+import badge from "../assets/badge.png";
+---
+<html>
+  <head><title>images</title></head>
+  <body>
+    <img src={hero.src} width={hero.width} height={hero.height} alt="a hero" />
+    <img src={badge.src} width={badge.width} height={badge.height} alt="a badge" />
+    <p>{hero.format} {hero.width}x{hero.height}</p>
+  </body>
+</html>

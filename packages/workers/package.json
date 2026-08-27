@@ -1,0 +1,42 @@
+{
+  "name": "@pletivo/workers",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/contember/pletivo.git",
+    "directory": "packages/workers"
+  },
+  "//": "No build step, by design — see the note in @pletivo/runtime. The host worker's bundler is the only thing that can embed astro.wasm and Tailwind's stylesheets, so this package ships source and is bundled by the app.",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "test:workerd": "bun test/workerd/run.ts"
+  },
+  "dependencies": {
+    "@astrojs/compiler": "^3",
+    "@pletivo/core": "workspace:*",
+    "@pletivo/runtime": "workspace:*",
+    "acorn": "^8.16.0",
+    "sucrase": "^3"
+  },
+  "peerDependencies": {
+    "tailwindcss": "^4"
+  },
+  "peerDependenciesMeta": {
+    "tailwindcss": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/computer": "0.1.1",
+    "@cloudflare/workers-types": "^5.20260810.1",
+    "@tailwindcss/node": "4.3.3",
+    "@tailwindcss/oxide": "4.3.3",
+    "tailwindcss": "^4",
+    "wrangler": "4.100.0"
+  }
+}

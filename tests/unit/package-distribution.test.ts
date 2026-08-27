@@ -168,6 +168,9 @@ const runtime = require("@pletivo/runtime/legacy");
       .toContain("export function jsx");
     expect(await fs.readFile(path.join(stage, "src/_internal/core/router.ts"), "utf8"))
       .toContain("export function");
+    await expect(fs.access(path.join(stage, "src/_internal/workers"))).rejects.toThrow();
+    const scanner = await fs.readFile(path.join(stage, "src/prepare/scan.ts"), "utf8");
+    expect(scanner).toContain('"@pletivo/runtime/jsx-runtime"');
   });
 
   test("refuses a nonempty output directory", async () => {
@@ -195,6 +198,7 @@ const runtime = require("@pletivo/runtime/legacy");
     const files = await inventory(firstPackage);
     expect(files.some((entry) => entry.startsWith("src/_internal/core/"))).toBe(true);
     expect(files.some((entry) => entry.startsWith("src/_internal/runtime/"))).toBe(true);
+    expect(files.some((entry) => entry.includes("workers"))).toBe(false);
     expect(files.some((entry) => {
       const separator = entry.indexOf("\t");
       return separator !== -1 && entry.slice(0, separator).endsWith(".js");

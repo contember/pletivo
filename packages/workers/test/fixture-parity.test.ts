@@ -1,0 +1,127 @@
+import { describe, expect, test } from "bun:test";
+import path from "node:path";
+import { tailwindDir } from "./tailwind-sources.ts";
+
+/**
+ * The only assertion in this suite that compares the two hosts' actual bytes.
+ *
+ * Everything else here checks the Workers host against what it is *believed* the Bun
+ * host does; this runs `pletivo build` for real and diffs the HTML and the generated
+ * stylesheet against it. `local-parity.ts` does the work — in a subprocess, because a
+ * build registers process-global Bun plugins and because the Astro compiler owns one
+ * `globalThis` slot per process, which this file has already taken.
+ *
+ * `test/parity.ts` is the same comparison against a real workerd, and has to stay a
+ * manual run: it needs `wrangler dev` listening.
+ */
+
+const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
+/** Tailwind's own sources are read off disk here, and the Bun host needs oxide too. */
+const HAS_TAILWIND = tailwindDir() !== null && canResolve("@tailwindcss/oxide");
+
+function canResolve(specifier: string): boolean {
+  try {
+    Bun.resolveSync(specifier, import.meta.dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function localParity(fixture: string): Promise<{ ok: boolean; output: string }> {
+  const child = Bun.spawn(
+    ["bun", path.join(import.meta.dir, "local-parity.ts"), fixture],
+    { cwd: REPO_ROOT, env: { ...process.env, NODE_ENV: "production" }, stdout: "pipe", stderr: "pipe" },
+  );
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { ok: code === 0, output: stdout + stderr };
+}
+
+describe("byte parity with pletivo build", () => {
+  test(
+    "the dynamic-route fixture renders every path the build emitted",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-dynamic-routes");
+      // One static page, three getStaticPaths slugs, two paginate() pages and two
+      // .tsx slugs — every one of them byte-for-byte against `pletivo build`.
+      expect(output).toContain("8/8 byte-identical");
+      // And the enumeration half agrees with the build's own page list.
+      expect(output).toContain("= 8 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test(
+    "the content fixture renders every collection-backed path the build emitted",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-content");
+      // A listing page, two `getStaticPaths` slugs off a markdown collection (one of
+      // them nested), and two off a JSON one — the markdown rendered by
+      // `entry.render()`, the ids resolved through `reference()`.
+      expect(output).toContain("5/5 byte-identical");
+      // The draft post is loaded and filtered out on both hosts, so the enumeration
+      // agreeing is also the schema default agreeing.
+      expect(output).toContain("= 5 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test(
+    "the vendor fixture renders a page whose components come from npm",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-vendor");
+      // One page, and everything on it arrived through the artifact: a bare specifier
+      // resolved to a package's `.astro`, that component's scoped CSS, a frozen
+      // `virtual:` module, a bundled JS entry, `site` from the frozen config and an
+      // `injectScript('head-inline')` body — all byte-for-byte against `pletivo build`.
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test(
+    "the image fixture names every file the same way, and serves what it names",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-images");
+      // Two pages: one whose images are ESM imports, one whose images come out of an
+      // `image()` collection schema by way of the content binding.
+      expect(output).toContain("2/2 byte-identical");
+      // And each URL those pages emit resolves to the same bytes `pletivo build`
+      // wrote under `_astro/` — a URL that 404s is worse than no image.
+      expect(output).toContain("= /_astro/hero.");
+      expect(output).toContain("= /_astro/badge.");
+      expect(output).toContain("= /_astro/thumb.");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test.skipIf(!HAS_TAILWIND)(
+    "the Tailwind fixture agrees on every byte except how the CSS is delivered",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-tailwind");
+      // The two hosts fork here on purpose: `pletivo build` links one stylesheet for
+      // the site, this host inlines the page's own (docs/todos/023 §5). One node is
+      // removed from each side and the rest of both pages still has to match.
+      expect(output).toContain("2/2 byte-identical");
+      expect(output).toContain("2 with the CSS delivery excepted");
+      // What the removed comparison used to prove, kept: the JS candidate scanner plus
+      // Tailwind over a virtual file map still emit the same bytes as the real
+      // `@tailwindcss/node` + `@tailwindcss/oxide`, given the same candidates.
+      expect(output).toMatch(/= \d{4,} B of Tailwind, byte-identical to pletivo build/);
+      // And what it never proved, which the per-page model now needs: every utility
+      // class the rendered page applies survives into the CSS that page carries.
+      expect(output).toMatch(/= index\.html — \d+ applied class\(es\) covered by \d+ B inline/);
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+});

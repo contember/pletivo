@@ -1,0 +1,15 @@
+---
+import "../styles/global.css";
+import Card from "../components/Card.astro";
+import { TAGLINE } from "../lib/theme.js";
+---
+<html lang="en">
+  <head><title>Tailwind</title></head>
+  <body class="bg-white antialiased">
+    <main class="mx-auto flex max-w-3xl flex-col gap-y-4 px-6">
+      <h1 class="text-3xl font-bold text-brand">Tailwind</h1>
+      <p class="extra-note text-sm/6">{TAGLINE}</p>
+      <Card label="from a component" />
+    </main>
+  </body>
+</html>

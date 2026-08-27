@@ -1,0 +1,40 @@
+---
+// The route that forced the whole shape of dynamic routes on the Workers host:
+// `getStaticPaths` hands the entry itself through `props`, and an entry carries a
+// `render()` method. Props therefore can never be serialized back out of the render
+// isolate, so the isolate resolves the path and renders it in one call.
+//
+// `[...slug]` rather than `[slug]` because `nested/deep-dive` is a real id.
+import { getCollection, getEntry, render } from "astro:content";
+
+export async function getStaticPaths() {
+  const posts = await getCollection("posts", (post) => !post.data.draft);
+  return posts.map((post) => ({ params: { slug: post.id }, props: { post } }));
+}
+
+const { post } = Astro.props;
+// The Astro-idiomatic render path: `<Content />` rather than a raw HTML string.
+const { Content } = await render(post);
+// `reference()` stored an id marker; this resolves it against the other collection.
+const author = await getEntry(post.data.author);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{post.data.title}</title>
+  </head>
+  <body>
+    <h1>{post.data.title}</h1>
+    <p id="author"><a href={author?.data.site}>{author?.data.name}</a></p>
+    <p id="slug">{Astro.params.slug}</p>
+    <article><Content /></article>
+  </body>
+</html>
+
+<style>
+  #author {
+    color: rgb(4, 5, 6);
+  }
+</style>

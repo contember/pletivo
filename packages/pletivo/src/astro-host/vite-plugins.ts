@@ -185,6 +185,46 @@ async function materializeViteVirtualModule(
   return filePath;
 }
 
+/**
+ * One virtual module's finished body, for `pletivo prepare` to freeze.
+ *
+ * The same `resolveId` → `load` walk `materializeViteVirtualModule` does, without the
+ * file it writes: a Worker has nowhere to put a file, so the artifact carries the text.
+ * A plugin whose `load()` depends on request-time state is exactly the thing this
+ * cannot serve, and it will freeze whatever that state was at prepare time — the
+ * design (`docs/todos/020 §7`) names the one real instance.
+ */
+export async function freezeViteVirtualModule(
+  specifier: string,
+  importer?: string,
+): Promise<{ id: string; code: string; loader: string } | null> {
+  const resolvedId = await resolveViteId(specifier, importer);
+  const id = resolvedId ?? specifier;
+  const loaded = await loadViteId(id);
+  if (loaded) return { id, code: loaded.code, loader: freezeLoaderForId(id, loaded.loader) };
+  if (resolvedId && path.isAbsolute(resolvedId) && await Bun.file(resolvedId).exists()) {
+    const loader = loaderForVirtualId(resolvedId);
+    return {
+      id: resolvedId,
+      code: await Bun.file(resolvedId).text(),
+      loader: freezeLoaderForId(resolvedId, loader),
+    };
+  }
+  return null;
+}
+
+function freezeLoaderForId(id: string, fallback: Loader): string {
+  const ext = path.extname(id.replace(/\0/g, "")).toLowerCase();
+  if (ext === ".astro") return "astro";
+  if (ext === ".css") return "css";
+  if (ext === ".jsx") return "jsx";
+  if (ext === ".tsx") return "tsx";
+  if (ext === ".js" || ext === ".mjs") return "js";
+  if (ext === ".ts" || ext === ".mts") return "ts";
+  if (ext === ".json") return "json";
+  return ext === "" ? fallback : `unsupported:${ext}`;
+}
+
 async function resolveViteId(specifier: string, importer?: string): Promise<string | null> {
   for (const p of collectedPlugins) {
     if (typeof p.resolveId !== "function") continue;

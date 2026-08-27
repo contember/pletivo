@@ -4,6 +4,8 @@
  * preact-dedupe resolution and identical hydrate-or-render mount semantics.
  * Previously these were duplicated and drifted apart.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 /**
  * Source for a per-island wrapper module.
@@ -26,6 +28,52 @@ export function islandWrapperSource(sourcePath: string): string {
     `  else render(h(Component, props), el);\n` +
     `}\n`
   );
+}
+
+/**
+ * Conditions tried, in order, when reading a package `exports` entry for the
+ * client bundle. `import` first because that is what a bare specifier resolves
+ * to with nothing mapped, and the island bundle is ESM.
+ */
+const CLIENT_EXPORT_CONDITIONS = ["import", "module", "browser", "default", "require"];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readJson(file: string): unknown {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Nearest ancestor of `file` that is a package root — the first directory with
+ * a `package.json` that names a package. Skips the `{"type": "module"}` marker
+ * files some packages drop next to their builds.
+ */
+function packageRootOf(file: string): { dir: string; manifest: Record<string, unknown> } | undefined {
+  let dir = path.dirname(file);
+  for (;;) {
+    const manifest = readJson(path.join(dir, "package.json"));
+    if (isRecord(manifest) && typeof manifest.name === "string") return { dir, manifest };
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/** Walk an `exports` value down its condition objects to a relative file target. */
+function pickExportTarget(entry: unknown): string | undefined {
+  if (typeof entry === "string") return entry;
+  if (!isRecord(entry)) return undefined;
+  for (const condition of CLIENT_EXPORT_CONDITIONS) {
+    const target = pickExportTarget(entry[condition]);
+    if (target !== undefined) return target;
+  }
+  return undefined;
 }
 
 /**
@@ -59,10 +107,43 @@ export function islandPlugin(projectRoot?: string) {
     return require.resolve(spec);
   };
   const preactMain = resolve("preact");
-  const preactJsx = resolve("preact/jsx-runtime");
-  const preactJsxDev = resolve("preact/jsx-dev-runtime");
-  const preactHooks = resolve("preact/hooks");
-  const preactCompat = resolve("preact/compat");
+
+  // Subpaths must NOT go through `resolve()`. Bun applies tsconfig `paths` at
+  // runtime, and this repo — plus every project that copies its tsconfig — maps
+  // `preact/hooks` onto the SSR no-op stub. A bare resolve therefore pinned the
+  // *client* bundle to the stub: `useState` returned a dead setter, `useEffect`
+  // never ran, and the build stayed green (see docs/todos/013). Re-rooting the
+  // resolve does not escape it either — Bun walks up from the resolve base for a
+  // tsconfig, and node_modules sits under the project root. Only a relative
+  // specifier escapes `paths`, and that one lands on the CJS `require` build.
+  //
+  // So go through preact's own `exports` map and take the `import` condition,
+  // which is what the bare specifier means when nothing is mapped. This applies
+  // to every subpath, not just the one mapped today: a user's tsconfig can map
+  // any of them and the failure is silent either way.
+  const preactPkg = packageRootOf(preactMain);
+  const resolveSubpath = (subpath: string) => {
+    if (preactPkg) {
+      const exportsField = preactPkg.manifest.exports;
+      const target = isRecord(exportsField)
+        ? pickExportTarget(exportsField[`./${subpath}`])
+        : undefined;
+      if (target?.startsWith(".")) return path.join(preactPkg.dir, target);
+      // No exports map, or nothing declared for this subpath: a relative
+      // specifier still escapes `paths`, it just may land on the CJS build.
+      try {
+        return Bun.resolveSync(`./${subpath}`, preactPkg.dir);
+      } catch {
+        // fall through to the bare resolve
+      }
+    }
+    return resolve(`preact/${subpath}`);
+  };
+
+  const preactJsx = resolveSubpath("jsx-runtime");
+  const preactJsxDev = resolveSubpath("jsx-dev-runtime");
+  const preactHooks = resolveSubpath("hooks");
+  const preactCompat = resolveSubpath("compat");
 
   return {
     name: "pletivo-island",
