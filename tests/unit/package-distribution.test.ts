@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   actualModuleSpecifiers,
+  assertOnlyHandledDependencyFields,
   mergeDependencies,
   packagePletivo,
   rewriteInternalSpecifiers,
@@ -108,6 +109,18 @@ const runtime = require("@pletivo/runtime/legacy");
     ]);
   });
 
+  test("refuses to stage a dependency field it would silently drop", () => {
+    for (const field of ["peerDependencies", "peerDependenciesMeta", "optionalDependencies"]) {
+      expect(() => assertOnlyHandledDependencyFields("core", { [field]: { preact: "^10" } }))
+        .toThrow(`core declares ${field}`);
+    }
+    expect(() => assertOnlyHandledDependencyFields("runtime", {
+      dependencies: { zod: "^4" },
+      devDependencies: { preact: "^10" },
+      peerDependencies: {},
+    })).not.toThrow();
+  });
+
   test("rejects incompatible dependency ranges", () => {
     expect(() => mergeDependencies({ unified: "^11" }, { unified: "^12" })).toThrow(
       'dependency conflict for unified: "^11" versus "^12"',
@@ -138,6 +151,9 @@ const runtime = require("@pletivo/runtime/legacy");
     });
     expect(JSON.stringify(Reflect.get(manifest, "dependencies"))).not.toContain("@pletivo/");
     expect(JSON.stringify(manifest)).not.toContain("workspace:*");
+    // The source manifest's prepublishOnly guard must not follow the tarball,
+    // or `npm publish <tarball>` would refuse the artifact it is meant to guard.
+    expect(Reflect.get(manifest, "scripts")).toBeUndefined();
     expect(Reflect.get(manifest, "exports")).toEqual({
       ".": "./src/index.ts",
       "./jsx-runtime": "./src/runtime/jsx-runtime.ts",
