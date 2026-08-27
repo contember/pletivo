@@ -45,11 +45,23 @@ describe("pletivo CLI", () => {
       expect(result.stdout).toContain("static site generator");
       // Every documented flag must appear, or the help drifts from the parser.
       for (const documented of [
-        "--incremental", "--clean", "--port", "--host",
-        "--404-page", "--error-page", "--stale", "--debug-header", "--no-restart",
+        "--incremental", "--clean", "--port", "--host", "--404-page",
+        "--error-page", "--stale", "--debug-header", "--no-restart", "--version",
       ]) {
         expect(result.stdout).toContain(documented);
       }
+    }
+  }, 30_000);
+
+  test("--version, -v and version print the bare version and exit 0", async () => {
+    const manifest = await Bun.file(
+      path.resolve(import.meta.dir, "../../packages/pletivo/package.json"),
+    ).json();
+    for (const flag of ["--version", "-v", "version"]) {
+      const result = await runCli([flag]);
+      expect(result.exitCode).toBe(0);
+      // Bare, so `$(pletivo --version)` is usable without stripping.
+      expect(result.stdout.trim()).toBe(manifest.version);
     }
   }, 30_000);
 
