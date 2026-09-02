@@ -182,6 +182,8 @@ export interface ProjectOptions {
    * owns one is `createProjectHost`; see `compile-cache.ts`.
    */
   compileCache?: CompileCache;
+  /** Tailwind's stylesheets, embedded by the host worker for CSS `@import`s. */
+  tailwind?: TailwindStylesheets;
   /**
    * Required only when the project has content collections. Without it such a project
    * throws `ContentUnavailableError` rather than rendering a page with empty ones.
@@ -229,13 +231,6 @@ export interface RenderPageOptions extends ProjectOptions {
   pathname: string;
   /** `site` from the project config. Sets the origin of `Astro.url`. */
   site?: string;
-  /**
-   * Tailwind's own stylesheets, as text. Needed only when a project stylesheet does
-   * `@import "tailwindcss"`; without them that project throws rather than rendering
-   * unstyled. The isolate cannot read them off disk, so the host worker's bundler has
-   * to embed them — see `packages/workers/example/src/index.ts`.
-   */
-  tailwind?: TailwindStylesheets;
 }
 
 /** A file the rendered HTML references, which the host has to serve for the page to work. */
@@ -523,6 +518,7 @@ async function isolatePaths(
     artifact,
     assets: options.assets,
     cache: options.compileCache,
+    tailwind: options.tailwind,
   });
   const { payload } = await callIsolate({
     project,
@@ -610,6 +606,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     artifact,
     assets: options.assets,
     cache: options.compileCache,
+    tailwind: options.tailwind,
   });
   const rendered = await renderModule({
     project,

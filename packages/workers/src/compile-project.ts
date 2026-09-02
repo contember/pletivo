@@ -93,6 +93,11 @@ import type {
   ResolvedModuleGraph,
   ResolvedTarget,
 } from "./module-graph.ts";
+import {
+  isTailwindStylesheetSpecifier,
+  TailwindNotConfiguredError,
+  type TailwindStylesheets,
+} from "./tailwind.ts";
 import { JSX_IMPORT_SPECIFIER, stripTypes, TranspileError } from "./transpile.ts";
 
 /** One `<style>` block from a `.astro` file, in the order it was written. */
@@ -564,6 +569,8 @@ export interface CompileProjectOptions {
    * project with an npm dependency stood before the artifact existed.
    */
   artifact?: PreparedSite | null;
+  /** Tailwind's host-embedded CSS sources, used only for CSS imports of its public stylesheets. */
+  tailwind?: TailwindStylesheets;
   /**
    * The project's binary files. An image *something imports* becomes a metadata
    * module, so `import hero from "./hero.png"` resolves to the same `{src, width,
@@ -799,6 +806,22 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
     });
   };
 
+  const hostStylesheet = (
+    specifier: keyof TailwindStylesheets,
+    source: string,
+  ): SourceModule => {
+    const id = `host:${specifier}`;
+    files.set(id, source);
+    return claim({
+      id,
+      legacyKey: id,
+      kind: "css",
+      source,
+      compilePath: id,
+      origin: "generated",
+    });
+  };
+
   const generatedModule = (id: ModuleId, legacyKey: string, code: string): SourceModule => {
     const known = claimed.get(id);
     const descriptor: Omit<SourceModule, "executionName"> = {
@@ -944,6 +967,15 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
         return externalUse(importer, rawSpecifier, frozen.specifier);
       }
       return moduleResolution(importer, rawSpecifier, artifactModule(frozen.id));
+    }
+
+    if (importer.kind === "css" && isTailwindStylesheetSpecifier(rawSpecifier)) {
+      if (options.tailwind === undefined) throw new TailwindNotConfiguredError(importer.id);
+      return moduleResolution(
+        importer,
+        rawSpecifier,
+        hostStylesheet(rawSpecifier, options.tailwind[rawSpecifier]),
+      );
     }
 
     if (UNSUPPORTED_PACKAGE_ROOTS.has(rawSpecifier)) {

@@ -61,6 +61,16 @@ export interface TailwindStylesheets {
   "tailwindcss/utilities": string;
 }
 
+export class TailwindNotConfiguredError extends Error {
+  constructor(readonly entry: string) {
+    super(
+      `[pletivo-workers] ${JSON.stringify(entry)} imports Tailwind, but renderPage() was ` +
+        "given no `tailwind` stylesheets. The isolate cannot read them off disk.",
+    );
+    this.name = "TailwindNotConfiguredError";
+  }
+}
+
 export interface CompileTailwindOptions {
   /** Key in `files` of the stylesheet that imports Tailwind. */
   entry: string;
@@ -103,11 +113,13 @@ async function loadTailwind(): Promise<TailwindModule> {
   return { compile };
 }
 
-function isTailwindStylesheet(
-  id: string,
-  stylesheets: TailwindStylesheets,
-): id is keyof TailwindStylesheets {
-  return Object.hasOwn(stylesheets, id);
+export function isTailwindStylesheetSpecifier(id: string): id is keyof TailwindStylesheets {
+  return (
+    id === "tailwindcss" ||
+    id === "tailwindcss/preflight" ||
+    id === "tailwindcss/theme" ||
+    id === "tailwindcss/utilities"
+  );
 }
 
 /** Directory part of a virtual path, `""` at the root. */
@@ -172,7 +184,7 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
       }
       const embedded = options.embeddedTargets?.get(resolved);
       if (embedded !== undefined) {
-        if (!isTailwindStylesheet(id, stylesheets) || embedded !== id) {
+        if (!isTailwindStylesheetSpecifier(id) || embedded !== id) {
           throw new Error(
             `[pletivo-workers] canonical CSS target ${JSON.stringify(resolved)} does not match ` +
               `embedded stylesheet ${JSON.stringify(id)}`,
@@ -181,7 +193,7 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
         consumed.add(resolved);
         return { path: resolved, base: resolved, content: stylesheets[embedded] };
       }
-      if (isTailwindStylesheet(id, stylesheets)) {
+      if (isTailwindStylesheetSpecifier(id)) {
         if (options.styleTargets) {
           throw new Error(
             `[pletivo-workers] canonical CSS target ${JSON.stringify(resolved)} is not registered ` +

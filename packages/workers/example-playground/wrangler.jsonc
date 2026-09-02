@@ -3,7 +3,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-01-01",
   // The Astro shim's render-tracking store is an AsyncLocalStorage, and both the
-  // compiled bundle and `@cloudflare/computer` want node built-ins.
+  // compiled bundle and `kompjutr` want node built-ins.
   "compatibility_flags": ["nodejs_compat"],
   // The only way to execute code produced at run time in workerd. This is what turns
   // an edit in the browser into a rendered page with no build step in between.
