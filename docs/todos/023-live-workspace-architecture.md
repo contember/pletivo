@@ -43,8 +43,8 @@ already has for `build --incremental`.
 
 Taken deliberately, over "compile in a worker beside the DO, read over RPC".
 
-`SQLiteWorkspaceProvider` (`@cloudflare/computer`) is node:fs-shaped over SQLite in a
-Durable Object. Inside that object `SqlStorage` is synchronous, so reading a file is
+`kompjutr` exposes a node:fs-shaped facade over SQLite in a Durable Object. Inside that
+object `SqlStorage` is synchronous, so reading a file is
 about as expensive as a map lookup. Beside it, every read is an RPC hop — and even the
 14 files a page actually needs would be 14 round trips, which would force batched
 reads (one RPC, a set of paths) and a lazier design than the one below.
@@ -77,8 +77,8 @@ correct even for a store with no revision gate; such a store simply pays a memcm
 file, which is still far below the 24 ms above.
 
 What the revision gate actually buys is the **read**: an unchanged workspace costs one
-`vfs_meta` lookup instead of a walk of the tree and a re-read of every file. That is
-worth having on its own, and it is what `workspace-store.ts` tests.
+`filesystem.rev()` lookup instead of a walk of the tree and a re-read of every
+file. That is worth having on its own, and it is what `workspace-store.ts` tests.
 
 Invalidation is therefore the source comparison and nothing else. An explicit
 `cache.delete(path)` on write would need a seam the store does not have — it is
@@ -238,13 +238,13 @@ of it needs a Durable Object under it to be tested:
 | `src/project-store.ts` | `ProjectStore` — one revision-coherent snapshot of source text and its demand-driven `ProjectAssetsView` |
 | `src/project-host.ts` | `createProjectHost` — route, render, serve the generated assets, turn the throws into status codes |
 | `src/asset-port.ts` | `ProjectAssetsView` — `info(source)` and `resolveOutput(path)` without an eager project-wide asset scan |
-| `src/workspace-store.ts` | `createWorkspaceProjectStore` over `@cloudflare/computer`'s SQLite VFS, typed structurally so this package depends on none of it |
+| `src/workspace-store.ts` | `createWorkspaceProjectStore` over `kompjutr`'s SQLite filesystem, typed structurally so this package depends on none of it |
 | `example-playground/` | the production-correct Durable Object workspace, with an editor in front of it |
 
 Verified under `wrangler dev` against a real workspace: a component written into SQLite
 changes the next render, scoped CSS included, with no build step between the two. The
-`vfs_meta` revision gate holds — two reads of an unchanged workspace return the same
-object, so the tree is walked once rather than once per request.
+public `filesystem.rev()` gate holds: two reads of an unchanged workspace
+return the same object, so the tree is walked once rather than once per request.
 
 Then verified on real Cloudflare (`pletivo-playground.contember.workers.dev`, account
 Contember), which is where the next two subsections come from — **neither is visible under

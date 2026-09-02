@@ -1,15 +1,13 @@
 /**
- * A `ProjectStore` over a SQLite-backed virtual filesystem — `@cloudflare/computer`'s
- * `SQLiteWorkspaceProvider`, and anything else with the same synchronous shape.
+ * A `ProjectStore` over a synchronous, Node-shaped virtual filesystem.
  *
  * This is the store `docs/todos/023` is about. Inside the Durable Object that owns the
  * workspace, `readFileSync` is a primary-key lookup rather than an RPC hop, so reading
  * the project is a walk over SQLite rather than a network round trip per file.
  *
- * The provider is named structurally, the way `WorkerLoaderBinding` is: this package
- * takes no dependency on `@cloudflare/computer`, on which version of it the app
- * installed, or on `node:fs` types. A `SQLiteWorkspaceProvider` satisfies
- * `WorkspaceFiles` as it stands.
+ * The filesystem is named structurally, the way `WorkerLoaderBinding` is: this package
+ * takes no dependency on `kompjutr`, on which version the app installed, or on
+ * `node:fs` types. `kompjutr`'s `NodeFsCompat` satisfies `WorkspaceFiles` as it stands.
  */
 
 import {
@@ -33,16 +31,6 @@ export interface WorkspaceFiles {
   existsSync(path: string): boolean;
 }
 
-/**
- * The one query the revision needs, structurally — a `Workspace`'s `db` satisfies it.
- *
- * See `vfsRevision` for why this is a separate argument rather than something read off
- * the provider.
- */
-export interface WorkspaceRevisionSource {
-  one(query: string, ...bindings: unknown[]): unknown;
-}
-
 export interface WorkspaceStoreOptions {
   /** Where the project starts in the workspace. Defaults to the workspace root. */
   root?: string;
@@ -51,10 +39,9 @@ export interface WorkspaceStoreOptions {
    *
    * The gate that makes the whole store worth having: on an unchanged workspace the
    * tree is not walked and no file is re-read — the previous snapshot is handed straight
-   * back. Without one, every snapshot re-reads the project, and the compile cache below
-   * it pays a string compare per file instead of an engine-level pointer compare
-   * (023 §3). Both are correct; one reads SQLite once per request and the other reads it
-   * once per file.
+   * back. Without one, every snapshot re-reads the project and the compile cache below
+   * it compares every source again (023 §3). Both are correct; one reads SQLite once per
+   * request and the other reads it once per file.
    */
   revision?: () => string | number | undefined;
   /** Directory names never descended into. */
@@ -195,31 +182,6 @@ export function createWorkspaceProjectStore(
       }
       return stableSnapshot(retry, retryBefore);
     },
-  };
-}
-
-/**
- * The revision counter `@cloudflare/computer` keeps, as a `revision` callback.
- *
- * dofs bumps one row in `vfs_meta` before it touches a node — writes, deletes, renames,
- * chmod alike — so one primary-key lookup answers the question the whole store is gated
- * on. `vfs_*` is that package's private schema rather than an API, so this is the only
- * place that names it and every failure degrades to `undefined`: a host whose schema has
- * moved keeps working and simply re-reads, exactly like a host that passed no callback.
- *
- * The same trick `@roj-ai/computer-platform` plays for its own filesystem cache; that
- * package cannot be depended on from here, so the query is repeated rather than shared.
- */
-export function vfsRevision(db: WorkspaceRevisionSource): () => string | undefined {
-  return () => {
-    try {
-      const row = db.one("SELECT v FROM vfs_meta WHERE k = 'rev'");
-      if (typeof row !== "object" || row === null || !("v" in row)) return undefined;
-      const value: unknown = row.v;
-      return typeof value === "number" || typeof value === "string" ? String(value) : undefined;
-    } catch {
-      return undefined;
-    }
   };
 }
 

@@ -173,6 +173,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       compiler: options.compiler,
       compileCache,
       artifact: artifactOf(snapshot),
+      tailwind: options.tailwind,
     };
   }
 
@@ -181,7 +182,6 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       ...projectOptions(snapshot),
       pathname,
       site: options.site,
-      tailwind: options.tailwind,
     });
     const rejected = served.putAll(page.assets);
     if (rejected.length > 0) {

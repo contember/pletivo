@@ -51,8 +51,8 @@ export interface ProjectStore {
    * The project, now.
    *
    * Async because a store over KV or R2 has to be. The one this exists for — a
-   * `@cloudflare/computer` workspace inside the Durable Object that owns it — reads
-   * SQLite synchronously and returns an already-settled promise.
+   * `kompjutr` workspace inside the Durable Object that owns it — reads SQLite
+   * synchronously and returns an already-settled promise.
    */
   snapshot(): Promise<ProjectSnapshot>;
 }

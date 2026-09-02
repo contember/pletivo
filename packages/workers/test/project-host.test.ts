@@ -21,12 +21,12 @@ import {
 import { createMapProjectStore, type ProjectStore } from "../src/project-store.ts";
 import {
   createWorkspaceProjectStore,
-  vfsRevision,
   type WorkspaceDirent,
   type WorkspaceFiles,
 } from "../src/workspace-store.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
+import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
 
 const compiler = createAstroCompiler(await astroWasmModule());
 const loader = new FileLoader();
@@ -240,17 +240,6 @@ describe("createWorkspaceProjectStore", () => {
     });
   });
 
-  test("vfsRevision degrades to undefined when the schema is not there", () => {
-    const missing = vfsRevision({
-      one: () => {
-        throw new Error("no such table: vfs_meta");
-      },
-    });
-    const present = vfsRevision({ one: () => ({ v: 42 }) });
-
-    expect(missing()).toBeUndefined();
-    expect(present()).toBe("42");
-  });
 });
 
 describe("createProjectHost", () => {
@@ -389,6 +378,41 @@ describe("createProjectHost", () => {
     expect(html).not.toContain("papayawhip");
     expect(html).not.toContain('<link rel="stylesheet"');
   });
+
+  test.skipIf(tailwindDir() === null)(
+    "resolves host-embedded Tailwind from a live workspace for paths and rendering",
+    async () => {
+      const workspace = new FakeWorkspace();
+      workspace.write(
+        "/src/pages/index.astro",
+        `---\nimport "../styles/global.css";\n---\n<html><body><p class="p-special">home</p></body></html>\n`,
+      );
+      workspace.write(
+        "/src/styles/global.css",
+        '@import "tailwindcss";\n@import "./tokens.css";\n.entry-sentinel { --entry: 1; }\n',
+      );
+      workspace.write(
+        "/src/styles/tokens.css",
+        "@theme { --spacing-special: 3rem; }\n.dep-sentinel { --dep: 1; }\n",
+      );
+      const host = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+        tailwind: await tailwindStylesheets(),
+      });
+
+      expect((await host.paths()).map((path) => path.pathname)).toEqual(["/"]);
+      const response = await host.fetch(new Request("https://example.test/"));
+      const html = await response.text();
+
+      expect(response.status, html).toBe(200);
+      expect(html).toContain(".p-special");
+      expect(html).toContain("--spacing-special");
+      expect(html).toContain("--dep: 1");
+      expect(html).not.toContain('@import "tailwindcss"');
+    },
+  );
 
   test("an unknown pathname is a 404, not a throw", async () => {
     const host = hostOf(createMapProjectStore(new Map([["src/pages/index.astro", PAGE]])));

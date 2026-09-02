@@ -7,8 +7,11 @@ import {
   compileTailwind,
   extractHtmlClassCandidates,
   extractCandidates,
+  TailwindNotConfiguredError,
   type TailwindStylesheets,
 } from "./tailwind.ts";
+
+export { TailwindNotConfiguredError };
 
 export interface PageStylesheetOptions {
   /** Project paths and artifact ModuleIds mapped to their source text. */
@@ -22,16 +25,6 @@ export interface PageStylesheetOptions {
   html: string;
   scripts?: InjectedScripts;
   tailwind?: TailwindStylesheets;
-}
-
-export class TailwindNotConfiguredError extends Error {
-  constructor(readonly entry: string) {
-    super(
-      `[pletivo-workers] ${JSON.stringify(entry)} imports Tailwind, but renderPage() was ` +
-        "given no `tailwind` stylesheets. The isolate cannot read them off disk.",
-    );
-    this.name = "TailwindNotConfiguredError";
-  }
 }
 
 const CSS = ".css";

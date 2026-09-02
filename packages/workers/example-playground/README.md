@@ -9,11 +9,14 @@ bunx wrangler@4 dev --config packages/workers/example-playground/wrangler.jsonc
 open http://localhost:8787/__playground
 ```
 
+Until `kompjutr` has its first release, `packages/workers` links it from the sibling
+`../kompjutr` checkout.
+
 ## What it is made of
 
 ```
-SQLiteWorkspaceProvider  ->  createWorkspaceProjectStore  ->  createProjectHost
-      (the sources)              (the project, now)            (route, render, serve)
+kompjutr NodeFsCompat  ->  createWorkspaceProjectStore  ->  createProjectHost
+     (the sources)              (the project, now)            (route, render, serve)
 ```
 
 `ProjectDO` holds the two things only a Durable Object can have — its storage and its

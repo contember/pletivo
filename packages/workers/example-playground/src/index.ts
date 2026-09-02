@@ -20,15 +20,20 @@
  *
  * The composition is unchanged and is the point:
  *
- *   SQLiteWorkspaceProvider  ->  createWorkspaceProjectStore  ->  createProjectHost
+ *   kompjutr NodeFsCompat  ->  createWorkspaceProjectStore  ->  createProjectHost
  *
  * Everything below `ProjectDO` is a plain object built by a factory. The class holds
  * what only a Durable Object can have — the storage and the bindings — and forwards.
  */
 
-import { Workspace } from "@cloudflare/computer";
-import type { DurableObjectStorageLike } from "@cloudflare/computer";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import {
+  createFilesystem,
+  Database,
+  NodeFsCompat,
+  type DurableObjectStorageLike,
+  type Filesystem,
+} from "kompjutr/fs";
 import { ContentFiles } from "@pletivo/workers/content-files";
 import type {
   ContentBinding,
@@ -39,7 +44,6 @@ import { createProjectHost, type ProjectHost } from "@pletivo/workers/project-ho
 import type { WorkerLoaderBinding } from "@pletivo/workers/render";
 import {
   createWorkspaceProjectStore,
-  vfsRevision,
   type WorkspaceDirent,
   type WorkspaceFiles,
 } from "@pletivo/workers/workspace-store";
@@ -66,7 +70,8 @@ const COMPATIBILITY_DATE = "2026-01-01";
 const COMPATIBILITY_FLAGS = ["nodejs_compat"];
 
 export class ProjectDO extends DurableObject<Env> {
-  readonly #workspace: Workspace;
+  readonly #filesystem: Filesystem;
+  readonly #files: NodeFsCompat;
   readonly #host: ProjectHost;
   /**
    * Content files the renders in flight are reading.
@@ -78,14 +83,12 @@ export class ProjectDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const storage: DurableObjectStorageLike = ctx.storage;
-    this.#workspace = new Workspace({ storage });
+    this.#filesystem = createFilesystem(new Database(storage));
+    this.#files = new NodeFsCompat(this.#filesystem);
     this.#host = createProjectHost({
-      store: createWorkspaceProjectStore(this.#workspace.provider(), {
+      store: createWorkspaceProjectStore(this.#files, {
         root: PROJECT_ROOT,
-        // One primary-key lookup per request instead of a walk of the tree. The DO is
-        // the single writer, so this counter is the whole invalidation story — no
-        // hashing, no key, no staleness window. See docs/todos/023 §3.
-        revision: vfsRevision(this.#workspace.db),
+        revision: () => this.#filesystem.rev(),
       }),
       loader: this.env.LOADER,
       content: {
@@ -148,23 +151,23 @@ export class ProjectDO extends DurableObject<Env> {
       return new Response("bad path", { status: 400 });
     }
     const path = `${PROJECT_ROOT}/${relative}`;
-    const provider = this.#workspace.provider();
+    const files = this.#files;
 
     if (request.method === "PUT") {
       return request.text().then((source) => {
-        provider.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
-        provider.writeFileSync(path, source);
+        files.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+        files.writeFileSync(path, source);
         return new Response(`wrote ${relative}\n`, { status: 201 });
       });
     }
     if (request.method === "DELETE") {
-      if (!provider.existsSync(path)) return new Response("no such file", { status: 404 });
-      provider.unlinkSync(path);
+      if (!files.existsSync(path)) return new Response("no such file", { status: 404 });
+      files.unlinkSync(path);
       return new Response(`removed ${relative}\n`);
     }
     if (request.method === "GET") {
-      if (!provider.existsSync(path)) return new Response("no such file", { status: 404 });
-      const source = provider.readFileSync(path, "utf-8");
+      if (!files.existsSync(path)) return new Response("no such file", { status: 404 });
+      const source = files.readFileSync(path, "utf-8");
       return new Response(typeof source === "string" ? source : new TextDecoder().decode(source), {
         headers: { "content-type": "text/plain; charset=utf-8" },
       });
@@ -179,12 +182,12 @@ export class ProjectDO extends DurableObject<Env> {
    * playground is what happens *after*, so the seed is `seed.ts` and it happens once.
    */
   #seed(): void {
-    const provider = this.#workspace.provider();
-    if (provider.existsSync(`${PROJECT_ROOT}/src/pages/index.astro`)) return;
+    const files = this.#files;
+    if (files.existsSync(`${PROJECT_ROOT}/src/pages/index.astro`)) return;
     for (const [relative, source] of SEED) {
       const path = `${PROJECT_ROOT}/${relative}`;
-      provider.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
-      provider.writeFileSync(path, source);
+      files.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+      files.writeFileSync(path, source);
     }
   }
 
@@ -196,8 +199,8 @@ export class ProjectDO extends DurableObject<Env> {
    * would inherit it. Emptied directories are left; the store walks files.
    */
   #reset(): void {
-    const provider = this.#workspace.provider();
-    for (const path of walkFiles(provider, PROJECT_ROOT)) provider.unlinkSync(path);
+    const files = this.#files;
+    for (const path of walkFiles(files, PROJECT_ROOT)) files.unlinkSync(path);
     this.#seed();
   }
 }
