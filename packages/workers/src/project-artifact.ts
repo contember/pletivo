@@ -13,9 +13,7 @@ const LOADED: unique symbol = Symbol("ProjectArtifact");
 
 /**
  * A `pletivo prepare` artifact, validated and bound to this host once.
- *
- * Everything a render needs from it is derived here, so a host that holds one pays
- * for the parse and the indexes once, not per render.
+ * Everything a render needs from it is derived here, not per render.
  */
 export class ProjectArtifact {
   constructor(

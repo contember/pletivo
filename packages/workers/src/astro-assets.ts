@@ -1,31 +1,11 @@
 /**
- * `astro:assets`, for a host that cannot open a file or run sharp.
+ * `astro:assets` as sources the host compiles like project files. The components copy
+ * Astro's template text verbatim (attribute order is compared) but throw a plain `Error`,
+ * because Astro's `AstroError` pulls in most of Astro.
  *
- * The Bun host answers this specifier with a virtual module that re-exports
- * `getImage()` and Astro's own `Image.astro` / `Picture.astro` out of `node_modules`
- * (`astro-plugin.ts`). An isolate has no `node_modules`, so the same three modules are
- * *sources* the host worker compiles like project files — which is what `.astro` has
- * to be here anyway: the compiler runs in the host worker, not in the isolate.
- *
- * They are written out rather than vendored off disk on purpose. Astro's `Image.astro`
- * pulls in `astro/dist/core/errors/index.js` for one `AstroError`, and that graph is
- * most of Astro; the two components below carry the same template text — copied
- * verbatim, because the rendered attribute order is the thing being compared — and
- * throw a plain `Error` instead. What they call is shared, not re-implemented:
- * `getImage()` is `@pletivo/core/image`, the same function the Bun host calls.
- *
- * ## The one deliberate divergence
- *
- * `setImageService("cloudflare")`. The Bun host defaults to sharp, which resizes and
- * re-encodes and writes `_astro/<name>.<hash>.webp`. **No isolate can do that.** A
- * host that emitted sharp's URL anyway would name a file nothing ever wrote — a 404
- * where an image should be. The Cloudflare service emits `/cdn-cgi/image/<options>/`
- * in front of the *original* file, so the URL always resolves to bytes that exist and
- * the transform is named rather than faked. It is also the only service that produces
- * a `srcset`, which sharp's silently drops (`docs/todos/017 §3`).
- *
- * A Bun build run with `PLETIVO_IMAGE_SERVICE=cloudflare` therefore emits byte-identical
- * HTML, which is how `test/fixture-images` is compared.
+ * Deliberate divergence: the image service is `cloudflare`, not sharp. An isolate cannot
+ * re-encode, so it emits `/cdn-cgi/image/<options>/` over the original file instead of
+ * naming an output nothing wrote. `PLETIVO_IMAGE_SERVICE=cloudflare` matches it on Bun.
  */
 
 import { IMAGE_MODULE_NAME } from "./generated/runtime-modules.ts";
@@ -34,28 +14,17 @@ import { IMAGE_MODULE_NAME } from "./generated/runtime-modules.ts";
 export const ASSETS_SPECIFIER = "astro:assets";
 
 /**
- * The specifier the generated sources use for the image runtime.
- *
- * Not `astro:assets` itself: that would make `index.ts` import itself, and the
- * components would resolve through the barrel for no reason. `compileProject` answers
- * it with the generated module, the same way it answers the content API.
+ * The specifier the generated sources use for the image runtime. Not `astro:assets`
+ * itself, which would make `index.ts` import itself.
  */
 export const IMAGE_RUNTIME_SPECIFIER = "pletivo:image";
 
-/**
- * Where the generated sources sit in the file map.
- *
- * Under `node_modules/` because that is what they are — a package the project does not
- * have — and because a project file can then never collide with one.
- */
+/** Where the generated sources sit in the file map; under `node_modules/` so no project file collides. */
 export const ASSETS_DIR = "node_modules/.pletivo/astro-assets";
 
 /**
- * Every import and re-export comes first, and the two calls last.
- *
- * Not style: `rewriteImports` only rewrites the statements a module *opens* with, so
- * a specifier below the first ordinary statement is left pointing at `pletivo:image`
- * and the Loader refuses the bundle.
+ * Imports and re-exports must come before the two calls: `rewriteImports` only rewrites
+ * the statements a module opens with.
  */
 const INDEX = `import { setImageMode, setImageService } from "${IMAGE_RUNTIME_SPECIFIER}";
 export { getImage, imageConfig } from "${IMAGE_RUNTIME_SPECIFIER}";
@@ -103,13 +72,8 @@ if (image.srcSet.values.length > 0) {
 `;
 
 /**
- * `astro/components/Picture.astro`, same treatment.
- *
- * `isESMImportedImage` and `resolveSrc` are Astro's, copied because they are four
- * lines each; `lookup` is the `mrmime` shim the Bun host installs, copied for the
- * same reason and because *that* is what the comparison is against — real mrmime
- * answers \`lookup("jpg")\` and the shim does not, and the fallback below covers it
- * identically on both.
+ * `astro/components/Picture.astro`, same treatment. `lookup` is the Bun host's `mrmime`
+ * shim rather than real mrmime, because the shim is what the comparison runs against.
  */
 const PICTURE = `---
 import { getImage } from "${IMAGE_RUNTIME_SPECIFIER}";
@@ -236,11 +200,8 @@ export function lookup(path) {
 `;
 
 /**
- * The sources `astro:assets` becomes, keyed by the path they are compiled at.
- *
- * Added to the file map only for a project that reaches for the specifier — three
- * modules is little, but a bundle that carried them anyway would be a different
- * content address than the same project prepared without them.
+ * The sources `astro:assets` becomes, keyed by the path they are compiled at. Added only
+ * for a project that imports the specifier, so other bundles keep their content address.
  */
 export const ASSETS_SOURCES: Readonly<Record<string, string>> = {
   [`${ASSETS_DIR}/index.ts`]: INDEX,

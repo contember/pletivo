@@ -1,11 +1,7 @@
 /**
- * `@astrojs/compiler` inside a Worker isolate.
- *
- * The compiler is a Go program compiled to wasm. Neither of the entry points
- * the package ships works in workerd: the node one reads `astro.wasm` off the
- * filesystem, the browser one fetches it and calls `WebAssembly.compile()`,
- * which workerd forbids at runtime. What does work is instantiating a module
- * the bundler compiled ahead of time, against the vendored Go runtime.
+ * `@astrojs/compiler` inside a Worker isolate. workerd forbids runtime
+ * `WebAssembly.compile()`, so the Go wasm is a module the bundler compiled ahead of time,
+ * run against the vendored Go runtime.
  */
 
 import astroWasm from "@astrojs/compiler/astro.wasm";

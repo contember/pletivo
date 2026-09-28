@@ -1,27 +1,9 @@
 /**
- * Tailwind v4 inside a Worker isolate.
+ * Tailwind v4 inside a Worker isolate: `compile()` with stylesheets resolved from a
+ * virtual file map and candidates from `extractCandidates` instead of oxide.
  *
- * The `tailwindcss` package itself is pure JS with no dependencies, so the engine
- * runs unchanged. What does not run is everything around it: `@tailwindcss/node`
- * resolves `@import`s off disk, `@tailwindcss/oxide` is a native scanner that walks
- * the filesystem, and `optimize()` needs lightningcss. Only the scanner is load
- * bearing, so this module keeps `compile()` and replaces the rest — stylesheets are
- * resolved out of a virtual file map, and candidates are extracted with
- * `extractCandidates` below, from whatever the caller decides the content is.
- *
- * ## `compiler.build()` accumulates, so a compiler cannot be shared across renders
- *
- * Verified in `tailwindcss/dist/lib.mjs`: the compiler closes over one `Set`, every
- * `build(candidates)` call adds into it, and the CSS returned is compiled from the
- * *union* of everything that instance has ever been handed — a call that adds nothing
- * new even returns the previous result memoized. (`--custom-property` candidates go
- * the same way, through `theme.markUsedVariable`.)
- *
- * Nothing here caches a compiler today, so nothing here is wrong. It is written down
- * because the obvious optimisation is: reuse the compiler and skip the parse. Do that
- * and page A's utilities appear in page B's stylesheet, which is the exact thing
- * per-page CSS exists to stop. A cache has to be keyed by the candidate set, or it has
- * to re-create the compiler.
+ * Never share a compiler across renders: `build()` accumulates every candidate it was
+ * ever given, so page A's utilities would leak into page B's stylesheet.
  */
 
 import type { ModuleId } from "@pletivo/core/artifact";
@@ -51,9 +33,8 @@ interface TailwindCompiler {
 }
 
 /**
- * Tailwind's own stylesheets, keyed by the specifier that reaches them. The package
- * exports them, but they are CSS — the host's bundler has to embed the text and hand
- * it over here.
+ * Tailwind's own stylesheets, keyed by the specifier that reaches them. The host's
+ * bundler embeds their text.
  */
 export interface TailwindStylesheets {
   tailwindcss: string;
@@ -78,11 +59,7 @@ export interface CompileTailwindOptions {
   /** Where `@import` resolves. */
   files: ProjectFiles;
   stylesheets: TailwindStylesheets;
-  /**
-   * What to build. The Workers host hands over the candidates of the page it just
-   * rendered; `scanCandidates` is the whole-project reference input the
-   * `@tailwindcss/oxide` comparison in `docs/todos/016 §7` is stated against.
-   */
+  /** What to build: the rendered page's candidates, or `scanCandidates` for the whole project. */
   candidates: readonly string[];
   /** Canonical CSS targets, in source import order for each logical importer. */
   styleTargets?: ReadonlyMap<ModuleId, readonly ModuleId[]>;
@@ -137,12 +114,8 @@ function join(base: string, id: string): string {
 }
 
 /**
- * Compile the entry stylesheet against the virtual project.
- *
- * `root === "none"` (`@source not inline` / an explicit opt-out) disables scanning.
- * Otherwise the caller's `candidates` are built. The `@source` globs Tailwind reports
- * in `sources` are not applied yet, so a project that narrows its content with
- * `@source` gets a superset — extra candidates, never missing ones.
+ * Compile the entry stylesheet against the virtual project. `root === "none"` disables
+ * scanning. `@source` globs are not applied, so a narrowing `@source` yields a superset.
  */
 export async function compileTailwind(options: CompileTailwindOptions): Promise<TailwindCompilation> {
   const { entry, files, stylesheets } = options;
@@ -176,7 +149,7 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
         targetCursors.set(base, cursor + 1);
         resolved = target;
       } else {
-        // Retained for the standalone parity harness; page assembly always supplies C1 targets.
+        // Only the standalone parity harness reaches this; page assembly supplies targets.
         resolved = id.startsWith(".") ? join(dirname(base), id) : id;
       }
       const embedded = options.embeddedTargets?.get(resolved);
@@ -262,16 +235,8 @@ export function scanCandidates(files: ReadonlyMap<string, string>): string[] {
   return [...all].sort();
 }
 
-// Character tables modelled on oxide's boundary rules
-// (crates/oxide/src/extractor/boundary.rs). Over-extraction is safe: Tailwind's own
-// parseCandidate() throws away anything that is not a utility, so recall matters and
-// precision does not.
-//
-// Measured against @tailwindcss/oxide 4.3.3 over 7569 files from this repo: of the
-// 1039 candidates oxide reports, 80 are missed and 2 of those compile to CSS under
-// the default design system (`border`, from CSS text inside a `<style>` block, and
-// `table`, from the word in markdown prose — neither is a class the page uses). Of
-// the 7178 extra spans this finds, 0 compile to CSS.
+// Modelled on oxide's boundary rules (crates/oxide/src/extractor/boundary.rs); parity in
+// docs/todos/016. Over-extraction is safe: Tailwind's parseCandidate() drops non-utilities.
 const WORD = new Uint8Array(128);
 const BEFORE = new Uint8Array(128);
 const AFTER = new Uint8Array(128);
@@ -292,18 +257,9 @@ const TRAILING = new Set([46, 44, 58, 59, 33, 63]);
 /** Depth limit for re-scanning inside bracket and quote groups. */
 const MAX_DEPTH = 6;
 /**
- * How long a bracket group may run before it stops being a candidate.
- *
- * Nothing in the boundary rules ends a `[`, so an unmatched or merely distant `]`
- * makes one span out of everything between them — in a 626 kB JSON file, the whole
- * file. That span is not a utility and never could be, but the nested re-scan below
- * then launches one sub-scan per bracket and quote inside it, each covering the
- * remainder: 449 seconds for that one file, measured on the static dogfood site's `asset-manifest.json`.
- *
- * Past this length the opening bracket is treated as ordinary punctuation, so the
- * scan walks into the group instead of swallowing it and the interior is still read.
- * 2 KiB leaves room for the longest real candidate — an arbitrary value holding a
- * `data:` URI — with an order of magnitude to spare.
+ * How long a bracket group may run before it stops being a candidate. Without a cap, an
+ * unmatched `[` spans the rest of the file and the nested re-scan goes quadratic.
+ * 2 KiB still fits an arbitrary value holding a `data:` URI.
  */
 const MAX_SPAN = 2048;
 
@@ -451,8 +407,7 @@ const HTML_ENTITIES: Readonly<Record<string, string>> = {
 };
 
 function decodeHtmlEntities(value: string): string {
-  // This intentionally covers numeric references and the punctuation subset Tailwind
-  // class syntax can contain; it is not a complete WHATWG named-entity table.
+  // Numeric references and the punctuation subset class syntax uses; not the full WHATWG table.
   return value.replace(/&(#(?:x[0-9a-f]+|[0-9]+);?|[a-z][a-z0-9]+;)/gi, (entity, body: string) => {
     if (body[0] !== "#") return HTML_ENTITIES[body.slice(0, -1).toLowerCase()] ?? entity;
     const numeric = body.endsWith(";") ? body.slice(0, -1) : body;
@@ -476,8 +431,7 @@ function scan(source: string, from: number, to: number, out: Set<string>, depth:
     const stack: number[] = [];
     const limit = Math.min(to, start + MAX_SPAN);
     while (i < to) {
-      // A group that runs this long is not a candidate. Give the opener back to the
-      // outer walk, which then reads the interior as ordinary text.
+      // Too long to be a candidate: give the opener back so the interior is still read.
       if (i >= limit) {
         i = start + 1;
         break;
@@ -505,8 +459,7 @@ function scan(source: string, from: number, to: number, out: Set<string>, depth:
       const afterOk = end >= source.length || isTableHit(AFTER, source, end);
       if (beforeOk && afterOk) out.add(source.slice(start, end));
 
-      // `class={["gap-y-4"]}`, `classList.add('line-through')` — the candidates are
-      // inside the group, where the outer span's boundaries do not reach.
+      // Candidates inside a group, e.g. `class={["gap-y-4"]}`, need their own scan.
       if (depth < MAX_DEPTH) {
         for (let k = start; k < end; k++) {
           const code = source.charCodeAt(k);

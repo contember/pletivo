@@ -9,13 +9,8 @@ import { JSX_RUNTIME_MODULE_NAME, RUNTIME_MODULE_NAME } from "./generated/runtim
 import { JSX_IMPORT_SPECIFIER } from "./transpile.ts";
 
 /**
- * Specifiers that name pletivo's content API rather than a project file.
- *
- * The bare ones are what a project writes. `astro:content` and `astro/loaders` are
- * Astro's own and the Bun host already answers to both — `astro-plugin.ts` registers
- * them as Bun virtual modules, for `.tsx` as much as for `.astro` — and
- * `pletivo/content` is the package's own `exports` entry. A project written against
- * either renders on both hosts with nothing changed.
+ * A specifier the host answers itself rather than resolving to a project file.
+ * The spellings match what the Bun host accepts, so a project renders on both unchanged.
  */
 export type HostAlias =
   | { kind: "fixed"; executionName: string }
@@ -26,7 +21,6 @@ export type HostAlias =
 
 /**
  * Every supported public spelling converges on one generated singleton module.
- *
  * Its keys are also the only externals an artifact may bind to.
  */
 export const HOST_ALIASES: ReadonlyMap<string, HostAlias> = new Map([

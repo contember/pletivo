@@ -1,67 +1,21 @@
 /**
- * `astro:env` in the render isolate: where the values come from, and how they get in.
- *
- * On the Bun host `astro-plugin.ts` registers `astro:env/client` and
- * `astro:env/server` as virtual modules and generates a `export const X =
- * process.env["X"] ?? import.meta.env?.["X"] ?? undefined` line per field of the
- * config's `env.schema` — the server module exporting every field, the client module
- * only the `context: "client"` ones. A Worker has no `process.env` and this host never
- * evaluates `astro.config.*`, so both halves of that have to arrive from outside.
- *
- * They arrive the way the content files do: **in `env`, never in the module map.**
- * `env` is a separate capability from `globalOutbound` — a project can read its API
- * token while still being cut off from the network — and keeping the values out of the
- * map is what stops a secret rotation from re-compiling the project. What the map
- * does hold is the *names*, because ESM named exports are static: a module cannot
- * decide at run time what it exports.
- *
- * ## Which names
- *
- * The union of two sets, and both halves earn their place:
- *
- *  - **what the project imports.** `import { API_BASE } from "astro:env/server"` is a
- *    link error if the module does not export `API_BASE` — inside an isolate, which
- *    reports it as a bundle that would not start. Exporting every imported name makes
- *    an unset variable `undefined` instead, which is exactly what the Bun host does
- *    with an unset `process.env` entry.
- *  - **what the host provided.** `import * as env from "astro:env/server"` names
- *    nothing at the import site, so a namespace import would otherwise see an empty
- *    module and silently render a page with no configuration in it.
- *
- * ## Size
- *
- * A dynamic Worker's `env` is capped at `MAX_DYNAMIC_WORKER_ENV_SIZE`, 1 MiB. Over
- * that the Loader refuses the whole isolate, so this module measures the values it is
- * about to send and throws `EnvTooLargeError` first — a named error against the
- * caller's own data, rather than a failure to start whose cause is a guess.
+ * `astro:env` in the render isolate. Values travel in the isolate's `env`, never in the
+ * module map, so a secret rotation does not recompile the project; the map holds only the
+ * names, because ESM exports are static.
  */
 
 /** What the values are called in the isolate's `env`. */
 export const ENV_BINDING = "PLETIVO_ENV";
 
 /**
- * `import.meta.env`, which is a different thing from `astro:env` and arrives the same
- * way.
- *
- * Vite gives every module an `import.meta.env`; a Worker Loader module has an
- * `import.meta` with nothing on it, so `import.meta.env.SITE` throws before a page
- * renders a byte. Bun gives the Bun host `process.env` under that name, so the
- * faithful thing for this host to serve is whatever its operator hands it — and
- * nothing, for an operator who hands nothing, which is what an unset `process.env`
- * entry reads as too.
- *
- * In `env` rather than in the module map for the same reason the `astro:env` values
- * are: a page's frontmatter may read a secret through it, and the map is what the
- * isolate is content-addressed — and therefore named, logged and cached — by.
+ * The `env` binding that carries `import.meta.env`, which a Loader module lacks.
+ * Kept out of the module map because a page may read a secret through it.
  */
 export const IMPORT_META_ENV_BINDING = "PLETIVO_IMPORT_META_ENV";
 
 /**
- * The global the rewritten `import.meta.env` reads.
- *
- * A global, because `import.meta` is per-module and V8 hands it to the host, not to
- * the program: there is no assignment any generated module could make that another
- * module's `import.meta` would see.
+ * The global the rewritten `import.meta.env` reads. A global, because no module can
+ * assign to another module's `import.meta`.
  */
 export const IMPORT_META_ENV_GLOBAL = "__pletivoImportMetaEnv";
 
@@ -85,28 +39,15 @@ export const ENV_SERVER_MODULE_NAME = "pletivo-env-server.js";
 export const ENV_CLIENT_SPECIFIER = "astro:env/client";
 export const ENV_SERVER_SPECIFIER = "astro:env/server";
 
-/**
- * The specifiers this host answers to, and the module each becomes.
- *
- * Astro's own two, unchanged, so a project written for the Bun host renders here
- * without an edit — the same contract `CONTENT_API_MODULES` keeps for `astro:content`.
- */
+/** The specifiers this host answers to, and the module each becomes. */
 export const ENV_MODULES: ReadonlyMap<string, string> = new Map([
   [ENV_CLIENT_SPECIFIER, ENV_CLIENT_MODULE_NAME],
   [ENV_SERVER_SPECIFIER, ENV_SERVER_MODULE_NAME],
 ]);
 
 /**
- * The values a host hands a render, split the way `astro:env` splits them.
- *
- * `server` is for what only the server may see — an API token — and `client` for what
- * a browser would be allowed to have. `astro:env/server` exports both, which is what
- * the Bun host's generator does; `astro:env/client` exports only `client`. A name in
- * both records takes the `server` value in the server module.
- *
- * Strings only, because this crosses into a dynamic Worker's `env` as JSON. A project
- * that wants a number reads it as text and parses it, the same as it would from
- * `process.env`.
+ * The values a host hands a render. `astro:env/server` exports both halves (`server`
+ * wins on a clash); `astro:env/client` only `client`. Strings only: `env` crosses as JSON.
  */
 export interface ProjectEnv {
   client?: Readonly<Record<string, string>>;
@@ -120,11 +61,8 @@ export interface EnvPayload {
 }
 
 /**
- * Which `astro:env` modules a project reaches for, and the names it takes from each.
- *
- * `null` means the project never imports that module, so the bundle does not carry
- * it. An empty array means it imports it without naming anything statically — a
- * namespace import, or a dynamic `import()`.
+ * Which `astro:env` modules a project imports, and the names it takes from each.
+ * `null`: never imported. Empty array: imported without static names (namespace or `import()`).
  */
 export interface ProjectEnvUse {
   client: string[] | null;
@@ -135,13 +73,8 @@ export interface ProjectEnvUse {
 export const MAX_ENV_BYTES = 1024 * 1024;
 
 /**
- * The env values are bigger than a dynamic Worker's `env` may be.
- *
- * Thrown before the Loader is called, so the message names the caller's data and its
- * measured size instead of arriving as an isolate that would not start. Nothing here
- * can shrink it: `env` is a capability channel, not a place to put a payload. A
- * project with a megabyte of configuration wants a binding it can query — the shape
- * `content-files.ts` uses — rather than a copy of it in every isolate.
+ * The env values exceed a dynamic Worker's `env` cap. Thrown before the Loader is called,
+ * which would otherwise fail to start the isolate with no named cause.
  */
 export class EnvTooLargeError extends Error {
   constructor(readonly bytes: number) {
@@ -171,10 +104,7 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 /**
  * The values to put in the isolate's `env`, or `null` when there are none.
- *
- * `null` rather than a pair of empty objects on purpose: it keeps a project that
- * imports `astro:env` but was given nothing out of the isolate cache key, so it goes
- * on sharing one isolate with every other render of the same sources.
+ * `null` rather than empty objects keeps the isolate cache key unchanged.
  */
 export function envPayload(env: ProjectEnv | undefined): EnvPayload | null {
   if (env === undefined) return null;
@@ -185,10 +115,8 @@ export function envPayload(env: ProjectEnv | undefined): EnvPayload | null {
 }
 
 /**
- * Throws when what is about to be put in the isolate's `env` would not fit.
- *
- * Both payloads together, because the cap is on `env` as a whole rather than on
- * either of them.
+ * Throws when the isolate's `env` would not fit. Measures both payloads together,
+ * because the cap is on `env` as a whole.
  */
 export function assertEnvFits(
   payload: EnvPayload | null,
@@ -202,10 +130,9 @@ export function assertEnvFits(
 }
 
 /**
- * The `astro:env` modules this project's bundle needs.
- *
- * Sorted, so the bundle a given project and a given set of names produce is the same
- * bundle every time — the module map is what the isolate is content-addressed by.
+ * The `astro:env` modules this project's bundle needs. Names are the union of what the
+ * project imports (an unexported name is a link error) and what the host provided (so a
+ * namespace import sees them). Sorted: the module map content-addresses the isolate.
  */
 export function envModules(
   use: ProjectEnvUse,
@@ -229,17 +156,9 @@ export function envModules(
 }
 
 /**
- * One generated module: a live binding per name, and the installer the entry calls.
- *
- * `export let` rather than `export const` because the values are not known when the
- * module is evaluated — they come out of the isolate's `env`, which only the entry's
- * `fetch` can see. ESM live bindings mean an importer reads the installed value, and
- * the entry installs before it imports any page.
- *
- * Reinstalling on every request is a no-op by construction: `env` is fixed when the
- * isolate is created, so every request in that isolate installs the same values. That
- * is what makes module-level state safe here and not for content, where the bytes
- * belong to one request and a mutable global handed them to the wrong one.
+ * One generated module: an `export let` live binding per name, set by the installer the
+ * entry calls before importing any page. Module-level state is safe here because `env`
+ * is fixed per isolate, so every request installs the same values.
  */
 function envModule(context: "client" | "server", names: string[]): string {
   const unique = [...new Set(names)].sort();

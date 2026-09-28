@@ -1,46 +1,17 @@
 /**
- * TypeScript and JSX out of a module, in the host worker.
+ * TypeScript and JSX stripped in the host worker, since the Loader takes only JavaScript
+ * and `.astro` frontmatter keeps its TypeScript. Sucrase, imported from the package root
+ * only (its CLI entries pull Node deps); see docs/todos/016 for the size comparison.
  *
- * `@astrojs/compiler` copies `.astro` frontmatter into its output verbatim, so
- * `export interface Props` — the documented Astro idiom — arrives at the Worker
- * Loader as JavaScript that does not parse. The Loader takes JavaScript and
- * workerd has no `eval`, so the strip has to happen out here, in the host worker,
- * whose own bundler compiled this file at build time. The same seam compiles
- * `.tsx` pages, which need JSX on top of the same parse.
- *
- * ## Why sucrase
- *
- * It is the only stripper that fits a Worker bundle. Measured, `bun build
- * --target=node --minify` then gzipped: `ts-blank-space` is 1.01 MB gzipped
- * because it depends on the whole `typescript` package; sucrase is 62 KB.
- *
- * Import the package root and nothing else. `sucrase/dist/cli` and
- * `sucrase/dist/register` reach for `mz`, `pirates`, `commander` and
- * `tinyglobby`, none of which run in an isolate — the root entry
- * (`dist/esm/index.js` via the `module` field) imports none of them, and
- * `test/transpile.test.ts` holds that line.
- *
- * ## Why these options
- *
- * - `keepUnusedImports` — the transform must not touch the module graph.
- *   `collectSpecifiers`, `rewriteImports` and the CSS cascade order all read the
- *   import prologue, so an elided import would silently move a page's styles.
- *   It also buys a much stronger property: a module with no TypeScript in it
- *   comes back byte-identical, so wiring this in cannot disturb anything that
- *   already rendered. Explicit `import type` still goes, which is correct — it
- *   never was an edge.
- * - `disableESTransforms` — optional chaining, class fields and friends are
- *   syntax V8 has had for years. Downlevelling them would only move the output
- *   further from what the Bun host runs.
+ * `keepUnusedImports` is load-bearing: the import prologue drives `collectSpecifiers`,
+ * `rewriteImports` and CSS cascade order, and it keeps TS-free input byte-identical.
  */
 
 import { transform } from "sucrase";
 
 /**
- * The package sucrase names in the import it injects for JSX. It appends
- * `/jsx-runtime`, so a page compiles to `import { jsx } from "pletivo/jsx-runtime"`
- * — the same specifier the Bun host's transpiler emits, from the same
- * `jsxImportSource`. `compileProject` points it at the bundle's copy.
+ * The package sucrase names in its injected JSX import (with `/jsx-runtime` appended),
+ * matching the Bun host's `jsxImportSource`.
  */
 export const JSX_IMPORT_SOURCE = "pletivo";
 
@@ -65,18 +36,15 @@ export interface TranspileOptions {
   /** Project path. Only used to name the file in an error. */
   file: string;
   /**
-   * Parse JSX and compile it to the automatic runtime. Off by default: a `.ts` file
-   * reads `<T>(x) => x` as a type assertion, and a `.tsx` file reads it as an
-   * element, so the two cannot share one parse.
+   * Parse JSX and compile it to the automatic runtime. Off by default: `.ts` reads
+   * `<T>(x) => x` as a type assertion, `.tsx` as an element.
    */
   jsx?: boolean;
 }
 
 /**
- * Remove TypeScript syntax — and compile JSX when asked — leaving everything else
- * where it was.
- *
- * Byte-identical output for input that carries neither — see the note above.
+ * Remove TypeScript syntax, and compile JSX when asked, leaving everything else where it
+ * was. Input with neither comes back byte-identical.
  */
 export function stripTypes(code: string, options: TranspileOptions): string {
   try {
@@ -84,9 +52,7 @@ export function stripTypes(code: string, options: TranspileOptions): string {
       transforms: options.jsx ? ["typescript", "jsx"] : ["typescript"],
       jsxRuntime: "automatic",
       jsxImportSource: JSX_IMPORT_SOURCE,
-      // `jsx`, `jsxs` and `jsxDEV` are the same function in @pletivo/runtime, so the
-      // two modes differ only in which specifier is imported. Pick the one the
-      // bundle actually carries.
+      // The runtime's `jsx` and `jsxDEV` are the same function; this picks the specifier the bundle carries.
       production: true,
       keepUnusedImports: true,
       disableESTransforms: true,
