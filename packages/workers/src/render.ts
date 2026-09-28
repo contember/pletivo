@@ -61,7 +61,6 @@ import {
   ENV_SERVER_MODULE_NAME,
   importMetaEnvPayload,
   IMPORT_META_ENV_BINDING,
-  IMPORT_META_ENV_GLOBAL,
   type ProjectEnv,
 } from "./env.ts";
 import {
@@ -77,10 +76,13 @@ import {
   type ExecutionNamespace,
 } from "./execution-identity.ts";
 import {
+  CONTENT_BINDING,
+  decodeParams,
+  encodeParams,
   ISOLATE_PROTOCOL_VERSION,
   IsolateProtocolError,
   parseIsolateResponse,
-  type IsolateParamPair,
+  type IsolateProgramExport,
   type IsolateRequest,
   type IsolateResponse,
 } from "./isolate-protocol.ts";
@@ -88,9 +90,11 @@ import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
   IMAGE_MODULE_NAME,
-  ISOLATE_PROTOCOL_MODULE_NAME,
-  RUNTIME_MODULE_NAME,
+  ISOLATE_ENTRY_MODULE_NAME,
+  ISOLATE_ENTRY_MODULES,
+  ISOLATE_PROGRAM_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
+import type { ExecutableProgram } from "./compiled-program.ts";
 
 // ── The Worker Loader binding ───────────────────────────────────────
 //
@@ -693,25 +697,6 @@ export async function renderMarkdownPage(source: string): Promise<string> {
   );
 }
 
-/**
- * How params cross the isolate boundary.
- *
- * Not as an object: `undefined` is a real param value — a rest segment that matched
- * nothing, which is how `[...page]` names its first page — and `JSON.stringify` drops
- * a key whose value is `undefined`. Sent as an object, `{ page: undefined }` would
- * arrive as `{}` and match the wrong entry of `getStaticPaths`. Pairs with `null`
- * survive the round trip.
- */
-function encodeParams(params: RouteParams): IsolateParamPair[] {
-  return Object.keys(params).map((name): IsolateParamPair => [name, params[name] ?? null]);
-}
-
-function decodeParams(pairs: IsolateParamPair[]): RouteParams {
-  const params: RouteParams = {};
-  for (const [name, value] of pairs) params[name] = value === null ? undefined : value;
-  return params;
-}
-
 interface IsolateRender {
   status: "rendered";
   html: string;
@@ -753,9 +738,10 @@ async function callIsolate(input: {
   const modules = {
     ...project.program.modules,
     ...(project.env === null ? {} : envModules(project.env, env)),
-    [ENTRY_MODULE]: entryModule(project),
+    ...ISOLATE_ENTRY_MODULES,
+    [ISOLATE_PROGRAM_MODULE_NAME]: programModule(project.program),
   };
-  const bundleId = await programHash({ mainModule: ENTRY_MODULE, modules });
+  const bundleId = await programHash({ mainModule: ISOLATE_ENTRY_MODULE_NAME, modules });
 
   const content = project.content === null ? null : options.content;
   if (project.content !== null && !content) throw new ContentUnavailableError();
@@ -785,7 +771,7 @@ async function callIsolate(input: {
   const workerCode: DynamicWorkerCode = {
     compatibilityDate,
     compatibilityFlags: [...compatibilityFlags],
-    mainModule: ENTRY_MODULE,
+    mainModule: ISOLATE_ENTRY_MODULE_NAME,
     modules,
     // Cut off unless the caller said otherwise, because a render is a pure function
     // of its sources and this is code the host generated a millisecond ago. The
@@ -889,339 +875,59 @@ function pageUrl(pathname: string, origin: string): string {
   return new URL("/" + pathname.replace(/^\//, ""), origin).href;
 }
 
-/** Name of the generated module the isolate starts at. Never a project path. */
-const ENTRY_MODULE = "pletivo-entry.js";
-
-/** What the content binding is called in the isolate's `env`. */
-const CONTENT_BINDING = "PLETIVO_CONTENT";
-
 /**
- * The isolate's entry point.
- *
- * Pages are behind thunks rather than static imports so that rendering one route does
- * not evaluate every other page's module — a sibling page that throws at module scope
- * must not take this one down. Thunks are also what keeps the table from defeating the
- * pruned compile: a static `import` here would make every listed page an edge of the
- * entry, and the walk would be back to the whole project.
- *
- * The table is `project.entries` — the pages this bundle was built for — and not every
- * executable module in it, which is what the page loader is ever called with. Sorted,
- * because this text is in the Loader program: unsorted, two
- * renders reaching the same modules in different orders would address one program twice.
- *
- * The two page kinds are called differently, and the difference is not cosmetic: a
- * compiled `.astro` default export takes `(result, props, slots)` and a `.tsx` one
- * takes plain props, so handing an Astro result object to a JSX component would give
- * it the render result as its props. `isAstroComponent` is the same test `build.ts`
- * splits on.
- *
- * This is also the only place `getStaticPaths` can run: it hands back props holding
- * `render()` methods, so nothing it returns may be serialized back to the host. The
- * `render` op therefore resolves and renders in one go; the `paths` op returns the
- * params and drops the props on the floor, which is what makes it JSON-safe.
+ * The per-program half of the isolate entry, as data; `IsolateProgram` in
+ * `isolate-entry.ts` is its contract. Sorted, because this text is in the Loader
+ * program. An optional module is imported only when the program reaches it, so it
+ * stays out of the bundle otherwise.
  */
-function entryModule(project: CompiledProject): string {
-  const pages = [...project.program.entries]
+function programModule(program: ExecutableProgram): string {
+  const { content, env, importMetaEnv } = program.requirements;
+  const imports: string[] = [];
+  const pages = [...program.entries]
     .sort((left, right) => left.moduleId < right.moduleId ? -1 : left.moduleId > right.moduleId ? 1 : 0)
     .map(({ moduleId, executionName }) => {
       const file = moduleId.startsWith("project:") ? moduleId.slice("project:".length) : moduleId;
-      return `  ${JSON.stringify(file)}: () => import(${JSON.stringify(`./${executionName}`)}),`;
-    })
-    .join("\n");
+      return `  ${JSON.stringify(file)}: () => import(${moduleSpecifier(executionName)}),`;
+    });
 
-  return `import { createPaginate, isAstroComponent, redirectPageHtml, renderAstroPage, runWithRenderTracking } from ${JSON.stringify(`./${RUNTIME_MODULE_NAME}`)};
-import { ISOLATE_PROTOCOL_VERSION, parseIsolateRequest } from ${JSON.stringify(`./${ISOLATE_PROTOCOL_MODULE_NAME}`)};
-${contentPrelude(project)}${envPrelude(project)}${importMetaEnvPrelude(project)}
-const PAGES = {
-${pages}
-};
-
-// The Workers host has no \`base\` yet, so paginate's URLs are root-relative — the
-// same output a project built with \`base: "/"\` gets.
-const BASE = "/";
-
-// \`undefined\` is a real param value and JSON drops it; see ParamPair in render.ts.
-function decodeParams(pairs) {
-  const params = {};
-  for (const [name, value] of pairs) params[name] = value === null ? undefined : value;
-  return params;
-}
-
-function encodeParams(params) {
-  return Object.keys(params).map((name) => [name, params[name] ?? null]);
-}
-
-function loadPage(file) {
-  const load = PAGES[file];
-  return load ? load() : null;
-}
-
-/**
- * What a dynamic route renders with — or why it renders nothing.
- *
- * The three kinds the Bun host has, in the order it tests them: an enumerable route
- * renders only what \`getStaticPaths()\` listed, \`prerender = false\` takes its params
- * from the URL, and a route that declares neither stays a 404.
- */
-async function resolveDynamic(module, route, urlParams) {
-  if (typeof module.getStaticPaths === "function") {
-    const paths = await module.getStaticPaths({ paginate: createPaginate(route, BASE) });
-    const match = paths.find((entry) =>
-      Object.keys(urlParams).every((name) => entry.params[name] === urlParams[name]),
+  let contentModules = "null";
+  let contentConfig = "null";
+  if (content !== null) {
+    imports.push(
+      `import * as $$collections from ${moduleSpecifier(CONTENT_MODULE_NAME)};`,
+      `import * as $$images from ${moduleSpecifier(IMAGE_MODULE_NAME)};`,
     );
-    if (!match) return { unresolved: "no-static-path" };
-    // \`Astro.params\` is the path's own param set, not the URL's — build.ts renders
-    // from the getStaticPaths entry, which may carry params no URL segment names.
-    return { params: match.params, props: match.props || {} };
-  }
-  return { unresolved: "not-enumerable" };
-}
-
-function assertStaticOnly(module, file) {
-  if (module.prerender === false) {
-    throw new Error(file + " exports prerender = false, which this static Worker host rejects");
-  }
-}
-
-async function renderPageComponent(component, props, pageContext) {
-  if (isAstroComponent(component)) return renderAstroPage(component, props, pageContext);
-  const output = await component({ ...props, __pageContext: pageContext });
-  if (typeof output === "string") return output;
-  // A static file cannot send a 3xx, so a redirect becomes the meta-refresh page
-  // Astro's static output emits. Any other Response has no static equivalent.
-  if (output instanceof Response) {
-    return output.headers.get("location") ? redirectPageHtml(output) : "";
-  }
-  if (output && typeof output === "object" && "__html" in output) return output.__html;
-  return "";
-}
-
-async function listPaths(routes) {
-  const paths = {};
-  for (const { file, route } of routes) {
-    const module = await loadPage(file);
-    if (!module) throw new Error("no module for " + file);
-    assertStaticOnly(module, file);
-    if (!module || typeof module.getStaticPaths !== "function") continue;
-    const list = await module.getStaticPaths({ paginate: createPaginate(route, BASE) });
-    paths[file] = list.map((entry) => encodeParams(entry.params));
-  }
-  return Response.json({ protocol: ISOLATE_PROTOCOL_VERSION, status: "paths", paths });
-}
-
-async function render({ file, params, route, url, site }) {
-  const module = await loadPage(file);
-  if (!module) return new Response("no module for " + file, { status: 404 });
-  assertStaticOnly(module, file);
-  if (typeof module.default !== "function") {
-    return new Response(file + " has no default export", { status: 500 });
-  }
-  let pageParams = decodeParams(params);
-  let props = {};
-  if (route) {
-    const resolved = await resolveDynamic(module, route, pageParams);
-    if (resolved.unresolved) {
-      return Response.json({ protocol: ISOLATE_PROTOCOL_VERSION, status: "unresolved", reason: resolved.unresolved });
+    contentModules = "{ collections: $$collections, images: $$images }";
+    if (content.configExecutionName !== null) {
+      contentConfig = `() => import(${moduleSpecifier(content.configExecutionName)})`;
     }
-    pageParams = resolved.params;
-    props = resolved.props;
   }
-  const { value, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-    renderPageComponent(module.default, props, {
-      url: new URL(url),
-      site: site ? new URL(site) : undefined,
-      params: pageParams,
-      preferredLocaleList: [],
-    }),
-  );
-  return Response.json({
-    protocol: ISOLATE_PROTOCOL_VERSION,
-    status: "rendered",
-    html: value ?? "",
-    renderedModules: [...renderedModules],
-    tsxStyles,
-  });
-}
 
-export default {
-  async fetch(request, env) {
-    // Everything below this line is a *render* failure, not a bundle that would not
-    // run — the bundle plainly ran, it is running now. Reported as a response rather
-    // than as a throw because an exception crossing the Loader boundary looks
-    // identical to one thrown while starting, and the host would have to guess.
-    // \`await\` on both branches, or the rejection leaves the try block unseen.
-    try {
-      const body = parseIsolateRequest(await request.json());
-      openImportMetaEnv(env);
-      openEnv(env);
-      return await withContent(env, body, () =>
-        body.op === "paths" ? listPaths(body.routes) : render(body)
-      );
-    } catch (error) {
-      return Response.json({
-        protocol: ISOLATE_PROTOCOL_VERSION,
-        status: "error",
-        message: error instanceof Error ? error.message : String(error),
-        ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
-      });
-    }
-  },
-};
-`;
-}
-
-/**
- * The isolate's `astro:env` wiring, emitted only for a project that imports it.
- *
- * Before anything else, and before the first page module is loaded: a page reads its
- * configuration in frontmatter, which runs the moment the module is imported.
- *
- * Unlike the content prelude, this one is safe to leave as module state. The values
- * come out of the isolate's own `env`, which is fixed when the isolate is created, so
- * every request installs the identical thing — there is no per-request value here for
- * an overlapping render to see. What makes that true is the isolate id covering the
- * env values: two different sets of values are two different isolates.
- */
-function envPrelude(project: CompiledProject): string {
-  if (project.env === null) return "\nfunction openEnv() {}\n";
-  const imports: string[] = [];
-  const installs: string[] = [];
-  const use = (names: string[] | null, local: string, module: string): void => {
+  const installers: string[] = [];
+  const useEnv = (names: string[] | null, local: string, module: string): void => {
     if (names === null) return;
-    imports.push(`import * as ${local} from ${JSON.stringify(`./${module}`)};`);
-    installs.push(`  ${local}.${ENV_INSTALL}(values);`);
+    imports.push(`import * as ${local} from ${moduleSpecifier(module)};`);
+    installers.push(`${local}.${ENV_INSTALL}`);
   };
-  use(project.env.client, "$$envClient", ENV_CLIENT_MODULE_NAME);
-  use(project.env.server, "$$envServer", ENV_SERVER_MODULE_NAME);
+  useEnv(env?.client ?? null, "$$envClient", ENV_CLIENT_MODULE_NAME);
+  useEnv(env?.server ?? null, "$$envServer", ENV_SERVER_MODULE_NAME);
 
-  return `${imports.join("\n")}
-
-function openEnv(env) {
-  const values = (env && env[${JSON.stringify(ENV_BINDING)}]) || {};
-${installs.join("\n")}
-}
-`;
-}
-
-/**
- * What `import.meta.env` was rewritten to, installed before any page is imported.
- *
- * A page reads its configuration in frontmatter, which runs the moment the module is
- * imported — and pages are imported from `fetch`, so this runs first. Module state is
- * safe here for the same reason it is for `astro:env`: the values come out of the
- * isolate's own `env`, which is fixed when the isolate is created and covered by its
- * id, so every request in that isolate installs the identical object.
- */
-function importMetaEnvPrelude(project: CompiledProject): string {
-  if (!project.importMetaEnv) return "\nfunction openImportMetaEnv() {}\n";
-  return `
-function openImportMetaEnv(env) {
-  globalThis.${IMPORT_META_ENV_GLOBAL} = (env && env[${JSON.stringify(IMPORT_META_ENV_BINDING)}]) || {};
-}
-`;
+  // Keyed by the protocol's export names, which `IsolateProgram` is checked against.
+  const exports: Record<IsolateProgramExport, string> = {
+    pages: `{\n${pages.join("\n")}\n}`,
+    contentConfig,
+    content: contentModules,
+    envInstallers: `[${installers.join(", ")}]`,
+    importMetaEnv: String(importMetaEnv),
+  };
+  return [
+    ...imports,
+    ...Object.entries(exports).map(([name, value]) => `export const ${name} = ${value};`),
+    "",
+  ].join("\n");
 }
 
-/**
- * The isolate's content wiring, emitted only for a project that reaches for the API.
- *
- * Two things have to happen on **every** request, and both are consequences of the
- * isolate being reused on purpose:
- *
- *  - the `ContentHost` is re-installed, because the binding call has to carry this
- *    request's ref — the stub in `env` was made for the first request and knows
- *    nothing about this one;
- *  - `initCollections` runs, which drops every cached entry. A store that survived
- *    would answer the next render with the previous render's markdown, and since a
- *    content edit does *not* change the module map, that next render is exactly the
- *    one an author is watching for.
- *
- * The config module sits behind a thunk for the same reason pages do: a throw at its
- * module scope should fail the render that needed it, not the isolate.
- */
-function contentPrelude(project: CompiledProject): string {
-  if (project.content === null) {
-    return "\nasync function withContent(_env, _body, run) { return run(); }\n";
-  }
-  const { configModule } = project.content;
-  return `import { createContentRuntime, imageSchemaFor, initCollections, runWithContentRuntime } from ${JSON.stringify(`./${CONTENT_MODULE_NAME}`)};
-import { imageOutputPath, makeImageMetadata } from ${JSON.stringify(`./${IMAGE_MODULE_NAME}`)};
-
-const CONTENT_CONFIG = ${configModule === null ? "null" : `() => import(${JSON.stringify(`./${configModule}`)})`};
-
-/**
- * A path against a directory, as a file-map key.
- *
- * Normalising rather than joining, and that is not tidiness: \`glob({ base:
- * "./content/product" })\` is ordinary in a real project, and \`path.resolve\` on the
- * Bun host makes the leading \`./\` disappear. Joined verbatim it becomes a prefix no
- * key starts with, the scan finds nothing, and the collection is silently empty — a
- * page that renders fine and is wrong.
- */
-function resolveFrom(dir, relative) {
-  const out = [];
-  for (const segment of (dir ? dir.split("/") : []).concat(relative ? relative.split("/") : [])) {
-    if (segment === "." || segment === "") continue;
-    if (segment === "..") out.pop();
-    else out.push(segment);
-  }
-  return out.join("/");
-}
-
-async function withContent(env, body, run) {
-  const files = env && env[${JSON.stringify(CONTENT_BINDING)}];
-  if (!files) throw new Error("[pletivo-workers] the render isolate has no content binding");
-  const ref = body.contentRef;
-  const runtime = createContentRuntime({
-    async scan(projectRoot, base, pattern) {
-      const dir = resolveFrom(projectRoot, base);
-      return {
-        root: dir,
-        // A virtual key is not a filesystem path, so this URL is rooted at the file
-        // map rather than at the machine. \`generateId\` reading \`base\` therefore sees
-        // a different absolute prefix than it would on the Bun host.
-        rootUrl: new URL("file:///" + dir + "/"),
-        files: await files.scan(ref, dir, pattern),
-      };
-    },
-    async readFile(path) {
-      const text = await files.read(ref, path);
-      if (text === null) throw new Error("[pletivo-workers] no content file " + path);
-      return text;
-    },
-    dirname(path) {
-      const at = path.lastIndexOf("/");
-      return at === -1 ? "" : path.slice(0, at);
-    },
-    resolveDir: resolveFrom,
-    /**
-     * \`image()\` in a collection schema. The binding answers with the four fields a
-     * schema needs — never with the file — so what crosses per entry is 40 bytes;
-     * see ImageInfo in content-files.ts.
-     */
-    image(entryDir) {
-      return imageSchemaFor(entryDir, async (dir, relative) => {
-        const path = resolveFrom(dir, relative);
-        const info = files.image ? await files.image(ref, path) : null;
-        if (!info) throw new Error("image not found: " + relative + " (resolved to " + path + ")");
-        return makeImageMetadata({
-          src: "/" + imageOutputPath(path, info.hash),
-          width: info.width,
-          height: info.height,
-          format: info.format,
-          fsPath: path,
-        });
-      });
-    },
-    async loadConfig() {
-      if (!CONTENT_CONFIG) return {};
-      const module = await CONTENT_CONFIG();
-      return module.collections || {};
-    },
-  });
-  return runWithContentRuntime(runtime, async () => {
-    await initCollections(body.rootDir || "");
-    return run();
-  });
-}
-`;
+function moduleSpecifier(name: string): string {
+  return JSON.stringify(`./${name}`);
 }

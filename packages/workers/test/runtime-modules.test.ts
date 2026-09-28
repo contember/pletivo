@@ -3,10 +3,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { bundleRuntimeModule } from "../scripts/build-runtime.ts";
+import { bundleRuntimeModule, strayImports } from "../scripts/build-runtime.ts";
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  IMAGE_MODULE_NAME,
+  ISOLATE_ENTRY_MODULES,
+  ISOLATE_ENTRY_MODULE_NAME,
+  ISOLATE_PROGRAM_MODULE_NAME,
   ISOLATE_PROTOCOL_MODULE_NAME,
   JSX_RUNTIME_MODULE_NAME,
   RUNTIME_MODULES,
@@ -68,6 +72,64 @@ describe("generated runtime modules", () => {
     expect(source.slice(source.lastIndexOf("export {"))).toContain("parseIsolateRequest");
     expect(source.slice(source.lastIndexOf("export {"))).toContain("ISOLATE_PROTOCOL_VERSION");
     expect(source).not.toMatch(/(?:node:|node\/fs|Bun\.)/);
+  });
+
+  test("import the runtime and the protocol into the isolate entry, never a copy", () => {
+    const handler = GENERATED_MODULES["pletivo-isolate-entry.js"];
+    expect(handler).not.toContain("new AsyncLocalStorage");
+    expect(handler).not.toContain("function parseIsolateRequest");
+    expect(Object.keys(ISOLATE_ENTRY_MODULES)).toEqual([
+      ISOLATE_ENTRY_MODULE_NAME,
+      "pletivo-isolate-entry.js",
+    ]);
+  });
+
+  test("import nothing but the Loader modules each one is paired with", () => {
+    const loaderImports: Record<string, { allowed: string[]; nodeBuiltins: boolean }> = {
+      [RUNTIME_MODULE_NAME]: { allowed: [], nodeBuiltins: true },
+      [CONTENT_MODULE_NAME]: { allowed: ["node:async_hooks"], nodeBuiltins: false },
+      [IMAGE_MODULE_NAME]: { allowed: [], nodeBuiltins: false },
+      [ISOLATE_PROTOCOL_MODULE_NAME]: { allowed: [], nodeBuiltins: false },
+      "pletivo-isolate-entry.js": {
+        allowed: [`./${RUNTIME_MODULE_NAME}`, `./${ISOLATE_PROTOCOL_MODULE_NAME}`],
+        nodeBuiltins: false,
+      },
+      [JSX_RUNTIME_MODULE_NAME]: { allowed: [`./${RUNTIME_MODULE_NAME}`], nodeBuiltins: false },
+      [ISOLATE_ENTRY_MODULE_NAME]: {
+        allowed: [`./${ISOLATE_PROGRAM_MODULE_NAME}`, "./pletivo-isolate-entry.js"],
+        nodeBuiltins: false,
+      },
+    };
+    expect(Object.keys(loaderImports).sort()).toEqual(Object.keys(GENERATED_MODULES).sort());
+    for (const [name, { allowed, nodeBuiltins }] of Object.entries(loaderImports)) {
+      expect([name, strayImports(GENERATED_MODULES[name], new Set(allowed), nodeBuiltins)]).toEqual([
+        name,
+        [],
+      ]);
+    }
+  });
+
+  test("names every import no Loader module answers, static or dynamic", () => {
+    const code = [
+      'import { a } from "@pletivo/runtime/astro-shim";',
+      'import b from "./helper.ts";',
+      'export * from "zod";',
+      'export { c } from "./pletivo-runtime.js";',
+      "const d = { a, b };",
+      "export { d };",
+      'const e = () => import("unified");',
+      "const f = (name) => import(name);",
+      'import("node:path");',
+    ].join("\n");
+    expect(strayImports(code, new Set(["./pletivo-runtime.js"]), false)).toEqual([
+      "@pletivo/runtime/astro-shim",
+      "./helper.ts",
+      "zod",
+      "unified",
+      "import(<computed>)",
+      "node:path",
+    ]);
+    expect(strayImports(code, new Set(["./pletivo-runtime.js"]), true)).not.toContain("node:path");
   });
 
   test("rejects a Node built-in before it can enter the protocol bundle", async () => {

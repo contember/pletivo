@@ -1,7 +1,38 @@
 export const ISOLATE_PROTOCOL_VERSION = 1;
 
+/** What the content binding is called in the isolate's `env`. */
+export const CONTENT_BINDING = "PLETIVO_CONTENT";
+
+/**
+ * The exports of the per-program data module the host generates. Named here, where
+ * both sides can see them without the host importing the isolate's runtime.
+ */
+export type IsolateProgramExport =
+  | "pages"
+  | "contentConfig"
+  | "content"
+  | "envInstallers"
+  | "importMetaEnv";
+
 /** Null preserves a route param whose value was `undefined` before JSON encoding. */
 export type IsolateParamPair = [name: string, value: string | null];
+
+/** Route params as both sides hold them; `undefined` is a rest segment that matched nothing. */
+export type IsolateParams = Record<string, string | undefined>;
+
+/**
+ * Params cross as pairs, not as an object: `JSON.stringify` drops a key whose value is
+ * `undefined`, and `{ page: undefined }` arriving as `{}` would match the wrong path.
+ */
+export function encodeParams(params: Readonly<IsolateParams>): IsolateParamPair[] {
+  return Object.keys(params).map((name): IsolateParamPair => [name, params[name] ?? null]);
+}
+
+export function decodeParams(pairs: readonly IsolateParamPair[]): IsolateParams {
+  const params: IsolateParams = {};
+  for (const [name, value] of pairs) params[name] = value === null ? undefined : value;
+  return params;
+}
 
 export interface IsolateRouteSegment {
   type: "static" | "param" | "rest";

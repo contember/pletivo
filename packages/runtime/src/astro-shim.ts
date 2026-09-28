@@ -60,7 +60,7 @@ export interface AstroGlobal {
   request?: Request;
   site?: URL;
   generator: string;
-  params: Record<string, string>;
+  params: Record<string, string | undefined>;
   /**
    * Canonical code of the locale that owns this page, as resolved from
    * the URL (or the default locale for non-prefixed routes). Undefined
@@ -267,7 +267,7 @@ export interface PageContext {
   url?: URL;
   request?: Request;
   site?: URL;
-  params?: Record<string, string>;
+  params?: Record<string, string | undefined>;
   /** Canonical locale code for `Astro.currentLocale`. */
   currentLocale?: string;
   /** Best Accept-Language match for `Astro.preferredLocale`. */

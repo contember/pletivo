@@ -10,6 +10,7 @@ import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
   IMAGE_MODULE_NAME,
+  ISOLATE_ENTRY_MODULE_NAME,
 } from "../generated/runtime-modules.ts";
 import type { ResolvedTarget } from "../module-graph.ts";
 import { UnsupportedFileError } from "./source-module.ts";
@@ -68,7 +69,7 @@ function emitProgram(
     return { moduleId: projectModuleId(file), executionName };
   });
   return {
-    mainModule: "pletivo-entry.js",
+    mainModule: ISOLATE_ENTRY_MODULE_NAME,
     modules: walk.modules,
     entries: programEntries,
     requirements,
