@@ -1,13 +1,10 @@
-import {
-  parsePreparedSite,
-  type ArtifactModule,
-  type ArtifactResolutionTarget,
-  type ModuleId,
-  type PreparedSite,
+import type {
+  ArtifactModule,
+  ArtifactResolutionTarget,
+  ModuleId,
+  PreparedSite,
 } from "@pletivo/core/artifact";
 
-/** The strict executable artifact seam exposed by the Workers host package. */
-export { parsePreparedSite };
 export type { PreparedSite };
 
 /** An artifact external the Workers host does not deliberately implement. */
@@ -41,15 +38,13 @@ export interface ArtifactResolver {
   modules(): readonly ArtifactModule[];
 }
 
-/** Bind the strict V2 graph to the host external capabilities it may use. */
-export function createArtifactResolver(
-  prepared: PreparedSite | null | undefined,
+/** Index a validated graph and bind it to the host externals it may use. */
+export function bindArtifactResolver(
+  prepared: PreparedSite,
   supportedExternals: ReadonlySet<string>,
 ): ArtifactResolver {
-  if (prepared === null || prepared === undefined) return EMPTY;
-  const validated = parsePreparedSite(prepared);
   const modules = new Map<ModuleId, ArtifactModule>();
-  for (const module of validated.artifact.modules) {
+  for (const module of prepared.artifact.modules) {
     const reserved = RESERVED_ARTIFACT_PREFIXES.find((prefix) => module.id.startsWith(prefix));
     if (reserved !== undefined) {
       throw new ModuleIdentityCollisionError(
@@ -61,7 +56,7 @@ export function createArtifactResolver(
   }
 
   const resolutions = new Map<ModuleId, Map<string, ArtifactResolutionTarget>>();
-  for (const resolution of validated.artifact.resolutions) {
+  for (const resolution of prepared.artifact.resolutions) {
     if (
       resolution.target.kind === "external" &&
       !supportedExternals.has(resolution.target.specifier)
@@ -79,15 +74,9 @@ export function createArtifactResolver(
   return {
     module: (id) => modules.get(id) ?? null,
     resolve: (importer, specifier) => resolutions.get(importer)?.get(specifier) ?? null,
-    modules: () => validated.artifact.modules,
+    modules: () => prepared.artifact.modules,
   };
 }
-
-const EMPTY: ArtifactResolver = {
-  module: () => null,
-  resolve: () => null,
-  modules: () => [],
-};
 
 /** Project source identity used by both producer edges and the Worker compiler. */
 export function projectModuleId(path: string): ModuleId {
@@ -113,14 +102,4 @@ export function executionNameForModuleId(id: ModuleId): string {
   const bytes = new TextEncoder().encode(id);
   const encoded = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return `module-${encoded}.js`;
-}
-
-/** Artifact Loader names, used only to keep startup diagnostics source-aware. */
-export function artifactModuleNames(prepared: PreparedSite | null | undefined): Set<string> {
-  if (prepared === null || prepared === undefined) return new Set();
-  return new Set(
-    parsePreparedSite(prepared).artifact.modules.map((module) =>
-      executionNameForModuleId(module.id),
-    ),
-  );
 }

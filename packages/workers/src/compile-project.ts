@@ -41,22 +41,18 @@
 
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
-import type { ArtifactModuleKind, ModuleId, PreparedSite } from "@pletivo/core/artifact";
+import type { ArtifactModuleKind, ModuleId } from "@pletivo/core/artifact";
 import { imageOutputPath } from "@pletivo/core/image";
 import { compileAstro, parseAstro, type AstroCompiler } from "./astro-compiler.ts";
 import {
-  createArtifactResolver,
   executionNameForModuleId,
   ModuleIdentityCollisionError,
   normalizeProjectPath,
   projectModuleId,
 } from "./artifact.ts";
-import {
-  ASSETS_DIR,
-  ASSETS_SOURCES,
-  ASSETS_SPECIFIER,
-  IMAGE_RUNTIME_SPECIFIER,
-} from "./astro-assets.ts";
+import { HOST_ALIASES } from "./host-aliases.ts";
+import { EMPTY_ARTIFACT_RESOLVER, type ProjectArtifact } from "./project-artifact.ts";
+import { ASSETS_DIR, ASSETS_SOURCES } from "./astro-assets.ts";
 import type { CompileCache, CompiledFile } from "./compile-cache.ts";
 import type {
   ExecutableProgram,
@@ -65,10 +61,8 @@ import type {
 import type { ProjectAssetInfo, ProjectAssetsView } from "./asset-port.ts";
 import {
   ENV_CLIENT_SPECIFIER,
-  ENV_CLIENT_MODULE_NAME,
   ENV_MODULES,
   ENV_SERVER_SPECIFIER,
-  ENV_SERVER_MODULE_NAME,
   IMPORT_META_ENV_GLOBAL,
   type ProjectEnvUse,
 } from "./env.ts";
@@ -82,9 +76,7 @@ import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
   IMAGE_MODULE_NAME,
-  JSX_RUNTIME_MODULE_NAME,
   RUNTIME_MODULES,
-  RUNTIME_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
 import { md5Hex } from "./md5.ts";
 import type {
@@ -98,7 +90,7 @@ import {
   TailwindNotConfiguredError,
   type TailwindStylesheets,
 } from "./tailwind.ts";
-import { JSX_IMPORT_SPECIFIER, stripTypes, TranspileError } from "./transpile.ts";
+import { stripTypes, TranspileError } from "./transpile.ts";
 
 /** One `<style>` block from a `.astro` file, in the order it was written. */
 export interface StyleBlock {
@@ -231,39 +223,6 @@ function projectModuleKind(file: string): ArtifactModuleKind | null {
   return null;
 }
 
-/**
- * Specifiers that name pletivo's content API rather than a project file.
- *
- * The bare ones are what a project writes. `astro:content` and `astro/loaders` are
- * Astro's own and the Bun host already answers to both — `astro-plugin.ts` registers
- * them as Bun virtual modules, for `.tsx` as much as for `.astro` — and
- * `pletivo/content` is the package's own `exports` entry. A project written against
- * either renders on both hosts with nothing changed.
- */
-type HostAlias =
-  | { kind: "fixed"; executionName: string }
-  | { kind: "content" }
-  | { kind: "assets" }
-  | { kind: "image" }
-  | { kind: "env"; executionName: string };
-
-/** Every supported public spelling converges on one generated singleton module. */
-const HOST_ALIASES: ReadonlyMap<string, HostAlias> = new Map([
-  [JSX_IMPORT_SPECIFIER, { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
-  ["pletivo/jsx-dev-runtime", { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
-  ["@pletivo/runtime/jsx-runtime", { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
-  ["pletivo/astro-shim", { kind: "fixed", executionName: RUNTIME_MODULE_NAME }],
-  ["@pletivo/runtime/astro-shim", { kind: "fixed", executionName: RUNTIME_MODULE_NAME }],
-  ["astro:content", { kind: "content" }],
-  ["astro/loaders", { kind: "content" }],
-  ["pletivo/content", { kind: "content" }],
-  [ASSETS_SPECIFIER, { kind: "assets" }],
-  [IMAGE_RUNTIME_SPECIFIER, { kind: "image" }],
-  [ENV_CLIENT_SPECIFIER, { kind: "env", executionName: ENV_CLIENT_MODULE_NAME }],
-  [ENV_SERVER_SPECIFIER, { kind: "env", executionName: ENV_SERVER_MODULE_NAME }],
-]);
-
-const SUPPORTED_ARTIFACT_EXTERNALS = new Set(HOST_ALIASES.keys());
 const UNSUPPORTED_PACKAGE_ROOTS = new Set(["pletivo", "@pletivo/runtime", "@pletivo/core"]);
 
 /**
@@ -568,7 +527,7 @@ export interface CompileProjectOptions {
    * a bare specifier is left alone and the Loader reports it — which is where every
    * project with an npm dependency stood before the artifact existed.
    */
-  artifact?: PreparedSite | null;
+  artifact?: ProjectArtifact;
   /** Tailwind's host-embedded CSS sources, used only for CSS imports of its public stylesheets. */
   tailwind?: TailwindStylesheets;
   /**
@@ -720,7 +679,7 @@ function sourceLegacyKey(id: ModuleId, claimed: ReadonlyMap<ModuleId, SourceModu
  */
 export async function compileProject(options: CompileProjectOptions): Promise<CompiledProject> {
   const { compiler = bundled, assets, cache } = options;
-  const artifact = createArtifactResolver(options.artifact, SUPPORTED_ARTIFACT_EXTERNALS);
+  const artifact = options.artifact?.resolver ?? EMPTY_ARTIFACT_RESOLVER;
   const projectFiles = normalizeProjectFiles(options.files);
   const files = new Map<string, string>(projectFiles);
   for (const module of artifact.modules()) files.set(module.id, module.source);

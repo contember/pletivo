@@ -13,6 +13,7 @@ import path from "node:path";
 import { Glob } from "bun";
 import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
 import { minifyCss } from "../../pletivo/src/css-minify.ts";
+import { loadProjectArtifact } from "../src/project-artifact.ts";
 import { serveImage } from "../src/images.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles, createProjectAssetsView } from "../src/content-files.ts";
@@ -58,9 +59,8 @@ const assets = new Map([...sources.binary].map(([rel, bytes]) => [`${prefix}/${r
 const assetView = createProjectAssetsView(assets);
 
 const preparedOutput: unknown = JSON.parse(await Bun.file(artifactPath).text());
-const artifact = prefixProjectImporters(
-  parsePreparedSite(siteFromPrepareOutput(preparedOutput)),
-  prefix,
+const artifact = loadProjectArtifact(
+  prefixProjectImporters(parsePreparedSite(siteFromPrepareOutput(preparedOutput)), prefix),
 );
 
 function siteFromPrepareOutput(value: unknown): unknown {
@@ -74,6 +74,7 @@ function siteFromPrepareOutput(value: unknown): unknown {
 function prefixProjectImporters(site: PreparedSite, projectPrefix: string): PreparedSite {
   if (projectPrefix === "") return site;
   return {
+    ...site,
     artifact: {
       ...site.artifact,
       resolutions: site.artifact.resolutions.map((resolution) => ({

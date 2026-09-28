@@ -13,8 +13,8 @@ import { compileProject, UnsupportedFileError } from "../src/compile-project.ts"
 import {
   ModuleIdentityCollisionError,
   UnsupportedArtifactExternalError,
-  parsePreparedSite,
 } from "../src/artifact.ts";
+import { loadProjectArtifact } from "../src/project-artifact.ts";
 import { finalizeHtml, pageCss } from "../src/page-css.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 
@@ -131,13 +131,13 @@ describe("Artifact V2 compiler consumer", () => {
       files: PROJECT,
       entries: ["src/pages/index.astro"],
       compiler,
-      artifact: PREPARED,
+      artifact: loadProjectArtifact(PREPARED),
     });
     const other = await compileProject({
       files: PROJECT,
       entries: ["src/pages/other.astro"],
       compiler,
-      artifact: PREPARED,
+      artifact: loadProjectArtifact(PREPARED),
     });
 
     expect(index.graph.edges).toContainEqual({
@@ -155,7 +155,7 @@ describe("Artifact V2 compiler consumer", () => {
   });
 
   test("walks a transitive virtual graph and deliberately compiles JSON and TSX", async () => {
-    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
 
     expect(bodyOf(compiled, IDs.data)).toBe(`export default {"label":"ok"};\n`);
     expect(bodyOf(compiled, IDs.chip)).not.toContain(": { label: string }");
@@ -166,7 +166,7 @@ describe("Artifact V2 compiler consumer", () => {
   });
 
   test("keeps package Astro and CSS in one ordered graph", async () => {
-    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
 
     expect(compiled.imports.get("src/pages/index.astro")).toEqual([
       IDs.sameA,
@@ -186,7 +186,7 @@ describe("Artifact V2 compiler consumer", () => {
   });
 
   test("makes every rewritten module import agree with its canonical edge", async () => {
-    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+    const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
     const graphModules = new Map(compiled.graph.modules.map((module) => [module.identity.id, module]));
 
     for (const edge of compiled.graph.edges) {
@@ -231,7 +231,7 @@ describe("Artifact V2 compiler consumer", () => {
       files: new Map([["src/pages/index.js", `import First from "first";\nimport Second from "second";\nexport { First, Second };\n`]]),
       entries: ["src/pages/index.js"],
       compiler,
-      artifact: prepared,
+      artifact: loadProjectArtifact(prepared),
       cache,
     });
 
@@ -267,7 +267,7 @@ describe("Artifact V2 compiler consumer", () => {
     const compiled = await compileProject({
       files: new Map([["src/pages/index.js", `import value from "root";\nexport default value;\n`]]),
       entries: ["src/pages/index.js"],
-      artifact: prepared,
+      artifact: loadProjectArtifact(prepared),
       compiler,
     });
     expect(bodyOf(compiled, root)).toContain(`"./${compiled.moduleNames.get(target)}"`);
@@ -295,7 +295,7 @@ describe("Artifact V2 compiler consumer", () => {
     const compiled = await compileProject({
       files: new Map([["src/pages/index.js", `const before = true;\nimport { PUBLIC as browser } from "public-env";\nimport { TOKEN } from "private-env";\nexport { before, browser, TOKEN };\n`]]),
       entries: ["src/pages/index.js"],
-      artifact: prepared,
+      artifact: loadProjectArtifact(prepared),
       compiler,
     });
     expect(compiled.env).toEqual({ client: ["PUBLIC"], server: ["TOKEN"] });
@@ -303,8 +303,8 @@ describe("Artifact V2 compiler consumer", () => {
   });
 
   test("uses collision-proof names derived from full ModuleIds", async () => {
-    const first = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
-    const second = await compileProject({ files: new Map([...PROJECT].reverse()), entries: ["src/pages/index.astro"], compiler, artifact: PREPARED });
+    const first = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
+    const second = await compileProject({ files: new Map([...PROJECT].reverse()), entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
 
     expect(first.moduleNames.get(IDs.slash)).not.toBe(first.moduleNames.get(IDs.underscore));
     expect(second.moduleNames.get(IDs.slash)).toBe(first.moduleNames.get(IDs.slash));
@@ -313,8 +313,8 @@ describe("Artifact V2 compiler consumer", () => {
 
   test("recomputes artifact resolution and graph effects on a compile-cache hit", async () => {
     const cache = createCompileCache();
-    const cold = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED, cache });
-    const unchangedWarm = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: PREPARED, cache });
+    const cold = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED), cache });
+    const unchangedWarm = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED), cache });
     const changed: PreparedSite = {
       artifact: {
         ...PREPARED.artifact,
@@ -325,7 +325,7 @@ describe("Artifact V2 compiler consumer", () => {
         ),
       },
     };
-    const warm = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: changed, cache });
+    const warm = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(changed), cache });
 
     expect(unchangedWarm.graph).toEqual(cold.graph);
     expect(unchangedWarm.program.requirements).toEqual(cold.program.requirements);
@@ -356,9 +356,7 @@ describe("Artifact V2 compiler consumer", () => {
         ],
       },
     };
-    await expect(
-      compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: unknownExternal }),
-    ).rejects.toBeInstanceOf(UnsupportedArtifactExternalError);
+    expect(() => loadProjectArtifact(unknownExternal)).toThrow(UnsupportedArtifactExternalError);
     await expect(
       compileProject({
         files: new Map([["src/pages/a.astro", `---\nimport "missing-package";\n---\n<p>a</p>\n`]]),
@@ -368,21 +366,17 @@ describe("Artifact V2 compiler consumer", () => {
     ).rejects.toThrow(/src\/pages\/a\.astro.*missing-package/);
   });
 
-  test("strictly rejects wrong-version and dangling artifacts", async () => {
+  test("strictly rejects wrong-version and dangling artifacts", () => {
     const wrongVersion = JSON.parse(JSON.stringify(PREPARED));
     wrongVersion.artifact.version = 1;
-    await expect(
-      compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: wrongVersion }),
-    ).rejects.toBeInstanceOf(ArtifactVersionError);
+    expect(() => loadProjectArtifact(wrongVersion)).toThrow(ArtifactVersionError);
 
     const dangling = JSON.parse(JSON.stringify(PREPARED));
     dangling.artifact.resolutions[0].target.id = "npm:missing/index.js";
-    await expect(
-      compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: dangling }),
-    ).rejects.toBeInstanceOf(ArtifactFormatError);
+    expect(() => loadProjectArtifact(dangling)).toThrow(ArtifactFormatError);
   });
 
-  test("reserves Worker-owned ModuleId namespaces", async () => {
+  test("reserves Worker-owned ModuleId namespaces", () => {
     const prepared: PreparedSite = {
       artifact: {
         version: ARTIFACT_VERSION,
@@ -392,9 +386,7 @@ describe("Artifact V2 compiler consumer", () => {
         resolutions: [],
       },
     };
-    await expect(
-      compileProject({ files: new Map(), artifact: prepared, compiler }),
-    ).rejects.toBeInstanceOf(ModuleIdentityCollisionError);
+    expect(() => loadProjectArtifact(prepared)).toThrow(ModuleIdentityCollisionError);
   });
 
   test("rejects conflicting project descriptors under one normalized ModuleId", async () => {
@@ -424,7 +416,7 @@ describe("injected scripts and strict parsing", () => {
   });
 
   test("round-trips the V2 fixture", () => {
-    expect(parsePreparedSite(JSON.parse(JSON.stringify(PREPARED)))).toEqual(PREPARED);
+    expect(loadProjectArtifact(JSON.parse(JSON.stringify(PREPARED))).prepared).toEqual(PREPARED);
   });
 
   test("exposes unresolved imports as UnsupportedFileError", async () => {

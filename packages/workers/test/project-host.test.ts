@@ -4,7 +4,9 @@
  * the split — `example-playground/` wires the same two objects to a real workspace.
  */
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { ARTIFACT_VERSION, ArtifactVersionError } from "@pletivo/core/artifact";
+import { UnsupportedArtifactExternalError } from "../src/artifact.ts";
 import type {
   ParseOptions,
   ParseResult,
@@ -463,6 +465,76 @@ describe("createProjectHost", () => {
 
     test("parses the artifact before taking the direct markdown path", async () => {
       await expect(artifactHost("null").render("/")).rejects.toBeInstanceOf(ProjectArtifactError);
+    });
+
+    function artifactMarking(marker: string, externals: readonly string[] = []): string {
+      return JSON.stringify({
+        artifact: {
+          version: ARTIFACT_VERSION,
+          config: {},
+          scripts: { headInline: [`window.marker = "${marker}";`], page: [] },
+          modules: [],
+          resolutions: externals.map((specifier) => ({
+            importer: "project:src/pages/index.md",
+            specifier,
+            target: { kind: "external", specifier },
+          })),
+        },
+      });
+    }
+
+    test("loads the artifact again only when its source changes", async () => {
+      const files = new Map<string, string>([
+        ["src/pages/index.md", "---\ntitle: Local\n---\n\nbody\n"],
+        [artifactPath, artifactMarking("first")],
+      ]);
+      const assets = createProjectAssetsView(new Map());
+      const store: ProjectStore = {
+        snapshot: () => Promise.resolve({ files: new Map(files), assets, revision: "constant" }),
+      };
+      const host = createProjectHost({ store, artifactPath, loader, compiler });
+      const parse = spyOn(JSON, "parse");
+      const parsesOf = (source: string) =>
+        parse.mock.calls.filter(([text]) => text === source).length;
+      try {
+        expect((await host.render("/")).html).toContain(`window.marker = "first";`);
+        // An equal source in a new string still reuses the loaded artifact.
+        files.set(artifactPath, artifactMarking("first"));
+        expect((await host.render("/")).html).toContain(`window.marker = "first";`);
+        expect(parsesOf(artifactMarking("first"))).toBe(1);
+
+        files.set(artifactPath, artifactMarking("second"));
+        const reloaded = (await host.render("/")).html;
+        expect(reloaded).toContain(`window.marker = "second";`);
+        expect(reloaded).not.toContain(`window.marker = "first";`);
+        expect(parsesOf(artifactMarking("second"))).toBe(1);
+      } finally {
+        parse.mockRestore();
+      }
+    });
+
+    test("surfaces an unsupported external as itself, not as a malformed artifact", async () => {
+      const source = artifactMarking("unused", ["node:fs"]);
+
+      await expect(artifactHost(source).render("/")).rejects.toBeInstanceOf(
+        UnsupportedArtifactExternalError,
+      );
+      const response = await artifactHost(source).fetch(new Request("https://example.test/"));
+      expect(response.status).toBe(500);
+      expect(await response.text()).toContain("UnsupportedArtifactExternalError");
+    });
+
+    test("rejects a wrong-version direct artifact when the host is created", () => {
+      expect(() =>
+        createProjectHost({
+          store: createMapProjectStore(new Map()),
+          artifact: {
+            artifact: { version: 1, config: {}, scripts: {}, modules: [], resolutions: [] },
+          },
+          loader,
+          compiler,
+        }),
+      ).toThrow(ArtifactVersionError);
     });
   });
 

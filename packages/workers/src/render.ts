@@ -41,8 +41,8 @@ import {
   type RouteParams,
 } from "@pletivo/core/router";
 import { parseMarkdown } from "@pletivo/core/content/markdown";
-import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
-import { artifactModuleNames, projectModuleId } from "./artifact.ts";
+import { projectModuleId } from "./artifact.ts";
+import type { ProjectArtifact } from "./project-artifact.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
@@ -223,7 +223,7 @@ export interface ProjectOptions {
    * a different program. Without one, a project that imports an npm package fails at
    * the Loader, which is where every such project stood before. See `artifact.ts`.
    */
-  artifact?: unknown;
+  artifact?: ProjectArtifact;
 }
 
 export interface RenderPageOptions extends ProjectOptions {
@@ -464,14 +464,13 @@ export interface RoutePath {
  * during enumeration instead of producing a path the host cannot later render.
  */
 export async function projectPaths(options: ProjectOptions): Promise<RoutePath[]> {
-  const artifact = validateArtifact(options.artifact);
   const pagesDir = options.pagesDir ?? DEFAULT_PAGES_DIR;
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
   const routes = projectRoutes(options.files, pagesDir).filter((route) => !route.isEndpoint);
   const executable = routes.filter((route) => isExecutableModule(prefix + route.file));
 
   const paramSets = executable.length === 0 ? new Map<string, RouteParams[]>() :
-    await isolatePaths(executable, prefix, options, artifact);
+    await isolatePaths(executable, prefix, options);
 
   const paths: RoutePath[] = [];
   for (const route of routes) {
@@ -507,7 +506,6 @@ async function isolatePaths(
   routes: Route[],
   prefix: string,
   options: ProjectOptions,
-  artifact: PreparedSite | undefined,
 ): Promise<Map<string, RouteParams[]>> {
   const project = await compileProject({
     files: options.files,
@@ -515,7 +513,7 @@ async function isolatePaths(
     entries: routes.map((route) => prefix + route.file),
     srcDir: srcDirOf(options),
     compiler: options.compiler,
-    artifact,
+    artifact: options.artifact,
     assets: options.assets,
     cache: options.compileCache,
     tailwind: options.tailwind,
@@ -523,7 +521,6 @@ async function isolatePaths(
   const { payload } = await callIsolate({
     project,
     options,
-    artifact,
     label: "resolving getStaticPaths",
     body: {
       protocol: ISOLATE_PROTOCOL_VERSION,
@@ -542,13 +539,13 @@ async function isolatePaths(
 // ── Rendering ───────────────────────────────────────────────────────
 
 export async function renderPage(options: RenderPageOptions): Promise<RenderedPage> {
-  const artifact = validateArtifact(options.artifact);
+  const artifact = options.artifact?.prepared.artifact;
   const { files, pathname, loader, pagesDir = DEFAULT_PAGES_DIR } = options;
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
   // The caller's `site` outranks the artifact's: a preview server serving one project
   // under several hostnames is naming the origin it is actually being reached at.
-  const site = options.site ?? artifact?.artifact.config.site;
-  const scripts = artifact?.artifact.scripts;
+  const site = options.site ?? artifact?.config.site;
+  const scripts = artifact?.scripts;
   const srcDir = options.srcDir ?? parentDir(pagesDir);
   const rootDir = options.rootDir ?? parentDir(srcDir);
 
@@ -603,7 +600,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     entries: [file],
     srcDir,
     compiler: options.compiler,
-    artifact,
+    artifact: options.artifact,
     assets: options.assets,
     cache: options.compileCache,
     tailwind: options.tailwind,
@@ -617,7 +614,6 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     route: match.route.isDynamic ? match.route : null,
     site,
     options,
-    artifact,
   });
   const css = pageCss({
     entry: projectModuleId(file),
@@ -741,12 +737,11 @@ export class IsolateExecutionError extends Error {
 async function callIsolate(input: {
   project: CompiledProject;
   options: ProjectOptions;
-  artifact: PreparedSite | undefined;
   /** Names the operation in an error, e.g. `rendering src/pages/index.astro`. */
   label: string;
   body: IsolateRequest;
 }): Promise<{ bundleId: string; payload: IsolateResponse }> {
-  const { project, options, artifact, label, body } = input;
+  const { project, options, label, body } = input;
   // The env values are not in the map — only the names their modules export, which is
   // forced: ESM decides its exports statically. Rotating a secret leaves the bundle,
   // and therefore the warm isolate, exactly where it was.
@@ -817,7 +812,7 @@ async function callIsolate(input: {
   try {
     response = await stub.getEntrypoint().fetch(request);
   } catch (error) {
-    throw new IsolateStartError(error, typescriptSuspects(modules, artifactModuleNames(artifact)));
+    throw new IsolateStartError(error, typescriptSuspects(modules, options.artifact?.moduleNames));
   } finally {
     handle?.close();
   }
@@ -859,9 +854,8 @@ async function renderModule(input: {
   route: Route | null;
   site: string | undefined;
   options: RenderPageOptions;
-  artifact: PreparedSite | undefined;
 }): Promise<IsolateRender> {
-  const { project, file, params, route, site, options, artifact } = input;
+  const { project, file, params, route, site, options } = input;
 
   // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost
   // stand-in. The request itself only carries the render instructions — the page's
@@ -871,7 +865,6 @@ async function renderModule(input: {
   const { bundleId, payload } = await callIsolate({
     project,
     options,
-    artifact,
     label: `rendering ${file}`,
     body: {
       protocol: ISOLATE_PROTOCOL_VERSION,
@@ -894,10 +887,6 @@ async function renderModule(input: {
 
 function pageUrl(pathname: string, origin: string): string {
   return new URL("/" + pathname.replace(/^\//, ""), origin).href;
-}
-
-function validateArtifact(value: unknown): PreparedSite | undefined {
-  return value === undefined ? undefined : parsePreparedSite(value);
 }
 
 /** Name of the generated module the isolate starts at. Never a project path. */

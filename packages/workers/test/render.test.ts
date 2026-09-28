@@ -12,6 +12,7 @@ import {
   typescriptSuspects,
   type WorkerLoaderBinding,
 } from "../src/render.ts";
+import { loadProjectArtifact } from "../src/project-artifact.ts";
 import { IsolateProtocolError } from "../src/isolate-protocol.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
@@ -195,30 +196,16 @@ describe("renderPage, .md on the host", () => {
     expect((await render("/about")).bundleId).toBe("");
   });
 
-  test("rejects a wrong-version direct artifact before rendering markdown", async () => {
-    await expect(
-      renderPage({
-        files: SITE,
-        pathname: "/about",
-        loader,
-        compiler,
-        artifact: {
-          artifact: { version: 1, config: {}, scripts: {}, modules: [], resolutions: [] },
-        },
+  test("rejects a wrong-version direct artifact before any render", () => {
+    expect(() =>
+      loadProjectArtifact({
+        artifact: { version: 1, config: {}, scripts: {}, modules: [], resolutions: [] },
       }),
-    ).rejects.toBeInstanceOf(ArtifactVersionError);
+    ).toThrow(ArtifactVersionError);
   });
 
-  test("rejects a malformed V2 direct artifact before rendering markdown", async () => {
-    await expect(
-      renderPage({
-        files: SITE,
-        pathname: "/about",
-        loader,
-        compiler,
-        artifact: { artifact: { version: 2 } },
-      }),
-    ).rejects.toBeInstanceOf(ArtifactFormatError);
+  test("rejects a malformed V2 direct artifact before any render", () => {
+    expect(() => loadProjectArtifact({ artifact: { version: 2 } })).toThrow(ArtifactFormatError);
   });
 });
 

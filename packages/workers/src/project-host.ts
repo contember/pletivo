@@ -25,7 +25,8 @@
  * be testable without a Durable Object under it.
  */
 
-import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
+import { ArtifactFormatError, ArtifactVersionError } from "@pletivo/core/artifact";
+import { loadProjectArtifact, type ProjectArtifact } from "./project-artifact.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
@@ -83,8 +84,8 @@ export interface ProjectHostOptions {
    */
   compileCache?: CompileCache | false;
   /**
-   * `pletivo prepare`'s output as a file *in the project*, re-read whenever the store's
-   * revision moves.
+   * `pletivo prepare`'s output as a file *in the project*, loaded again whenever its
+   * content changes.
    *
    * This is the workspace shape: the artifact is a file an agent's `bun install` can
    * invalidate, not a constant the host was deployed with. A host holding one in memory
@@ -92,7 +93,7 @@ export interface ProjectHostOptions {
    * dependencies, which is where every project stood before the artifact existed.
    */
   artifactPath?: string;
-  /** The artifact already parsed, for a host that is handed one per request. */
+  /** `pletivo prepare`'s output as a value, validated once when the host is created. */
   artifact?: unknown;
   /**
    * How many generated files to keep for the browser's follow-up GET.
@@ -128,7 +129,7 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 
 export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const directArtifact =
-    options.artifact === undefined ? undefined : parsePreparedSite(options.artifact);
+    options.artifact === undefined ? undefined : loadProjectArtifact(options.artifact);
   const served = new GeneratedAssetCache<RenderedAsset>(
     options.generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE,
   );
@@ -139,18 +140,18 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
    */
   const compileCache =
     options.compileCache === false ? undefined : (options.compileCache ?? createCompileCache());
-  let artifactAt: { revision: string; artifact: PreparedSite } | null = null;
+  let artifactFrom: { source: string; artifact: ProjectArtifact } | null = null;
 
   /** The artifact for this snapshot: the caller's, or the project's own file. */
-  function artifactOf(snapshot: ProjectSnapshot): PreparedSite | undefined {
+  function artifactOf(snapshot: ProjectSnapshot): ProjectArtifact | undefined {
     if (directArtifact !== undefined) return directArtifact;
     const path = options.artifactPath;
     if (path === undefined) return undefined;
-    if (artifactAt?.revision === snapshot.revision) return artifactAt.artifact;
     const source = snapshot.files.get(path);
     if (source === undefined) throw new ProjectArtifactError(path, "configured artifact is missing");
+    if (artifactFrom?.source === source) return artifactFrom.artifact;
     const artifact = parseArtifact(source, path);
-    artifactAt = { revision: snapshot.revision, artifact };
+    artifactFrom = { source, artifact };
     return artifact;
   }
 
@@ -259,7 +260,7 @@ export class ProjectArtifactError extends Error {
   }
 }
 
-function parseArtifact(source: string, path: string): PreparedSite {
+function parseArtifact(source: string, path: string): ProjectArtifact {
   let parsed: unknown;
   try {
     parsed = JSON.parse(source);
@@ -267,9 +268,13 @@ function parseArtifact(source: string, path: string): PreparedSite {
     throw new ProjectArtifactError(path, error instanceof Error ? error.message : String(error));
   }
   try {
-    return parsePreparedSite(parsed);
+    return loadProjectArtifact(parsed);
   } catch (error) {
-    throw new ProjectArtifactError(path, error instanceof Error ? error.message : String(error));
+    // Binding errors keep their own class: the envelope is valid, this host cannot run it.
+    if (error instanceof ArtifactFormatError || error instanceof ArtifactVersionError) {
+      throw new ProjectArtifactError(path, error.message);
+    }
+    throw error;
   }
 }
 

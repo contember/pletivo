@@ -14,7 +14,6 @@
  * report the authoritative ContentUnavailableError because this preview owns no binding.
  */
 
-import { parsePreparedSite, type PreparedSite } from "@pletivo/workers/artifact";
 import { createMapProjectStore } from "@pletivo/workers/project-store";
 import { createProjectHost } from "@pletivo/workers/project-host";
 import type { ProjectEnv } from "@pletivo/workers/env";
@@ -78,7 +77,8 @@ interface ParsedRender {
   proxyOutbound: boolean;
   tenant?: string;
   capabilityGeneration?: string;
-  artifact?: PreparedSite;
+  /** Validated once, by `createProjectHost`. */
+  artifact?: unknown;
 }
 
 function isRenderRequest(value: unknown): value is RenderRequest {
@@ -106,7 +106,6 @@ async function readRenderRequest(request: Request): Promise<ParsedRender> {
     throw new Error('POST /__render wants {"files": {path: source}, "pathname": "/"}');
   }
   const files = new Map(Object.entries(body.files));
-  const artifact = body.artifact === undefined ? undefined : parsePreparedSite(body.artifact);
   const proxyOutbound = body.outbound === "proxy";
   return {
     files,
@@ -123,7 +122,7 @@ async function readRenderRequest(request: Request): Promise<ParsedRender> {
           ),
         }
       : {}),
-    ...(artifact === undefined ? {} : { artifact }),
+    ...(body.artifact === undefined ? {} : { artifact: body.artifact }),
   };
 }
 
