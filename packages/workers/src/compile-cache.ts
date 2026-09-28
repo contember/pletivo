@@ -27,7 +27,7 @@
  */
 
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
-import type { AstroStyles } from "./compile-project.ts";
+import type { AstroStyles } from "./compile/types.ts";
 
 /** One file's compile, everything the file set decides left out. */
 export interface CompiledFile {
