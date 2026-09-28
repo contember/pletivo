@@ -1,15 +1,10 @@
 /**
  * What runs inside the render isolate: request parsing, the `render` and `paths` ops,
- * and the per-request content scope.
+ * and the per-request content scope. The host generates `pletivo-program.js` per
+ * bundle; `pletivo-entry.js` hands its exports to `createIsolateEntry`.
  *
- * Bundled by `scripts/build-runtime.ts` with the runtime, the protocol and the content
- * modules kept external, so each stays one module record in the isolate. The program
- * itself arrives as data: the host generates `pletivo-program.js` per bundle, and the
- * generated `pletivo-entry.js` hands its exports to `createIsolateEntry`.
- *
- * `getStaticPaths` runs only here: its props hold `render()` methods and can never be
- * serialized back to the host. The `render` op therefore resolves and renders in one
- * go; the `paths` op returns params and drops the props.
+ * `getStaticPaths` runs only here: its props are not serializable, so `render` resolves
+ * and renders in one go and `paths` returns params only.
  */
 
 import type * as ContentCollection from "@pletivo/core/content/collection";
@@ -104,9 +99,8 @@ const BASE = "/";
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
   return {
     async fetch(request, env) {
-      // A render failure answers with an error payload rather than a throw: an
-      // exception crossing the Loader boundary looks identical to one thrown while the
-      // bundle starts, and the host would have to guess which it was.
+      // An error payload, not a throw: across the Loader boundary a throw looks the same
+      // as a bundle that failed to start.
       try {
         const body = parseIsolateRequest(await request.json());
         const bindings = parseBindings(env);
@@ -334,9 +328,8 @@ function stringRecord(value: unknown, label: string): Record<string, string> {
 }
 
 /**
- * A path against a directory, as a file-map key. Normalised rather than joined:
- * `glob({ base: "./content/product" })` joined verbatim is a prefix no key starts
- * with, and the collection would be silently empty.
+ * A path against a directory, as a file-map key. Normalised, not joined: a verbatim
+ * `./content/x` base is a prefix no key starts with, silently emptying the collection.
  */
 export function resolveFrom(dir: string, relative: string): string {
   const out: string[] = [];
@@ -354,11 +347,8 @@ function dirname(path: string): string {
 }
 
 /**
- * Runs `run` inside a content runtime built for this request.
- *
- * Per request, because the isolate is reused: the binding calls must carry this
- * request's ref, and `initCollections` must drop the previous render's entries — a
- * content edit does not change the module map, so the same isolate serves it.
+ * Runs `run` inside a content runtime built for this request. Per request because the
+ * isolate is reused: calls carry this request's ref, and a content edit keeps the isolate.
  */
 async function withContent(
   program: IsolateProgram,
@@ -379,8 +369,7 @@ async function withContent(
       const dir = resolveFrom(projectRoot, base);
       return {
         root: dir,
-        // Rooted at the file map rather than the machine, so `generateId` reading
-        // `base` sees a different absolute prefix than on the Bun host.
+        // Rooted at the file map, so `generateId` sees a different prefix than on Bun.
         rootUrl: new URL("file:///" + dir + "/"),
         files: await files.scan(ref, dir, pattern),
       };

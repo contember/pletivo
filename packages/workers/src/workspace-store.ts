@@ -1,23 +1,13 @@
 /**
- * A `ProjectStore` over a synchronous, Node-shaped virtual filesystem.
+ * A `ProjectStore` over a synchronous, Node-shaped virtual filesystem (docs/todos/023).
  *
- * This is the store `docs/todos/023` is about. Inside the Durable Object that owns the
- * workspace, `readFileSync` is a primary-key lookup rather than an RPC hop.
+ * A snapshot lists directories and reads no file; files are read on first use. With a
+ * `revision` source, every read first checks the workspace is still at the snapshot's
+ * revision and throws `WorkspaceSnapshotChangedError` otherwise, so a snapshot never
+ * mixes two revisions. Without one, reads are unchecked and nothing is reused.
  *
- * A snapshot lists directories and reads no file; with `maxFileBytes` it also stats each
- * one. A text file is read on its first `get` and kept for the snapshot; an image is read
- * when its metadata is first asked for or when it is served, and only the metadata is
- * kept. A render therefore reads what its page reaches.
- *
- * With a `revision` source, every such read first checks that the workspace is still at
- * the snapshot's revision and throws `WorkspaceSnapshotChangedError` when it is not, so a
- * snapshot never mixes two revisions; what it already read stays valid. Without one, a
- * snapshot's revision is `unknown:N`, its reads are unchecked, and nothing it read is
- * reused by the next snapshot.
- *
- * The filesystem is named structurally, the way `WorkerLoaderBinding` is: this package
- * takes no dependency on `kompjutr`, on which version the app installed, or on
- * `node:fs` types. `kompjutr`'s `NodeFsCompat` satisfies `WorkspaceFiles` as it stands.
+ * The filesystem is typed structurally, so this package takes no dependency on the
+ * workspace provider or on `node:fs` types.
  */
 
 import { createLazyProjectAssetsView } from "./content-files.ts";
@@ -49,13 +39,8 @@ export interface WorkspaceStoreOptions {
   /** Where the project starts in the workspace. Defaults to the workspace root. */
   root?: string;
   /**
-   * Answers "has anything changed" without walking the tree.
-   *
-   * The gate that makes the whole store worth having: on an unchanged workspace the
-   * tree is not walked and no file is re-read — the previous snapshot is handed straight
-   * back. It is also what lets a lazy read notice a write made after the walk. Without
-   * one, every snapshot walks the tree and re-reads what its render reaches, and the
-   * compile cache below it compares every source again (023 §3).
+   * Answers "has anything changed" without walking the tree. On an unchanged workspace
+   * the previous snapshot is reused, and a lazy read can notice a later write (023 §3).
    */
   revision?: () => string | number | undefined;
   /** Directory names never descended into. */
@@ -63,30 +48,18 @@ export interface WorkspaceStoreOptions {
   /** Extensions read as bytes rather than text. */
   binaryExtensions?: Iterable<string>;
   /**
-   * Largest file to read, in bytes. Unset, there is no limit and one enormous file can
-   * exhaust the isolate's 128 MiB heap. Set, a file over the limit is left out of the
-   * listing — which is a broken import rather than a dead Worker, and the one this host
-   * can report. `ProjectSnapshot.readBytes` is not bound by it.
+   * Largest file to read, in bytes; a larger file is left out of the listing. Unset, one
+   * enormous file can exhaust the isolate heap. `ProjectSnapshot.readBytes` is not bound by it.
    */
   maxFileBytes?: number;
 }
 
-/**
- * Build products and dependencies, not sources.
- *
- * `node_modules` is skipped because nothing reads it yet: npm arrives through the
- * artifact today, and 023 §6 has vendored output landing in the workspace later. When
- * it does, this default is what has to change.
- */
+/** Build products and dependencies. npm packages arrive through the artifact (023 §6). */
 const DEFAULT_SKIP = ["node_modules", ".git", ".wrangler", ".astro", "dist"];
 
 /**
- * Read as bytes; everything else is read as text.
- *
- * Deliberately the same list as `test/sources.ts`, because the parity harness and this
- * store have to classify a file the same way or the comparison means nothing. `.svg` is
- * text on both sides. The consequence is that an unlisted binary — a font, a PDF — is
- * read as UTF-8 and mangled; nothing serves those today, and the list is the lever.
+ * Read as bytes; everything else is read as text. Must match `test/sources.ts`, or the
+ * parity harness compares differently classified files.
  */
 const DEFAULT_BINARY = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"];
 
@@ -124,8 +97,7 @@ export function createWorkspaceProjectStore(
           if (!skip.has(entry.name)) directories.push(`${relative}/${entry.name}`);
           continue;
         }
-        // Symlinks and devices are neither: a workspace is allowed to hold them, and a
-        // render has nothing to do with one.
+        // Symlinks and devices: a render has nothing to do with them.
         if (!entry.isFile()) continue;
         const key = relative === "" ? entry.name : `${relative.slice(1)}/${entry.name}`;
         const path = absolute === "/" ? `/${entry.name}` : `${absolute}/${entry.name}`;
@@ -237,12 +209,7 @@ class LazyWorkspaceFiles implements ProjectFiles {
   }
 }
 
-/**
- * `""` for the workspace root, `/project` for a subdirectory.
- *
- * Empty rather than `"/"` so a child is `${root}/src` in both cases; the one place that
- * needs a path rather than a prefix spells the root out.
- */
+/** `""` for the workspace root, `/project` for a subdirectory, so a child is always `${root}/src`. */
 function normalizeRoot(root: string): string {
   const trimmed = root.endsWith("/") ? root.slice(0, -1) : root;
   if (trimmed === "") return "";
@@ -254,14 +221,12 @@ function dirents(files: WorkspaceFiles, path: string): WorkspaceDirent[] {
   try {
     entries = files.readdirSync(path, { withFileTypes: true });
   } catch {
-    // A directory that vanished between the listing of its parent and this call. The
-    // workspace is live; a snapshot of a moving tree is allowed to miss what moved.
+    // Vanished since its parent was listed; a snapshot of a live tree may miss it.
     return [];
   }
   const dirents: WorkspaceDirent[] = [];
   for (const entry of entries) {
-    // A provider that ignored `withFileTypes` would hand back names. Nothing can be
-    // decided from a name, so such an entry is skipped rather than guessed at.
+    // A provider that ignored `withFileTypes`; a bare name cannot be classified.
     if (typeof entry === "string") continue;
     dirents.push(entry);
   }

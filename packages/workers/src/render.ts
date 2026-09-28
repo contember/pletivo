@@ -1,36 +1,11 @@
 /**
- * Render one route of a virtual project to HTML, inside a Cloudflare Worker.
+ * Render one route of a virtual project to HTML inside a Cloudflare Worker.
+ * `.md` renders here in the host; `.astro` / `.tsx` must execute, and workerd has no
+ * `eval`, so they run in a Worker Loader isolate built from `compileProject`'s map.
  *
- * The whole point of the package: sources live in memory (a Durable Object, a
- * SQLite row, an agent's scratch buffer) and a Worker turns them into a page, with
- * no sandbox and no filesystem anywhere in the path.
- *
- * Two rendering paths, because they need different things:
- *
- *   - `.md` is a pure string transform, so it runs right here in the host worker
- *     through `@pletivo/core`, exactly as the Bun host's `renderMarkdownFile` does.
- *   - `.astro` and `.tsx` compile to JavaScript that has to *execute*, and workerd
- *     has no `eval` or `new Function`. The only door is the Worker Loader binding,
- *     which takes a module map and runs it in its own isolate. `compileProject` fills
- *     that map; this module generates the entry that drives it and stitches the result
- *     back together — doctype, page CSS — the way `build.ts` does on the Bun host.
- *
- * Nothing about a page's own render is host-specific, so the isolate only reports
- * two things back: the HTML, and which component modules ran. The CSS ordering that
- * needs the import graph stays out here, where the graph is.
- *
- * ## Dynamic routes are one call, and that is forced
- *
- * `build.ts` calls `getStaticPaths({ paginate })` on the imported page module, and
- * its own comment explains why it only ever carries the *params* across a cache
- * boundary: a collection-backed route's props hold `render()` methods. Props are not
- * serializable, so they can never leave the isolate. Asking the isolate for a path
- * list and then rendering out here would break on the first such route.
- *
- * So the host asks for *pathname X of route file Y* and the isolate does the whole
- * thing internally — import, `getStaticPaths`, match, render. `projectPaths` is the
- * other half, for a preview index or a sitemap: it returns params and nothing else,
- * which is exactly the part that is JSON-safe.
+ * A dynamic route renders in one isolate call (import, `getStaticPaths`, match,
+ * render) because its props are not serializable and cannot leave the isolate.
+ * `projectPaths` returns only params, the JSON-safe half.
  */
 
 import {
@@ -97,8 +72,6 @@ import {
 } from "./generated/runtime-modules.ts";
 import type { ExecutableProgram } from "./compiled-program.ts";
 
-// ── The Worker Loader binding ───────────────────────────────────────
-//
 // Declared structurally rather than imported from `@cloudflare/workers-types`, so
 // the package keeps working whichever typings the host app has installed.
 
@@ -109,15 +82,14 @@ export interface DynamicWorkerCode {
   mainModule: string;
   modules: Record<string, string>;
   /**
-   * `null` cuts the isolate off from the network, a binding proxies it — and *absent*
-   * inherits the host worker's own access. `ProjectOptions.outbound` is what decides
-   * which; nothing here ever leaves the field out by accident. See `outbound.ts`.
+   * `null` cuts the isolate off from the network, a binding proxies it, and *absent*
+   * inherits the host worker's own access. See `outbound.ts`.
    */
   globalOutbound?: OutboundBinding | null;
   /**
-   * Bindings the isolate gets, independent of `globalOutbound` — a capability is not
-   * the network. Set once, when the isolate is created: `get()` only calls the code
-   * factory on a cache miss, so nothing per-request can ride here.
+   * Bindings the isolate gets, independent of `globalOutbound`. Set once at isolate
+   * creation: `get()` calls the code factory only on a cache miss, so nothing
+   * per-request can ride here.
    */
   env?: Record<string, unknown>;
 }
@@ -130,14 +102,9 @@ export interface WorkerLoaderBinding {
   get(id: string, code: () => DynamicWorkerCode | Promise<DynamicWorkerCode>): DynamicWorkerStub;
 }
 
-// ── Options and results ─────────────────────────────────────────────
-
 /**
  * How the isolate reads content files, for a project that has collections.
- *
- * Two halves because only the app has `ctx.exports`: it owns the store and wraps it
- * in a `WorkerEntrypoint`, and hands back the loopback stub. See `content-files.ts`
- * for the shape, and for why every call carries a ref.
+ * Two halves because only the app has `ctx.exports`. See `content-files.ts`.
  */
 export interface ContentAccess {
   /** The loopback stub the isolate calls, e.g. `ctx.exports.PletivoContent({})`. */
@@ -151,14 +118,8 @@ export interface ProjectOptions {
   /** The project: path (no leading slash, `/` separators) -> source text. */
   files: ProjectFiles;
   /**
-   * The project's binary files, keyed the same way — images today.
-   *
-   * Kept apart from `files` because a Worker's sources arrive as text and its
-   * binaries do not. What a render does with them is read four numbers: an ESM
-   * `import hero from "./hero.png"` becomes a metadata module in the bundle, and an
-   * `image()` schema asks the content binding per entry. The bytes themselves never
-   * enter the isolate, and a host that already knows an image's size may hand that
-   * instead of the file — see `ProjectAsset` in `content-files.ts`.
+   * The project's binary files (images), keyed like `files`. A render reads only
+   * their metadata; the bytes never enter the isolate. See `ProjectAsset`.
    */
   assets?: ProjectAssetsView;
   loader: WorkerLoaderBinding;
@@ -174,59 +135,29 @@ export interface ProjectOptions {
   /** `compatibility_date` for the render isolate. */
   compatibilityDate?: string;
   compatibilityFlags?: readonly string[];
-  /**
-   * Overrides the compiler bound to the bundled `astro.wasm`. Only a test outside
-   * a Worker needs this — see `compileProject`.
-   */
+  /** Overrides the compiler bound to the bundled `astro.wasm`. For tests outside a Worker. */
   compiler?: AstroCompiler;
   /**
    * Compiled files kept between renders, keyed by path and checked by `source ===`.
-   *
-   * Absent, every file the page reaches is compiled — which is what a host handed a
-   * different project per request wants, since every lookup would miss. The host that
-   * owns one is `createProjectHost`; see `compile-cache.ts`.
+   * Absent, every file the page reaches is compiled. See `compile-cache.ts`.
    */
   compileCache?: CompileCache;
   /** Tailwind's stylesheets, embedded by the host worker for CSS `@import`s. */
   tailwind?: TailwindStylesheets;
-  /**
-   * Required only when the project has content collections. Without it such a project
-   * throws `ContentUnavailableError` rather than rendering a page with empty ones.
-   */
+  /** Required when the project has content collections, else `ContentUnavailableError`. */
   content?: ContentAccess;
-  /**
-   * What the isolate may reach over the network. Omitted, it reaches nothing — a page
-   * that calls `fetch()` throws rather than quietly getting out. See `outbound.ts`
-   * for the three states and why they are named rather than optional.
-   */
+  /** What the isolate may reach over the network. Omitted, it reaches nothing. See `outbound.ts`. */
   outbound?: OutboundAccess;
   /**
-   * What `astro:env/client` and `astro:env/server` export inside the isolate.
-   *
-   * The host's own configuration — its `vars` and secrets — not the project's, since
-   * nothing here evaluates `astro.config.*`. A name the project imports and this does
-   * not carry arrives as `undefined`, which is what the Bun host gives for an unset
-   * `process.env` entry. Capped at 1 MiB; see `env.ts`.
+   * What `astro:env/client` and `astro:env/server` export inside the isolate: the
+   * host's own configuration. A missing name reads as `undefined`. Capped; see `env.ts`.
    */
   env?: ProjectEnv;
-  /**
-   * What `import.meta.env` is inside the isolate.
-   *
-   * Vite gives every module one and a Worker Loader module has none, so a page that
-   * reads `import.meta.env.SITE` throws before it renders a byte. The host supplies
-   * the values; a name it does not carry reads as `undefined`, which is what Bun gives
-   * the other host for an unset `process.env` entry. See `env.ts`.
-   */
+  /** What `import.meta.env` is inside the isolate. A missing name reads as `undefined`. */
   importMetaEnv?: Readonly<Record<string, string>>;
   /**
-   * What `pletivo prepare` froze out of `astro:config:setup` — vendored npm packages,
-   * frozen virtual modules, `node_modules` sources, the config fields a render reads,
-   * and the injected script bodies.
-   *
-   * Code, not configuration: its modules go into the map, so a different integration
- * set is a different program hash and a different isolate — which is correct, it is
-   * a different program. Without one, a project that imports an npm package fails at
-   * the Loader, which is where every such project stood before. See `artifact.ts`.
+   * What `pletivo prepare` froze out of `astro:config:setup`. Its modules go into the
+   * map, so they are part of the program hash. See `artifact.ts`.
    */
   artifact?: ProjectArtifact;
 }
@@ -251,26 +182,18 @@ export interface RenderedPage {
   /** Project path of the page that produced it. */
   file: string;
   /**
-   * Content address of the exact Loader program. The isolate cache key also covers
-   * the namespace, platform settings, capabilities, and immutable environment.
-   *
-   * Not a project identity: the bundle is only what the requested page's import graph
-   * reaches, so two pages sharing no module get two of these. That is the trade
-   * `docs/todos/023 §10` records — a page compiles ~14 modules instead of 109, and a
-   * write only cools the pages that can see it.
+   * Content address of the exact Loader program. Not a project identity: the bundle
+   * holds only the requested page's import graph. See docs/todos/023 §10.
    */
   bundleId: string;
   /**
-   * Generated files the HTML links to — today, what a `?url` import named. Each is
-   * content-hashed, so a host can serve them from one map and cache them forever.
-   *
-   * The page's CSS is not among them: it is inlined, see `project-css.ts`.
+   * Generated files the HTML links to (`?url` imports), content-hashed so a host can
+   * cache them forever. The page's CSS is inlined, not listed here.
    */
   assets: RenderedAsset[];
   /**
    * Prepare inputs of a workspace artifact that changed since `pletivo prepare`, sorted.
-   * `renderPage` has no workspace to compare against and leaves it empty; see
-   * `createProjectHost`.
+   * Always empty from `renderPage`; `createProjectHost` fills it.
    */
   staleArtifactInputs: string[];
 }
@@ -297,13 +220,8 @@ const UNRESOLVED_REASONS: Readonly<Record<UnresolvedReason, string>> = {
 };
 
 /**
- * A dynamic route matched the pathname and then produced no page.
- *
- * Still a `RouteNotFoundError`, because to whoever asked for the URL it is the same
- * 404 the Bun dev server gives. The reason is worth carrying anyway: `no-static-path`
- * means the author's own path list does not hold this one, while `not-enumerable`
- * means the route never said what its paths are — which a preview server may want to
- * surface rather than swallow.
+ * A dynamic route matched the pathname and then produced no page. A 404 like any
+ * `RouteNotFoundError`; `reason` lets a preview server tell the two causes apart.
  */
 export class RoutePathNotFoundError extends RouteNotFoundError {
   constructor(
@@ -322,10 +240,7 @@ export class RoutePathNotFoundError extends RouteNotFoundError {
 
 /**
  * The project has content collections and nothing was given to read them with.
- *
- * Loud rather than lenient: without a binding `getCollection()` inside the isolate
- * would have no sources at all, and a blog index would render as an empty list — a
- * page that looks fine and is wrong.
+ * Thrown rather than rendering empty collections, which would look fine and be wrong.
  */
 export class ContentUnavailableError extends Error {
   constructor() {
@@ -349,11 +264,7 @@ export class UnsupportedRouteError extends Error {
 /**
  * TypeScript-only syntax at statement level, which the Loader cannot parse.
  * Line-anchored, because these words are ordinary inside a string or a comment.
- *
- * `compileProject` runs `stripTypes` over compiled `.astro` output, so frontmatter no
- * longer reaches here. One path is left: a `.js` / `.mjs` file in the map is taken at
- * its word and carried into the bundle verbatim, so a mis-named TypeScript file still
- * lands in the isolate — and this is what names it.
+ * Catches a mis-named `.js` / `.mjs` file, which is carried into the bundle verbatim.
  */
 const TYPESCRIPT_SYNTAX = [
   /^\s*(?:export\s+)?interface\s+[A-Za-z_$]/m,
@@ -363,13 +274,8 @@ const TYPESCRIPT_SYNTAX = [
 ];
 
 /**
- * Generated modules carrying TypeScript the isolate cannot run.
- *
- * The pre-bundled modules are skipped, and not as an optimisation: they are Bun's own
- * output, so they cannot hold TypeScript — but `pletivo-content.js` carries a
- * megabyte of vendored JavaScript, and somewhere in it a line begins `type … =`. Left
- * in, it made every isolate failure in a content project blame a file with nothing
- * wrong with it, which is the exact mistake `1101194` was about.
+ * Modules carrying TypeScript the isolate cannot run. Pre-bundled modules are skipped:
+ * they are Bun output, and vendored JavaScript can contain a line that matches anyway.
  */
 export function typescriptSuspects(
   modules: Record<string, string>,
@@ -383,17 +289,9 @@ export function typescriptSuspects(
 }
 
 /**
- * The isolate refused the module bundle — it never got as far as running a page.
- *
- * An unresolvable specifier fails here identically to unparseable syntax, so the
- * TypeScript note is only attached when a module actually carries some. Blaming it
- * unconditionally sends whoever reads this hunting for annotations that may not
- * exist — which is what it used to do, and it cost a verification round.
- *
- * A page that throws *while rendering* does not come here: the generated entry catches
- * it and answers with a 500, so the two are told apart rather than guessed at. Denied
- * network access is the case that made this matter — workerd's own message names the
- * cause precisely, and it used to arrive under a headline blaming the bundle.
+ * The isolate refused the module bundle before running a page. The TypeScript note
+ * appears only when a module carries some, since an unresolvable specifier fails the
+ * same way. A page that throws while rendering is an `IsolateExecutionError` instead.
  */
 export class IsolateStartError extends Error {
   constructor(
@@ -413,10 +311,7 @@ export class IsolateStartError extends Error {
 }
 
 const DEFAULT_PAGES_DIR = "src/pages";
-/**
- * Recent enough for `Response.json` and the modern module registry inside the
- * render isolate. The host worker's own date is set by its wrangler config.
- */
+/** Recent enough for `Response.json` and the modern module registry in the isolate. */
 const DEFAULT_COMPATIBILITY_DATE = "2026-01-01";
 const DEFAULT_COMPATIBILITY_FLAGS = ["nodejs_compat"];
 const WORKER_HOST_ABI = "pletivo-workers-v2";
@@ -427,8 +322,6 @@ const SHARED_NAMESPACE: ExecutionNamespace = {
 
 /** Extensions `parseRoute` turns into routes. */
 const PAGE_EXTENSIONS = [".astro", ".md", ".mdx", ".tsx", ".jsx", ".ts", ".js"];
-
-// ── Routing ─────────────────────────────────────────────────────────
 
 /**
  * The project's routes, ordered the way `scanRoutes` orders them on the Bun host:
@@ -462,17 +355,9 @@ export interface RoutePath {
 }
 
 /**
- * Every page the project can enumerate: the static routes, plus one entry per param
- * set each `getStaticPaths()` returns.
- *
- * The JSON-safe half of the dynamic-route problem, and the only half there is out
- * here — props stay in the isolate, so this is params and nothing else. What is
- * deliberately absent: `prerender = false` routes (there is no path list to
- * enumerate, which is the point of them), routes that declare neither, and endpoints.
- * `renderPage` still serves an on-demand route when asked for a concrete pathname.
- *
- * Static executable routes enter the isolate too, so unsupported SSR exports fail
- * during enumeration instead of producing a path the host cannot later render.
+ * Every page the project can enumerate: static routes, plus one entry per param set
+ * each `getStaticPaths()` returns. Params only; omits `prerender = false` routes,
+ * routes that declare neither, and endpoints.
  */
 export async function projectPaths(options: ProjectOptions): Promise<RoutePath[]> {
   const pagesDir = options.pagesDir ?? DEFAULT_PAGES_DIR;
@@ -498,12 +383,8 @@ export async function projectPaths(options: ProjectOptions): Promise<RoutePath[]
 }
 
 /**
- * The URL a route with these params is served at.
- *
- * Derived from `routeToOutputPath` rather than from the segments directly, so it is
- * exactly the file `pletivo build` would have written — and then the same directory
- * URL `toPathname` gives that file, trailing slash included. `paginate` builds its
- * `page.url` links the same way, so a page's own links and this list agree.
+ * The URL a route with these params is served at. Derived from `routeToOutputPath`,
+ * as `paginate` does, so this list agrees with a page's own links.
  */
 function routePathname(route: Route, params: RouteParams): string {
   const output = routeToOutputPath(route, params);
@@ -547,14 +428,11 @@ async function isolatePaths(
   );
 }
 
-// ── Rendering ───────────────────────────────────────────────────────
-
 export async function renderPage(options: RenderPageOptions): Promise<RenderedPage> {
   const artifact = options.artifact?.prepared.artifact;
   const { files, pathname, loader, pagesDir = DEFAULT_PAGES_DIR } = options;
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
-  // The caller's `site` outranks the artifact's: a preview server serving one project
-  // under several hostnames is naming the origin it is actually being reached at.
+  // The caller's `site` outranks the artifact's: it names the origin actually reached.
   const site = options.site ?? artifact?.config.site;
   const scripts = artifact?.scripts;
   const srcDir = srcDirOf(options);
@@ -572,17 +450,12 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   if (source === undefined) throw new RouteNotFoundError(pathname);
 
   if (file.endsWith(".md")) {
-    // A markdown page has no module, so it can declare neither a path list nor the
-    // on-demand opt-out — a dynamic one is unresolvable by construction.
+    // A markdown page has no module, so a dynamic one can never declare its paths.
     if (match.route.isDynamic) {
       throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
     }
     const html = await renderMarkdownPage(source);
-    // No `compileProject` here any more: it ran only to feed the project-wide sheet,
-    // and a `.md` page has no JavaScript graph, so its CSS is the source tree and
-    // nothing else — a key scan, not a walk. That takes the wasm compiler out of every
-    // markdown render. `files` rather than a merged map for the same reason: with no
-    // graph, an artifact's `node_modules` sources have nothing to contribute.
+    // A `.md` page has no module graph, so its CSS needs no compile and no merged map.
     const stylesheet = await pageStylesheet({
       files,
       srcDir,
@@ -607,8 +480,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
 
   const project = await compileProject({
     files,
-    // Just this page: everything it can execute is in its own import graph, this one
-    // included — `getStaticPaths` is an export of the page module. See docs/todos/023 §4.
+    // Just this page: `getStaticPaths` is in its import graph too. See docs/todos/023 §4.
     entries: [file],
     srcDir,
     compiler: options.compiler,
@@ -621,8 +493,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     project,
     file,
     params: match.params,
-    // A static route needs none of the getStaticPaths machinery, and the isolate
-    // tells the two apart by whether it was handed a route.
+    // The isolate treats a page without a route as static.
     route: match.route.isDynamic ? match.route : null,
     site,
     options,
@@ -633,15 +504,11 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     html: rendered.html,
     renderedModules: new Set(rendered.renderedModules),
   });
-  // A `.tsx` `<style>` is page-global and is hoisted by the JSX runtime rather than
-  // scoped by the compiler, so it goes after the component CSS — where `writeHtml`
-  // puts it on the Bun host.
+  // A `.tsx` `<style>` is page-global, so it goes after the component CSS, as on Bun.
   const styles = [css, rendered.tsxStyles.join("\n")].filter(Boolean).join("\n");
-  // After the render, because the page's own HTML is what Tailwind's content is. The
-  // scoped blocks above are deliberately not in it — `finalizeHtml` injects them next.
+  // After the render: the page's HTML is Tailwind's content.
   const stylesheet = await pageStylesheet({
-    // `project.sources`, not `options.files`: a stylesheet imported by an `.astro`
-    // component that lives in `node_modules` is only in the map the artifact merged.
+    // `project.sources`: only the artifact-merged map holds `node_modules` stylesheets.
     files: project.sources,
     srcDir,
     rootDir,
@@ -671,11 +538,8 @@ function assetsOf(urlAssets: ReadonlyMap<string, string>): RenderedAsset[] {
 }
 
 /**
- * What a `?url`-emitted file is served as.
- *
- * Only the handful of text types a project imports this way; anything else is an
- * octet stream rather than a guess, because a wrong `content-type` on a script is a
- * page that silently does not run.
+ * What a `?url`-emitted file is served as. Unknown types are an octet stream rather
+ * than a guess: a wrong `content-type` on a script silently stops it running.
  */
 function urlAssetContentType(path: string): string {
   const dot = path.lastIndexOf(".");
@@ -692,11 +556,7 @@ function urlAssetContentType(path: string): string {
   return known[extension] ?? "application/octet-stream";
 }
 
-/**
- * A `.md` page, rendered exactly as `build.ts` renders one: frontmatter for the
- * title, the body through the shared markdown pipeline, wrapped in a bare document.
- * No isolate involved — there is no module to execute.
- */
+/** A `.md` page, rendered as `build.ts` renders one. No isolate involved. */
 export async function renderMarkdownPage(source: string): Promise<string> {
   const { html, frontmatter } = await parseMarkdown(source);
   const title = typeof frontmatter.title === "string" ? frontmatter.title : "";
@@ -722,11 +582,8 @@ export class IsolateExecutionError extends Error {
 }
 
 /**
- * One round trip to the render isolate, whichever question is being asked.
- *
- * The module map is the page's import graph and nothing else, so it stays
- * content-addressed — every per-request value rides in the request body, and one warm
- * isolate keeps serving however many pathnames are rendered from the same modules.
+ * One round trip to the render isolate. The module map stays content-addressed:
+ * every per-request value rides in the request body.
  */
 async function callIsolate(input: {
   project: CompiledProject;
@@ -736,12 +593,10 @@ async function callIsolate(input: {
   body: IsolateRequest;
 }): Promise<{ bundleId: string; payload: IsolateResponse }> {
   const { project, options, label, body } = input;
-  // The env values are not in the map — only the names their modules export, which is
-  // forced: ESM decides its exports statically. Rotating a secret leaves the bundle,
-  // and therefore the warm isolate, exactly where it was.
+  // Only env names are in the map (ESM exports are static); values ride in bindings,
+  // so rotating a secret keeps the bundle.
   const env = project.env === null ? null : envPayload(options.env);
-  // Only for a project that reads it: an isolate that never had `import.meta.env`
-  // rewritten keeps the bundle, and therefore the warm isolate, it always had.
+  // Only for a project that reads it, so other bundles stay unchanged.
   const importMetaEnv = project.importMetaEnv ? importMetaEnvPayload(options.importMetaEnv) : null;
   assertEnvFits(env, importMetaEnv);
   const modules = {
@@ -782,19 +637,15 @@ async function callIsolate(input: {
     compatibilityFlags: [...compatibilityFlags],
     mainModule: ISOLATE_ENTRY_MODULE_NAME,
     modules,
-    // Cut off unless the caller said otherwise, because a render is a pure function
-    // of its sources and this is code the host generated a millisecond ago. The
-    // bindings below are unaffected either way: a capability is not the network.
+    // Cut off unless the caller said otherwise; bindings are unaffected either way.
     ...outboundConfig(options.outbound),
     ...(Object.keys(isolateEnv).length > 0 ? { env: isolateEnv } : {}),
   };
   options.executionObserver?.onLoaderGet(key, bundleId);
-  // Loader serializes the callback closure. Keep the request options and host-owned
-  // stores out of it; only this immutable, capability-safe DTO may cross.
+  // Loader serializes the callback closure; only this immutable DTO may cross.
   const stub = options.loader.get(key, immutableCodeFactory(workerCode));
 
-  // Opened per render, not per isolate: the isolate outlives the request that made
-  // it, so the sources have to be named by something that travels with the request.
+  // Opened per render: the isolate outlives the request, so the ref travels with it.
   const handle = content ? content.store.open(options.files, options.assets) : null;
   const requestBody: IsolateRequest = handle
     ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options) }
@@ -866,10 +717,7 @@ async function renderModule(input: {
 }): Promise<IsolateRender> {
   const { project, file, params, route, site, options } = input;
 
-  // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost
-  // stand-in. The request itself only carries the render instructions — the page's
-  // own `Astro.request` is synthesized from `url` inside the isolate, matching a
-  // static build, which has no request either.
+  // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost stand-in.
   const origin = site ? new URL(site).origin : "http://localhost/";
   const { bundleId, payload } = await callIsolate({
     project,
@@ -899,10 +747,8 @@ function pageUrl(pathname: string, origin: string): string {
 }
 
 /**
- * The per-program half of the isolate entry, as data; `IsolateProgram` in
- * `isolate-entry.ts` is its contract. Sorted, because this text is in the Loader
- * program. An optional module is imported only when the program reaches it, so it
- * stays out of the bundle otherwise.
+ * The per-program half of the isolate entry; `IsolateProgram` is its contract. Sorted,
+ * because this text is in the Loader program. Optional modules are imported only when reached.
  */
 function programModule(program: ExecutableProgram): string {
   const { content, env, importMetaEnv } = program.requirements;

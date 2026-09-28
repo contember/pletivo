@@ -1,10 +1,6 @@
 /**
- * One project, served over HTTP — as an object you hold, not a class you extend.
- *
- * Every host of this package had to write the same twenty lines: look in the generated
- * assets, then the images, then render, then turn the throws into status codes. The
- * preview server in `example/` did, and a Durable Object holding a live workspace would
- * have again. So it lives here once, and a host composes it:
+ * One project, served over HTTP — an object a host composes, not a class it extends,
+ * so it stays testable without a Durable Object under it:
  *
  * ```ts
  * export class ProjectDO extends DurableObject<Env> {
@@ -18,11 +14,6 @@
  *   }
  * }
  * ```
- *
- * The DO owns the storage and the bindings — the two things only it can have — and
- * nothing else. That is the shape `@roj-ai/computer-platform` uses for the same reason:
- * a subclass cannot be handed to a second host, and everything interesting here has to
- * be testable without a Durable Object under it.
  */
 
 import {
@@ -62,10 +53,7 @@ export interface ProjectHostOptions {
   /** Where the project is read from. See `project-store.ts`. */
   store: ProjectStore;
   loader: WorkerLoaderBinding;
-  /**
-   * Required only for a project with content collections, and only the host can build
-   * it: the binding half needs `ctx.exports`, which nothing but the app object has.
-   */
+  /** Required only for a project with content collections. */
   content?: ContentAccess;
   /** Tailwind's own stylesheets, which the isolate cannot read off disk. */
   tailwind?: TailwindStylesheets;
@@ -87,41 +75,25 @@ export interface ProjectHostOptions {
   /** Only a test outside a Worker needs this — see `compileProject`. */
   compiler?: AstroCompiler;
   /**
-   * Compiled files kept between renders.
-   *
-   * Absent, a default cache. `false` for a host handed a different project per request:
-   * every lookup would miss and the entries would be pure heap. See `compile-cache.ts`.
+   * Compiled files kept between renders. Absent, a default cache; `false` for a host
+   * handed a different project per request, where every lookup would miss.
    */
   compileCache?: CompileCache | false;
   /**
    * `pletivo prepare`'s output as a file *in the project*, loaded again whenever its
-   * content changes.
-   *
-   * This is the workspace shape: the artifact is a file an agent's `bun install` can
-   * invalidate, not a constant the host was deployed with. A host holding one in memory
-   * passes `artifact` instead; a host doing neither serves a project with no npm
-   * dependencies, which is where every project stood before the artifact existed.
+   * content changes. Its prepare inputs are checked for staleness.
    */
   artifactPath?: string;
   /** `pletivo prepare`'s output as a value, validated once when the host is created. */
   artifact?: unknown;
-  /**
-   * How many generated files to keep for the browser's follow-up GET.
-   *
-   * They are content-hashed, so an entry is never stale and the only question is how
-   * many to hold. A single-project host wants a handful — one stylesheet, plus whatever
-   * `?url` imports its pages make.
-   */
+  /** How many generated (content-hashed) files to keep for the browser's follow-up GET. */
   generatedAssetCache?: { maxEntries: number; maxBytes: number };
 }
 
 export interface ProjectHost {
   /**
-   * Serve one request: a generated asset, an image, or a rendered page.
-   *
-   * Throws nothing — a route that does not exist is a 404 and a broken project is a 500
-   * with the stack in the body, because the alternative is every host writing the same
-   * `catch`. Call `render()` instead to handle the failures yourself.
+   * Serve one request: a generated asset, an image, or a rendered page. Throws nothing:
+   * failures become status codes. Call `render()` to handle them yourself.
    */
   fetch(request: Request): Promise<Response>;
   /** Render one pathname, failures and all. */
@@ -143,11 +115,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const served = new GeneratedAssetCache<RenderedAsset>(
     options.generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE,
   );
-  /**
-   * Compiled files, held for as long as this host is — not a module global: two hosts
-   * in one isolate are two projects competing for one budget, and an entry's `.astro`
-   * output is bound to the compiler that produced it.
-   */
+  // Per host, not a module global: an entry's `.astro` output is bound to its compiler.
   const compileCache =
     options.compileCache === false ? undefined : (options.compileCache ?? createCompileCache());
   let artifactFrom: { source: string; artifact: ProjectArtifact } | null = null;
@@ -167,10 +135,8 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   }
 
   /**
-   * The artifact's prepare inputs that no longer match the workspace. Only an
-   * `artifactPath` artifact is checked: a direct one has no workspace to compare against.
-   * A warning, so a failed check is no warning; only a moved workspace propagates, to be
-   * retried with the rest of the attempt.
+   * The `artifactPath` artifact's prepare inputs that no longer match the workspace.
+   * A warning, so a failed check is no warning; only a moved workspace propagates.
    */
   async function staleArtifactInputs(
     snapshot: ProjectSnapshot,
@@ -192,9 +158,8 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   }
 
   /**
-   * Run `operation` on a fresh snapshot, and once more on another when the workspace moved
-   * under the first. `blockConcurrencyWhile` cannot hold writes off instead: the content
-   * binding re-enters the Durable Object during the render.
+   * Run `operation` on a fresh snapshot, and once more if the workspace moved under it.
+   * Not `blockConcurrencyWhile`: the content binding re-enters the Durable Object.
    */
   async function withSnapshot<T>(operation: (snapshot: ProjectSnapshot) => Promise<T>): Promise<T> {
     try {
