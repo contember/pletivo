@@ -14,7 +14,7 @@ import {
   configureMdx,
   captureMdxIntegrationOptions,
 } from "../../packages/pletivo/src/mdx-plugin";
-import { configureMarkdown, parseMarkdown } from "../../packages/pletivo/src/content/markdown";
+import { configureMarkdown, parseMarkdown } from "@pletivo/core/content/markdown";
 
 // A real remark plugin: rewrites the text "MARK" to "DONE" in the mdast tree.
 const remarkMark = () => (tree: any) => {

@@ -1,15 +1,15 @@
 # 013 — The SSR hooks stub leaks into client island bundles
 
 **Priority:** S-tier
-**Status:** Open
+**Status:** Done — `a7f816a`
 **Area:** Islands / Hydration
 
 ## Problem
 
-Every hydrated island ships pletivo's server-side no-op hooks instead of
-Preact's. `useState` returns `[value, () => {}]`, `useEffect` never runs. The
-island mounts, renders once, and is inert — no error, no warning, just a
-component that does not react.
+Every hydrated island shipped pletivo's server-side no-op hooks instead of
+Preact's. `useState` returned `[value, () => {}]`, `useEffect` never ran. The
+island mounted, rendered once, and was inert — no error, no warning, just a
+component that did not react.
 
 ## Root cause
 
@@ -44,6 +44,11 @@ so the bundle contains genuine preact core next to fake hooks.
 - the shipped `Counter.js` carries preact-core markers but none of the
   hooks-specific ones (`__H`, `__N`)
 
+The two byte counts above were measured on a bare bundle. Through the real
+build, `examples/basic`'s `_islands/Counter.js` went 14,337 B → 15,165 B: the
+stub build already carried minified preact core, and the ESM hooks build is
+tree-shaken down to the one hook the island uses.
+
 Origin: commit `adc1e30`. Up to and including `pletivo@0.1.35`,
 `packages/pletivo/package.json` had no `files` field, so that tsconfig shipped
 to npm and the mapping reached installed projects too.
@@ -65,9 +70,10 @@ examples and benchmarks build.
 
 ## Consequences beyond the bug
 
-`scripts/benchmark.sh` compares pletivo bundling ~4 KB of stub against Astro
-bundling a real framework. Any island-bundle size or build-time number taken
-before this is fixed is not comparing the same work.
+`scripts/benchmark.sh` compared pletivo bundling a stub against Astro bundling
+a real framework. **Every island-bundle size and build-time number taken before
+`a7f816a` is not comparing the same work — re-run `scripts/benchmark.sh` before
+quoting any of them.**
 
 ## Resolution behaviour, measured
 
@@ -94,28 +100,49 @@ specifier escapes, because `paths` applies to bare specifiers only.
 through the nested `hooks/package.json` and yields the CJS `hooks.js`, while
 ground truth for an ESM bundle is the `import` condition, `hooks.mjs`.
 
-## Fix direction
+## Fix, as shipped in `a7f816a`
 
-Keep the SSR mapping — SSR genuinely wants the no-op stub — and resolve the
-client copy in `islandPlugin` from preact's own `exports` map: read
-`<preactRoot>/package.json`, take `exports["./hooks"]`, prefer `import`, and
-fall back to `Bun.resolveSync("./hooks", preactRoot)` for packages with no
-exports map. Apply it uniformly to every preact subpath (`compat`,
-`jsx-runtime`, …), not just `hooks` — those are only safe today because nobody
-has mapped them, and a user's own tsconfig can.
+The SSR mapping stays — SSR genuinely wants the no-op stub. `islandPlugin`
+resolves the client copy from preact's own `exports` map instead: find the
+package root by walking up from `resolve("preact")`, read its `package.json`,
+take `exports["./<subpath>"]` and prefer the `import` condition, falling back to
+`Bun.resolveSync("./<subpath>", preactRoot)` for packages with no exports map
+and to the old bare resolve after that. Applied to every subpath — `hooks`,
+`compat`, `jsx-runtime`, `jsx-dev-runtime` — not just the mapped one; the others
+were only safe because nobody had mapped them yet. The package *root* still
+comes from the project's node_modules, unchanged: a second preact instance
+breaks Radix's context registry.
 
-The alternative worth weighing: drop the tsconfig mapping entirely and do the
-SSR redirect in the Bun plugin layer that already exists (`astro-plugin.ts`,
+Side effect worth knowing: `compat` and `jsx-runtime` move off their CJS build
+onto the ESM one, so hooks now tree-shake.
+
+The alternative not taken: drop the tsconfig mapping entirely and do the SSR
+redirect in the Bun plugin layer that already exists (`astro-plugin.ts`,
 `dev-ts-plugin.ts` both register `Bun.plugin`). That puts the redirect where
 module loading actually happens instead of in a blunt global, but it moves a
-module-resolution boundary, so it is a separate decision.
+module-resolution boundary, so it stays a separate decision.
 
-A regression test has to assert on bundle *content* (a hooks-specific marker,
-or that the resolved path is under `node_modules/preact`), because the
-failure mode is a green build that produces a dead island.
+## Regression coverage
+
+`tests/unit/islands-preact-resolve.test.ts`. It never asserts that the build
+succeeded — a green build is what hid this for the whole life of the bug. It
+asserts on resolved paths, on bundle bytes (`__H` / `__N`, preact's mangled
+hook-state internals), and at runtime by importing the built bundle and
+checking preact's hooks installed themselves on the *same* `options` object the
+island renders with — which pins the dedupe as well. It also pins the other
+direction: server-side `preact/hooks` is still the stub module by identity.
+Against the unfixed plugin, 9 of its 17 cases fail.
+
+Note the conformance snapshots did **not** move. The harness deliberately does
+not compare JS bundle contents, and island bundles are emitted unhashed as
+`_islands/<Name>.js`, so a bundle can change from inert to working without a
+single snapshot line changing. That is the same blind spot that let this ship.
 
 ## Files
 
-- `packages/pletivo/src/islands-bundle.ts` — `islandPlugin()`, the `resolve()` helper
-- `packages/runtime/src/hooks.ts` — the SSR stub (correct as-is, wrong destination)
-- `tsconfig.json`, `packages/pletivo/tsconfig.json` — the `preact/hooks` mapping
+- `packages/pletivo/src/islands-bundle.ts` — `islandPlugin()`, `resolveSubpath()`
+- `tests/unit/islands-preact-resolve.test.ts` — the regression coverage
+- `packages/runtime/src/hooks.ts` — the SSR stub (correct as-is; its doc comment
+  describes the client redirect, which is only true as of `a7f816a`)
+- `tsconfig.json`, `packages/pletivo/tsconfig.json` — the `preact/hooks` mapping,
+  deliberately kept

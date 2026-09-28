@@ -1,0 +1,22 @@
+---
+// A static page, so the fixture proves the dynamic routes did not disturb the
+// ordering `projectRoutes` gives static routes.
+import { POSTS, TAGS } from "../data/posts.ts";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Dynamic routes</title>
+  </head>
+  <body>
+    <h1>Posts</h1>
+    <ul id="posts">
+      {POSTS.map((post) => <li><a href={`/posts/${post.slug}/`}>{post.title}</a></li>)}
+    </ul>
+    <ul id="tags">
+      {TAGS.map((tag) => <li><a href={`/tag/${tag}/`}>{tag}</a></li>)}
+    </ul>
+  </body>
+</html>

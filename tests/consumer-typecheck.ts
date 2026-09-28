@@ -94,6 +94,11 @@ async function assertInstalledShape(project: string): Promise<object> {
   if (violations.length > 0) {
     throw new Error(`published source retains internal imports:\n${violations.join("\n")}`);
   }
+
+  const scanner = await fs.readFile(path.join(packageRoot, "src/prepare/scan.ts"), "utf8");
+  if (!scanner.includes('"@pletivo/runtime/jsx-runtime"')) {
+    throw new Error("packaging rewrote the semantic Worker runtime specifier");
+  }
   return manifest;
 }
 

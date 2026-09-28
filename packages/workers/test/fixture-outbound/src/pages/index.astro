@@ -1,0 +1,21 @@
+---
+// A page that cannot render without the network, which is the point of it: the API
+// base and the token come from `astro:env/server`, and the list comes from a `fetch()`
+// during the render. With no outbound stub configured this page throws; with one, it
+// reaches exactly what the host's proxy is willing to serve.
+import { API_BASE, API_TOKEN } from "astro:env/server";
+
+const response = await fetch(`${API_BASE}/posts`, {
+  headers: { authorization: `Bearer ${API_TOKEN}` },
+});
+const posts = await response.json();
+---
+
+<html lang="en">
+  <head><title>Posts</title></head>
+  <body>
+    <p id="base">{API_BASE}</p>
+    <p id="status">{response.status}</p>
+    <ul>{posts.map((post) => <li id={post.id}>{post.title}</li>)}</ul>
+  </body>
+</html>

@@ -1,11 +1,11 @@
 /**
- * Build-time image optimization for pletivo.
+ * The Bun host's half of the image pipeline.
  *
- * Provides:
- * - Pure JS image dimension reader (PNG, JPEG, GIF, WebP, SVG)
- * - `getImage()` implementation for Astro's `<Image>` / `<Picture>` components
- * - Transform registry for post-render image processing
- * - Sharp integration (optional) for resize + format conversion
+ * What is the same on any host — the dimension reader, the output-path naming,
+ * `getImage()` and the image services — lives in `@pletivo/core/image`, because a
+ * render isolate needs all of it and has none of what is below. What is left here is
+ * the part that needs a machine: reading a file to probe it, the transform registry a
+ * build drains afterwards, sharp, and the dev server's `/cdn-cgi/image/` stand-in.
  */
 
 import path from "path";
@@ -13,12 +13,17 @@ import fs from "fs/promises";
 import { createRequire } from "module";
 import { withBase } from "@pletivo/runtime/base";
 import { recordRuntimeDep } from "./incremental/dep-tracker";
+import type { ImageMetadata } from "@pletivo/core/image-service";
 import {
-  resolveImageService,
-  type ImageProcessing,
-  type ImageService,
-  type ImageServiceConfig,
-} from "@pletivo/core/image-service";
+  getImageMode,
+  imageContentType,
+  imageOutputPath,
+  readImageDimensions as readImageDimensionsFromBuffer,
+  setImageHost,
+  setImageMode as setCoreImageMode,
+  type ImageDimensions,
+  type ImageTransformEntry,
+} from "@pletivo/core/image";
 
 export {
   buildCdnCgiImageUrl,
@@ -27,54 +32,26 @@ export {
   sharpImageService,
 } from "@pletivo/core/image-service";
 
+export {
+  getImage,
+  imageConfig,
+  imageContentType,
+  makeImageMetadata,
+  setImageService,
+  type GetImageResult,
+  type ImageTransformEntry,
+} from "@pletivo/core/image";
+
 // ── Types ──────────────────────────────────────────────────────────────
 
-export interface ImageMetadata {
-  src: string;
-  width: number;
-  height: number;
-  format: string;
-  /** Absolute filesystem path — non-enumerable, for build-time use only. */
-  fsPath: string;
-}
-
-export interface GetImageResult {
-  rawOptions: Record<string, unknown>;
-  options: Record<string, unknown>;
-  src: string;
-  srcSet: { values: SrcSetValue[]; attribute: string };
-  attributes: Record<string, unknown>;
-}
-
-interface SrcSetValue {
-  url: string;
-  descriptor: string;
-}
-
-export interface ImageTransformEntry {
-  sourcePath: string;
-  outputPath: string;
-  width?: number;
-  height?: number;
-  format: string;
-  quality?: number | string;
-  processing?: ImageProcessing;
-}
+export type { ImageMetadata };
 
 // ── Runtime state ──────────────────────────────────────────────────────
 
-let imageMode: "dev" | "build" = "dev";
-
 export function setImageMode(mode: "dev" | "build"): void {
-  imageMode = mode;
+  setCoreImageMode(mode);
   probeCache.clear();
   probeInflight.clear();
-}
-
-let imageService: ImageService = resolveImageService(undefined);
-
-export function setImageService(service: ImageServiceConfig | undefined): void {
-  imageService = resolveImageService(service);
 }
 
 /**
@@ -85,7 +62,7 @@ export function setImageService(service: ImageServiceConfig | undefined): void {
  * prefixed with the configured base path.
  */
 export function imageUrlFor(fsPath: string, outputPath: string): string {
-  return imageMode === "build"
+  return getImageMode() === "build"
     ? withBase(`/${outputPath}`)
     : withBase(`/@image/${path.basename(fsPath)}?f=${fsPath}`);
 }
@@ -111,9 +88,16 @@ export function registerImportedImage(
   importedImages.set(outputPath, { sourcePath, outputPath });
 }
 
-function registerTransform(entry: ImageTransformEntry): void {
-  transforms.set(entry.outputPath, entry);
-}
+/**
+ * The one thing `@pletivo/core/image` cannot do on its own: remember that a file has
+ * to be produced. Installed at module load, so importing this module is all a build
+ * has to do — the same shape `setContentHost` has for collections.
+ */
+setImageHost({
+  registerTransform(entry: ImageTransformEntry): void {
+    transforms.set(entry.outputPath, entry);
+  },
+});
 
 export function getTransforms(): Map<string, ImageTransformEntry> {
   return transforms;
@@ -131,162 +115,12 @@ export function clearTransforms(): void {
   importedImages.clear();
 }
 
-// ── Image config ───────────────────────────────────────────────────────
-
-export const imageConfig: Record<string, unknown> = {
-  experimentalLayout: undefined,
-  experimentalResponsiveImages: false,
-  service: { entrypoint: "" },
-  domains: [],
-  remotePatterns: [],
-};
-
-// ── Pure JS image dimension reader ─────────────────────────────────────
-
-interface ImageDimensions {
-  width: number;
-  height: number;
-  format: string;
-}
-
-export async function readImageDimensions(
-  filePath: string,
-): Promise<ImageDimensions> {
-  const buffer = await Bun.file(filePath).arrayBuffer();
-  return readImageDimensionsFromBuffer(buffer, filePath);
-}
-
-function readImageDimensionsFromBuffer(
-  buffer: ArrayBuffer,
-  filePath: string,
-): ImageDimensions {
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
-
-  // PNG: 8-byte signature, IHDR width at 16, height at 20 (BE uint32)
-  if (
-    bytes.length > 24 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47
-  ) {
-    return {
-      width: view.getUint32(16),
-      height: view.getUint32(20),
-      format: "png",
-    };
-  }
-
-  // GIF: "GIF87a" or "GIF89a", width at 6 (LE uint16), height at 8
-  if (
-    bytes.length > 10 &&
-    bytes[0] === 0x47 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46
-  ) {
-    return {
-      width: view.getUint16(6, true),
-      height: view.getUint16(8, true),
-      format: "gif",
-    };
-  }
-
-  // JPEG: scan markers for SOF0 (0xC0) or SOF2 (0xC2)
-  if (bytes.length > 2 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-    let offset = 2;
-    while (offset < bytes.length - 9) {
-      if (bytes[offset] !== 0xff) break;
-      const marker = bytes[offset + 1];
-      // SOF0 or SOF2 — frame header with dimensions
-      if (marker === 0xc0 || marker === 0xc2) {
-        return {
-          height: view.getUint16(offset + 5),
-          width: view.getUint16(offset + 7),
-          format: "jpeg",
-        };
-      }
-      // Skip segment
-      if (marker === 0xd9) break; // EOI
-      if (marker === 0xda) break; // SOS — no more metadata
-      const segLen = view.getUint16(offset + 2);
-      offset += 2 + segLen;
-    }
-    // Fallback: JPEG without findable SOF
-    return { width: 0, height: 0, format: "jpeg" };
-  }
-
-  // WebP: "RIFF" + "WEBP" container
-  if (
-    bytes.length > 30 &&
-    view.getUint32(0) === 0x52494646 && // RIFF
-    view.getUint32(8) === 0x57454250 // WEBP
-  ) {
-    const chunkFourCC = String.fromCharCode(
-      bytes[12],
-      bytes[13],
-      bytes[14],
-      bytes[15],
-    );
-    if (chunkFourCC === "VP8 " && bytes.length > 29) {
-      return {
-        width: view.getUint16(26, true) & 0x3fff,
-        height: view.getUint16(28, true) & 0x3fff,
-        format: "webp",
-      };
-    }
-    if (chunkFourCC === "VP8L" && bytes.length > 24) {
-      const bits = view.getUint32(21, true);
-      return {
-        width: (bits & 0x3fff) + 1,
-        height: ((bits >> 14) & 0x3fff) + 1,
-        format: "webp",
-      };
-    }
-    if (chunkFourCC === "VP8X" && bytes.length > 29) {
-      return {
-        width:
-          (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)) + 1,
-        height:
-          (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)) + 1,
-        format: "webp",
-      };
-    }
-    return { width: 0, height: 0, format: "webp" };
-  }
-
-  // SVG: no intrinsic pixel dimensions from headers
-  const head = new TextDecoder().decode(
-    bytes.slice(0, Math.min(256, bytes.length)),
-  );
-  if (head.includes("<svg") || head.trimStart().startsWith("<?xml")) {
-    // Try to extract width/height from the <svg> tag
-    const wMatch = head.match(/\bwidth="(\d+)/);
-    const hMatch = head.match(/\bheight="(\d+)/);
-    return {
-      width: wMatch ? parseInt(wMatch[1], 10) : 0,
-      height: hMatch ? parseInt(hMatch[1], 10) : 0,
-      format: "svg",
-    };
-  }
-
-  throw new Error(`Unsupported image format: ${filePath}`);
-}
-
 // ── Image probing + registration ───────────────────────────────────────
 
-/** Build an ImageMetadata with `fsPath` non-enumerable so it doesn't leak through JSON.stringify. */
-export function makeImageMetadata(parts: {
-  src: string;
-  width: number;
-  height: number;
-  format: string;
-  fsPath: string;
-}): ImageMetadata {
-  const { fsPath, ...visible } = parts;
-  const meta = { ...visible } as ImageMetadata;
-  Object.defineProperty(meta, "fsPath", { value: fsPath, enumerable: false });
-  return meta;
+/** Dimensions of a file on disk. The reader itself is host-agnostic and takes bytes. */
+export async function readImageDimensions(filePath: string): Promise<ImageDimensions> {
+  const buffer = await Bun.file(filePath).arrayBuffer();
+  return readImageDimensionsFromBuffer(buffer, filePath);
 }
 
 interface ProbeResult {
@@ -326,9 +160,9 @@ export async function probeAndRegisterImage(fsPath: string): Promise<ProbeResult
     hasher.update(buffer);
     const contentHash = hasher.digest("hex").slice(0, 8);
 
-    const ext = path.extname(fsPath);
-    const base = path.basename(fsPath, ext);
-    const outputPath = `_astro/${base}.${contentHash}${ext}`;
+    // Named by `@pletivo/core/image`, so an isolate holding the same bytes and no
+    // filesystem arrives at the same URL.
+    const outputPath = imageOutputPath(fsPath, contentHash);
 
     registerImportedImage(fsPath, outputPath);
 
@@ -343,202 +177,6 @@ export async function probeAndRegisterImage(fsPath: string): Promise<ProbeResult
   } finally {
     probeInflight.delete(fsPath);
   }
-}
-
-// ── getImage() ─────────────────────────────────────────────────────────
-
-function computeHash(...parts: (string | number | undefined)[]): string {
-  const hasher = new Bun.CryptoHasher("md5");
-  hasher.update(parts.map(String).join("|"));
-  return hasher.digest("hex").slice(0, 8);
-}
-
-function isImageMetadata(src: unknown): src is ImageMetadata {
-  return (
-    typeof src === "object" &&
-    src !== null &&
-    "src" in src &&
-    "width" in src &&
-    "height" in src &&
-    "format" in src
-  );
-}
-
-function parseOptionalNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = parseInt(value, 10);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
-function parseOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function parseQualityOption(value: unknown): number | string | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") return value;
-  return undefined;
-}
-
-function parseWidths(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  const widths: number[] = [];
-  for (const item of value) {
-    const width = parseOptionalNumber(item);
-    if (width && width > 0) widths.push(width);
-  }
-  return widths;
-}
-
-function getDefaultExport(value: unknown): unknown {
-  if (typeof value === "object" && value !== null && "default" in value) {
-    return value.default;
-  }
-  return value;
-}
-
-export async function getImage(
-  options: Record<string, unknown>,
-): Promise<GetImageResult> {
-  const src = getDefaultExport(await options.src);
-
-  const metadata = isImageMetadata(src) ? src : null;
-  const srcPath = metadata ? metadata.src : String(src ?? "");
-  const fsPath = metadata?.fsPath;
-
-  // Compute dimensions
-  const origW = metadata?.width;
-  const origH = metadata?.height;
-  let width = parseOptionalNumber(options.width);
-  let height = parseOptionalNumber(options.height);
-
-  if (origW && origH) {
-    const ratio = origW / origH;
-    if (width && !height) height = Math.round(width / ratio);
-    else if (height && !width) width = Math.round(height * ratio);
-    else if (!width && !height) {
-      width = origW;
-      height = origH;
-    }
-  }
-
-  // Output format — SVG stays SVG, otherwise default to webp
-  const sourceFormat = metadata?.format ?? "png";
-  const requestedFormat = parseOptionalString(options.format);
-  const format =
-    requestedFormat ?? (sourceFormat === "svg" ? "svg" : "webp");
-  const quality = parseQualityOption(options.quality);
-  const fit = parseOptionalString(options.fit);
-
-  // Compute deterministic output path
-  const hash = computeHash(srcPath, width, height, format, quality);
-  const baseName = path.basename(srcPath, path.extname(srcPath));
-  const outputFile = `_astro/${baseName}.${hash}.${format}`;
-
-  let finalSrc: string;
-  let srcSet: { values: SrcSetValue[]; attribute: string } = {
-    values: [],
-    attribute: "",
-  };
-
-  if (imageMode === "build") {
-    if (fsPath) {
-      if (imageService.processing === "transform") {
-        // On-disk source: optimize/copy it into _astro/ after render.
-        registerTransform({
-          sourcePath: fsPath,
-          outputPath: outputFile,
-          width,
-          height,
-          format,
-          quality,
-          processing: "transform",
-        });
-      }
-      finalSrc = imageService.getURL({
-        src: srcPath,
-        outputPath: outputFile,
-        width,
-        height,
-        sourceFormat,
-        outputFormat: format,
-        requestedFormat,
-        quality,
-        fit,
-      });
-      if (imageService.supportsResponsive && sourceFormat !== "svg") {
-        const widths = parseWidths(options.widths);
-        if (widths.length) {
-          const values = widths.map((responsiveWidth) => ({
-            url: imageService.getURL({
-              src: srcPath,
-              outputPath: outputFile,
-              width: responsiveWidth,
-              sourceFormat,
-              outputFormat: format,
-              requestedFormat,
-              quality,
-              fit,
-            }),
-            descriptor: `${responsiveWidth}w`,
-          }));
-          srcSet = {
-            values,
-            attribute: values.map((v) => `${v.url} ${v.descriptor}`).join(", "),
-          };
-        }
-      }
-    } else {
-      // Bare string src with no on-disk source: a public-root path
-      // (e.g. "/uploads/foo.jpg") or a remote URL. Astro does not run
-      // these through the asset pipeline, so pass the reference through
-      // unchanged. Public files are emitted and hashed separately — the
-      // rendered HTML is rewritten against the public manifest — and
-      // remote URLs are fetched by the browser.
-      finalSrc = srcPath;
-    }
-  } else {
-    // Dev mode — serve original file
-    if (fsPath) {
-      finalSrc = withBase(`/@image/${path.basename(fsPath)}?f=${fsPath}`);
-    } else {
-      finalSrc = srcPath;
-    }
-  }
-
-  // Build HTML attributes — only include image-relevant ones
-  const attributes: Record<string, unknown> = {};
-  if (width) attributes.width = width;
-  if (height) attributes.height = height;
-  attributes.loading = options.loading ?? "lazy";
-  attributes.decoding = options.decoding ?? "async";
-  if (options.alt !== undefined) attributes.alt = options.alt;
-
-  // Pass through data-* and common HTML attributes.
-  for (const [k, v] of Object.entries(options)) {
-    if (
-      k.startsWith("data-") ||
-      k === "class" ||
-      k === "style" ||
-      k === "id" ||
-      k === "role" ||
-      k === "sizes" ||
-      k === "fetchpriority"
-    ) {
-      attributes[k] = v;
-    }
-  }
-
-  return {
-    rawOptions: { ...options, src },
-    options: { ...options, src, width, height, format },
-    src: finalSrc,
-    srcSet,
-    attributes,
-  };
 }
 
 // ── Cloudflare-style image resizing (dev only) ──────────────────────────
@@ -668,19 +306,6 @@ function clampInt(value: string, min: number, max: number): number | undefined {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : undefined;
 }
 
-const IMAGE_CONTENT_TYPES: Record<string, string> = {
-  webp: "image/webp",
-  avif: "image/avif",
-  jpeg: "image/jpeg",
-  jpg: "image/jpeg",
-  png: "image/png",
-  gif: "image/gif",
-  svg: "image/svg+xml",
-};
-
-export function imageContentType(format: string): string {
-  return IMAGE_CONTENT_TYPES[format] ?? "application/octet-stream";
-}
 
 /** Best-effort image format from a path/URL extension (jpg→jpeg). */
 export function formatFromPath(p: string): string {

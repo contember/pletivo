@@ -4,7 +4,7 @@ import { watch } from "fs";
 import { scanRoutes } from "./router";
 import { matchRoute, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
-import { getContentBaseDirs, initCollections } from "./content/collection";
+import { getContentBaseDirs, initCollections, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
 import { runWithRenderTracking, AstroCookies, type AstroResponse } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
@@ -12,7 +12,7 @@ import { hmrClientScript } from "@pletivo/runtime/hmr-client";
 import { devCss } from "./css";
 import { registerAstroPlugin, getAstroCssForPage, extractAstroClasses, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
-import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "./content/markdown";
+import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
 import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";
@@ -171,7 +171,11 @@ function logRequest(
   console.log(`  ${statusCol}  ${durationCol}  ${methodStr} ${pathname}`);
 }
 
-export async function dev(projectRoot: string, config: PletivoConfig) {
+export function dev(projectRoot: string, config: PletivoConfig) {
+  return runWithBunContentRuntime(() => devWithContentRuntime(projectRoot, config));
+}
+
+async function devWithContentRuntime(projectRoot: string, config: PletivoConfig) {
   const pagesDir = path.join(projectRoot, config.srcDir, "pages");
   const publicDir = path.join(projectRoot, config.publicDir);
   const islandsDir = path.join(projectRoot, config.srcDir, "islands");
@@ -847,22 +851,25 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     port: config.port,
     hostname: config.host,
     async fetch(req, server) {
-      const url = new URL(req.url);
-      const pathname = stripBase(url.pathname);
-      const start = Date.now();
-      const countsAsActivity = idleRecycler !== null && !isHmrTransportPath(pathname ?? url.pathname);
-      if (countsAsActivity) idleRecycler?.requestStarted();
-      try {
-        const response = await dispatchRequest(req, server, url, pathname);
-        if (response) {
-          const logPath = pathname ?? url.pathname;
-          const sub = isSubrequest(req, url.origin, logPath);
-          logRequest(req.method, logPath, response.status, Date.now() - start, sub);
+      return runWithBunContentRuntime(async () => {
+        const url = new URL(req.url);
+        const pathname = stripBase(url.pathname);
+        const start = Date.now();
+        const countsAsActivity =
+          idleRecycler !== null && !isHmrTransportPath(pathname ?? url.pathname);
+        if (countsAsActivity) idleRecycler?.requestStarted();
+        try {
+          const response = await dispatchRequest(req, server, url, pathname);
+          if (response) {
+            const logPath = pathname ?? url.pathname;
+            const sub = isSubrequest(req, url.origin, logPath);
+            logRequest(req.method, logPath, response.status, Date.now() - start, sub);
+          }
+          return response;
+        } finally {
+          if (countsAsActivity) idleRecycler?.requestFinished();
         }
-        return response;
-      } finally {
-        if (countsAsActivity) idleRecycler?.requestFinished();
-      }
+      });
     },
 
     websocket: {
@@ -1300,48 +1307,50 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
 
   // Watch for file changes
   const srcDir = path.join(projectRoot, config.srcDir);
-  const watcher = watch(srcDir, { recursive: true }, async (event, filename) => {
-    if (!filename) return;
-    // Skip tmp files
-    if (filename.includes("_tmp_")) return;
-    bumpDevVersion();
-    const ext = path.extname(filename).toLowerCase();
-    const isCss = ext === ".css";
-    const isScss = ext === ".scss" || ext === ".sass";
-    if (/\.(css|js|jsx|ts|tsx|mjs|cjs)$/i.test(filename)) {
-      clearJsImportedCssImportCache();
-    }
-    // scss changes: clear the cache so stale entries for deleted/renamed
-    // files don't linger (active entries are overwritten on re-import).
-    // Serve as a full reload so the page re-renders and re-imports scss
-    // before the client fetches /__styles.css.
-    if (isScss) clearScss();
-    const hmrType = isCss ? "css" : isScss ? "reload" : "html";
-    const clients = sockets.size + sseClients.size + pollWaiters.size;
-    console.log(`  ${config.srcDir}/${filename} changed → ${hmrType} update (${clients} clients)`);
+  const watcher = watch(srcDir, { recursive: true }, async (_event, filename) =>
+    runWithBunContentRuntime(async () => {
+      if (!filename) return;
+      // Skip tmp files
+      if (filename.includes("_tmp_")) return;
+      bumpDevVersion();
+      const ext = path.extname(filename).toLowerCase();
+      const isCss = ext === ".css";
+      const isScss = ext === ".scss" || ext === ".sass";
+      if (/\.(css|js|jsx|ts|tsx|mjs|cjs)$/i.test(filename)) {
+        clearJsImportedCssImportCache();
+      }
+      // scss changes: clear the cache so stale entries for deleted/renamed
+      // files don't linger (active entries are overwritten on re-import).
+      // Serve as a full reload so the page re-renders and re-imports scss
+      // before the client fetches /__styles.css.
+      if (isScss) clearScss();
+      const hmrType = isCss ? "css" : isScss ? "reload" : "html";
+      const clients = sockets.size + sseClients.size + pollWaiters.size;
+      console.log(`  ${config.srcDir}/${filename} changed → ${hmrType} update (${clients} clients)`);
 
-    if (filename.startsWith("content/") || /^content\.config\.(ts|mts|mjs|js)$/.test(filename)) {
-      await initCollections(projectRoot);
-    }
+      if (filename.startsWith("content/") || /^content\.config\.(ts|mts|mjs|js)$/.test(filename)) {
+        await initCollections(projectRoot);
+      }
 
-    if (filename.startsWith("pages/")) {
-      routes = await scanRoutes(pagesDir);
-    }
+      if (filename.startsWith("pages/")) {
+        routes = await scanRoutes(pagesDir);
+      }
 
-    // Forward to Astro host watcher — integrations like Nua CMS subscribe
-    // to `change` / `add` / `unlink` events on `server.watcher`.
-    if (astroHost) {
-      const absPath = path.join(srcDir, filename);
-      // Node's fs.watch uses "rename" for both creation and deletion.
-      // Check if the file still exists to distinguish add/change vs unlink.
-      const exists = fs.existsSync(absPath);
-      const viteEvent = exists ? "change" : "unlink";
-      astroHost.server.watcher.emit(viteEvent, absPath);
-    }
+      // Forward to Astro host watcher — integrations like Nua CMS subscribe
+      // to `change` / `add` / `unlink` events on `server.watcher`.
+      if (astroHost) {
+        const absPath = path.join(srcDir, filename);
+        // Node's fs.watch uses "rename" for both creation and deletion.
+        // Check if the file still exists to distinguish add/change vs unlink.
+        const exists = fs.existsSync(absPath);
+        const viteEvent = exists ? "change" : "unlink";
+        astroHost.server.watcher.emit(viteEvent, absPath);
+      }
 
-    await retrySetup(true);
-    broadcastHmr(JSON.stringify({ type: hmrType }));
-  });
+      await retrySetup(true);
+      broadcastHmr(JSON.stringify({ type: hmrType }));
+    }),
+  );
 
   try {
     watch(publicDir, { recursive: true }, () => {
@@ -1366,16 +1375,18 @@ export async function dev(projectRoot: string, config: PletivoConfig) {
     if (watchedContentRoots.has(rootDir) || !fs.existsSync(rootDir)) continue;
     watchedContentRoots.add(rootDir);
     try {
-      watch(rootDir, { recursive: true }, async (_event, filename) => {
-        if (!filename || filename.includes("_tmp_")) return;
-        await initCollections(projectRoot); // clears the collection cache
-        if (astroHost) {
-          const absPath = path.join(rootDir, filename);
-          astroHost.server.watcher.emit(fs.existsSync(absPath) ? "change" : "unlink", absPath);
-        }
-        await retrySetup(true);
-        broadcastHmr(JSON.stringify({ type: "html" }));
-      });
+      watch(rootDir, { recursive: true }, async (_event, filename) =>
+        runWithBunContentRuntime(async () => {
+          if (!filename || filename.includes("_tmp_")) return;
+          await initCollections(projectRoot); // clears the collection cache
+          if (astroHost) {
+            const absPath = path.join(rootDir, filename);
+            astroHost.server.watcher.emit(fs.existsSync(absPath) ? "change" : "unlink", absPath);
+          }
+          await retrySetup(true);
+          broadcastHmr(JSON.stringify({ type: "html" }));
+        }),
+      );
       console.log(`  watching ${top}/ for content changes`);
     } catch {
       // dir vanished between existsSync and watch

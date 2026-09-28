@@ -324,7 +324,7 @@ export async function registerAstroPlugin(): Promise<void> {
   registered = true;
 
   // The shim resolves hoisted-script ids through this, rather than importing
-  // the map from here — see runtime/script-registry.ts.
+  // the map from here — see @pletivo/runtime/script-registry.
   setScriptUrlResolver((id) => {
     const entry = getHoistedScript(id);
     return entry ? hoistedUrl(entry.hash) : null;

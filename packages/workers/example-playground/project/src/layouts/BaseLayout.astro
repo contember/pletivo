@@ -1,0 +1,49 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    {description && <meta name="description" content={description} />}
+  </head>
+  <body class="bg-white text-ink antialiased">
+    <div class="mx-auto flex min-h-screen max-w-2xl flex-col gap-10 px-6 py-10">
+      <header class="flex items-baseline justify-between gap-4 border-b border-ink/10 pb-4">
+        <a href="/" class="brand text-lg font-semibold tracking-tight">Rendered in a Worker</a>
+        <nav class="flex gap-4 text-sm">
+          <a href="/">Home</a>
+          <a href="/about/">About</a>
+        </nav>
+      </header>
+
+      <main class="flex flex-col gap-10"><slot /></main>
+
+      <footer class="mt-auto border-t border-ink/10 pt-4 text-sm text-ink/50">
+        Change a class, a heading or a post — the page re-renders.
+      </footer>
+    </div>
+  </body>
+</html>
+
+<style>
+  /* Scoped: this only applies to the markup in this file. */
+  .brand {
+    color: var(--color-signal);
+  }
+
+  nav a:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+</style>

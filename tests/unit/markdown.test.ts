@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseMarkdown } from "../../packages/pletivo/src/content/markdown";
+import { parseMarkdown } from "@pletivo/core/content/markdown";
 
 // `parseMarkdown` runs the unified/remark pipeline (remark-parse → remark-gfm →
 // remark-rehype → heading-id slugs → rehype-stringify) and is async. HTML is
