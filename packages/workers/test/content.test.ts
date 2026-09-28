@@ -1,9 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { compileProject, isContentApi } from "../src/compile-project.ts";
+import { imageOutputPath } from "@pletivo/core/image";
 import {
   ContentFiles,
+  createLazyProjectAssetsView,
   globMatcher,
+  ProjectAssetOutputAmbiguityError,
   type ContentBinding,
   type ContentFileRef,
 } from "../src/content-files.ts";
@@ -397,6 +400,43 @@ describe("ContentFiles", () => {
     left.close();
     right.close();
     expect(store.openCount).toBe(0);
+  });
+});
+
+describe("createLazyProjectAssetsView", () => {
+  const GIF = Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 3, 0, 2, 0, 0);
+
+  function lazyView(sources: string[]) {
+    const reads: string[] = [];
+    const view = createLazyProjectAssetsView(sources, (source) => {
+      reads.push(source);
+      return sources.includes(source) ? new Uint8Array(GIF) : null;
+    });
+    return { view, reads };
+  }
+
+  test("reads an image for its metadata once, and again only to serve it", async () => {
+    const { view, reads } = lazyView(["src/hero.gif"]);
+    expect(reads).toEqual([]);
+
+    const info = await view.info("src/hero.gif");
+    await view.info("src/hero.gif");
+    expect(info?.width).toBe(3);
+    expect(reads).toEqual(["src/hero.gif"]);
+
+    const output = `/${imageOutputPath("src/hero.gif", info?.hash ?? "")}`;
+    const served = await view.resolveOutput(`/cdn-cgi/image/width=3${output}`);
+    expect(served?.source).toBe("src/hero.gif");
+    expect(served?.bytes).toEqual(GIF);
+    expect(reads).toEqual(["src/hero.gif", "src/hero.gif"]);
+  });
+
+  test("keeps the map view's ambiguity error for one output name", async () => {
+    const { view } = lazyView(["a/hero.gif", "b/hero.gif"]);
+    const info = await view.info("a/hero.gif");
+    const output = `/${imageOutputPath("a/hero.gif", info?.hash ?? "")}`;
+
+    expect(() => view.resolveOutput(output)).toThrow(ProjectAssetOutputAmbiguityError);
   });
 });
 

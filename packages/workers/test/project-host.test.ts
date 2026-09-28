@@ -5,7 +5,11 @@
  */
 
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { ARTIFACT_VERSION, ArtifactVersionError } from "@pletivo/core/artifact";
+import {
+  ARTIFACT_VERSION,
+  ArtifactVersionError,
+  digestArtifactInput,
+} from "@pletivo/core/artifact";
 import { UnsupportedArtifactExternalError } from "../src/artifact.ts";
 import type {
   ParseOptions,
@@ -14,7 +18,7 @@ import type {
   TransformResult,
 } from "@astrojs/compiler/types";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
-import { createProjectAssetsView, probeImage } from "../src/content-files.ts";
+import { ContentFiles, createProjectAssetsView, probeImage } from "../src/content-files.ts";
 import {
   createProjectHost,
   GeneratedAssetRetentionError,
@@ -23,6 +27,7 @@ import {
 import { createMapProjectStore, type ProjectStore } from "../src/project-store.ts";
 import {
   createWorkspaceProjectStore,
+  WorkspaceSnapshotChangedError,
   type WorkspaceDirent,
   type WorkspaceFiles,
 } from "../src/workspace-store.ts";
@@ -44,6 +49,7 @@ const title = "Home";
 /** A workspace held in plain objects: directory path -> its entries. */
 class FakeWorkspace implements WorkspaceFiles {
   readonly reads: string[] = [];
+  onRead: ((path: string) => void) | undefined;
   #revision = 1;
   readonly #text = new Map<string, string>();
   readonly #bytes = new Map<string, Uint8Array>();
@@ -82,6 +88,7 @@ class FakeWorkspace implements WorkspaceFiles {
 
   readFileSync(path: string, options?: { encoding?: string | null } | string | null): unknown {
     this.reads.push(path);
+    this.onRead?.(path);
     const text = this.#text.get(path);
     if (text !== undefined) return options ? text : new TextEncoder().encode(text);
     const bytes = this.#bytes.get(path);
@@ -600,6 +607,276 @@ describe("createProjectHost", () => {
 
       expect(transformed).toEqual(["src/components/Layout.astro"]);
       expect(await response.text()).toContain("margin:1px");
+    });
+  });
+
+  describe("a lazy workspace", () => {
+    const LAYOUT = `<html><body><slot /></body></html>\n`;
+    const HOME = `---\nimport Layout from "../components/Layout.astro";\n---\n<Layout><h1>home</h1></Layout>\n`;
+
+    function workspaceWithPage(): FakeWorkspace {
+      const workspace = new FakeWorkspace();
+      workspace.write("/src/pages/index.astro", HOME);
+      workspace.write("/src/components/Layout.astro", LAYOUT);
+      return workspace;
+    }
+
+    test("a render reads only the files its page reaches", async () => {
+      const workspace = workspaceWithPage();
+      workspace.write("/src/data/unrelated.json", JSON.stringify("x".repeat(1024 * 1024)));
+      workspace.write("/src/assets/photo.png", new Uint8Array(1024 * 1024));
+      const host = hostOf(
+        createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+      );
+
+      const response = await host.fetch(new Request("https://example.test/"));
+
+      expect(response.status).toBe(200);
+      expect([...workspace.reads].sort()).toEqual([
+        "/src/components/Layout.astro",
+        "/src/pages/index.astro",
+      ]);
+    });
+
+    test("a write during the render is retried on a fresh snapshot", async () => {
+      const workspace = workspaceWithPage();
+      let writes = 0;
+      workspace.onRead = (path) => {
+        if (path !== "/src/pages/index.astro" || writes > 0) return;
+        writes++;
+        workspace.write("/src/components/Layout.astro", `<html><body><slot />v2</body></html>\n`);
+      };
+      const host = hostOf(
+        createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+      );
+
+      const response = await host.fetch(new Request("https://example.test/"));
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("v2");
+      expect(workspace.reads.filter((path) => path === "/src/pages/index.astro")).toHaveLength(2);
+    });
+
+    test("a workspace that keeps moving is a 503, not a mixed render", async () => {
+      const workspace = workspaceWithPage();
+      workspace.onRead = () => workspace.write("/churn.txt", String(workspace.revision));
+      const host = hostOf(
+        createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+      );
+
+      await expect(host.render("/")).rejects.toBeInstanceOf(WorkspaceSnapshotChangedError);
+      const response = await host.fetch(new Request("https://example.test/"));
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("1");
+      expect(await response.text()).toContain("workspace changed");
+    });
+  });
+
+  describe("content collections over a lazy workspace", () => {
+    const CONFIG = `import { defineCollection, z } from "astro:content";
+import { glob } from "astro/loaders";
+
+export const collections = {
+  notes: defineCollection({
+    loader: glob({ base: "src/content/notes", pattern: "**/*.md" }),
+    schema: ({ image }) => z.object({ title: z.string(), cover: image().optional() }),
+  }),
+};
+`;
+    const INDEX = `---
+import { getCollection } from "astro:content";
+const notes = await getCollection("notes");
+---
+<html><body><ul>{notes.map((note) => <li data-w={note.data.cover?.width}>{note.data.title}</li>)}</ul></body></html>
+`;
+    const GIF = Uint8Array.from(atob("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="), (char) =>
+      char.charCodeAt(0),
+    );
+
+    function collectionWorkspace(): FakeWorkspace {
+      const workspace = new FakeWorkspace();
+      workspace.write("/src/content.config.ts", CONFIG);
+      workspace.write("/src/pages/index.astro", INDEX);
+      workspace.write("/src/content/notes/a.md", "---\ntitle: Alpha\n---\n\nbody\n");
+      workspace.write("/src/content/notes/b.md", "---\ntitle: Beta\n---\n\nbody\n");
+      return workspace;
+    }
+
+    // One instance for every test: a Loader-cached isolate keeps the binding it started with.
+    const content = new ContentFiles();
+
+    function contentHost(workspace: FakeWorkspace, maxFileBytes?: number) {
+      return createProjectHost({
+        store: createWorkspaceProjectStore(workspace, {
+          revision: () => workspace.revision,
+          maxFileBytes,
+        }),
+        loader,
+        compiler,
+        content: { binding: content, store: content },
+        executionNamespace: { tenant: "project-host-tests", capabilityGeneration: "content-v1" },
+      });
+    }
+
+    /** Write once, right after the first read of `trigger`, so the next read sees a moved workspace. */
+    function writeAfterFirstRead(workspace: FakeWorkspace, trigger: string, write: () => void) {
+      let written = false;
+      workspace.onRead = (path) => {
+        if (written || path !== trigger) return;
+        written = true;
+        write();
+      };
+    }
+
+    test("a write racing a content read is retried on a fresh snapshot", async () => {
+      const workspace = collectionWorkspace();
+      writeAfterFirstRead(workspace, "/src/content/notes/a.md", () =>
+        workspace.write("/src/content/notes/b.md", "---\ntitle: Beta two\n---\n\nbody\n"),
+      );
+
+      const response = await contentHost(workspace).fetch(new Request("https://example.test/"));
+      const html = await response.text();
+
+      expect(response.status, html).toBe(200);
+      expect(html).toContain("Beta two");
+      expect(workspace.reads.filter((path) => path === "/src/content/notes/a.md")).toHaveLength(2);
+    });
+
+    test("a write racing an image read through the binding is retried", async () => {
+      const workspace = collectionWorkspace();
+      workspace.write("/src/content/notes/a.md", "---\ntitle: Alpha\ncover: ./cover.gif\n---\n\nbody\n");
+      workspace.write("/src/content/notes/cover.gif", GIF);
+      writeAfterFirstRead(workspace, "/src/content/notes/b.md", () =>
+        workspace.write("/src/content/notes/b.md", "---\ntitle: Beta two\n---\n\nbody\n"),
+      );
+
+      const response = await contentHost(workspace).fetch(new Request("https://example.test/"));
+      const html = await response.text();
+
+      expect(response.status, html).toBe(200);
+      expect(html).toContain('data-w="1"');
+      expect(html).toContain("Beta two");
+      expect(workspace.reads.filter((path) => path === "/src/content/notes/cover.gif")).toHaveLength(1);
+    });
+
+    test("an oversized entry is left out of the collection, not a broken render", async () => {
+      const workspace = collectionWorkspace();
+      workspace.write("/src/content/notes/huge.md", `---\ntitle: Huge\n---\n\n${"x".repeat(4096)}\n`);
+
+      const response = await contentHost(workspace, 2048).fetch(new Request("https://example.test/"));
+      const html = await response.text();
+
+      expect(response.status, html).toBe(200);
+      expect(html).toContain("Alpha");
+      expect(html).toContain("Beta");
+      expect(html).not.toContain("Huge");
+      expect(workspace.reads).not.toContain("/src/content/notes/huge.md");
+    });
+  });
+
+  describe("a stale workspace artifact", () => {
+    const artifactPath = ".pletivo/site.json";
+    const PACKAGE = `{"name":"demo","dependencies":{}}`;
+
+    async function preparedWorkspace(): Promise<FakeWorkspace> {
+      const workspace = new FakeWorkspace();
+      workspace.write("/src/pages/index.md", "---\ntitle: Local\n---\n\nbody\n");
+      workspace.write("/package.json", PACKAGE);
+      workspace.write(
+        `/${artifactPath}`,
+        JSON.stringify({
+          artifact: {
+            version: ARTIFACT_VERSION,
+            config: {},
+            scripts: { headInline: [], page: [] },
+            modules: [],
+            resolutions: [],
+          },
+          inputs: [
+            {
+              path: "package.json",
+              digest: await digestArtifactInput(new TextEncoder().encode(PACKAGE)),
+            },
+          ],
+        }),
+      );
+      return workspace;
+    }
+
+    function artifactHost(workspace: FakeWorkspace) {
+      return createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        artifactPath,
+        loader,
+        compiler,
+      });
+    }
+
+    test("an unchanged input sends no warning", async () => {
+      const host = artifactHost(await preparedWorkspace());
+
+      const response = await host.fetch(new Request("https://example.test/"));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.has("x-pletivo-artifact-stale")).toBe(false);
+      expect((await host.render("/")).staleArtifactInputs).toEqual([]);
+    });
+
+    test("a changed input is named on the page, which still renders", async () => {
+      const workspace = await preparedWorkspace();
+      const host = artifactHost(workspace);
+      workspace.write("/package.json", `{"name":"demo","dependencies":{"preact":"^10"}}`);
+
+      const response = await host.fetch(new Request("https://example.test/"));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-pletivo-artifact-stale")).toBe("package.json");
+      expect(await response.text()).toContain("body");
+      expect((await host.render("/")).staleArtifactInputs).toEqual(["package.json"]);
+    });
+
+    test("an input over maxFileBytes is digested from its bytes and not kept", async () => {
+      const LOCKFILE = `{"lockfileVersion":1,"packages":{${'"p":{},'.repeat(512)}"q":{}}}`;
+      const workspace = new FakeWorkspace();
+      workspace.write("/src/pages/index.md", "---\ntitle: Local\n---\n\nbody\n");
+      workspace.write("/bun.lock", LOCKFILE);
+      workspace.write(
+        `/${artifactPath}`,
+        JSON.stringify({
+          artifact: {
+            version: ARTIFACT_VERSION,
+            config: {},
+            scripts: { headInline: [], page: [] },
+            modules: [],
+            resolutions: [],
+          },
+          inputs: [
+            {
+              path: "bun.lock",
+              digest: await digestArtifactInput(new TextEncoder().encode(LOCKFILE)),
+            },
+          ],
+        }),
+      );
+      const host = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, {
+          revision: () => workspace.revision,
+          maxFileBytes: 1024,
+        }),
+        artifactPath,
+        loader,
+        compiler,
+      });
+
+      const response = await host.fetch(new Request("https://example.test/"));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.has("x-pletivo-artifact-stale")).toBe(false);
+      expect(workspace.reads.filter((path) => path === "/bun.lock")).toHaveLength(1);
+      const snapshot = await host.snapshot();
+      expect(snapshot.files.get("bun.lock")).toBeUndefined();
+      expect(workspace.reads.filter((path) => path === "/bun.lock")).toHaveLength(1);
     });
   });
 

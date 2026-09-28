@@ -125,6 +125,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       entry: "src/styles/global.css",
       files,
       stylesheets: await tailwindStylesheets(),
+      candidates: scanCandidates(files),
     });
 
     expect(css.css).toContain(".mt-4");
@@ -161,7 +162,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
   test("reports an @import it cannot resolve", async () => {
     const files = new Map([["src/styles/global.css", '@import "tailwindcss";\n@import "./gone.css";']]);
     await expect(
-      compileTailwind({ entry: "src/styles/global.css", files, stylesheets: await tailwindStylesheets() }),
+      compileTailwind({ entry: "src/styles/global.css", files, stylesheets: await tailwindStylesheets(), candidates: [] }),
     ).rejects.toThrow(/cannot resolve stylesheet "\.\/gone\.css"/);
   });
 
@@ -170,13 +171,18 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       ["src/styles/global.css", '@import "tailwindcss";\n@plugin "./typography.js";'],
     ]);
     await expect(
-      compileTailwind({ entry: "src/styles/global.css", files, stylesheets: await tailwindStylesheets() }),
+      compileTailwind({ entry: "src/styles/global.css", files, stylesheets: await tailwindStylesheets(), candidates: [] }),
     ).rejects.toThrow(/no module loader/);
   });
 
   test("rejects an entry that is not in the file map", async () => {
     await expect(
-      compileTailwind({ entry: "missing.css", files: new Map(), stylesheets: await tailwindStylesheets() }),
+      compileTailwind({
+        entry: "missing.css",
+        files: new Map(),
+        stylesheets: await tailwindStylesheets(),
+        candidates: [],
+      }),
     ).rejects.toThrow(/is not in the file map/);
   });
 });

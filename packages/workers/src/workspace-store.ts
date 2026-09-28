@@ -2,19 +2,33 @@
  * A `ProjectStore` over a synchronous, Node-shaped virtual filesystem.
  *
  * This is the store `docs/todos/023` is about. Inside the Durable Object that owns the
- * workspace, `readFileSync` is a primary-key lookup rather than an RPC hop, so reading
- * the project is a walk over SQLite rather than a network round trip per file.
+ * workspace, `readFileSync` is a primary-key lookup rather than an RPC hop.
+ *
+ * A snapshot lists directories and reads no file; with `maxFileBytes` it also stats each
+ * one. A text file is read on its first `get` and kept for the snapshot; an image is read
+ * when its metadata is first asked for or when it is served, and only the metadata is
+ * kept. A render therefore reads what its page reaches.
+ *
+ * With a `revision` source, every such read first checks that the workspace is still at
+ * the snapshot's revision and throws `WorkspaceSnapshotChangedError` when it is not, so a
+ * snapshot never mixes two revisions; what it already read stays valid. Without one, a
+ * snapshot's revision is `unknown:N`, its reads are unchecked, and nothing it read is
+ * reused by the next snapshot.
  *
  * The filesystem is named structurally, the way `WorkerLoaderBinding` is: this package
  * takes no dependency on `kompjutr`, on which version the app installed, or on
  * `node:fs` types. `kompjutr`'s `NodeFsCompat` satisfies `WorkspaceFiles` as it stands.
  */
 
+import { createLazyProjectAssetsView } from "./content-files.ts";
 import {
-  createProjectAssetsView,
-  type ProjectAsset,
-} from "./content-files.ts";
-import type { ProjectSnapshot, ProjectStore } from "./project-store.ts";
+  WorkspaceSnapshotChangedError,
+  type ProjectFiles,
+  type ProjectSnapshot,
+  type ProjectStore,
+} from "./project-store.ts";
+
+export { WorkspaceSnapshotChangedError };
 
 /** One `readdir` entry, in the `withFileTypes` shape. */
 export interface WorkspaceDirent {
@@ -39,9 +53,9 @@ export interface WorkspaceStoreOptions {
    *
    * The gate that makes the whole store worth having: on an unchanged workspace the
    * tree is not walked and no file is re-read — the previous snapshot is handed straight
-   * back. Without one, every snapshot re-reads the project and the compile cache below
-   * it compares every source again (023 §3). Both are correct; one reads SQLite once per
-   * request and the other reads it once per file.
+   * back. It is also what lets a lazy read notice a write made after the walk. Without
+   * one, every snapshot walks the tree and re-reads what its render reaches, and the
+   * compile cache below it compares every source again (023 §3).
    */
   revision?: () => string | number | undefined;
   /** Directory names never descended into. */
@@ -49,26 +63,12 @@ export interface WorkspaceStoreOptions {
   /** Extensions read as bytes rather than text. */
   binaryExtensions?: Iterable<string>;
   /**
-   * Largest file to read, in bytes. Unset, there is no limit and a workspace holding
-   * one enormous file can exhaust the isolate's 128 MiB heap. Set, a file over the
-   * limit is left out of the snapshot — which is a broken import rather than a dead
-   * Worker, and the one this host can report.
+   * Largest file to read, in bytes. Unset, there is no limit and one enormous file can
+   * exhaust the isolate's 128 MiB heap. Set, a file over the limit is left out of the
+   * listing — which is a broken import rather than a dead Worker, and the one this host
+   * can report. `ProjectSnapshot.readBytes` is not bound by it.
    */
   maxFileBytes?: number;
-}
-
-/** The workspace changed during both attempts to materialize one revision. */
-export class WorkspaceSnapshotChangedError extends Error {
-  constructor(
-    readonly before: string,
-    readonly after: string,
-  ) {
-    super(
-      `[pletivo-workers] workspace changed while taking a project snapshot ` +
-        `(${JSON.stringify(before)} -> ${JSON.stringify(after)})`,
-    );
-    this.name = "WorkspaceSnapshotChangedError";
-  }
 }
 
 /**
@@ -100,7 +100,7 @@ export function createWorkspaceProjectStore(
   const readRevision = options.revision;
   const maxFileBytes = options.maxFileBytes;
 
-  /** The last walk, and what the workspace's revision was when it was taken. */
+  /** The last snapshot, and what the workspace's revision was when it was listed. */
   let cached: { revision: string; snapshot: ProjectSnapshot } | null = null;
   /** Stands in for a revision the workspace will not give, so nothing is reused. */
   let fallback = 0;
@@ -110,9 +110,10 @@ export function createWorkspaceProjectStore(
     return revision === undefined ? undefined : String(revision);
   }
 
-  function walk(): Omit<ProjectSnapshot, "revision"> {
+  /** Project key -> workspace path, for text and binary files. Stats, reads no file. */
+  function list(): Listing {
     const text = new Map<string, string>();
-    const assets = new Map<string, ProjectAsset>();
+    const binaryFiles = new Map<string, string>();
     const directories = [""];
 
     while (directories.length > 0) {
@@ -129,31 +130,47 @@ export function createWorkspaceProjectStore(
         const key = relative === "" ? entry.name : `${relative.slice(1)}/${entry.name}`;
         const path = absolute === "/" ? `/${entry.name}` : `${absolute}/${entry.name}`;
         if (maxFileBytes !== undefined && sizeOf(files, path) > maxFileBytes) continue;
-        if (binary.has(extensionOf(entry.name))) {
-          const bytes = readBytes(files, path);
-          if (bytes !== null) assets.set(key, bytes);
-          continue;
-        }
-        const source = readText(files, path);
-        if (source !== null) text.set(key, source);
+        if (binary.has(extensionOf(entry.name))) binaryFiles.set(key, path);
+        else text.set(key, path);
       }
     }
-    // SQLite cannot promise that a lazy read after this walk still sees `revision`.
-    // Keep the immutable bytes from this walk; the view indexes keys but probes none.
-    return { files: text, assets: createProjectAssetsView(assets) };
+    return { text, binary: binaryFiles };
   }
 
-  function unknownSnapshot(snapshot: Omit<ProjectSnapshot, "revision">): ProjectSnapshot {
-    return { ...snapshot, revision: `unknown:${++fallback}` };
+  function snapshotOf(listing: Listing, revision: string, checked: boolean): ProjectSnapshot {
+    const assertCurrent = (): void => {
+      if (!checked) return;
+      const now = currentRevision();
+      if (now !== revision) throw new WorkspaceSnapshotChangedError(revision, String(now));
+    };
+    const readBytesOf = (source: string): Uint8Array<ArrayBuffer> | null => {
+      const path = listing.binary.get(source);
+      if (path === undefined) return null;
+      assertCurrent();
+      return readBytes(files, path);
+    };
+    return {
+      files: new LazyWorkspaceFiles(listing.text, (path) => {
+        assertCurrent();
+        return readText(files, path);
+      }),
+      assets: createLazyProjectAssetsView(listing.binary.keys(), readBytesOf),
+      revision,
+      readBytes: (key) => {
+        assertCurrent();
+        return readBytes(files, root === "" ? `/${key}` : `${root}/${key}`) ?? undefined;
+      },
+    };
   }
 
-  function stableSnapshot(
-    snapshot: Omit<ProjectSnapshot, "revision">,
-    revision: string,
-  ): ProjectSnapshot {
-    const stable = { ...snapshot, revision };
-    cached = { revision, snapshot: stable };
-    return stable;
+  function unknownSnapshot(listing: Listing): ProjectSnapshot {
+    return snapshotOf(listing, `unknown:${++fallback}`, false);
+  }
+
+  function stableSnapshot(listing: Listing, revision: string): ProjectSnapshot {
+    const snapshot = snapshotOf(listing, revision, true);
+    cached = { revision, snapshot };
+    return snapshot;
   }
 
   return {
@@ -163,7 +180,7 @@ export function createWorkspaceProjectStore(
         return cached.snapshot;
       }
 
-      const first = walk();
+      const first = list();
       const after = currentRevision();
       if (before === undefined || after === undefined) {
         // No usable revision means no coherence proof and therefore no cache reuse.
@@ -172,7 +189,7 @@ export function createWorkspaceProjectStore(
       if (before === after) return stableSnapshot(first, before);
 
       const retryBefore = currentRevision();
-      const retry = walk();
+      const retry = list();
       const retryAfter = currentRevision();
       if (retryBefore === undefined || retryAfter === undefined) {
         return unknownSnapshot(retry);
@@ -183,6 +200,41 @@ export function createWorkspaceProjectStore(
       return stableSnapshot(retry, retryBefore);
     },
   };
+}
+
+interface Listing {
+  text: ReadonlyMap<string, string>;
+  binary: ReadonlyMap<string, string>;
+}
+
+/** Text files of one snapshot, each read on its first `get` and kept for the snapshot. */
+class LazyWorkspaceFiles implements ProjectFiles {
+  readonly #paths: ReadonlyMap<string, string>;
+  readonly #read: (path: string) => string | null;
+  readonly #sources = new Map<string, string | null>();
+
+  constructor(paths: ReadonlyMap<string, string>, read: (path: string) => string | null) {
+    this.#paths = paths;
+    this.#read = read;
+  }
+
+  keys(): Iterable<string> {
+    return this.#paths.keys();
+  }
+
+  has(key: string): boolean {
+    return this.#paths.has(key);
+  }
+
+  get(key: string): string | undefined {
+    const known = this.#sources.get(key);
+    if (known !== undefined || this.#sources.has(key)) return known ?? undefined;
+    const path = this.#paths.get(key);
+    if (path === undefined) return undefined;
+    const source = this.#read(path);
+    this.#sources.set(key, source);
+    return source ?? undefined;
+  }
 }
 
 /**

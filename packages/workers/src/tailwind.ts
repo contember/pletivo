@@ -25,6 +25,7 @@
  */
 
 import type { ModuleId } from "@pletivo/core/artifact";
+import type { ProjectFiles } from "./project-store.ts";
 
 /** The slice of `tailwindcss` this host uses. Validated at run time by `loadTailwind`. */
 interface TailwindModule {
@@ -74,18 +75,15 @@ export class TailwindNotConfiguredError extends Error {
 export interface CompileTailwindOptions {
   /** Key in `files` of the stylesheet that imports Tailwind. */
   entry: string;
-  /** Where `@import` resolves. Also the default content, when `candidates` is absent. */
-  files: ReadonlyMap<string, string>;
+  /** Where `@import` resolves. */
+  files: ProjectFiles;
   stylesheets: TailwindStylesheets;
   /**
-   * What to build, when the caller knows the content better than a scan of `files` does
-   * — the Workers host hands over the candidates of the page it just rendered.
-   *
-   * Defaulting to the scan keeps `files` doing the one job it always did for callers
-   * that have no better answer, and keeps `scanCandidates` as the reference input the
+   * What to build. The Workers host hands over the candidates of the page it just
+   * rendered; `scanCandidates` is the whole-project reference input the
    * `@tailwindcss/oxide` comparison in `docs/todos/016 §7` is stated against.
    */
-  candidates?: readonly string[];
+  candidates: readonly string[];
   /** Canonical CSS targets, in source import order for each logical importer. */
   styleTargets?: ReadonlyMap<ModuleId, readonly ModuleId[]>;
   /** Canonical target identities for the four host-embedded Tailwind stylesheets. */
@@ -142,10 +140,9 @@ function join(base: string, id: string): string {
  * Compile the entry stylesheet against the virtual project.
  *
  * `root === "none"` (`@source not inline` / an explicit opt-out) disables scanning.
- * Otherwise the caller's `candidates` are built, or every non-CSS file in `files` is
- * scanned for them; the `@source` globs Tailwind reports in `sources` are not applied
- * yet, so a project that narrows its content with `@source` gets a superset — extra
- * candidates, never missing ones.
+ * Otherwise the caller's `candidates` are built. The `@source` globs Tailwind reports
+ * in `sources` are not applied yet, so a project that narrows its content with
+ * `@source` gets a superset — extra candidates, never missing ones.
  */
 export async function compileTailwind(options: CompileTailwindOptions): Promise<TailwindCompilation> {
   const { entry, files, stylesheets } = options;
@@ -240,7 +237,7 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
 
   return {
     css: compiler.build(
-      compiler.root === "none" ? [] : (options.candidates ?? scanCandidates(files)),
+      compiler.root === "none" ? [] : options.candidates,
     ),
     consumedStylesheets: [...consumed],
   };
@@ -250,7 +247,7 @@ function isProjectCssModule(moduleId: ModuleId): boolean {
   return moduleId.startsWith("project:") && moduleId.endsWith(".module.css");
 }
 
-function sourceFor(moduleId: ModuleId, files: ReadonlyMap<string, string>): string | undefined {
+function sourceFor(moduleId: ModuleId, files: ProjectFiles): string | undefined {
   if (moduleId.startsWith("project:")) return files.get(moduleId.slice("project:".length));
   return files.get(moduleId);
 }

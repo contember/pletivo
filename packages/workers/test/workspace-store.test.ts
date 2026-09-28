@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { imageOutputPath } from "@pletivo/core/image";
 import {
   createWorkspaceProjectStore,
   WorkspaceSnapshotChangedError,
@@ -9,6 +10,7 @@ import {
 class FakeWorkspace implements WorkspaceFiles {
   readonly reads: string[] = [];
   onRead: ((path: string) => void) | undefined;
+  onReaddir: ((path: string) => void) | undefined;
   readonly #text = new Map<string, string>();
   readonly #bytes = new Map<string, Uint8Array>();
   #revision = 0;
@@ -30,6 +32,7 @@ class FakeWorkspace implements WorkspaceFiles {
 
   readdirSync(path: string, options?: { withFileTypes?: boolean }): string[] | WorkspaceDirent[] {
     if (options?.withFileTypes !== true) throw new Error("withFileTypes is required");
+    this.onReaddir?.(path);
     const prefix = path === "/" ? "/" : `${path}/`;
     const names = new Map<string, boolean>();
     for (const file of [...this.#text.keys(), ...this.#bytes.keys()]) {
@@ -68,7 +71,7 @@ class FakeWorkspace implements WorkspaceFiles {
   }
 }
 
-function gif(width: number, height: number, tail: number): Uint8Array {
+function gif(width: number, height: number, tail: number): Uint8Array<ArrayBuffer> {
   return Uint8Array.of(
     0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
     width & 0xff, width >> 8,
@@ -78,7 +81,7 @@ function gif(width: number, height: number, tail: number): Uint8Array {
 }
 
 describe("createWorkspaceProjectStore", () => {
-  test("keeps a revision's files and asset bytes in one immutable snapshot", async () => {
+  test("keeps what a snapshot already read after the workspace moves on", async () => {
     const workspace = new FakeWorkspace();
     workspace.write("/src/pages/index.astro", "<p>old</p>");
     workspace.write("/src/assets/hero.gif", gif(1, 1, 1));
@@ -88,10 +91,12 @@ describe("createWorkspaceProjectStore", () => {
 
     const before = await store.snapshot();
     const oldInfo = await before.assets.info("src/assets/hero.gif");
+    const oldPage = before.files.get("src/pages/index.astro");
     workspace.write("/src/pages/index.astro", "<p>new</p>");
     workspace.write("/src/assets/hero.gif", gif(2, 3, 2));
     const after = await store.snapshot();
 
+    expect(oldPage).toBe("<p>old</p>");
     expect(before.files.get("src/pages/index.astro")).toBe("<p>old</p>");
     expect(oldInfo?.width).toBe(1);
     expect((await before.assets.info("src/assets/hero.gif"))?.width).toBe(1);
@@ -108,9 +113,12 @@ describe("createWorkspaceProjectStore", () => {
     });
 
     const first = await store.snapshot();
+    first.files.get("src/pages/index.astro");
     const reads = workspace.reads.length;
     const second = await store.snapshot();
+    second.files.get("src/pages/index.astro");
 
+    expect(reads).toBe(1);
     expect(second).toBe(first);
     expect(second.assets).toBe(first.assets);
     expect(workspace.reads.length).toBe(reads);
@@ -121,7 +129,7 @@ describe("createWorkspaceProjectStore", () => {
     workspace.write("/src/pages/index.astro", "<p>old</p>");
     workspace.write("/src/assets/hero.gif", gif(1, 1, 1));
     let changed = false;
-    workspace.onRead = () => {
+    workspace.onReaddir = () => {
       if (changed) return;
       changed = true;
       workspace.write("/src/pages/index.astro", "<p>new</p>");
@@ -136,14 +144,15 @@ describe("createWorkspaceProjectStore", () => {
     expect(snapshot.revision).toBe(String(workspace.revision));
     expect(snapshot.files.get("src/pages/index.astro")).toBe("<p>new</p>");
     expect((await snapshot.assets.info("src/assets/hero.gif"))?.width).toBe(2);
-    expect(workspace.reads.filter((path) => path === "/src/pages/index.astro")).toHaveLength(2);
-    expect(workspace.reads.filter((path) => path === "/src/assets/hero.gif")).toHaveLength(2);
+    // The walk lists; the reads above are the only ones.
+    expect(workspace.reads.filter((path) => path === "/src/pages/index.astro")).toHaveLength(1);
+    expect(workspace.reads.filter((path) => path === "/src/assets/hero.gif")).toHaveLength(1);
   });
 
   test("fails when the workspace changes during the retry", async () => {
     const workspace = new FakeWorkspace();
     workspace.write("/src/pages/index.astro", "<p>page</p>");
-    workspace.onRead = () => {
+    workspace.onReaddir = () => {
       workspace.write("/churn.txt", String(workspace.revision));
     };
     const store = createWorkspaceProjectStore(workspace, {
@@ -161,8 +170,10 @@ describe("createWorkspaceProjectStore", () => {
     });
 
     const first = await store.snapshot();
+    first.files.get("src/pages/index.astro");
     const reads = workspace.reads.length;
     const second = await store.snapshot();
+    second.files.get("src/pages/index.astro");
 
     expect(first.revision).not.toBe(second.revision);
     expect(second).not.toBe(first);
@@ -194,5 +205,71 @@ describe("createWorkspaceProjectStore", () => {
     const snapshot = await store.snapshot();
     expect(await snapshot.assets.info("large.png")).toBeNull();
     expect(workspace.reads).not.toContain("/large.png");
+  });
+
+  test("a snapshot reads no file until something asks", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/src/pages/index.astro", "<p>page</p>");
+    workspace.write("/src/assets/huge.png", new Uint8Array(8 * 1024 * 1024));
+    const store = createWorkspaceProjectStore(workspace, {
+      revision: () => workspace.revision,
+    });
+
+    const snapshot = await store.snapshot();
+
+    expect(workspace.reads).toEqual([]);
+    expect([...snapshot.files.keys()]).toEqual(["src/pages/index.astro"]);
+    expect(snapshot.files.get("src/pages/index.astro")).toBe("<p>page</p>");
+    expect(snapshot.files.get("src/pages/index.astro")).toBe("<p>page</p>");
+    expect(workspace.reads).toEqual(["/src/pages/index.astro"]);
+  });
+
+  test("keeps an image's metadata, not its bytes", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/src/pages/index.astro", "<p>page</p>");
+    workspace.write("/src/assets/hero.gif", gif(3, 2, 1));
+    const store = createWorkspaceProjectStore(workspace, {
+      revision: () => workspace.revision,
+    });
+    const snapshot = await store.snapshot();
+    const heroReads = () => workspace.reads.filter((path) => path === "/src/assets/hero.gif").length;
+
+    const info = await snapshot.assets.info("src/assets/hero.gif");
+    expect(info?.width).toBe(3);
+    expect(heroReads()).toBe(1);
+    await snapshot.assets.info("src/assets/hero.gif");
+    expect(heroReads()).toBe(1);
+
+    const output = `/${imageOutputPath("src/assets/hero.gif", info?.hash ?? "")}`;
+    const served = await snapshot.assets.resolveOutput(output);
+    expect(served?.bytes).toEqual(gif(3, 2, 1));
+    expect(heroReads()).toBe(2);
+    await snapshot.assets.resolveOutput(output);
+    expect(heroReads()).toBe(3);
+  });
+
+  test("refuses a read after the workspace moved off the snapshot's revision", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/src/pages/index.astro", "<p>page</p>");
+    workspace.write("/src/pages/about.astro", "<p>about</p>");
+    workspace.write("/src/assets/hero.gif", gif(1, 1, 1));
+    const store = createWorkspaceProjectStore(workspace, {
+      revision: () => workspace.revision,
+    });
+    const snapshot = await store.snapshot();
+    snapshot.files.get("src/pages/index.astro");
+
+    workspace.write("/src/pages/about.astro", "<p>changed</p>");
+
+    expect(snapshot.files.get("src/pages/index.astro")).toBe("<p>page</p>");
+    expect(() => snapshot.files.get("src/pages/about.astro")).toThrow(
+      WorkspaceSnapshotChangedError,
+    );
+    expect(() => snapshot.assets.info("src/assets/hero.gif")).toThrow(
+      WorkspaceSnapshotChangedError,
+    );
+    expect(workspace.reads).toEqual(["/src/pages/index.astro"]);
+    const fresh = await store.snapshot();
+    expect(fresh.files.get("src/pages/about.astro")).toBe("<p>changed</p>");
   });
 });

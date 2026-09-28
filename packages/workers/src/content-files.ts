@@ -35,6 +35,7 @@ import type {
   ProjectAssetsView,
   ServedProjectAsset,
 } from "./asset-port.ts";
+import type { ProjectFiles } from "./project-store.ts";
 
 /**
  * The RPC surface the isolate calls. Structural rather than imported from
@@ -104,18 +105,23 @@ export interface ContentFileRef {
 export interface ContentHandle {
   ref: string;
   close(): void;
+  /**
+   * The first error a read through this handle threw, or `undefined`. The isolate sees
+   * such an error only as a message, so the host rethrows it from here with its class.
+   */
+  failure(): unknown;
 }
 
 /** Where the bytes come from, for the length of one render. */
 export interface ContentStore {
   /**
-   * `files` is the text map; `assets` is everything that is not text — images today.
-   * They are two maps rather than one because a Worker's sources arrive as text and
-   * its binaries do not, and merging them would force every caller to decide which
-   * an unknown extension is.
+   * `files` is the project's text; `assets` is everything that is not text — images
+   * today. They are two collections rather than one because a Worker's sources arrive
+   * as text and its binaries do not, and merging them would force every caller to
+   * decide which an unknown extension is.
    */
   open(
-    files: ReadonlyMap<string, string>,
+    files: ProjectFiles,
     assets?: ProjectAssets | ProjectAssetsView,
   ): ContentHandle;
 }
@@ -140,8 +146,7 @@ export interface ContentStore {
  * and passed uncalled it is not serializable into a dynamic Worker's `env`.
  */
 export class ContentFiles implements ContentBinding, ContentStore {
-  readonly #open = new Map<string, ReadonlyMap<string, string>>();
-  readonly #openAssets = new Map<string, ProjectAssetsView>();
+  readonly #open = new Map<string, OpenProject>();
   #next = 0;
 
   /** How many renders currently hold a handle. A leak shows up here. */
@@ -150,58 +155,88 @@ export class ContentFiles implements ContentBinding, ContentStore {
   }
 
   open(
-    files: ReadonlyMap<string, string>,
+    files: ProjectFiles,
     assets?: ProjectAssets | ProjectAssetsView,
   ): ContentHandle {
     const ref = `r${++this.#next}`;
-    this.#open.set(ref, files);
-    if (assets) this.#openAssets.set(ref, projectAssetsView(assets));
+    const project: OpenProject = {
+      files,
+      assets: assets ? projectAssetsView(assets) : undefined,
+      failure: undefined,
+    };
+    this.#open.set(ref, project);
     return {
       ref,
       close: () => {
         this.#open.delete(ref);
-        this.#openAssets.delete(ref);
       },
+      failure: () => project.failure?.error,
     };
   }
 
   scan(ref: string, dir: string, pattern: string): ContentFileRef[] {
-    const files = this.#files(ref);
-    const prefix = dir === "" ? "" : `${dir}/`;
-    const match = globMatcher(pattern);
-    const found: ContentFileRef[] = [];
-    for (const path of files.keys()) {
-      if (!path.startsWith(prefix)) continue;
-      const entry = path.slice(prefix.length);
-      if (entry === "" || !match(entry)) continue;
-      found.push({ entry, path });
-    }
-    // Sorted here rather than by the caller, because the caller is the isolate and
-    // this is the enumeration the Bun host sorts too — see `ContentScan.files`.
-    found.sort((a, b) => (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
-    return found;
+    const project = this.#project(ref);
+    return recording(project, () => scanFiles(project.files, dir, pattern));
   }
 
   read(ref: string, path: string): string | null {
-    return this.#files(ref).get(path) ?? null;
+    const project = this.#project(ref);
+    return recording(project, () => project.files.get(path) ?? null);
   }
 
   image(ref: string, path: string): ImageInfo | null | Promise<ImageInfo | null> {
-    // `#files` first, so a call against a finished render is the same loud error here
+    // `#project` first, so a call against a finished render is the same loud error here
     // as it is for `read` — an asset map is allowed to be absent, a ref is not.
-    this.#files(ref);
-    return this.#openAssets.get(ref)?.info(path) ?? null;
+    const project = this.#project(ref);
+    const info = recording(project, () => project.assets?.info(path) ?? null);
+    if (!(info instanceof Promise)) return info;
+    return info.catch((error: unknown) => {
+      project.failure ??= { error };
+      throw error;
+    });
   }
 
-  #files(ref: string): ReadonlyMap<string, string> {
-    const files = this.#open.get(ref);
-    if (!files) {
+  #project(ref: string): OpenProject {
+    const project = this.#open.get(ref);
+    if (!project) {
       throw new Error(
         `[pletivo-workers] no open project for content ref ${JSON.stringify(ref)} — ` +
           "the render that opened it has already finished",
       );
     }
-    return files;
+    return project;
+  }
+}
+
+/** One render's sources, and the first error a read of them threw. */
+interface OpenProject {
+  files: ProjectFiles;
+  assets: ProjectAssetsView | undefined;
+  failure: { error: unknown } | undefined;
+}
+
+function scanFiles(files: ProjectFiles, dir: string, pattern: string): ContentFileRef[] {
+  const prefix = dir === "" ? "" : `${dir}/`;
+  const match = globMatcher(pattern);
+  const found: ContentFileRef[] = [];
+  for (const path of files.keys()) {
+    if (!path.startsWith(prefix)) continue;
+    const entry = path.slice(prefix.length);
+    if (entry === "" || !match(entry)) continue;
+    found.push({ entry, path });
+  }
+  // Sorted here rather than by the caller, because the caller is the isolate and
+  // this is the enumeration the Bun host sorts too — see `ContentScan.files`.
+  found.sort((a, b) => (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+  return found;
+}
+
+function recording<T>(project: OpenProject, read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    project.failure ??= { error };
+    throw error;
   }
 }
 
@@ -239,7 +274,23 @@ export function createProjectAssetsView(
   assets: ProjectAssets,
   probe: AssetProbe = probeImage,
 ): ProjectAssetsView {
-  return new MapProjectAssetsView(ownProjectAssets(assets), probe);
+  const owned = ownProjectAssets(assets);
+  return new SnapshotAssetsView(owned.keys(), (source) => owned.get(source) ?? null, probe);
+}
+
+/**
+ * An asset view over files it reads on demand.
+ *
+ * `readBytes` is called when `info` first asks about a source, and again each time
+ * `resolveOutput` serves it. Only the derived `ProjectAssetInfo` is kept, never the bytes,
+ * so a project's images do not have to fit the isolate's heap.
+ */
+export function createLazyProjectAssetsView(
+  sources: Iterable<string>,
+  readBytes: (source: string) => Uint8Array<ArrayBuffer> | null,
+  probe: AssetProbe = probeImage,
+): ProjectAssetsView {
+  return new SnapshotAssetsView(sources, readBytes, probe);
 }
 
 /** Preserve an existing view, or adapt the legacy map input used by direct render callers. */
@@ -255,18 +306,30 @@ function isProjectAssetsView(
   return "info" in assets && "resolveOutput" in assets;
 }
 
-class MapProjectAssetsView implements ProjectAssetsView {
+/** An output name resolved to its source; the bytes are loaded each time it is served. */
+interface ResolvedOutput {
+  path: string;
+  contentType: string;
+  source: string;
+}
+
+class SnapshotAssetsView implements ProjectAssetsView {
   readonly #info = new Map<string, ProjectAssetInfo | null>();
-  readonly #outputs = new Map<string, ServedProjectAsset | null>();
+  readonly #outputs = new Map<string, ResolvedOutput | null>();
   readonly #ambiguities = new Map<string, readonly string[]>();
   readonly #candidates = new Map<string, string[]>();
+  readonly #load: (source: string) => ProjectAsset | null;
+  readonly #probe: AssetProbe;
 
   constructor(
-    readonly assets: ProjectAssets,
-    readonly probe: AssetProbe,
+    sources: Iterable<string>,
+    load: (source: string) => ProjectAsset | null,
+    probe: AssetProbe,
   ) {
+    this.#load = load;
+    this.#probe = probe;
     // Keys only: snapshot construction never reads, hashes or probes asset bytes.
-    for (const source of assets.keys()) {
+    for (const source of sources) {
       const key = outputCandidateKey(source);
       const candidates = this.#candidates.get(key);
       if (candidates) candidates.push(source);
@@ -278,23 +341,30 @@ class MapProjectAssetsView implements ProjectAssetsView {
   info(source: string): ProjectAssetInfo | null {
     const cached = this.#info.get(source);
     if (cached !== undefined || this.#info.has(source)) return cached ?? null;
-    const asset = this.assets.get(source);
-    if (!asset) {
-      this.#info.set(source, null);
-      return null;
+    // Outside the `try`: a failed load (a workspace that moved) must not read as a missing file.
+    const asset = this.#load(source);
+    let info: ProjectAssetInfo | null = null;
+    if (asset instanceof Uint8Array) {
+      try {
+        info = this.#probe(asset, source);
+      } catch {
+        info = null;
+      }
+    } else if (asset !== null) {
+      info = asset;
     }
-    try {
-      const info = asset instanceof Uint8Array ? this.probe(asset, source) : asset;
-      this.#info.set(source, info);
-      return info;
-    } catch {
-      this.#info.set(source, null);
-      return null;
-    }
+    this.#info.set(source, info);
+    return info;
   }
 
   resolveOutput(pathname: string): ServedProjectAsset | null {
-    const path = withoutCdnImagePrefix(pathname);
+    const resolved = this.#resolve(withoutCdnImagePrefix(pathname));
+    if (resolved === null) return null;
+    const asset = this.#load(resolved.source);
+    return { ...resolved, bytes: asset instanceof Uint8Array ? asset : null };
+  }
+
+  #resolve(path: string): ResolvedOutput | null {
     const ambiguity = this.#ambiguities.get(path);
     if (ambiguity !== undefined) {
       throw new ProjectAssetOutputAmbiguityError(path, ambiguity);
@@ -306,17 +376,11 @@ class MapProjectAssetsView implements ProjectAssetsView {
       this.#outputs.set(path, null);
       return null;
     }
-    const matches: ServedProjectAsset[] = [];
+    const matches: ResolvedOutput[] = [];
     for (const source of this.#candidates.get(key) ?? []) {
       const info = this.info(source);
       if (!info || `/${imageOutputPath(source, info.hash)}` !== path) continue;
-      const asset = this.assets.get(source);
-      matches.push({
-        path,
-        contentType: imageContentType(info.format),
-        source,
-        bytes: asset instanceof Uint8Array ? asset : null,
-      });
+      matches.push({ path, contentType: imageContentType(info.format), source });
     }
     if (matches.length > 1) {
       const sources = matches.map((match) => match.source);

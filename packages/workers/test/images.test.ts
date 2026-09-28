@@ -395,7 +395,9 @@ describe("what the host has to serve", () => {
     const first = await view.resolveOutput(OUTPUT);
     const second = await view.resolveOutput(OUTPUT);
     expect(first?.source).toBe("src/assets/logo.png");
-    expect(second).toBe(first);
+    // The resolution is cached; the served object is built per call, since a lazy view
+    // reads its bytes per serve and must not retain them.
+    expect(second).toEqual(first);
     expect(probed).toEqual(["src/assets/logo.png"]);
   });
 

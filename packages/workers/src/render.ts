@@ -43,6 +43,7 @@ import {
 import { parseMarkdown } from "@pletivo/core/content/markdown";
 import { projectModuleId } from "./artifact.ts";
 import type { ProjectArtifact } from "./project-artifact.ts";
+import type { ProjectFiles } from "./project-store.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
@@ -50,7 +51,7 @@ import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
 import type { ProjectAssetsView } from "./asset-port.ts";
-import type { ContentBinding, ContentStore } from "./content-files.ts";
+import type { ContentBinding, ContentHandle, ContentStore } from "./content-files.ts";
 import {
   assertEnvFits,
   envModules,
@@ -148,7 +149,7 @@ export interface ContentAccess {
 /** What every entrypoint here needs: the project, and somewhere to run it. */
 export interface ProjectOptions {
   /** The project: path (no leading slash, `/` separators) -> source text. */
-  files: ReadonlyMap<string, string>;
+  files: ProjectFiles;
   /**
    * The project's binary files, keyed the same way — images today.
    *
@@ -266,6 +267,12 @@ export interface RenderedPage {
    * The page's CSS is not among them: it is inlined, see `project-css.ts`.
    */
   assets: RenderedAsset[];
+  /**
+   * Prepare inputs of a workspace artifact that changed since `pletivo prepare`, sorted.
+   * `renderPage` has no workspace to compare against and leaves it empty; see
+   * `createProjectHost`.
+   */
+  staleArtifactInputs: string[];
 }
 
 /** No route in the project matches the pathname. */
@@ -428,7 +435,7 @@ const PAGE_EXTENSIONS = [".astro", ".md", ".mdx", ".tsx", ".jsx", ".ts", ".js"];
  * static before dynamic, then by specificity.
  */
 export function projectRoutes(
-  files: ReadonlyMap<string, string>,
+  files: ProjectFiles,
   pagesDir: string = DEFAULT_PAGES_DIR,
 ): Route[] {
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
@@ -550,8 +557,8 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   // under several hostnames is naming the origin it is actually being reached at.
   const site = options.site ?? artifact?.config.site;
   const scripts = artifact?.scripts;
-  const srcDir = options.srcDir ?? parentDir(pagesDir);
-  const rootDir = options.rootDir ?? parentDir(srcDir);
+  const srcDir = srcDirOf(options);
+  const rootDir = projectRoot(options);
 
   const match = findRoute(projectRoutes(files, pagesDir), pathname);
   if (!match) throw new RouteNotFoundError(pathname);
@@ -591,6 +598,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
       file,
       bundleId: "",
       assets: [],
+      staleArtifactInputs: [],
     };
   }
   if (!isExecutableModule(file)) {
@@ -648,6 +656,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     file,
     bundleId: rendered.bundleId,
     assets: assetsOf(project.urlAssets),
+    staleArtifactInputs: [],
   };
 }
 
@@ -798,10 +807,13 @@ async function callIsolate(input: {
   try {
     response = await stub.getEntrypoint().fetch(request);
   } catch (error) {
+    throwContentFailure(handle);
     throw new IsolateStartError(error, typescriptSuspects(modules, options.artifact?.moduleNames));
   } finally {
     handle?.close();
   }
+  // Before the response: a failed content read is the cause of whatever the isolate says.
+  throwContentFailure(handle);
   if (!response.ok) throw new IsolateExecutionError(`${label} failed: ${await response.text()}`);
   let responseValue: unknown;
   try {
@@ -817,18 +829,29 @@ async function callIsolate(input: {
   return { bundleId, payload };
 }
 
+/** Rethrow a content read's own error, which reaches the isolate only as a message. */
+function throwContentFailure(handle: ContentHandle | null): void {
+  const failure = handle?.failure();
+  if (failure !== undefined) throw failure;
+}
+
 /** Create the Loader callback outside request-owned call frames. */
 function immutableCodeFactory(code: DynamicWorkerCode): () => DynamicWorkerCode {
   return () => code;
 }
 
+type ProjectLayout = Pick<ProjectOptions, "pagesDir" | "srcDir" | "rootDir">;
+
 /** Where the source tree sits in `files`. `compileProject` probes it for the content config. */
-function srcDirOf(options: ProjectOptions): string {
+function srcDirOf(options: ProjectLayout): string {
   return options.srcDir ?? parentDir(options.pagesDir ?? DEFAULT_PAGES_DIR);
 }
 
-/** Where the project root sits in `files`, which is what a collection base resolves against. */
-function projectRoot(options: ProjectOptions): string {
+/**
+ * Where the project root sits in `files`: what a collection base and an artifact's
+ * prepare inputs resolve against.
+ */
+export function projectRoot(options: ProjectLayout): string {
   return options.rootDir ?? parentDir(srcDirOf(options));
 }
 

@@ -3,6 +3,7 @@
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 import { moduleOrder } from "./page-css.ts";
+import type { ProjectFiles } from "./project-store.ts";
 import {
   compileTailwind,
   extractHtmlClassCandidates,
@@ -15,7 +16,7 @@ export { TailwindNotConfiguredError };
 
 export interface PageStylesheetOptions {
   /** Project paths and artifact ModuleIds mapped to their source text. */
-  files: ReadonlyMap<string, string>;
+  files: ProjectFiles;
   srcDir: string;
   rootDir: string;
   /** Canonical graph shared with executable compilation. */
@@ -128,7 +129,7 @@ function styleTargets(graph: ResolvedStyleGraph): ReadonlyMap<ModuleId, readonly
 
 function embeddedTargets(
   graph: ResolvedStyleGraph,
-  files: ReadonlyMap<string, string>,
+  files: ProjectFiles,
   stylesheets: TailwindStylesheets,
 ): ReadonlyMap<ModuleId, keyof TailwindStylesheets> {
   const embedded = new Map<ModuleId, keyof TailwindStylesheets>();
@@ -153,7 +154,7 @@ function tailwindSpecifier(value: string): keyof TailwindStylesheets {
   throw new Error(`[pletivo-workers] unknown embedded Tailwind stylesheet ${JSON.stringify(value)}`);
 }
 
-function sourceFor(moduleId: ModuleId, files: ReadonlyMap<string, string>): string | undefined {
+function sourceFor(moduleId: ModuleId, files: ProjectFiles): string | undefined {
   if (moduleId.startsWith("project:")) return files.get(moduleId.slice("project:".length));
   return files.get(moduleId);
 }
@@ -192,14 +193,15 @@ function findTailwindEntry(sources: readonly StylesheetSource[]): StylesheetSour
 }
 
 export function tailwindEntry(options: {
-  files: ReadonlyMap<string, string>;
+  files: ProjectFiles;
   srcDir: string;
 }): string | null {
   const prefix = withSlash(options.srcDir);
   const sources: StylesheetSource[] = [];
-  for (const [file, content] of options.files) {
+  for (const file of options.files.keys()) {
     if (!file.startsWith(prefix) || !isCollectableCss(file)) continue;
-    sources.push({ moduleId: file, content });
+    const content = options.files.get(file);
+    if (content !== undefined) sources.push({ moduleId: file, content });
   }
   return findTailwindEntry(sources)?.moduleId ?? null;
 }

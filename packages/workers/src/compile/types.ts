@@ -5,6 +5,7 @@ import type { ExecutableProgram, ResolvedStyleGraph } from "../compiled-program.
 import type { ProjectEnvUse } from "../env.ts";
 import type { ResolvedModuleGraph } from "../module-graph.ts";
 import type { ProjectArtifact } from "../project-artifact.ts";
+import type { ProjectFiles } from "../project-store.ts";
 import type { TailwindStylesheets } from "../tailwind.ts";
 
 /** One `<style>` block from a `.astro` file, in the order it was written. */
@@ -24,11 +25,12 @@ export interface CompiledProject {
   /** Module name -> JavaScript, ready for `env.LOADER`. Includes `@pletivo/runtime`. */
   modules: Record<string, string>;
   /**
-   * The file map this was compiled from: the caller's, plus whatever the artifact
-   * contributed. Everything downstream that walks the graph — the CSS pipeline above
-   * all — has to see the same map, or a `node_modules` component's edges lead nowhere.
+   * The files this was compiled from: the caller's, plus whatever the artifact
+   * contributed, composed per lookup rather than copied. Everything downstream that
+   * walks the graph — the CSS pipeline above all — has to see the same files, or a
+   * `node_modules` component's edges lead nowhere.
    */
-  sources: ReadonlyMap<string, string>;
+  sources: ProjectFiles;
   /** Project path -> its module name, for the files that produced one. */
   moduleNames: ReadonlyMap<string, string>;
   /**
@@ -108,7 +110,7 @@ export interface ProjectContent {
 
 export interface CompileProjectOptions {
   /** The project: path (no leading slash, `/` separators) -> source text. */
-  files: ReadonlyMap<string, string>;
+  files: ProjectFiles;
   /**
    * The pages the bundle has to serve. Only what their import graphs reach is
    * compiled. Absent, every module-shaped file in the map is compiled.

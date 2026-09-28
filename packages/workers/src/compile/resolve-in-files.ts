@@ -1,3 +1,4 @@
+import type { ProjectFiles } from "../project-store.ts";
 import { extensionOf } from "./module-kind.ts";
 
 /**
@@ -20,7 +21,7 @@ const IMPLIED_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".astro", ".mt
  */
 export function resolveInFiles(
   resolved: string,
-  files: ReadonlyMap<string, string>,
+  files: ProjectFiles,
 ): string | null {
   if (files.has(resolved)) return resolved;
   const extension = extensionOf(resolved);

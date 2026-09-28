@@ -25,7 +25,12 @@
  * be testable without a Durable Object under it.
  */
 
-import { ArtifactFormatError, ArtifactVersionError } from "@pletivo/core/artifact";
+import {
+  ArtifactFormatError,
+  ArtifactVersionError,
+  digestArtifactInput,
+  type ArtifactInput,
+} from "@pletivo/core/artifact";
 import { loadProjectArtifact, type ProjectArtifact } from "./project-artifact.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
@@ -33,11 +38,16 @@ import { GeneratedAssetCache } from "./asset-cache.ts";
 import type { ProjectEnv } from "./env.ts";
 import type { ExecutionNamespace } from "./execution-identity.ts";
 import type { OutboundAccess } from "./outbound.ts";
-import type { ProjectSnapshot, ProjectStore } from "./project-store.ts";
+import {
+  WorkspaceSnapshotChangedError,
+  type ProjectSnapshot,
+  type ProjectStore,
+} from "./project-store.ts";
 import {
   RouteNotFoundError,
   UnsupportedRouteError,
   projectPaths,
+  projectRoot,
   renderPage,
   type ContentAccess,
   type ProjectOptions,
@@ -141,6 +151,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const compileCache =
     options.compileCache === false ? undefined : (options.compileCache ?? createCompileCache());
   let artifactFrom: { source: string; artifact: ProjectArtifact } | null = null;
+  let staleFrom: { artifact: ProjectArtifact; revision: string; stale: string[] } | null = null;
 
   /** The artifact for this snapshot: the caller's, or the project's own file. */
   function artifactOf(snapshot: ProjectSnapshot): ProjectArtifact | undefined {
@@ -153,6 +164,45 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     const artifact = parseArtifact(source, path);
     artifactFrom = { source, artifact };
     return artifact;
+  }
+
+  /**
+   * The artifact's prepare inputs that no longer match the workspace. Only an
+   * `artifactPath` artifact is checked: a direct one has no workspace to compare against.
+   * A warning, so a failed check is no warning; only a moved workspace propagates, to be
+   * retried with the rest of the attempt.
+   */
+  async function staleArtifactInputs(
+    snapshot: ProjectSnapshot,
+    artifact: ProjectArtifact | undefined,
+  ): Promise<string[]> {
+    if (options.artifactPath === undefined || artifact === undefined) return [];
+    if (staleFrom?.artifact === artifact && staleFrom.revision === snapshot.revision) {
+      return staleFrom.stale;
+    }
+    let stale: string[];
+    try {
+      stale = await changedInputs(artifact.prepared.inputs ?? [], snapshot, projectRoot(options));
+    } catch (error) {
+      if (error instanceof WorkspaceSnapshotChangedError) throw error;
+      return [];
+    }
+    staleFrom = { artifact, revision: snapshot.revision, stale };
+    return stale;
+  }
+
+  /**
+   * Run `operation` on a fresh snapshot, and once more on another when the workspace moved
+   * under the first. `blockConcurrencyWhile` cannot hold writes off instead: the content
+   * binding re-enters the Durable Object during the render.
+   */
+  async function withSnapshot<T>(operation: (snapshot: ProjectSnapshot) => Promise<T>): Promise<T> {
+    try {
+      return await operation(await options.store.snapshot());
+    } catch (error) {
+      if (!(error instanceof WorkspaceSnapshotChangedError)) throw error;
+      return operation(await options.store.snapshot());
+    }
   }
 
   /** Everything both entrypoints need, resolved against the store as it is now. */
@@ -179,29 +229,20 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   }
 
   async function renderSnapshot(pathname: string, snapshot: ProjectSnapshot): Promise<RenderedPage> {
-    const page = await renderPage({
-      ...projectOptions(snapshot),
-      pathname,
-      site: options.site,
-    });
+    const project = projectOptions(snapshot);
+    const stale = await staleArtifactInputs(snapshot, project.artifact);
+    const page = await renderPage({ ...project, pathname, site: options.site });
     const rejected = served.putAll(page.assets);
     if (rejected.length > 0) {
       throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
     }
-    return page;
-  }
-
-  async function render(pathname: string): Promise<RenderedPage> {
-    return renderSnapshot(pathname, await options.store.snapshot());
+    return { ...page, staleArtifactInputs: stale };
   }
 
   return {
-    render,
+    render: (pathname) => withSnapshot((snapshot) => renderSnapshot(pathname, snapshot)),
 
-    async paths(): Promise<RoutePath[]> {
-      const snapshot = await options.store.snapshot();
-      return projectPaths(projectOptions(snapshot));
-    },
+    paths: () => withSnapshot((snapshot) => projectPaths(projectOptions(snapshot))),
 
     snapshot: () => options.store.snapshot(),
 
@@ -216,29 +257,55 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       }
 
       try {
-        // `/_astro/<name>.<hash>.<ext>` and the `/cdn-cgi/image/` form a page links to.
-        const snapshot = await options.store.snapshot();
-        const image = await snapshot.assets.resolveOutput(url.pathname);
-        if (image !== null) {
-          if (image.bytes === null) return new Response("Not Found", { status: 404 });
-          return new Response(image.bytes, {
-            headers: { "content-type": image.contentType, "cache-control": IMMUTABLE },
-          });
-        }
+        return await withSnapshot(async (snapshot) => {
+          // `/_astro/<name>.<hash>.<ext>` and the `/cdn-cgi/image/` form a page links to.
+          const image = await snapshot.assets.resolveOutput(url.pathname);
+          if (image !== null) {
+            if (image.bytes === null) return new Response("Not Found", { status: 404 });
+            return new Response(image.bytes, {
+              headers: { "content-type": image.contentType, "cache-control": IMMUTABLE },
+            });
+          }
 
-        const page = await renderSnapshot(url.pathname, snapshot);
-        return new Response(page.html, {
-          headers: {
+          const page = await renderSnapshot(url.pathname, snapshot);
+          const headers = new Headers({
             "content-type": "text/html; charset=utf-8",
             "x-pletivo-page": page.file,
             "x-pletivo-bundle": page.bundleId,
-          },
+          });
+          if (page.staleArtifactInputs.length > 0) {
+            headers.set("x-pletivo-artifact-stale", page.staleArtifactInputs.join(","));
+          }
+          return new Response(page.html, { headers });
         });
       } catch (error) {
         return errorResponse(error);
       }
     },
   };
+}
+
+/** The inputs whose bytes under `root` no longer have the digest `prepare` recorded, sorted. */
+async function changedInputs(
+  inputs: readonly ArtifactInput[],
+  snapshot: ProjectSnapshot,
+  root: string,
+): Promise<string[]> {
+  const encoder = new TextEncoder();
+  const stale: string[] = [];
+  for (const input of inputs) {
+    const path = root === "" ? input.path : `${root}/${input.path}`;
+    let bytes: Uint8Array | undefined;
+    if (snapshot.readBytes) {
+      bytes = snapshot.readBytes(path);
+    } else {
+      const source = snapshot.files.get(path);
+      bytes = source === undefined ? undefined : encoder.encode(source);
+    }
+    const digest = bytes === undefined ? undefined : await digestArtifactInput(bytes);
+    if (digest !== input.digest) stale.push(input.path);
+  }
+  return stale.sort();
 }
 
 /** A rendered page references generated assets this host cannot retain for follow-up GETs. */
@@ -279,6 +346,12 @@ function parseArtifact(source: string, path: string): ProjectArtifact {
 }
 
 function errorResponse(error: unknown): Response {
+  if (error instanceof WorkspaceSnapshotChangedError) {
+    return new Response(error.message, {
+      status: 503,
+      headers: { "content-type": "text/plain; charset=utf-8", "retry-after": "1" },
+    });
+  }
   const status = error instanceof RouteNotFoundError ? 404 : 500;
   const detail =
     error instanceof RouteNotFoundError || error instanceof UnsupportedRouteError

@@ -1,21 +1,14 @@
 /**
  * Where a host reads the project from.
  *
- * Until now `@pletivo/workers` had one answer: the caller hands the whole project in
- * with the request. That is right for a preview server handed a different project
- * every time, and wrong for the shape `docs/todos/023` describes — a live workspace
- * that outlives any one render and that an agent writes to between two of them.
+ * A store answers "the project, as it is now" for a live workspace that outlives any one
+ * render and that an agent writes to between two of them (`docs/todos/023`). Everything
+ * above it sees a `ProjectSnapshot`: a listing of source paths with a read of one file,
+ * plus a demand-driven asset view bound to the same revision.
  *
- * This is the seam. A store answers "the project, as it is now"; everything above it
- * is unchanged: a `ProjectSnapshot` holds immutable text plus a demand-driven asset
- * view bound to the same revision.
- *
- * **This materialises the whole project, deliberately, for now.** The compile no longer
- * walks all of it — `compileProject` follows the requested page's import graph (023 §4).
- * What still reads every key is routing, which needs a listing of `src/pages`, and the
- * base stylesheet, which is every `.css` under `srcDir` and needs their bytes. Both are
- * key scans rather than compiles, so the lazier shape they want is a listing and a
- * read — and this interface is where it goes.
+ * Every consumer needs only those two operations. Routing lists `src/pages`, content
+ * scans list a collection's directory, and the compile reads what the page's import
+ * graph reaches (023 §4). So a snapshot never has to hold the project in memory.
  */
 
 import type { ProjectAssetsView } from "./asset-port.ts";
@@ -25,17 +18,25 @@ import {
   type ProjectAssets,
 } from "./content-files.ts";
 
+/** Project sources as one revision sees them. A `ReadonlyMap<string, string>` satisfies it. */
+export interface ProjectFiles {
+  /** Every source path. Listing only: no content is read. */
+  keys(): Iterable<string>;
+  get(path: string): string | undefined;
+  has(path: string): boolean;
+}
+
 /** The project as one render sees it: text and assets from one revision. */
 export interface ProjectSnapshot {
-  /** Path -> source, keyed the way `renderPage` keys `files`. */
-  files: ReadonlyMap<string, string>;
+  /** Source paths, keyed the way `renderPage` keys `files`. */
+  files: ProjectFiles;
   /** Snapshot-owned source metadata and output lookup, both demand-driven. */
   assets: ProjectAssetsView;
   /**
    * Changes when the project does, and only then.
    *
    * What it buys is the read: a store that can answer "nothing moved" hands the same
-   * snapshot back instead of walking the tree and re-reading every file.
+   * snapshot back, with the files it already read, instead of walking the tree again.
    *
    * It is *not* what makes the compile cache correct. `===` on two strings compares
    * their contents, so an equal source hits whether or not it is the same object — a
@@ -44,6 +45,26 @@ export interface ProjectSnapshot {
    * therefore an optimisation on both counts, and nothing depends on it.
    */
   revision: string;
+  /**
+   * A file's raw bytes, read now and not kept, for a caller that needs exact bytes
+   * rather than text. Checked against `revision` like any other read; not bound by a
+   * store's size limit. Absent on stores that hold only text.
+   */
+  readBytes?(path: string): Uint8Array<ArrayBuffer> | undefined;
+}
+
+/** The workspace moved off a snapshot's revision: during both listing walks, or before a read. */
+export class WorkspaceSnapshotChangedError extends Error {
+  constructor(
+    readonly before: string,
+    readonly after: string,
+  ) {
+    super(
+      `[pletivo-workers] workspace changed under a project snapshot ` +
+        `(${JSON.stringify(before)} -> ${JSON.stringify(after)})`,
+    );
+    this.name = "WorkspaceSnapshotChangedError";
+  }
 }
 
 export interface ProjectStore {

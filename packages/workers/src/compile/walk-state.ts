@@ -2,7 +2,6 @@ import type { ModuleId } from "@pletivo/core/artifact";
 import {
   executionNameForModuleId,
   ModuleIdentityCollisionError,
-  normalizeProjectPath,
   projectModuleId,
   type ArtifactResolver,
 } from "../artifact.ts";
@@ -10,8 +9,10 @@ import { ASSETS_SOURCES } from "../astro-assets.ts";
 import { ENV_MODULES } from "../env.ts";
 import { RUNTIME_MODULES } from "../generated/runtime-modules.ts";
 import type { ResolvedModule, ResolvedModuleEdge } from "../module-graph.ts";
+import type { ProjectFiles } from "../project-store.ts";
 import type { TailwindStylesheets } from "../tailwind.ts";
 import { projectModuleKind } from "./module-kind.ts";
+import { CompileSources, NormalizedProjectFiles } from "./project-files.ts";
 import { resolveInFiles } from "./resolve-in-files.ts";
 import {
   UnsupportedFileError,
@@ -48,7 +49,7 @@ const DEFAULT_SRC_DIR = "src";
  */
 export class CompileWalk {
   /** The caller's files plus the artifact's sources; what `CompiledProject.sources` returns. */
-  readonly sources: Map<string, string>;
+  readonly sources: CompileSources;
   /** URL path -> the file's text, for every `?url` import the project made. */
   readonly urlAssets = new Map<string, string>();
   readonly modules: Record<string, string> = { ...RUNTIME_MODULES };
@@ -60,7 +61,7 @@ export class CompileWalk {
   readonly graphEdges: ResolvedModuleEdge[] = [];
   usesImportMetaEnv = false;
 
-  readonly #projectFiles: Map<string, string>;
+  readonly #projectFiles: NormalizedProjectFiles;
   readonly #artifact: ArtifactResolver;
   readonly #srcDir: string | undefined;
   readonly #takenNames = new Map<string, ModuleId>();
@@ -77,16 +78,11 @@ export class CompileWalk {
   #contentConfig: string | null = null;
   #usesImages = false;
 
-  constructor(
-    files: ReadonlyMap<string, string>,
-    artifact: ArtifactResolver,
-    srcDir: string | undefined,
-  ) {
-    this.#projectFiles = normalizeProjectFiles(files);
+  constructor(files: ProjectFiles, artifact: ArtifactResolver, srcDir: string | undefined) {
+    this.#projectFiles = new NormalizedProjectFiles(files);
     this.#artifact = artifact;
     this.#srcDir = srcDir;
-    this.sources = new Map<string, string>(this.#projectFiles);
-    for (const module of artifact.modules()) this.sources.set(module.id, module.source);
+    this.sources = new CompileSources(this.#projectFiles, artifact);
   }
 
   get usesContent(): boolean {
@@ -172,7 +168,7 @@ export class CompileWalk {
 
   hostStylesheet(specifier: keyof TailwindStylesheets, source: string): SourceModule {
     const id = `host:${specifier}`;
-    this.sources.set(id, source);
+    this.sources.addGenerated(id, source);
     return this.#claim({
       id,
       legacyKey: id,
@@ -216,10 +212,7 @@ export class CompileWalk {
 
   /** Add the `astro:assets` implementation to the project, the first time it is reached. */
   addAssetSources(): void {
-    for (const [file, source] of Object.entries(ASSETS_SOURCES)) {
-      if (!this.#projectFiles.has(file)) this.#projectFiles.set(file, source);
-      if (!this.sources.has(file)) this.sources.set(file, source);
-    }
+    for (const [file, source] of Object.entries(ASSETS_SOURCES)) this.#projectFiles.add(file, source);
   }
 
   /**
@@ -330,23 +323,4 @@ function sameDescriptor(left: ModuleDescriptor, right: SourceModule): boolean {
     left.compilePath === right.compilePath &&
     left.origin === right.origin
   );
-}
-
-function normalizeProjectFiles(files: ReadonlyMap<string, string>): Map<string, string> {
-  const normalized = new Map<string, string>();
-  const owners = new Map<string, string>();
-  for (const [inputPath, source] of files) {
-    const path = normalizeProjectPath(inputPath);
-    if (path.length === 0) throw new UnsupportedFileError(inputPath, "the normalized path is empty");
-    const owner = owners.get(path);
-    if (owner !== undefined && owner !== inputPath) {
-      throw new ModuleIdentityCollisionError(
-        projectModuleId(path),
-        `${JSON.stringify(inputPath)} and ${JSON.stringify(owner)} normalize to the same project module`,
-      );
-    }
-    owners.set(path, inputPath);
-    normalized.set(path, source);
-  }
-  return normalized;
 }
