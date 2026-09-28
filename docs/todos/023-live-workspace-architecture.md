@@ -1,7 +1,7 @@
 # 023 — The live workspace: SQLite FS, lazy compile, inline CSS
 
 **Priority:** S-tier
-**Status:** In progress — the store and the Durable Object serve a live workspace; compilation, CSS, assets, and Loader identity now use the explicit host seams described in §10.
+**Status:** In progress — the Durable Object serves a live workspace through a lazy store: a listing plus on-demand reads, checked against the workspace revision. Compilation, CSS, assets, and Loader identity use the explicit host seams described in §10. npm and config in the workspace (§6, §7) remain open; until then an artifact that `prepare` built from older inputs is reported, not rebuilt.
 **Area:** Workers host / architecture
 
 Where `@pletivo/workers` goes once the project stops being a snapshot handed in with
@@ -77,8 +77,9 @@ correct even for a store with no revision gate; such a store simply pays a memcm
 file, which is still far below the 24 ms above.
 
 What the revision gate actually buys is the **read**: an unchanged workspace costs one
-`filesystem.rev()` lookup instead of a walk of the tree and a re-read of every
-file. That is worth having on its own, and it is what `workspace-store.ts` tests.
+`filesystem.rev()` lookup instead of a walk of the tree and a fresh read of every file
+the render reaches. That is worth having on its own, and it is what `workspace-store.ts`
+tests. It also lets a lazy read notice a write made after the listing — §10.3.
 
 Invalidation is therefore the source comparison and nothing else. An explicit
 `cache.delete(path)` on write would need a seam the store does not have — it is
@@ -90,10 +91,10 @@ workspace. That is a cold start, not a correctness problem.
 
 ## 4. Lazy reads make pruning mandatory rather than optional
 
-Today `compileProject` iterates the whole map, and so do `projectRoutes`,
-`hasStylesheet` and the CSS pipeline. That is free only because the map is already
-materialised in memory. Against a real file store it stops being free, and the design
-has to ask for what it needs.
+When this was written, `compileProject` iterated the whole map, and so did
+`projectRoutes`, `hasStylesheet` and the CSS pipeline. That was free only because the
+map was already in memory. Against a real file store it stops being free, and the design
+has to ask for what it needs. §10 step 1 and §10.3 record how it now does.
 
 Which is the change worth making anyway. Measured on the static dogfood site:
 
@@ -185,10 +186,11 @@ every file change, and the retry context dedupes `injectRoute` / `injectScript` 
 
 ## 8. Prerequisites
 
-Today nothing here runs in a Durable Object: the host is a stateless `fetch` worker
-handed the whole project in the request body (`packages/workers/example/src/index.ts`).
-So "the logic lives in the DO" is the change this document proposes, and the question
-was whether the platform permits it.
+The Durable Object host now exists (§10). This section records the verification made
+before it did, when the only host was a stateless `fetch` worker handed the whole
+project in the request body (`packages/workers/example/src/index.ts`). "The logic lives
+in the DO" was then the change this document proposed, and the question was whether
+the platform permits it.
 
 **It does. Verified locally**, `wrangler dev` with `worker_loaders` and a
 `new_sqlite_classes` DO, all three claims in one request:
@@ -235,10 +237,11 @@ of it needs a Durable Object under it to be tested:
 
 | | |
 |---|---|
-| `src/project-store.ts` | `ProjectStore` — one revision-coherent snapshot of source text and its demand-driven `ProjectAssetsView` |
-| `src/project-host.ts` | `createProjectHost` — route, render, serve the generated assets, turn the throws into status codes |
+| `src/project-store.ts` | `ProjectStore` — one `ProjectSnapshot` per revision: a listing of source paths (`ProjectFiles`) read on demand, and its demand-driven `ProjectAssetsView` |
+| `src/project-host.ts` | `createProjectHost` — route, render, serve the generated assets, retry once when the workspace moves (§10.3), turn the throws into status codes |
 | `src/asset-port.ts` | `ProjectAssetsView` — `info(source)` and `resolveOutput(path)` without an eager project-wide asset scan |
-| `src/workspace-store.ts` | `createWorkspaceProjectStore` over `kompjutr`'s SQLite filesystem, typed structurally so this package depends on none of it |
+| `src/workspace-store.ts` | `createWorkspaceProjectStore` over `kompjutr`'s SQLite filesystem: lists the tree, reads a file on first use; typed structurally so this package depends on none of it |
+| `src/project-artifact.ts` | `loadProjectArtifact` — the one parser of a `pletivo prepare` artifact; everything after it takes the bound `ProjectArtifact` |
 | `example-playground/` | the production-correct Durable Object workspace, with an editor in front of it |
 
 Verified under `wrangler dev` against a real workspace: a component written into SQLite
@@ -283,6 +286,58 @@ separate identities, a deploy could leave old isolates holding the old binding o
 Changing it requires the caller's `capabilityGeneration` or the host ABI to change; a
 deploy alone is not a capability identity. The playground derives the tenant from the
 stable Durable Object id and names its DO-self binding generation explicitly.
+
+### 10.3 The store is lazy, so a read can land after a write
+
+A snapshot is a listing, not a copy of the project. `createWorkspaceProjectStore` walks
+the tree once per revision and reads no file; with `maxFileBytes` it also stats each
+one. A text file is read on its first `get` and kept for the snapshot. An image is read
+when its metadata is first asked for and again each time it is served; only the
+metadata is kept. Nothing downstream copies the files into a map either: the compile
+sees them through `ProjectFiles` overlays (`src/compile/project-files.ts`). So a render
+reads what its page reaches (§4), plus the listing.
+
+The price is that reads happen after the listing, while an agent may be writing. The
+check is optimistic:
+
+- The listing is taken between two `revision()` calls. When they differ it is taken
+  once more, and when that one moves too, `snapshot()` throws
+  `WorkspaceSnapshotChangedError`.
+- Every later read — text, image bytes, `readBytes` — first compares the workspace
+  revision with the snapshot's and throws the same error when it moved. A snapshot
+  never mixes two revisions; what it already read stays valid.
+- A read the isolate makes through the content binding cannot cross back with its
+  class; the isolate sees only a message. `ContentFiles` records the first error a read
+  threw on the render's handle, and `callIsolate` (`render.ts`) rethrows
+  `ContentHandle.failure()` before it looks at the isolate's response. The render fails
+  with the store's error, not with what the isolate made of it.
+- `createProjectHost` runs a render, a path enumeration or an image lookup on a fresh
+  snapshot, and on `WorkspaceSnapshotChangedError` once more on another. A second
+  failure propagates: `render()` and `paths()` throw it, `fetch` answers `503` with
+  `retry-after: 1`.
+
+**Why not `blockConcurrencyWhile`.** Holding writes off for the length of a render would
+make the check unnecessary, but the content binding is a stub to the same Durable Object
+(§10.1): the render re-enters the DO while it runs, and those calls would wait behind
+the render that needs them.
+
+A store with no revision source gets none of this. Its snapshots are `unknown:N`, never
+reused, and nothing is re-checked after the listing.
+
+### 10.4 An artifact built from other files is reported, not trusted silently
+
+`pletivo prepare` records what it was prepared from in `PreparedSite.inputs`: path and
+`sha256` digest of each of `package.json`, `bun.lock`, `package-lock.json`,
+`pnpm-lock.yaml`, `yarn.lock` and the loaded astro and pletivo config that exists. The
+inputs sit beside the executable artifact and are never part of program identity.
+
+With `artifactPath`, the host compares each recorded digest with the file in the
+snapshot, under the project root, once per artifact and revision. Every input that
+changed or is gone is named in `x-pletivo-artifact-stale`, comma-separated and sorted;
+`render()` returns the same list as `staleArtifactInputs`. **It is a warning, never a
+failure:** the page still renders from the artifact as it is. A check that fails for any
+reason but a moved workspace gives no warning. A host that passes `artifact` as a value
+is not checked; it has no workspace to compare against.
 
 **What has landed and what remains**, in dependency order:
 
@@ -340,6 +395,13 @@ stable Durable Object id and names its DO-self binding generation explicitly.
    Worker** (§7). Until then a project with npm dependencies still needs an artifact —
    `artifactPath` reads one out of the workspace, which is a file an agent can replace,
    but `pletivo prepare` still has to produce it somewhere else.
+
+   The stale header (§10.4) makes the gap visible; it does not close it. It says that a
+   recorded input changed. It does not re-run `prepare`, and it cannot see: a module the
+   config imports, an input file that did not exist at prepare time (a config added
+   later, a new lockfile), `bun.lockb`, a change to installed packages that no lockfile
+   records, or an artifact passed as a value. An artifact with no `inputs` is never
+   reported.
 
 The measurements on the demo project (30–70 ms a render) say nothing about any of this:
 it has five files. The numbers that matter are still those from the static dogfood site in §4.

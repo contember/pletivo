@@ -18,6 +18,28 @@ These contracts landed after the measurements below. They are the current baseli
   resolutions. The parser rejects malformed, duplicate, dangling, unknown-version,
   and unsupported inputs. Fatal prepare diagnostics prevent emission; diagnostics
   stay outside the executable artifact and its canonical identity.
+- The host parses an artifact once, at its boundary. `loadProjectArtifact`
+  (`src/project-artifact.ts`) is the only parser: it validates the untrusted value and
+  binds it to the host externals it may use, so a binding error surfaces when the
+  artifact is loaded, not at the first executable route. `renderPage`, `projectPaths`
+  and `compileProject` take the bound `ProjectArtifact`. With `artifactPath` the parse
+  is reused while the file's source is unchanged.
+- `PreparedSite.inputs` records the files `prepare` read — `package.json`, the
+  lockfiles, the loaded astro and pletivo config — as `sha256` digests. They are
+  provenance, never program identity. With `artifactPath` the host compares them with
+  the workspace and names changed ones in `x-pletivo-artifact-stale`: a warning, never a
+  failure ([023 §10.4](023-live-workspace-architecture.md)).
+- The isolate's logic is a typed module, `src/isolate-entry.ts`, bundled by
+  `scripts/build-runtime.ts` into the committed `src/generated/runtime-modules.ts` with
+  the runtime and protocol kept external; `test/runtime-modules.test.ts` fails when the
+  committed output drifts. Per program the host emits only `pletivo-program.js`, a data
+  module whose export names are type-checked against `IsolateProgram`.
+- A `ProjectSnapshot` is a listing plus on-demand reads (`ProjectFiles`), not a copy of
+  the project. The workspace store reads a text file on first use and an image when it
+  is probed or served. Every lazy read is checked against the snapshot's revision; a
+  write mid-render throws `WorkspaceSnapshotChangedError`, content reads carry it back
+  across the isolate, and the host retries once before answering `503`
+  ([023 §10.3](023-live-workspace-architecture.md)).
 - `ProgramHash` identifies the exact executable module set. `IsolateKey` separately
   includes tenant, capability generation, host ABI, compatibility date and flags,
   outbound policy, and immutable environment inputs. Request data is not isolate identity.
@@ -113,10 +135,12 @@ Consequences:
 ## 6. `resolveSpecifier` normalises away a leading `/`
 
 Module-graph keys are root-relative without a leading slash
-(`src/components/Layout.astro`). An importer passed as `/src/pages/index.astro`
-resolves to the same key. Forgiving rather than wrong, but undocumented in the
-function's own comment, which only mentions dropping a `..` that climbs past the
-root.
+(`src/components/Layout.astro`). `resolveSpecifier` drops empty and `.` segments, so an
+importer passed as `/src/pages/index.astro` resolves to the same key; a `..` that
+climbs past the root is dropped too. File-map keys get the same treatment on the way in
+(`normalizeProjectPath`, applied by `src/compile/project-files.ts`), and two keys that
+normalize to one path are a `ModuleIdentityCollisionError`. Forgiving rather than
+wrong.
 
 ## 7. Where the MVP stops
 
@@ -356,6 +380,46 @@ project", closed in a `finally`. Not defensive coding: measured in workerd, a
 mutable module global handed the slower of two overlapping requests the faster
 one's bytes.
 
+### Runtime bundle build and module-level constraints
+
+`scripts/build-runtime.ts` bundles what runs in the isolate, and the targets are forced:
+
+- **`browser` for every bundle but one.** A `bun` target leaves `debug` on
+  its Node entry, which calls `__require("tty")` at start-up. A `node` target's CJS
+  interop opens the module with `createRequire(import.meta.url)`, and a Loader module
+  has no `import.meta.url`. Only `pletivo-runtime.js` stays `node`, to keep
+  `node:async_hooks` external; the content bundle, which also needs it, marks it
+  external explicitly so the browser target does not stub it.
+- **The content bundle adds the `workerd` export condition**, because
+  `decode-named-character-reference`'s `browser` entry calls `document.createElement`
+  at module scope.
+- **The content collection runtime is about 1 MB** (Zod plus unified/remark), so it
+  enters a program only when the walk reaches the content API.
+
+Two compile-time constraints sit beside it:
+
+- **`import.meta.env` is substituted textually.** V8 hands `import.meta` to the host,
+  so no module can assign to it. The host rewrites `import.meta.env` to a global, the
+  way Vite's `define` works, and like `define` it also rewrites occurrences inside
+  string literals.
+- **Only imported images are read at compile time.** A photo site can hold thousands;
+  a page imports a handful. Images a collection names are answered over the content
+  binding, one entry at a time.
+- **`astro:env` values ride in the isolate's `env`, names in the module map**
+  (`src/env.ts`), because ESM exports are static. A generated module exports the union
+  of the names the project imports and the names the host provides. A rotated secret
+  changes no `ProgramHash`, only the `IsolateKey`; adding or removing a provided name
+  changes both. A program that reaches no env module carries no env in its isolate key.
+  The `astro:env` and `import.meta.env` payloads together are capped at 1 MiB
+  (`MAX_ENV_BYTES`); a larger one fails the render with `EnvTooLargeError`.
+
+Recorded in [020](020-workers-integration-phase.md), not repeated here: why the image
+service is `cloudflare` rather than sharp, and why it is the only one that emits
+`srcset` ("How images reach the isolate"); why image bytes never cross the content
+binding, only `{width, height, format, hash}` (same section); and why candidate
+extraction bounds a span at 2 KiB, `MAX_SPAN` in `src/tailwind.ts` ("Three
+pre-existing bugs the real site exposed", item 1).
+
 ### What is left
 
 Endpoints, islands, hoisted-script bundling, and real HTTP SSR. **Islands specifically: this host
@@ -373,8 +437,7 @@ than matching Vite here, but it is a divergence, not an oversight. See
 [022](022-dogfood-ssr-workers.md) items 3 and 4.
 
 `tests/fixture` still cannot run here, and collections are no longer the reason:
-its pages use extensionless imports (`import Layout from "../components/Layout"`,
-§7 edges) and islands. `content-formats` needs `.mdx`, which the isolate has no
+its pages use islands. `content-formats` needs `.mdx`, which the isolate has no
 renderer for and says so by name. Also absent from collections: `image()` schemas
 (no filesystem), and the glob matcher is a re-implementation — `**`, `*`, `?`,
 `{a,b}` and dotfile exclusion only, so extglob and character classes can match
@@ -387,17 +450,31 @@ would have given across pages — given up knowingly, because in a workspace an 
 writes to continuously that cache is invalidated on every write anyway
 ([023 §5](023-live-workspace-architecture.md)).
 
-Two smaller edges: extensionless imports (`import x from "./foo"`) are not
-resolved, since `resolveSpecifier` needs an exact file-map key — common in TS
-projects, and it fails loudly as an unresolved module. And a `.js`/`.mjs` file in
-the map is carried verbatim, so a mis-named TypeScript file still reaches the
-isolate; that is the one path `typescriptSuspects` can still fire on.
+One smaller edge: a `.js`/`.mjs` file in the map is carried verbatim, so a mis-named
+TypeScript file still reaches the isolate; that is the one path `typescriptSuspects`
+can still fire on. Extensionless imports and `./x.js` naming `x.ts` are no longer
+edges: `resolveInFiles` tries the extensions in Bun's order, then a directory index.
 
-Two mechanical constraints: the whole project is still recompiled per request (only
-the *isolate* is content-addressed, by module-map hash) — the CSS no longer forces
-that, but nothing prunes it yet, see [023 §4](023-live-workspace-architecture.md) —
-and file-map keys must not contain `..`, since `resolveSpecifier` drops a climb past
-the root.
+A render compiles only what its page's import graph reaches, and a per-file compile
+cache in `ProjectHost` skips unchanged sources
+([023 §10](023-live-workspace-architecture.md) steps 1 and 2). The isolate is keyed by
+`IsolateKey`, which includes the `ProgramHash` of that pruned program, so there is up
+to one isolate per page rather than one per project.
+
+Known follow-ups:
+
+1. CI runs `bun install --frozen-lockfile` and has no `../kompjutr` checkout, so the
+   workers job cannot install. This predates the lazy store.
+2. `example-playground/tsconfig.json` is left out of `bun run typecheck`: kompjutr's
+   `SQLStorageLike.exec` constraint is wider than workerd's `SqlStorage.exec`. The fix
+   belongs in kompjutr.
+3. `packages/pletivo/src/dev-config-watch.ts` watches `pletivo.config.mjs`, which
+   `loadConfig` / `findPletivoConfig` never load, and its private finder duplicates
+   `findPletivoConfig`.
+4. An image that `resolveOutput` is asked for before `info` is read twice: once to
+   probe it, once to serve it.
+5. A store with no revision source (`unknown:N` snapshots) re-checks nothing after the
+   listing.
 
 ## Parity that does hold
 
