@@ -8,7 +8,12 @@ import {
   type ContentFileRef,
 } from "../src/content-files.ts";
 import { CONTENT_MODULE_NAME } from "../src/generated/runtime-modules.ts";
-import { ContentUnavailableError, projectPaths, renderPage } from "../src/render.ts";
+import {
+  ContentUnavailableError,
+  projectPaths,
+  renderPage,
+  type ContentAccess,
+} from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
 
@@ -72,7 +77,7 @@ function contentAccess(): { binding: ContentFiles; store: ContentFiles } {
 
 async function render(
   files: Map<string, string>,
-  content = contentAccess(),
+  content: ContentAccess = contentAccess(),
   executionNamespace = EXECUTION_NAMESPACE,
 ) {
   return renderPage({

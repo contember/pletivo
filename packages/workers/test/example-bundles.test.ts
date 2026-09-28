@@ -14,6 +14,7 @@ async function allocatePort(): Promise<number> {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
   const port = server.port;
   await server.stop(true);
+  if (port === undefined) throw new Error("the port probe did not bind a TCP port");
   return port;
 }
 

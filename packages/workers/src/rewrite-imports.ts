@@ -133,7 +133,8 @@ function stringProperty(value: object, key: string): string | null {
   return typeof found === "string" ? found : null;
 }
 
-function property(value: object, key: string): unknown {
+function property(value: unknown, key: string): unknown {
+  if (typeof value !== "object" || value === null) return undefined;
   return Reflect.get(value, key);
 }
 

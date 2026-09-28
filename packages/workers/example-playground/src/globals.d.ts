@@ -18,8 +18,11 @@ declare module "*.css" {
   export default content;
 }
 
-/** Likewise the playground shell, which is served as-is. */
-declare module "*.html" {
+/**
+ * Likewise the playground shell, which is served as-is. The `./` prefix outranks
+ * Bun's own `*.html` declaration, which types the import as an HTMLBundle.
+ */
+declare module "./*.html" {
   const content: string;
   export default content;
 }

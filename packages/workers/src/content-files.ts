@@ -89,7 +89,7 @@ export type ImageInfo = ProjectAssetInfo;
  * render. Everything downstream needs the four fields and nothing else, which is what
  * makes the substitution possible at all.
  */
-export type ProjectAsset = Uint8Array | ProjectAssetInfo;
+export type ProjectAsset = Uint8Array<ArrayBuffer> | ProjectAssetInfo;
 
 /** The project's binary files, keyed like its sources. */
 export type ProjectAssets = ReadonlyMap<string, ProjectAsset>;

@@ -1,0 +1,12 @@
+{
+  // The Bun side: host source as the tests run it, the tests, and the build
+  // scripts. Worker entry points are checked against workerd's globals by
+  // tsconfig.workerd.json and each example's own config.
+  "extends": "../../tsconfig.json",
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["**/node_modules", "test/fixture-*", "test/workerd/entry.ts", "test/workerd/globals.d.ts"],
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  }
+}

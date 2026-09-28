@@ -236,14 +236,19 @@ function readText(files: WorkspaceFiles, path: string): string | null {
   return null;
 }
 
-function readBytes(files: WorkspaceFiles, path: string): Uint8Array | null {
+function readBytes(files: WorkspaceFiles, path: string): Uint8Array<ArrayBuffer> | null {
   let value: unknown;
   try {
     value = files.readFileSync(path);
   } catch {
     return null;
   }
-  if (value instanceof Uint8Array) return value;
+  if (value instanceof Uint8Array) {
+    const { buffer, byteOffset, byteLength } = value;
+    if (buffer instanceof ArrayBuffer) return new Uint8Array(buffer, byteOffset, byteLength);
+    // A Response body cannot be a view of a SharedArrayBuffer.
+    return new Uint8Array(value);
+  }
   if (typeof value === "string") return new TextEncoder().encode(value);
   return null;
 }

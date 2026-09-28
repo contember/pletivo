@@ -12,7 +12,7 @@ export interface ServedProjectAsset {
   contentType: string;
   source: string;
   /** Null lets an outer host serve metadata-backed bytes from its own store. */
-  bytes: Uint8Array | null;
+  bytes: Uint8Array<ArrayBuffer> | null;
 }
 
 /** Demand-driven project asset access owned by the outer host. */

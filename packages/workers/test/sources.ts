@@ -16,12 +16,12 @@ const BINARY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".a
 
 export interface FixtureSources {
   text: Map<string, string>;
-  binary: Map<string, Uint8Array>;
+  binary: Map<string, Uint8Array<ArrayBuffer>>;
 }
 
 export async function readSources(dir: string): Promise<FixtureSources> {
   const text = new Map<string, string>();
-  const binary = new Map<string, Uint8Array>();
+  const binary = new Map<string, Uint8Array<ArrayBuffer>>();
   for await (const rel of new Glob("**/*").scan({ cwd: dir, dot: false })) {
     if (rel.split("/").some((segment) => SKIPPED.has(segment))) continue;
     const file = Bun.file(path.join(dir, rel));
