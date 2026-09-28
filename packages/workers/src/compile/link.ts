@@ -11,11 +11,7 @@ import {
 } from "./source-module.ts";
 import type { CompileWalk } from "./walk-state.ts";
 
-/**
- * The half of a module's compile that a cache hit still pays: resolving its specifiers
- * against the file set, recording the edges, and writing its rewritten code into the
- * bundle.
- */
+/** The part of a module's compile a cache hit still pays: resolve, record edges, emit rewritten code. */
 export async function linkModule(
   walk: CompileWalk,
   resolver: ImportResolver,

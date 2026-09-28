@@ -21,11 +21,7 @@ import {
 } from "./source-module.ts";
 import type { AstroStyles } from "./types.ts";
 
-/**
- * Where a project's collection definitions live *relative to `srcDir`*, in the order
- * the Bun host looks — `initCollections` takes the first that exists, so a project with
- * both gets the same one on either host.
- */
+/** Content config paths relative to `srcDir`, in the Bun host's `initCollections` order. */
 const CONTENT_CONFIG_CANDIDATES = [
   "content.config.ts",
   "content.config.mts",
@@ -42,10 +38,7 @@ const DEFAULT_SRC_DIR = "src";
 
 /**
  * Everything one `compileProject` call accumulates while it walks the import graph.
- *
- * The project file map is private: every read of a project file's contents goes through
- * `readProjectFile`, and every existence check through `resolveProjectFile`,
- * `projectPaths` or the content-config probe.
+ * The project file map is private; contents are read only through `readProjectFile`.
  */
 export class CompileWalk {
   /** The caller's files plus the artifact's sources; what `CompiledProject.sources` returns. */
@@ -237,11 +230,7 @@ export class CompileWalk {
     if (into !== undefined) for (const name of names) into.add(name);
   }
 
-  /**
-   * Naming lazily is what makes a forward reference work: `rewriteImports` runs while
-   * compiling A and has to emit `./<name-of-B>` before B has been read, and the name
-   * is a pure function of B's path, so it can be claimed without reading it.
-   */
+  /** Names without compiling, so an importer can reference a module not yet compiled. */
   #claim(descriptor: ModuleDescriptor): SourceModule {
     const known = this.#claimed.get(descriptor.id);
     if (known !== undefined) {
@@ -269,13 +258,8 @@ export class CompileWalk {
   }
 
   /**
-   * The name a module takes in the bundle, with the collision it cannot rule out turned
-   * into an error.
-   *
-   * A pure function of the id, deliberately: a compile pruned to one page's graph reaches
-   * files in an order of its own, and a name that moved with discovery order would give
-   * one program two bundles. The hash makes a collision unlikely, not impossible, and an
-   * unnoticed one would silently overwrite a module in the bundle.
+   * The module's bundle name. Must stay a pure function of the id: pruned walks reach
+   * files in different orders. A hash collision throws rather than overwrite a module.
    */
   #claimBundleName(id: ModuleId): string {
     const name = executionNameForModuleId(id);
@@ -290,13 +274,7 @@ export class CompileWalk {
     return name;
   }
 
-  /**
-   * The project's content config, or `null`.
-   *
-   * Probed by path when the caller said where the source tree starts. Without a `srcDir`
-   * there is no root to resolve against, so each candidate is matched as a suffix over
-   * every key instead.
-   */
+  /** The project's content config, or `null`. Without `srcDir`, candidates match as key suffixes. */
   #findContentConfig(): string | null {
     const srcDir = this.#srcDir;
     if (srcDir !== undefined) {

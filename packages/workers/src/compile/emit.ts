@@ -25,8 +25,7 @@ export function emitProject(walk: CompileWalk, entries: string[]): CompiledProje
     const configFile = walk.contentConfig;
     content = { configModule: configFile === null ? null : (walk.moduleNames.get(configFile) ?? null) };
   }
-  // The content runtime needs it too: an `image()` schema names the output file, and
-  // `imageOutputPath` is what names it on both hosts.
+  // The content runtime needs it too: an `image()` schema names the output file.
   const images = walk.usesImages || walk.usesContent;
   if (images) walk.modules[IMAGE_MODULE_NAME] = GENERATED_MODULES[IMAGE_MODULE_NAME];
 
@@ -106,10 +105,7 @@ function moduleTargetId(target: ResolvedTarget): ModuleId {
 
 /**
  * Which `astro:env` modules the bundle needs, and the names each has to export.
- *
- * A specifier that was resolved but named nothing — a namespace import, a dynamic
- * `import()` — still yields an entry, with an empty list: the module has to exist, it
- * just takes its whole surface from what the host provided.
+ * A specifier that named nothing (namespace or dynamic import) still gets an empty list.
  */
 function envUse(
   used: ReadonlySet<string>,

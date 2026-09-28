@@ -19,14 +19,7 @@ const UNSUPPORTED_PACKAGE_ROOTS = new Set(["pletivo", "@pletivo/runtime", "@plet
 
 /**
  * The content API reached by relative path into pletivo's own source, as this repo's
- * fixtures write it.
- *
- * They predate the published package, so they import
- * `packages/pletivo/src/content/collection` by relative path — which
- * `resolveSpecifier` lands on the same project-root-relative key from every one of
- * them, however deep the importer sits. A path is not a package, so it can never be
- * in a virtual file map; matching it is what lets a fixture written for the Bun host
- * be previewed without being rewritten first.
+ * fixtures import it; such a path is never in a virtual file map.
  */
 const PLETIVO_CONTENT_PATH = /(?:^|\/)pletivo\/src\/content\/(?:collection|index)(?:\.ts)?$/;
 
@@ -36,13 +29,8 @@ export function isContentApi(resolved: string): boolean {
 }
 
 /**
- * Vite's import suffixes, of which pletivo answers two.
- *
- * `?raw` and `?inline` both mean the file's text here, because that is what the Bun
- * host's loader makes of them (`astro-plugin.ts:571`) and the two hosts have to agree.
- * (Vite's `?inline` is a data: URI — a divergence pletivo already carries.) `?url`
- * means the URL of the emitted file, which is a different thing entirely: a string
- * the HTML spells, and a file somebody then has to serve.
+ * Vite's import suffixes: `?raw` and `?inline` mean the file's text, as on the Bun
+ * host; `?url` means the URL of the emitted file.
  */
 export function importQuery(resolved: string): { file: string; kind: "text" | "url" } | null {
   const mark = resolved.indexOf("?");
@@ -62,11 +50,7 @@ export interface ImportResolverOptions {
 
 /**
  * Decides what one specifier of one importer names, and claims the target in the walk.
- *
- * This is the single place that decides a module has to be in the bundle, so claiming
- * it here is also how the walk discovers it. Every side effect it has on the walk —
- * content, images, `?url` assets, generated modules — is reproduced on a compile
- * cache hit, because a hit still resolves every specifier.
+ * Side effects on the walk live here because a compile cache hit still resolves.
  */
 export class ImportResolver {
   readonly #walk: CompileWalk;
@@ -237,13 +221,7 @@ function externalResolution(
   };
 }
 
-/**
- * The URL a `?url` import resolves to, and the file registered under it.
- *
- * `_astro/<base>.<md5-8><ext>`, which is what the Bun host emits (`url-asset.ts`), so
- * a project's markup spells the same href on either host. Content-hashed, so a host
- * can cache it forever and two renders of the same project agree on the name.
- */
+/** The URL a `?url` import resolves to, registering the file; matches the Bun host's `url-asset.ts`. */
 function urlAssetHref(
   file: string,
   source: string,
@@ -274,14 +252,8 @@ function isImageSource(file: string): boolean {
 }
 
 /**
- * One image's module, holding what the Bun host's loader puts in the same place.
- *
- * `fsPath` is the file-map key rather than a filesystem path — it is what `getImage()`
- * tests to tell an ESM-imported image from a bare string, and what a host resolves
- * back to bytes when the browser asks for the URL. Non-enumerable, exactly as on the
- * Bun host, so it cannot leak through `JSON.stringify`.
- *
- * The view already validated `info`; a missing or unreadable image fails in `resolve` first.
+ * One image's module, as the Bun host's loader emits it. `fsPath` is the file-map key
+ * `getImage()` checks for; non-enumerable so `JSON.stringify` does not leak it.
  */
 function imageModule(file: string, info: ProjectAssetInfo): string {
   const visible = {

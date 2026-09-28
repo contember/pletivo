@@ -1,29 +1,7 @@
 /**
- * What one file compiled to, kept between renders.
- *
- * Everything in `compileProject` that costs anything depends only on `(path, source,
- * compiler)`: the Astro wasm transform is 72 % of the per-file work, sucrase 26 %,
- * `collectSpecifiers` 2 % (`docs/todos/023 §4`). `rewriteImports` and the edge
- * resolution depend on the whole file *set* and were measured at 2 ms for a whole
- * project, so they stay outside — which is also the correctness argument. A hit still
- * runs `rewriteImports`, so every side effect that lives inside `resolve` is reproduced
- * for free: `usesContent` and the content-config seed, `usesImages`, `usedEnv`, the
- * image metadata modules, the `?raw`/`?url` modules and `urlAssets`, and the artifact
- * binder's used set. Only the three effects that happen *outside* `resolve` have to be
- * carried, and they are the three fields below `code`.
- *
- * **Freshness is `source ===`, and nothing else.** `===` compares two strings by their
- * contents, so an unchanged file hits whether or not the store handed back the same
- * object; a store that can answer "nothing changed" (`project-store.ts`) hands back the
- * same strings, which every engine short-circuits to a pointer compare. Content hashing
- * was priced at 24 ms per request for 700 files and rejected (`023 §3`).
- *
- * A store with no revision source therefore still *hits* — it re-reads the project and
- * pays a full compare per file, rather than missing. What it loses is the read it did
- * not have to do, not the cache.
- *
- * An entry's `.astro` output is bound to the compiler that produced it, so a cache
- * belongs to one host and must not be shared between two that compile differently.
+ * What one file compiled to, kept between renders: the work that depends only on
+ * `(path, source, compiler)`. Freshness is `source ===`; see `docs/todos/023 §3–4`.
+ * A cache is bound to the compiler that filled it; never share it between hosts.
  */
 
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
@@ -31,33 +9,22 @@ import type { AstroStyles } from "./compile/types.ts";
 
 /** One file's compile, everything the file set decides left out. */
 export interface CompiledFile {
-  /** The source this was built from, by identity — the whole freshness check. */
+  /** The source this was built from; comparing it is the whole freshness check. */
   source: string;
   /** Source interpretation; resolution is deliberately not cached with it. */
   kind?: ArtifactModuleKind;
   /**
    * The JavaScript `rewriteImports` runs over, after `import.meta.env` substitution.
-   * `null` means "the source itself": substitution returns its argument unchanged when
-   * the pattern does not fire, so a plain `.js` module costs a pointer rather than a
-   * second copy of the file.
+   * `null` means "the source itself", so an unchanged module is not stored twice.
    */
   code: string | null;
-  /**
-   * Whether the substitution fired, and therefore whether the isolate's entry has to
-   * install the global it rewrote to. Missed on a hit, every page reading
-   * `import.meta.env` throws at frontmatter.
-   */
+  /** Whether the substitution fired, so the isolate must install the global it rewrote to. */
   importMetaEnv: boolean;
-  /**
-   * Every specifier the file imports, read off the *pre-substitution* text. Kept rather
-   * than re-derived from `code`, which is the post-substitution one.
-   */
+  /** Every specifier the file imports, read off the pre-substitution text, not `code`. */
   specifiers: readonly string[];
   /**
-   * Per raw specifier, the statically imported names. Resolution later assigns them to
-   * `astro:env` aliases; caching only the final external would freeze artifact semantics.
-   *
-   * `null` when the file has no named imports.
+   * Per raw specifier, the statically imported names; `null` when there are none.
+   * Resolution maps them to `astro:env` aliases, so the resolved result is not cached.
    */
   envNames: ReadonlyMap<string, readonly string[]> | null;
   /** The `<style>` blocks a `.astro` file declares, with its scope hash. Feeds `pageCss`. */
@@ -67,15 +34,7 @@ export interface CompiledFile {
 export interface CompileCache {
   get(file: string): CompiledFile | undefined;
   set(file: string, entry: CompiledFile): void;
-  /**
-   * Forget one file.
-   *
-   * Unused, deliberately. The store is read-only and a Durable Object writes through
-   * the workspace rather than through it, so an explicit invalidation path would be a
-   * seam every writer has to remember to call — and a *missed* delete is a stale
-   * bundle, which `source ===` can never produce. Here for a host that has a reason of
-   * its own to drop an entry.
-   */
+  /** Forget one file. Freshness never needs it; `source ===` already invalidates. */
   delete(file: string): void;
   /** What the held entries charge, by the measure `maxBytes` bounds. */
   readonly bytes: number;
@@ -86,16 +45,10 @@ export interface CompileCacheOptions {
   maxEntries?: number;
 }
 
-/**
- * 32 MiB, against a Worker's 128 MiB heap.
- *
- * The largest project measured carries 12.4 MB of compiled module source (`023 §1`), so
- * a fully warm cache of it charges roughly 25 MB — its sources plus that compiled code.
- * One whole project therefore fits, and anything larger evicts rather than dying.
- */
+/** 32 MiB of a Worker's 128 MiB heap: sized to hold one large project (`023 §1`), evicting beyond it. */
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 
-/** …and a count, so a project of thousands of tiny modules is bounded by number too. */
+/** Bounds a project of thousands of tiny modules by count too. */
 const DEFAULT_MAX_ENTRIES = 4096;
 
 /** An entry's charge, in string length: the byte count for ASCII source, near enough otherwise. */
@@ -133,7 +86,7 @@ export function createCompileCache(options: CompileCacheOptions = {}): CompileCa
     get(file) {
       const found = held.get(file);
       if (found === undefined) return undefined;
-      // Re-inserted, which moves it to the back: recency is the map's own order.
+      // Re-insert to move it to the most recently used end.
       held.delete(file);
       held.set(file, found);
       return found.entry;
@@ -142,8 +95,7 @@ export function createCompileCache(options: CompileCacheOptions = {}): CompileCa
     set(file, entry) {
       drop(file);
       const charge = chargeOf(entry);
-      // Refused rather than stored: one enormous vendored bundle must not flush the
-      // whole cache and then evict itself.
+      // An oversized entry would flush the whole cache and then evict itself.
       if (charge > maxBytes) return;
       held.set(file, { entry, charge });
       bytes += charge;

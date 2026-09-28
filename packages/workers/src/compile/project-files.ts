@@ -9,9 +9,7 @@ import { UnsupportedFileError } from "./source-module.ts";
 
 /**
  * The caller's project under normalized keys, plus the sources the walk adds to it.
- *
- * Normalizing reads keys only, and only a key that normalization changes is indexed;
- * a file's contents are read when the walk asks for that file.
+ * Construction reads keys only; contents are read when the walk asks for a file.
  */
 export class NormalizedProjectFiles implements ProjectFiles {
   readonly #files: ProjectFiles;

@@ -10,19 +10,12 @@ import { COMPILED } from "./module-kind.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
 import type { AstroStyles, StyleBlock } from "./types.ts";
 
-/**
- * The compiler bound to the `astro.wasm` the host worker's bundler embedded.
- *
- * Injectable because that binding only exists inside a real Worker — on Bun the
- * `.wasm` import resolves to a path, so tests hand in a compiler of their own.
- */
+/** The compiler bound to the embedded `astro.wasm`; only works inside a real Worker, so tests inject their own. */
 export const bundled: AstroCompiler = { transform: compileAstro, parse: parseAstro };
 
 /**
  * One module's compile, from the cache when it holds this exact source and kind.
- *
- * Written to the cache only once the file has fully compiled, so a compiler diagnostic
- * or a sucrase failure never poisons an entry.
+ * Cached only after a full compile, so a failure never poisons an entry.
  */
 export async function compileCached(
   module: SourceModule,
@@ -36,11 +29,7 @@ export async function compileCached(
   return entry;
 }
 
-/**
- * Everything about one file that depends only on its path, its bytes and the
- * compiler — which is all of the expensive work, and therefore all a cache holds.
- * What the file *set* decides is `linkModule`.
- */
+/** What depends only on the file's path, bytes and the compiler; the file set's part is `linkModule`. */
 async function compileFile(module: SourceModule, compiler: AstroCompiler): Promise<CompiledFile> {
   const { source, compilePath, kind } = module;
   if (kind === "js") return fileEntry(source, source, null, kind);
@@ -96,13 +85,9 @@ async function compileFile(module: SourceModule, compiler: AstroCompiler): Promi
 }
 
 /**
- * Pair each `result.css[]` entry with the `<style>` block that produced it, so the
- * `is:global` ones can be told apart.
- *
- * Reading `is:global` off the source rather than looking for a `:where(.astro-…)`
- * marker in the compiled CSS is the same choice `classifyCompilerCss` makes on the
- * Bun host, for the same reason: the compiler cannot scope `body`, `html` or
- * `:root`, so a scoped block holding only those rules looks global but is not.
+ * Pair each `result.css[]` entry with its `<style>` block to tell `is:global` apart.
+ * Read off the source, not the compiled CSS: a scoped block of only `body`/`html`/`:root`
+ * rules compiles unscoped yet is not global.
  */
 export async function classifyStyles(
   css: string[],
@@ -115,8 +100,7 @@ export async function classifyStyles(
 
   const visit = (node: Node): void => {
     if (is.element(node) && node.name === "style") {
-      // The compiler drops blocks that compile to nothing, so skip them here too or
-      // the 1:1 pairing with `css[index]` slips by one.
+      // The compiler drops empty blocks; skip them too or the pairing slips by one.
       const text = node.children.filter(is.text).map((child) => child.value).join("");
       if (text.replace(/\/\*[\s\S]*?\*\//g, "").trim().length === 0) return;
       if (index >= css.length) {
@@ -144,28 +128,14 @@ export async function classifyStyles(
   return blocks;
 }
 
-/**
- * The compiler emits one `import '<file>?astro&type=style&index=N&lang.css'` per
- * `<style>` block, and nothing in the bundle answers to that specifier. The Bun
- * host strips the same imports for the same reason — the CSS is already in
- * `result.css`.
- */
+/** Drops the compiler's per-`<style>` `?astro&type=style` imports; the CSS is already in `result.css`. */
 function stripStyleImports(code: string): string {
   return code.replace(/import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?/g, "");
 }
 
 /**
- * `import.meta.env`, which a Worker Loader module does not have.
- *
- * V8 hands `import.meta` to the *host*, so nothing a generated module could assign
- * would be visible to another module's `import.meta`. The only way to answer it is the
- * way Vite does — substitution — with the values behind a global so a rotated secret
- * does not recompile the project.
- *
- * A textual replacement, and it says so: the same three tokens inside a string literal
- * are rewritten too. That is Vite's own failure mode with `define`. It runs after
- * sucrase, on generated JavaScript, so `.astro` frontmatter and `.tsx` are covered by
- * one pass.
+ * `import.meta.env`, which a Loader module cannot be given, substituted with a global
+ * so a rotated secret does not recompile. Textual: it rewrites inside strings too.
  */
 const IMPORT_META_ENV = /\bimport\s*\.\s*meta\s*\.\s*env\b/g;
 
@@ -176,14 +146,8 @@ function substituteImportMetaEnv(code: string): { code: string; used: boolean } 
 }
 
 /**
- * One cache entry, from the two texts the rest of the compile needs.
- *
- * `text` is the file's JavaScript *before* substitution — the raw source for `.js`, the
- * transpiled code for the rest — and it is what the specifiers and the `astro:env`
- * names are read off. `code` is the substituted one, which is what `rewriteImports`
- * runs over. Two texts, not one: the specifier collection must not see
- * `import.meta.env` rewritten. `code` is `null` when substitution did not fire and the
- * text *is* the source, so a plain `.js` module costs a pointer.
+ * One cache entry. Specifiers and `astro:env` names are read off `text`, the JavaScript
+ * before `import.meta.env` substitution, which must not see the rewrite.
  */
 function fileEntry(
   source: string,
@@ -205,11 +169,8 @@ function fileEntry(
 }
 
 /**
- * The names one file takes from `astro:env/client` and `astro:env/server`.
- *
- * Carried per file rather than accumulated in the walk, because the walk is what a
- * cache hit skips — and these are the generated module's export list, so a dropped
- * name is the isolate refusing to start rather than an undefined value.
+ * The names one file imports, per specifier. Carried per file so a cache hit keeps
+ * them: a dropped `astro:env` export stops the isolate from starting.
  */
 function envNamesOf(
   text: string,
@@ -224,13 +185,7 @@ function envNamesOf(
   return names;
 }
 
-/**
- * `stripTypes`, reported as an unsupported file.
- *
- * For `.astro` the position sucrase reports counts lines in the *compiled* module,
- * not in the source the author wrote — and the compiler puts the whole template on
- * one line — so an unqualified "(3:14)" points at a file nobody has. Say so.
- */
+/** `stripTypes`, reported as an unsupported file; for `.astro` the position is in the compiled output. */
 function transpile(code: string, options: { file: string; jsx?: boolean }): string {
   try {
     return stripTypes(code, options);
