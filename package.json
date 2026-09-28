@@ -21,5 +21,10 @@
     "preact": "^10",
     "typescript": "~5.9.3",
     "zod": "^4"
+  },
+  "overrides": {
+    "@kompjutr/drive": "file:../kompjutr/packages/drive",
+    "@kompjutr/git": "file:../kompjutr/packages/git",
+    "@kompjutr/sqlite": "file:../kompjutr/packages/sqlite"
   }
 }

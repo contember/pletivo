@@ -33,7 +33,7 @@ import {
   NodeFsCompat,
   type DurableObjectStorageLike,
   type Filesystem,
-} from "kompjutr/fs";
+} from "@kompjutr/do/fs";
 import { ContentFiles } from "@pletivo/workers/content-files";
 import type {
   ContentBinding,

@@ -9,7 +9,7 @@
     "url": "git+https://github.com/contember/pletivo.git",
     "directory": "packages/workers"
   },
-  "//": "No build step, by design — see the note in @pletivo/runtime. The host worker's bundler is the only thing that can embed astro.wasm and Tailwind's stylesheets, so this package ships source and is bundled by the app.",
+  "//": "No build step, by design \u2014 see the note in @pletivo/runtime. The host worker's bundler is the only thing that can embed astro.wasm and Tailwind's stylesheets, so this package ships source and is bundled by the app.",
   "exports": {
     "./*": "./src/*.ts"
   },
@@ -33,9 +33,9 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260810.1",
+    "@kompjutr/do": "file:../../../kompjutr/packages/do",
     "@tailwindcss/node": "4.3.3",
     "@tailwindcss/oxide": "4.3.3",
-    "kompjutr": "file:../../../kompjutr",
     "tailwindcss": "^4",
     "wrangler": "4.100.0"
   }

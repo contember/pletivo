@@ -55,7 +55,7 @@ describe("Workers example topology", () => {
     expect(durableConfigs).toEqual(["example-playground/wrangler.jsonc"]);
 
     const source = await readFile(PLAYGROUND_ENTRY, "utf8");
-    expect(source).toContain('from "kompjutr/fs"');
+    expect(source).toContain('from "@kompjutr/do/fs"');
     expect(source).not.toContain("@cloudflare/computer");
     expect(source).toContain("createWorkspaceProjectStore(this.#files");
     expect(source).toContain("revision: () => this.#filesystem.rev()");
