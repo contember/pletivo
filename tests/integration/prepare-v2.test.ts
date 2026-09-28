@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import { parsePreparedSite, serializePreparedSite } from "@pletivo/core/artifact";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import {
@@ -205,6 +206,37 @@ describe("Artifact V2 producer", () => {
     __resetForTests();
     const copied = await prepare(path.join(copiedFixtures, "project"));
     expect(serializePreparedSite(copied.site)).toBe(serializePreparedSite(first.site));
+  });
+
+  test("records only the Astro config for the bare fixture", async () => {
+    const prepared = await prepare(project);
+    const digest = createHash("sha256").update(await fs.readFile(path.join(project, "astro.config.mjs"))).digest("hex");
+    expect(prepared.site.inputs).toEqual([{ path: "astro.config.mjs", digest: `sha256:${digest}` }]);
+  });
+
+  test("records the digests of the config, package manifest, and text lockfiles", async () => {
+    const directory = await temporaryDirectory();
+    const copiedFixtures = path.join(directory, "fixture-prepare-v2");
+    await fs.cp(fixtures, copiedFixtures, { recursive: true });
+    const copiedProject = path.join(copiedFixtures, "project");
+    await fs.writeFile(path.join(copiedProject, "package.json"), '{ "name": "prepare-inputs", "private": true }\n');
+    await fs.writeFile(path.join(copiedProject, "bun.lock"), "{}\n");
+    await fs.writeFile(path.join(copiedProject, "package-lock.json"), '{ "lockfileVersion": 3 }\n');
+    await fs.writeFile(path.join(copiedProject, "bun.lockb"), new Uint8Array([0, 1, 2]));
+    await fs.writeFile(path.join(copiedProject, "pletivo.config.ts"), "export default {};\n");
+
+    const prepared = await prepare(copiedProject);
+    const expected = await Promise.all(
+      ["astro.config.mjs", "bun.lock", "package-lock.json", "package.json", "pletivo.config.ts"].map(async (file) => ({
+        path: file,
+        digest: `sha256:${createHash("sha256").update(await fs.readFile(path.join(copiedProject, file))).digest("hex")}`,
+      })),
+    );
+    expect(prepared.site.inputs).toEqual(expected);
+
+    const emitted = await emitArtifact(await temporaryDirectory(), prepared.site);
+    const json: unknown = JSON.parse(await fs.readFile(emitted.jsonPath, "utf8"));
+    expect(parsePreparedSite(json).inputs).toEqual(expected);
   });
 });
 

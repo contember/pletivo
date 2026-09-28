@@ -56,9 +56,19 @@ export interface SiteArtifact {
   resolutions: ArtifactResolution[];
 }
 
+/** A file `pletivo prepare` read, and the digest of its bytes at that time. */
+export interface ArtifactInput {
+  /** Project-root-relative, `/`-separated, no leading `/`, no `.` or `..` segments. */
+  path: string;
+  /** `sha256:` + 64 lowercase hex characters. */
+  digest: string;
+}
+
 /** Producer/consumer envelope kept distinct from the prepare report. */
 export interface PreparedSite {
   artifact: SiteArtifact;
+  /** Provenance for staleness checks; never part of program identity. */
+  inputs?: ArtifactInput[];
 }
 
 export type PrepareDiagnosticSeverity = "fatal" | "warning";
@@ -113,7 +123,7 @@ export function parsePreparedSite(value: unknown): PreparedSite {
   }
   assertArtifactVersion({ version });
 
-  assertExactFields(prepared, ["artifact"], "$");
+  assertExactFields(prepared, ["artifact", "inputs"], "$");
   assertExactFields(
     artifact,
     ["version", "config", "scripts", "modules", "resolutions"],
@@ -128,7 +138,7 @@ export function parsePreparedSite(value: unknown): PreparedSite {
     modules,
   );
 
-  return {
+  const site: PreparedSite = {
     artifact: {
       version: ARTIFACT_VERSION,
       config,
@@ -137,6 +147,17 @@ export function parsePreparedSite(value: unknown): PreparedSite {
       resolutions,
     },
   };
+  if (hasOwn(prepared, "inputs")) site.inputs = parseInputs(Reflect.get(prepared, "inputs"));
+  return site;
+}
+
+/** Digest file bytes in the `ArtifactInput.digest` format. */
+export async function digestArtifactInput(bytes: Uint8Array): Promise<string> {
+  // WebCrypto refuses a view over a SharedArrayBuffer; the copy is always ArrayBuffer-backed.
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes)));
+  let hex = "";
+  for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
+  return `sha256:${hex}`;
 }
 
 /** Serialize V2 with stable object, module, and resolution ordering. */
@@ -164,6 +185,9 @@ export function serializePreparedSite(value: unknown): string {
       resolutions: resolutions.map(canonicalResolution),
     },
   };
+  if (prepared.inputs !== undefined) {
+    canonical.inputs = prepared.inputs.map((input) => ({ path: input.path, digest: input.digest }));
+  }
   return JSON.stringify(canonical);
 }
 
@@ -295,6 +319,51 @@ function parseTarget(value: unknown, path: string): ArtifactResolutionTarget {
     };
   }
   throw new ArtifactFormatError(`${path}.kind`, 'expected "module" or "external"');
+}
+
+const INPUT_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+function parseInputs(value: unknown): ArtifactInput[] {
+  if (!Array.isArray(value)) throw new ArtifactFormatError("$.inputs", "expected an array");
+  const parsed: ArtifactInput[] = [];
+  for (let index = 0; index < value.length; index++) {
+    const path = `$.inputs[${index}]`;
+    if (!hasOwn(value, index)) {
+      throw new ArtifactFormatError(path, "sparse array entries are not allowed");
+    }
+    const entry: unknown = value[index];
+    const input = requireObject(entry, path, "an object");
+    assertExactFields(input, ["path", "digest"], path);
+
+    const inputPath = requiredField(input, "path", path);
+    if (typeof inputPath !== "string" || !isProjectRelativePath(inputPath)) {
+      throw new ArtifactFormatError(
+        `${path}.path`,
+        'expected a "/"-separated project-relative path without empty, ".", or ".." segments, backslashes, or colons',
+      );
+    }
+    const previous = parsed.at(-1);
+    if (previous !== undefined && compareStrings(previous.path, inputPath) >= 0) {
+      throw new ArtifactFormatError(`${path}.path`, "inputs must be strictly ascending by path");
+    }
+
+    const digest = requiredField(input, "digest", path);
+    if (typeof digest !== "string" || !INPUT_DIGEST.test(digest)) {
+      throw new ArtifactFormatError(
+        `${path}.digest`,
+        "expected \"sha256:\" followed by 64 lowercase hex characters",
+      );
+    }
+    parsed.push({ path: inputPath, digest });
+  }
+  return parsed;
+}
+
+function isProjectRelativePath(value: string): boolean {
+  if (value.includes("\\") || value.includes(":")) return false;
+  return value
+    .split("/")
+    .every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
 function parseModuleKind(value: unknown, path: string): ArtifactModuleKind {

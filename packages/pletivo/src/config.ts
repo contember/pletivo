@@ -1,3 +1,4 @@
+import { statSync } from "fs";
 import path from "path";
 import type { CompileOptions } from "@mdx-js/mdx";
 import {
@@ -104,24 +105,25 @@ const defaults: PletivoConfig = {
 
 let configVersion = 0;
 
-export async function loadConfig(projectRoot: string): Promise<PletivoConfig> {
-  const candidates = [
-    "pletivo.config.ts",
-    "pletivo.config.js",
-  ];
+const PLETIVO_CONFIG_NAMES = ["pletivo.config.ts", "pletivo.config.js"];
 
-  for (const file of candidates) {
-    const configPath = path.join(projectRoot, file);
-    const configFile = Bun.file(configPath);
-    if (await configFile.exists()) {
-      configVersion++;
-      const mod = await import(configPath + `?v=${configVersion}`);
-      const userConfig = mod.default || {};
-      return { ...defaults, ...userConfig };
-    }
+/** The pletivo config file `loadConfig` loads, or null if the project has none. */
+export function findPletivoConfig(projectRoot: string): string | null {
+  for (const name of PLETIVO_CONFIG_NAMES) {
+    const configPath = path.join(projectRoot, name);
+    if (statSync(configPath, { throwIfNoEntry: false })?.isFile()) return configPath;
   }
+  return null;
+}
 
-  return { ...defaults };
+export async function loadConfig(projectRoot: string): Promise<PletivoConfig> {
+  const configPath = findPletivoConfig(projectRoot);
+  if (configPath === null) return { ...defaults };
+
+  configVersion++;
+  const mod = await import(configPath + `?v=${configVersion}`);
+  const userConfig = mod.default || {};
+  return { ...defaults, ...userConfig };
 }
 
 export function defineConfig(config: Partial<PletivoConfig>): Partial<PletivoConfig> {

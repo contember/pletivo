@@ -3,6 +3,7 @@ import {
   ARTIFACT_VERSION,
   ArtifactFormatError,
   ArtifactVersionError,
+  digestArtifactInput,
   parsePreparedSite,
   serializePreparedSite,
   type PrepareReport,
@@ -102,6 +103,13 @@ function artifactWith(overrides: Record<string, unknown>): unknown {
       ...overrides,
     },
   };
+}
+
+const DIGEST_A = `sha256:${"a".repeat(64)}`;
+const DIGEST_B = `sha256:${"0123456789abcdef".repeat(4)}`;
+
+function withInputs(inputs: unknown): unknown {
+  return { ...PREPARED, inputs };
 }
 
 function sparseArray(): unknown[] {
@@ -376,5 +384,123 @@ describe("Artifact V2", () => {
 
     expect(serialized).not.toContain(report.diagnostics[0]?.reason);
     expect(() => parsePreparedSite({ ...PREPARED, report })).toThrow(ArtifactFormatError);
+  });
+});
+
+describe("Artifact V2 inputs", () => {
+  test("accepts sorted inputs and keeps them through canonical serialization", () => {
+    const inputs = [
+      { path: "astro.config.mjs", digest: DIGEST_A },
+      { path: "config/site.json", digest: DIGEST_B },
+      { path: "package.json", digest: DIGEST_A },
+    ];
+    const parsed = parsePreparedSite(withInputs(inputs));
+
+    expect(parsed.inputs).toEqual(inputs);
+    expect(parsePreparedSite(JSON.parse(serializePreparedSite(parsed))).inputs).toEqual(inputs);
+  });
+
+  test("accepts an envelope without inputs", () => {
+    const parsed = parsePreparedSite(PREPARED);
+
+    expect(parsed.inputs).toBeUndefined();
+    expect(serializePreparedSite(parsed)).not.toContain("inputs");
+  });
+
+  test("inputs never change the serialized artifact", () => {
+    const withProvenance = parsePreparedSite(withInputs([{ path: "package.json", digest: DIGEST_A }]));
+
+    expect(JSON.stringify(withProvenance.artifact)).toBe(JSON.stringify(parsePreparedSite(PREPARED).artifact));
+  });
+
+  const inputCases = [
+    { name: "a non-array", inputs: {}, path: "$.inputs" },
+    { name: "a sparse entry", inputs: sparseArray(), path: "$.inputs[0]" },
+    {
+      name: "an uppercase digest",
+      inputs: [{ path: "package.json", digest: `sha256:${"A".repeat(64)}` }],
+      path: "$.inputs[0].digest",
+    },
+    {
+      name: "a short digest",
+      inputs: [{ path: "package.json", digest: `sha256:${"a".repeat(63)}` }],
+      path: "$.inputs[0].digest",
+    },
+    {
+      name: "a digest without the algorithm prefix",
+      inputs: [{ path: "package.json", digest: "a".repeat(64) }],
+      path: "$.inputs[0].digest",
+    },
+    {
+      name: "an unsorted list",
+      inputs: [
+        { path: "package.json", digest: DIGEST_A },
+        { path: "astro.config.mjs", digest: DIGEST_A },
+      ],
+      path: "$.inputs[1].path",
+    },
+    {
+      name: "a duplicate path",
+      inputs: [
+        { path: "package.json", digest: DIGEST_A },
+        { path: "package.json", digest: DIGEST_B },
+      ],
+      path: "$.inputs[1].path",
+    },
+    {
+      name: "a parent segment",
+      inputs: [{ path: "../package.json", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "a current-directory segment",
+      inputs: [{ path: "./package.json", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "a leading slash",
+      inputs: [{ path: "/package.json", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "a backslash-separated parent segment",
+      inputs: [{ path: "..\\x", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "a drive-letter path",
+      inputs: [{ path: "C:\\x", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "an empty path",
+      inputs: [{ path: "", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "an unknown entry field",
+      inputs: [{ path: "package.json", digest: DIGEST_A, size: 12 }],
+      path: "$.inputs[0].size",
+    },
+    {
+      name: "a missing digest",
+      inputs: [{ path: "package.json" }],
+      path: "$.inputs[0].digest",
+    },
+  ];
+
+  for (const scenario of inputCases) {
+    test(`rejects ${scenario.name}`, () => {
+      expect(formatError(withInputs(scenario.inputs)).path).toBe(scenario.path);
+    });
+  }
+
+  test("digests bytes as prefixed lowercase SHA-256", async () => {
+    expect(await digestArtifactInput(new TextEncoder().encode("abc"))).toBe(
+      "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+    expect(await digestArtifactInput(new Uint8Array())).toBe(
+      "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
   });
 });
