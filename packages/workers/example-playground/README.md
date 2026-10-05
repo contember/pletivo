@@ -31,6 +31,9 @@ isolate; it cannot transfer a Durable Object stub directly. The execution namesp
 derives its tenant from the same ID and carries a named capability generation, so Loader
 reuse cannot pin another project's binding.
 
+The content binding exposes only reads (`scan`, `read`, and `image`). Rendered project
+code cannot use it to call the workspace editing or reset endpoints.
+
 `docs/todos/023` is the design. This is the repository's only Durable Object workspace
 example, so its binding topology is also the production reference.
 
@@ -56,6 +59,10 @@ components, Tailwind v4 through `@import "tailwindcss"`. They are real files: wr
 project paths, and `ProjectDO` writes them into SQLite the first time it is asked for a
 page. After that the workspace is the source of truth and `project/` is only the thing
 `POST /__reset` goes back to.
+
+Initialization is recorded in a separate SQL table, in the same transaction as the
+seed files. Deleting a seed page does not initialize the workspace again. Reset removes
+the current files and restores the seed in one transaction.
 
 Two details worth knowing before editing it:
 
