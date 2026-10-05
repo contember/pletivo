@@ -266,7 +266,7 @@ function readBytes(files: WorkspaceFiles, path: string): Uint8Array<ArrayBuffer>
     // A Response body cannot be a view of a SharedArrayBuffer.
     return new Uint8Array(value);
   }
-  if (typeof value === "string") return new TextEncoder().encode(value);
+  if (typeof value === "string") return new Uint8Array(new TextEncoder().encode(value));
   return null;
 }
 

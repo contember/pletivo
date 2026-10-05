@@ -9,8 +9,8 @@ bunx wrangler@4 dev --config packages/workers/example-playground/wrangler.jsonc
 open http://localhost:8787/__playground
 ```
 
-Until `kompjutr` has its first release, `packages/workers` links it from the sibling
-`../kompjutr` checkout.
+Run `bun install` at the repository root first. The workspace uses the published
+`@kompjutr/do@0.1.2` package for SQLite-backed storage.
 
 ## What it is made of
 

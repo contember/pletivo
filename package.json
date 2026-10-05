@@ -6,7 +6,7 @@
   ],
   "scripts": {
     "package:pletivo": "bun scripts/package-pletivo.ts",
-    "typecheck": "tsc --noEmit -p packages/pletivo/tsconfig.json && tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/workers/tsconfig.json && tsc --noEmit -p packages/workers/tsconfig.workerd.json && tsc --noEmit -p packages/workers/example/tsconfig.json"
+    "typecheck": "tsc --noEmit -p packages/pletivo/tsconfig.json && tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/workers/tsconfig.json && tsc --noEmit -p packages/workers/tsconfig.workerd.json && tsc --noEmit -p packages/workers/example/tsconfig.json && tsc --noEmit -p packages/workers/example-playground/tsconfig.json"
   },
   "devDependencies": {
     "@astrojs/compiler": "3.0.1",
@@ -21,10 +21,5 @@
     "preact": "^10",
     "typescript": "~5.9.3",
     "zod": "^4"
-  },
-  "overrides": {
-    "@kompjutr/drive": "file:../kompjutr/packages/drive",
-    "@kompjutr/git": "file:../kompjutr/packages/git",
-    "@kompjutr/sqlite": "file:../kompjutr/packages/sqlite"
   }
 }

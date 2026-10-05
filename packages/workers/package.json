@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260810.1",
-    "@kompjutr/do": "file:../../../kompjutr/packages/do",
+    "@kompjutr/do": "0.1.2",
     "@tailwindcss/node": "4.3.3",
     "@tailwindcss/oxide": "4.3.3",
     "tailwindcss": "^4",

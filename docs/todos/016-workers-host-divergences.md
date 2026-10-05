@@ -463,17 +463,12 @@ to one isolate per page rather than one per project.
 
 Known follow-ups:
 
-1. CI runs `bun install --frozen-lockfile` and has no `../kompjutr` checkout, so the
-   workers job cannot install. This predates the lazy store.
-2. `example-playground/tsconfig.json` is left out of `bun run typecheck`: kompjutr's
-   `SQLStorageLike.exec` constraint is wider than workerd's `SqlStorage.exec`. The fix
-   belongs in kompjutr.
-3. `packages/pletivo/src/dev-config-watch.ts` watches `pletivo.config.mjs`, which
+1. `packages/pletivo/src/dev-config-watch.ts` watches `pletivo.config.mjs`, which
    `loadConfig` / `findPletivoConfig` never load, and its private finder duplicates
    `findPletivoConfig`.
-4. An image that `resolveOutput` is asked for before `info` is read twice: once to
+2. An image that `resolveOutput` is asked for before `info` is read twice: once to
    probe it, once to serve it.
-5. A store with no revision source (`unknown:N` snapshots) re-checks nothing after the
+3. A store with no revision source (`unknown:N` snapshots) re-checks nothing after the
    listing.
 
 ## Parity that does hold

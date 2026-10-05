@@ -1,7 +1,6 @@
 {
   // A Worker. `bun` stays in `types` only for node's types, which
   // `nodejs_compat` provides at run time; no DOM lib, workerd has its own.
-  // Not in the root `typecheck` script: kompjutr's `SQLStorageLike.exec` constraint is wider than workerd's `SqlStorage.exec`.
   "extends": "../../../tsconfig.json",
   "include": ["src/**/*.ts", "../src/astro-wasm.d.ts"],
   "exclude": [],
