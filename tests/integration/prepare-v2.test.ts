@@ -26,7 +26,7 @@ afterAll(async () => {
 });
 
 describe("Artifact V2 producer", () => {
-  test("closes virtual A to B to npm and preserves importer-aware nested packages", async () => {
+  test("closes extensionless virtual A to B to npm and preserves importer-aware nested packages", async () => {
     const prepared = await prepare(project);
     const virtualA = targetFor(prepared.site, "project:src/pages/index.tsx", "virtual:a");
     const virtualB = targetFor(prepared.site, virtualA, "virtual:b");
@@ -91,6 +91,68 @@ describe("Artifact V2 producer", () => {
     await expectPrepareError(path.join(fixtures, "fatal-unresolved"), "could not resolve");
     await expectPrepareError(path.join(fixtures, "fatal-loader"), "unsupported module extension");
   });
+
+  test.each(["raw", "inline", "url", "lang=text&raw", "url&v=1", "raw=true"])(
+    "leaves project ?%s imports to the consumer while validating their files",
+    async (query) => {
+      const directory = await temporaryDirectory();
+      await fs.mkdir(path.join(directory, "src/pages"), { recursive: true });
+      await fs.writeFile(path.join(directory, "src/data.txt"), "query import body\n");
+      await fs.writeFile(
+        path.join(directory, "src/pages/index.ts"),
+        `import value from "../data.txt?${query}"; export default value;\n`,
+      );
+      const prepared = await prepare(directory);
+      expect(prepared.site.artifact.modules).toEqual([]);
+      expect(prepared.site.artifact.resolutions).toEqual([]);
+
+      await fs.unlink(path.join(directory, "src/data.txt"));
+      __resetForTests();
+      await expectPrepareError(directory, "could not resolve");
+    },
+  );
+
+  test("does not silently accept unsupported project query imports", async () => {
+    const directory = await temporaryDirectory();
+    await fs.mkdir(path.join(directory, "src/pages"), { recursive: true });
+    await fs.writeFile(path.join(directory, "src/data.txt"), "query import body\n");
+    await fs.writeFile(
+      path.join(directory, "src/pages/index.ts"),
+      'import value from "../data.txt?unknown"; export default value;\n',
+    );
+    await expectPrepareError(directory, "could not resolve");
+  });
+
+  for (const query of ["raw", "inline", "url"]) {
+    test.each([
+      { specifier: "../data", file: "data.ts", source: "export default 1;", accepted: true },
+      { specifier: "../data", file: "data/index.ts", source: "export default 1;", accepted: true },
+      { specifier: "../data", file: "data.json", source: "{}", accepted: false },
+      { specifier: "../data", file: "data.css", source: "p {}", accepted: false },
+      { specifier: "../data", file: "data/index.json", source: "{}", accepted: false },
+      { specifier: "../data.mjs", file: "data.ts", source: "export default 1;", accepted: true },
+      { specifier: "../data.cjs", file: "data.mts", source: "export default 1;", accepted: true },
+      { specifier: "../data.js", file: "data.jsx", source: "export default 1;", accepted: false },
+      { specifier: "../data.json", file: "data.json", source: "{}", accepted: true },
+    ])(`matches consumer resolution for $specifier?${query} with $file`, async ({ specifier, file, source, accepted }) => {
+      const directory = await temporaryDirectory();
+      await fs.mkdir(path.join(directory, "src/pages"), { recursive: true });
+      const target = path.join(directory, "src", file);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, source);
+      await fs.writeFile(
+        path.join(directory, "src/pages/index.ts"),
+        `import value from "${specifier}?${query}"; export default value;\n`,
+      );
+      if (!accepted) {
+        await expectPrepareError(directory, "could not resolve");
+        return;
+      }
+      const prepared = await prepare(directory);
+      expect(prepared.site.artifact.modules).toEqual([]);
+      expect(prepared.site.artifact.resolutions).toEqual([]);
+    });
+  }
 
   test("rejects malformed carried and virtual modules with importer context", async () => {
     const malformedPackage = await capturedPrepareError(path.join(fixtures, "fatal-malformed-npm"));

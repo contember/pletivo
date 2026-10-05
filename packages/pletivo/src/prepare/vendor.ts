@@ -90,9 +90,10 @@ export async function prepareModuleGraph(
     relativeViaVite: boolean,
     stylesheet: boolean,
     source: string,
+    moduleKind?: ArtifactModuleKind,
   ): void => {
     try {
-      for (const specifier of specifiersOf(importerFile, source)) {
+      for (const specifier of specifiersOf(importerFile, source, moduleKind)) {
         queue.push({ importer, importerFile, resolveFrom, relativeViaVite, stylesheet, specifier });
       }
     } catch (error) {
@@ -236,6 +237,7 @@ export async function prepareModuleGraph(
           frozenIdentity.physicalFile === null,
           moduleKind === "css",
           frozen.code,
+          moduleKind,
         );
       }
       resolutions.push({
@@ -248,11 +250,21 @@ export async function prepareModuleGraph(
 
     let resolved: string;
     try {
-      resolved = await resolveWorkerSpecifier(
-        request.specifier,
-        request.resolveFrom,
-        request.stylesheet,
-      );
+      const queryFile = kind === "relative" && request.importer.startsWith("project:") && !request.stylesheet
+        ? projectQueryFile(request.specifier)
+        : null;
+      if (queryFile !== null) {
+        const candidate = path.resolve(request.resolveFrom, queryFile);
+        const target = await resolveProjectQueryCandidate(candidate);
+        if (target === null) throw new Error(`no file matches ${JSON.stringify(candidate)}`);
+        resolved = target;
+      } else {
+        resolved = await resolveWorkerSpecifier(
+          request.specifier,
+          request.resolveFrom,
+          request.stylesheet,
+        );
+      }
     } catch (error) {
       if (error instanceof PrepareGraphError) throw error;
       throw new PrepareGraphError(
@@ -290,6 +302,37 @@ export async function prepareModuleGraph(
         : importerOrder;
     }),
   };
+}
+
+function projectQueryFile(specifier: string): string | null {
+  const mark = specifier.indexOf("?");
+  if (mark === -1) return null;
+  const query = specifier.slice(mark + 1);
+  // Match the Workers consumer's raw/inline/url query keys; the source map owns their output.
+  return /(^|&)(raw|inline|url)(&|=|$)/.test(query) ? specifier.slice(0, mark) : null;
+}
+
+// Query targets follow Workers resolveInFiles, not npm/package.json resolution.
+async function resolveProjectQueryCandidate(candidate: string): Promise<string | null> {
+  if (await isFile(candidate)) return candidate;
+  const extension = extensionOf(candidate);
+  if (extension === ".js" || extension === ".mjs" || extension === ".cjs") {
+    const stem = candidate.slice(0, -extension.length);
+    for (const suffix of [".ts", ".tsx", ".mts", ".cts"]) {
+      if (await isFile(stem + suffix)) return stem + suffix;
+    }
+  }
+  if (extension === "") {
+    const implied = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".astro", ".mts", ".cts"];
+    for (const suffix of implied) {
+      if (await isFile(candidate + suffix)) return candidate + suffix;
+    }
+    for (const suffix of implied) {
+      const index = path.join(candidate, `index${suffix}`);
+      if (await isFile(index)) return index;
+    }
+  }
+  return null;
 }
 
 function kindForFile(file: string): ArtifactModuleKind {

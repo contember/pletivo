@@ -41,6 +41,17 @@ import Layout from "../layouts/Layout.astro";
     expect(specifiersOf("src/pages/index.tsx", source)).toEqual(["real-package"]);
   });
 
+  test("uses the declared kind for virtual modules without a file extension", () => {
+    expect(specifiersOf("\0virtual:entry", 'import value from "virtual:leaf";', "js"))
+      .toEqual(["virtual:leaf"]);
+    expect(specifiersOf("\0virtual:entry", 'import value from "virtual:leaf"; export default <p>{value}</p>;', "tsx"))
+      .toEqual(["virtual:leaf"]);
+    expect(specifiersOf("\0virtual:style", '@import "theme-package";', "css"))
+      .toEqual(["theme-package"]);
+    expect(() => specifiersOf("\0virtual:broken", "export const = ;", "ts"))
+      .toThrow(/could not parse imports/);
+  });
+
   test("contributes nothing for a file that is not a module", () => {
     expect(importableSource("src/data/x.json", "{}")).toBeNull();
     expect(specifiersOf("src/data/x.json", "{}")).toEqual([]);

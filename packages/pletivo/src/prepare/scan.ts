@@ -8,6 +8,8 @@
  * a dependency that is never imported costs module-map bytes for nothing.
  */
 
+import type { ArtifactModuleKind } from "@pletivo/core/artifact";
+
 const SCANNABLE = new Set([".astro", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts"]);
 
 export class ImportScanError extends Error {
@@ -21,8 +23,8 @@ export class ImportScanError extends Error {
 }
 
 /** Loader to read a file with, keyed by extension. `.astro` frontmatter is TypeScript. */
-function loaderFor(file: string): "ts" | "tsx" {
-  return file.endsWith(".tsx") || file.endsWith(".jsx") ? "tsx" : "ts";
+function loaderFor(extension: string): "ts" | "tsx" {
+  return extension === ".tsx" || extension === ".jsx" ? "tsx" : "ts";
 }
 
 const transpilers = new Map<string, Bun.Transpiler>();
@@ -43,9 +45,14 @@ function transpiler(loader: "ts" | "tsx"): Bun.Transpiler {
  * it may contain a code block showing an import, and reading that as one would send
  * prepare hunting for a package the project never uses.
  */
-export function importableSource(file: string, source: string): string | null {
-  if (!SCANNABLE.has(extensionOf(file))) return null;
-  if (!file.endsWith(".astro")) return source;
+export function importableSource(
+  file: string,
+  source: string,
+  kind?: ArtifactModuleKind,
+): string | null {
+  const extension = kind === undefined ? extensionOf(file) : `.${kind}`;
+  if (!SCANNABLE.has(extension)) return null;
+  if (extension !== ".astro") return source;
   // Frontmatter opens the file or there is none — Astro's own rule, and the reason
   // this cannot be a search: `---` inside the template is a horizontal rule.
   const opened = source.length - source.trimStart().length;
@@ -57,8 +64,8 @@ export function importableSource(file: string, source: string): string | null {
 }
 
 /** Every module specifier a source names, type-only imports already elided. */
-export function specifiersOf(file: string, source: string): string[] {
-  const extension = extensionOf(file);
+export function specifiersOf(file: string, source: string, kind?: ArtifactModuleKind): string[] {
+  const extension = kind === undefined ? extensionOf(file) : `.${kind}`;
   if (extension === ".cjs" || extension === ".cts") {
     throw new ImportScanError(
       file,
@@ -66,10 +73,10 @@ export function specifiersOf(file: string, source: string): string[] {
     );
   }
   if (extension === ".css") return cssImports(source);
-  const code = importableSource(file, source);
+  const code = importableSource(file, source, kind);
   if (code === null) return [];
   try {
-    const imports = transpiler(loaderFor(file)).scanImports(code);
+    const imports = transpiler(loaderFor(extension)).scanImports(code);
     if (usesCommonJsRequire(code)) {
       throw new ImportScanError(
         file,
