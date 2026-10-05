@@ -95,6 +95,98 @@ async function withPlayground<T>(
 }
 
 describe("Workers examples", () => {
+  test(
+    "rendered source cannot mutate the workspace through its content binding",
+    async () => {
+      const port = await allocatePort();
+      const persistence = path.join(OUTPUT_ROOT, "read-only-content");
+      await withPlayground(port, persistence, async (base) => {
+        const source = `---
+import { getCollection } from "astro:content";
+const moduleName = "cloudflare:workers";
+const { env } = await import(moduleName);
+const binding = env.PLETIVO_CONTENT;
+const attempts = [
+  ["PUT", "/__files/src/pages/injected.astro"],
+  ["DELETE", "/__files/src/pages/about.astro"],
+  ["POST", "/__reset"],
+];
+const outcomes = [];
+for (const [method, path] of attempts) {
+  try {
+    const response = await binding.fetch(new Request("https://example.invalid" + path, {
+      method,
+      ...(method === "PUT" ? { body: "<h1>Injected</h1>" } : {}),
+    }));
+    outcomes.push(response.ok ? "allowed" : "blocked");
+  } catch {
+    outcomes.push("blocked");
+  }
+}
+---
+<pre>{JSON.stringify({ binding: Boolean(binding), outcomes })}</pre>`;
+        const write = await fetch(`${base}/__files/src/pages/probe.astro`, {
+          method: "PUT",
+          body: source,
+        });
+        expect(write.status, await write.text()).toBe(201);
+        const before = await (await fetch(`${base}/__files`)).text();
+        const about = await (await fetch(`${base}/__files/src/pages/about.astro`)).text();
+
+        const rendered = await fetch(`${base}/probe`);
+        const html = await rendered.text();
+        expect(rendered.status, html).toBe(200);
+        expect(html).toContain('&quot;binding&quot;:true');
+        expect(html).toContain('[&quot;blocked&quot;,&quot;blocked&quot;,&quot;blocked&quot;]');
+        expect(await (await fetch(`${base}/__files`)).text()).toBe(before);
+        expect(await (await fetch(`${base}/__files/src/pages/about.astro`)).text()).toBe(about);
+        expect((await fetch(`${base}/__files/src/pages/injected.astro`)).status).toBe(404);
+      });
+    },
+    120_000,
+  );
+
+  test(
+    "deleting the seed index preserves edits across restart until an explicit reset",
+    async () => {
+      const port = await allocatePort();
+      const persistence = path.join(OUTPUT_ROOT, "seed-lifecycle");
+      const edited = "<h1>Saved edit must survive deleting the index</h1>";
+      let originalAbout = "";
+      let originalIndex = "";
+      let afterDelete = "";
+      await withPlayground(port, persistence, async (base) => {
+        originalAbout = await (await fetch(`${base}/__files/src/pages/about.astro`)).text();
+        originalIndex = await (await fetch(`${base}/__files/src/pages/index.astro`)).text();
+        for (const name of ["about", "added"]) {
+          const write = await fetch(`${base}/__files/src/pages/${name}.astro`, {
+            method: "PUT",
+            body: edited,
+          });
+          expect(write.status, await write.text()).toBe(201);
+        }
+        const remove = await fetch(`${base}/__files/src/pages/index.astro`, { method: "DELETE" });
+        expect(remove.status, await remove.text()).toBe(200);
+        expect(await (await fetch(`${base}/__files/src/pages/about.astro`)).text()).toBe(edited);
+        expect((await fetch(`${base}/__files/src/pages/index.astro`)).status).toBe(404);
+        afterDelete = await (await fetch(`${base}/__files`)).text();
+      });
+
+      await withPlayground(port, persistence, async (base) => {
+        expect(await (await fetch(`${base}/__files`)).text()).toBe(afterDelete);
+        expect(await (await fetch(`${base}/__files/src/pages/about.astro`)).text()).toBe(edited);
+        expect((await fetch(`${base}/`)).status).toBe(404);
+
+        const reset = await fetch(`${base}/__reset`, { method: "POST" });
+        expect(reset.status, await reset.text()).toBe(200);
+        expect(await (await fetch(`${base}/__files/src/pages/about.astro`)).text()).toBe(originalAbout);
+        expect(await (await fetch(`${base}/__files/src/pages/index.astro`)).text()).toBe(originalIndex);
+        expect((await fetch(`${base}/__files/src/pages/added.astro`)).status).toBe(404);
+      });
+    },
+    120_000,
+  );
+
   for (const example of EXAMPLES) {
     test(
       `Wrangler bundles ${example} without deploying`,

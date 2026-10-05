@@ -56,10 +56,6 @@ interface Env {
   LOADER: WorkerLoaderBinding;
 }
 
-interface ProjectBindingPort extends ContentBinding {
-  fetch(request: Request): Promise<Response>;
-}
-
 /** Where the project sits in the workspace. Everything else there is not a source. */
 const PROJECT_ROOT = "/project";
 
@@ -70,6 +66,7 @@ const COMPATIBILITY_DATE = "2026-01-01";
 const COMPATIBILITY_FLAGS = ["nodejs_compat"];
 
 export class ProjectDO extends DurableObject<Env> {
+  readonly #database: Database;
   readonly #filesystem: Filesystem;
   readonly #files: NodeFsCompat;
   readonly #host: ProjectHost;
@@ -83,7 +80,11 @@ export class ProjectDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const storage: DurableObjectStorageLike = ctx.storage;
-    this.#filesystem = createFilesystem(new Database(storage));
+    this.#database = new Database(storage);
+    this.#filesystem = createFilesystem(this.#database);
+    this.#database.run(
+      "CREATE TABLE IF NOT EXISTS pletivo_playground_state (id INTEGER PRIMARY KEY CHECK (id = 1))",
+    );
     this.#files = new NodeFsCompat(this.#filesystem);
     this.#host = createProjectHost({
       store: createWorkspaceProjectStore(this.#files, {
@@ -182,8 +183,16 @@ export class ProjectDO extends DurableObject<Env> {
    * playground is what happens *after*, so the seed is `seed.ts` and it happens once.
    */
   #seed(): void {
+    if (this.#database.scalar<number>("SELECT id FROM pletivo_playground_state WHERE id = 1") === 1) return;
+    this.#database.transactionSync(() => {
+      // Adopt workspaces created before the initialization marker without overwriting edits.
+      if (!this.#files.existsSync(PROJECT_ROOT)) this.#writeSeed();
+      this.#database.run("INSERT INTO pletivo_playground_state (id) VALUES (1)");
+    });
+  }
+
+  #writeSeed(): void {
     const files = this.#files;
-    if (files.existsSync(`${PROJECT_ROOT}/src/pages/index.astro`)) return;
     for (const [relative, source] of SEED) {
       const path = `${PROJECT_ROOT}/${relative}`;
       files.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
@@ -199,15 +208,17 @@ export class ProjectDO extends DurableObject<Env> {
    * would inherit it. Emptied directories are left; the store walks files.
    */
   #reset(): void {
-    const files = this.#files;
-    for (const path of walkFiles(files, PROJECT_ROOT)) files.unlinkSync(path);
-    this.#seed();
+    this.#database.transactionSync(() => {
+      const files = this.#files;
+      for (const path of walkFiles(files, PROJECT_ROOT)) files.unlinkSync(path);
+      this.#writeSeed();
+    });
   }
 }
 
 /** Transferable access to the DO-owned content store. */
 export class ProjectBinding extends WorkerEntrypoint<Env, { projectId: string }>
-  implements ProjectBindingPort {
+  implements ContentBinding {
   #target(): DurableObjectStub<ProjectDO> {
     return this.env.PROJECT.get(this.env.PROJECT.idFromString(this.ctx.props.projectId));
   }
@@ -222,10 +233,6 @@ export class ProjectBinding extends WorkerEntrypoint<Env, { projectId: string }>
 
   image(ref: string, path: string): Promise<ImageInfo | null> {
     return this.#target().image(ref, path);
-  }
-
-  fetch(request: Request): Promise<Response> {
-    return this.#target().fetch(request);
   }
 }
 
