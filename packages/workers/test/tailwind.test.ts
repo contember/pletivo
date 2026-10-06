@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import {
-  compileTailwind,
-  extractCandidates,
-  extractHtmlClassCandidates,
-  scanCandidates,
-} from "../src/tailwind.ts";
+import { compileTailwind, extractCandidates, extractHtmlClassCandidates } from "../src/tailwind.ts";
 import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
+import { scanCandidates, STANDALONE_TARGETS } from "./tailwind-standalone.ts";
 
 /** `tailwindcss` is an optional peer: skip the engine tests where it is not installed. */
 const TAILWIND_DIR = tailwindDir();
@@ -67,21 +63,6 @@ describe("extractCandidates", () => {
   });
 });
 
-describe("scanCandidates", () => {
-  test("reads the virtual file map and skips stylesheets", () => {
-    const found = new Set(
-      scanCandidates(
-        new Map([
-          ["src/pages/index.astro", '<h1 class="from-markup">x</h1>'],
-          ["src/styles/global.css", ".from-css { color: red }"],
-        ]),
-      ),
-    );
-    expect(found).toContain("from-markup");
-    expect(found).not.toContain("from-css");
-  });
-});
-
 describe("extractHtmlClassCandidates", () => {
   test("decodes class attribute entities and ignores every other HTML context", () => {
     const found = new Set(extractHtmlClassCandidates(`
@@ -126,6 +107,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       files,
       stylesheets: await tailwindStylesheets(),
       candidates: scanCandidates(files),
+      ...STANDALONE_TARGETS,
     });
 
     expect(css.css).toContain(".mt-4");
@@ -135,6 +117,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
     expect(css.css).toContain(".p-huge");
     expect(css.consumedStylesheets).toEqual([
       "src/styles/global.css",
+      "tailwindcss",
       "src/styles/tokens.css",
     ]);
     // Not in any source file, so not emitted.
@@ -153,6 +136,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       files,
       stylesheets: await tailwindStylesheets(),
       candidates: ["p-2"],
+      ...STANDALONE_TARGETS,
     });
 
     expect(css.css).toContain(".p-2");
@@ -162,7 +146,13 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
   test("reports an @import it cannot resolve", async () => {
     const files = new Map([["src/styles/global.css", '@import "tailwindcss";\n@import "./gone.css";']]);
     await expect(
-      compileTailwind({ entry: "src/styles/global.css", files, stylesheets: await tailwindStylesheets(), candidates: [] }),
+      compileTailwind({
+        entry: "src/styles/global.css",
+        files,
+        stylesheets: await tailwindStylesheets(),
+        candidates: [],
+        ...STANDALONE_TARGETS,
+      }),
     ).rejects.toThrow(/cannot resolve stylesheet "\.\/gone\.css"/);
   });
 
@@ -171,7 +161,13 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       ["src/styles/global.css", '@import "tailwindcss";\n@plugin "./typography.js";'],
     ]);
     await expect(
-      compileTailwind({ entry: "src/styles/global.css", files, stylesheets: await tailwindStylesheets(), candidates: [] }),
+      compileTailwind({
+        entry: "src/styles/global.css",
+        files,
+        stylesheets: await tailwindStylesheets(),
+        candidates: [],
+        ...STANDALONE_TARGETS,
+      }),
     ).rejects.toThrow(/no module loader/);
   });
 
@@ -182,6 +178,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
         files: new Map(),
         stylesheets: await tailwindStylesheets(),
         candidates: [],
+        ...STANDALONE_TARGETS,
       }),
     ).rejects.toThrow(/is not in the file map/);
   });

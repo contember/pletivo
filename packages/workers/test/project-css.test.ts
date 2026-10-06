@@ -4,7 +4,6 @@ import type { ResolvedStyleGraph } from "../src/compiled-program.ts";
 import {
   TailwindNotConfiguredError,
   pageStylesheet,
-  tailwindEntry,
   type PageStylesheetOptions,
 } from "../src/project-css.ts";
 import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
@@ -221,14 +220,5 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
       { "src/styles/global.css": '@import "tailwindcss";' },
       graph([PAGE, entry], [], [{ importer: PAGE, target: entry }]),
     ))).rejects.toBeInstanceOf(TailwindNotConfiguredError);
-  });
-});
-
-describe("tailwindEntry parity helper", () => {
-  test("keeps the source-map scanner only for local parity", () => {
-    expect(tailwindEntry({
-      files: new Map([["src/styles/global.css", '@import "tailwindcss";']]),
-      srcDir: "src",
-    })).toBe("src/styles/global.css");
   });
 });

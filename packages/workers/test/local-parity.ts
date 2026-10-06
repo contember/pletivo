@@ -17,14 +17,14 @@ import { loadProjectArtifact } from "../src/project-artifact.ts";
 import { serveImage } from "../src/images.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles, createProjectAssetsView } from "../src/content-files.ts";
-import { tailwindEntry } from "../src/project-css.ts";
-import { compileTailwind, extractCandidates, scanCandidates } from "../src/tailwind.ts";
+import { compileTailwind, extractCandidates } from "../src/tailwind.ts";
 import { projectPaths, renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { builtPathname } from "./built-pathname.ts";
 import { FileLoader } from "./file-loader.ts";
 import { imageUrls, readSources, sameBytes } from "./sources.ts";
 import { tailwindStylesheets } from "./tailwind-sources.ts";
+import { scanCandidates, STANDALONE_TARGETS, tailwindEntry } from "./tailwind-standalone.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 
@@ -127,6 +127,7 @@ const projectWide =
         files,
         stylesheets: await tailwindStylesheets(),
         candidates: scanCandidates(files),
+        ...STANDALONE_TARGETS,
       });
 if (projectWide !== null) {
   // The Bun host minifies the finished stylesheet before writing it. Run the same

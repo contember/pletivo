@@ -2,12 +2,14 @@
 
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
-import { moduleOrder } from "./page-css.ts";
+import { adjacency, moduleOrder } from "./page-css.ts";
 import type { ProjectFiles } from "./project-store.ts";
 import {
   compileTailwind,
   extractHtmlClassCandidates,
   extractCandidates,
+  isTailwindStylesheetSpecifier,
+  sourceFor,
   TailwindNotConfiguredError,
   type TailwindStylesheets,
 } from "./tailwind.ts";
@@ -28,14 +30,9 @@ export interface PageStylesheetOptions {
   tailwind?: TailwindStylesheets;
 }
 
-const CSS = ".css";
 const CSS_MODULE = ".module.css";
 const PREFERRED_ENTRIES = ["global.css", "app.css", "main.css", "styles.css"];
 const IMPORTS_TAILWIND = /@import\s+(?:url\(\s*)?["']tailwindcss["']\s*\)?/i;
-
-export function isCollectableCss(moduleId: string): boolean {
-  return moduleId.endsWith(CSS) && !moduleId.endsWith(CSS_MODULE);
-}
 
 export async function pageStylesheet(options: PageStylesheetOptions): Promise<string | null> {
   const ordered = orderedStylesheets(options.entry, options.styleGraph);
@@ -63,7 +60,7 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
     files: options.files,
     stylesheets: options.tailwind,
     candidates: [...candidates],
-    styleTargets: styleTargets(options.styleGraph),
+    styleTargets: adjacency(options.styleGraph.styleEdges),
     embeddedTargets: embeddedTargets(options.styleGraph, options.files, options.tailwind),
   });
   const consumed = new Set(compilation.consumedStylesheets);
@@ -84,7 +81,7 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
   return parts.filter(Boolean).join("\n\n");
 }
 
-interface StylesheetSource {
+export interface StylesheetSource {
   moduleId: ModuleId;
   content: string;
 }
@@ -111,22 +108,6 @@ function isUnsupportedProjectCssModule(moduleId: ModuleId): boolean {
   return moduleId.startsWith("project:") && moduleId.endsWith(CSS_MODULE);
 }
 
-function adjacency(
-  edges: readonly { importer: ModuleId; target: ModuleId }[],
-): Map<ModuleId, ModuleId[]> {
-  const byImporter = new Map<ModuleId, ModuleId[]>();
-  for (const edge of edges) {
-    const targets = byImporter.get(edge.importer);
-    if (targets) targets.push(edge.target);
-    else byImporter.set(edge.importer, [edge.target]);
-  }
-  return byImporter;
-}
-
-function styleTargets(graph: ResolvedStyleGraph): ReadonlyMap<ModuleId, readonly ModuleId[]> {
-  return adjacency(graph.styleEdges);
-}
-
 function embeddedTargets(
   graph: ResolvedStyleGraph,
   files: ProjectFiles,
@@ -138,25 +119,10 @@ function embeddedTargets(
     const source = sourceFor(edge.target, files);
     if (source === undefined) continue;
     for (const [specifier, content] of entries) {
-      if (source === content) embedded.set(edge.target, tailwindSpecifier(specifier));
+      if (source === content && isTailwindStylesheetSpecifier(specifier)) embedded.set(edge.target, specifier);
     }
   }
   return embedded;
-}
-
-function tailwindSpecifier(value: string): keyof TailwindStylesheets {
-  if (
-    value === "tailwindcss" ||
-    value === "tailwindcss/preflight" ||
-    value === "tailwindcss/theme" ||
-    value === "tailwindcss/utilities"
-  ) return value;
-  throw new Error(`[pletivo-workers] unknown embedded Tailwind stylesheet ${JSON.stringify(value)}`);
-}
-
-function sourceFor(moduleId: ModuleId, files: ProjectFiles): string | undefined {
-  if (moduleId.startsWith("project:")) return files.get(moduleId.slice("project:".length));
-  return files.get(moduleId);
 }
 
 function emitStylesheets(
@@ -180,7 +146,7 @@ function labelFor(
   return file.startsWith(rootPrefix) ? file.slice(rootPrefix.length) : file;
 }
 
-function findTailwindEntry(sources: readonly StylesheetSource[]): StylesheetSource | null {
+export function findTailwindEntry(sources: readonly StylesheetSource[]): StylesheetSource | null {
   const ranked = [...sources].sort((left, right) => {
     const leftRank = PREFERRED_ENTRIES.indexOf(basename(left.moduleId));
     const rightRank = PREFERRED_ENTRIES.indexOf(basename(right.moduleId));
@@ -190,20 +156,6 @@ function findTailwindEntry(sources: readonly StylesheetSource[]): StylesheetSour
     return left.moduleId < right.moduleId ? -1 : left.moduleId > right.moduleId ? 1 : 0;
   });
   return ranked.find((source) => IMPORTS_TAILWIND.test(source.content)) ?? null;
-}
-
-export function tailwindEntry(options: {
-  files: ProjectFiles;
-  srcDir: string;
-}): string | null {
-  const prefix = withSlash(options.srcDir);
-  const sources: StylesheetSource[] = [];
-  for (const file of options.files.keys()) {
-    if (!file.startsWith(prefix) || !isCollectableCss(file)) continue;
-    const content = options.files.get(file);
-    if (content !== undefined) sources.push({ moduleId: file, content });
-  }
-  return findTailwindEntry(sources)?.moduleId ?? null;
 }
 
 function withSlash(directory: string): string {

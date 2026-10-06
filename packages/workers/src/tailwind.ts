@@ -59,12 +59,12 @@ export interface CompileTailwindOptions {
   /** Where `@import` resolves. */
   files: ProjectFiles;
   stylesheets: TailwindStylesheets;
-  /** What to build: the rendered page's candidates, or `scanCandidates` for the whole project. */
+  /** The utilities to build: the rendered page's candidates. */
   candidates: readonly string[];
   /** Canonical CSS targets, in source import order for each logical importer. */
-  styleTargets?: ReadonlyMap<ModuleId, readonly ModuleId[]>;
+  styleTargets: ReadonlyMap<ModuleId, readonly ModuleId[]>;
   /** Canonical target identities for the four host-embedded Tailwind stylesheets. */
-  embeddedTargets?: ReadonlyMap<ModuleId, keyof TailwindStylesheets>;
+  embeddedTargets: ReadonlyMap<ModuleId, keyof TailwindStylesheets>;
 }
 
 export interface TailwindCompilation {
@@ -72,9 +72,6 @@ export interface TailwindCompilation {
   /** Entry and project/artifact stylesheets compiled through its @import closure. */
   consumedStylesheets: readonly ModuleId[];
 }
-
-/** Extensions that only ever hold CSS, never class names. */
-const NOT_SCANNED = [".css"];
 
 async function loadTailwind(): Promise<TailwindModule> {
   const module: unknown = await import("tailwindcss");
@@ -135,7 +132,7 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
     base: entry,
     from: entry,
     async loadStylesheet(id, base) {
-      const targets = options.styleTargets?.get(base);
+      const targets = options.styleTargets.get(base);
       let resolved: ModuleId;
       if (targets) {
         const cursor = targetCursors.get(base) ?? 0;
@@ -149,10 +146,10 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
         targetCursors.set(base, cursor + 1);
         resolved = target;
       } else {
-        // Only the standalone parity harness reaches this; page assembly supplies targets.
+        // An importer with no recorded edges, e.g. one Tailwind reaches through `@reference`.
         resolved = id.startsWith(".") ? join(dirname(base), id) : id;
       }
-      const embedded = options.embeddedTargets?.get(resolved);
+      const embedded = options.embeddedTargets.get(resolved);
       if (embedded !== undefined) {
         if (!isTailwindStylesheetSpecifier(id) || embedded !== id) {
           throw new Error(
@@ -164,13 +161,10 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
         return { path: resolved, base: resolved, content: stylesheets[embedded] };
       }
       if (isTailwindStylesheetSpecifier(id)) {
-        if (options.styleTargets) {
-          throw new Error(
-            `[pletivo-workers] canonical CSS target ${JSON.stringify(resolved)} is not registered ` +
-              `for embedded stylesheet ${JSON.stringify(id)}`,
-          );
-        }
-        return { path: `virtual:${id}`, base, content: stylesheets[id] };
+        throw new Error(
+          `[pletivo-workers] canonical CSS target ${JSON.stringify(resolved)} is not registered ` +
+            `for embedded stylesheet ${JSON.stringify(id)}`,
+        );
       }
       if (isProjectCssModule(resolved)) {
         throw new Error(
@@ -197,7 +191,7 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
   });
 
   for (const importer of consumed) {
-    const targets = options.styleTargets?.get(importer);
+    const targets = options.styleTargets.get(importer);
     if (targets === undefined) continue;
     const consumedCount = targetCursors.get(importer) ?? 0;
     if (consumedCount !== targets.length) {
@@ -220,19 +214,10 @@ function isProjectCssModule(moduleId: ModuleId): boolean {
   return moduleId.startsWith("project:") && moduleId.endsWith(".module.css");
 }
 
-function sourceFor(moduleId: ModuleId, files: ProjectFiles): string | undefined {
+/** A ModuleId's text: a project module by its path, anything else by its id. */
+export function sourceFor(moduleId: ModuleId, files: ProjectFiles): string | undefined {
   if (moduleId.startsWith("project:")) return files.get(moduleId.slice("project:".length));
   return files.get(moduleId);
-}
-
-/** Every candidate in the project, from the virtual file map rather than a filesystem walk. */
-export function scanCandidates(files: ReadonlyMap<string, string>): string[] {
-  const all = new Set<string>();
-  for (const [file, content] of files) {
-    if (NOT_SCANNED.some((extension) => file.endsWith(extension))) continue;
-    for (const candidate of extractCandidates(content)) all.add(candidate);
-  }
-  return [...all].sort();
 }
 
 // Modelled on oxide's boundary rules (crates/oxide/src/extractor/boundary.rs); parity in

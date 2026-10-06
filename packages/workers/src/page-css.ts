@@ -55,12 +55,7 @@ function orderContributors(
 
 /** Executable modules reachable from `entry`, in depth-first post-order. */
 export function moduleOrder(entry: ModuleId, graph: ResolvedStyleGraph): ModuleId[] {
-  const imports = new Map<ModuleId, ModuleId[]>();
-  for (const edge of graph.executionEdges) {
-    const targets = imports.get(edge.importer);
-    if (targets) targets.push(edge.target);
-    else imports.set(edge.importer, [edge.target]);
-  }
+  const imports = adjacency(graph.executionEdges);
   const order: ModuleId[] = [];
   const seen = new Set<ModuleId>();
   const visit = (moduleId: ModuleId): void => {
@@ -71,6 +66,19 @@ export function moduleOrder(entry: ModuleId, graph: ResolvedStyleGraph): ModuleI
   };
   visit(entry);
   return order;
+}
+
+/** Importer -> its targets, in edge order. */
+export function adjacency(
+  edges: readonly { importer: ModuleId; target: ModuleId }[],
+): Map<ModuleId, ModuleId[]> {
+  const byImporter = new Map<ModuleId, ModuleId[]>();
+  for (const edge of edges) {
+    const targets = byImporter.get(edge.importer);
+    if (targets) targets.push(edge.target);
+    else byImporter.set(edge.importer, [edge.target]);
+  }
+  return byImporter;
 }
 
 export function extractAstroClasses(html: string): Set<string> {
