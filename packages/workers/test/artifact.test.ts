@@ -11,10 +11,10 @@ import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { createCompileCache } from "../src/compile-cache.ts";
 import { compileProject, UnsupportedFileError } from "../src/compile-project.ts";
 import {
+  loadProjectArtifact,
   ModuleIdentityCollisionError,
   UnsupportedArtifactExternalError,
 } from "../src/artifact.ts";
-import { loadProjectArtifact } from "../src/project-artifact.ts";
 import { finalizeHtml, pageCss } from "../src/page-css.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { codeOf, hasModule, importsOf, nameOf, stylesheetsOf, stylesOf } from "./compiled.ts";

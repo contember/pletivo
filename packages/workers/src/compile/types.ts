@@ -2,7 +2,7 @@ import type { AstroCompiler } from "../astro-compiler.ts";
 import type { ProjectAssetsView } from "../asset-port.ts";
 import type { CompileCache } from "../compile-cache.ts";
 import type { ExecutableProgram, ResolvedStyleGraph } from "../compiled-program.ts";
-import type { ProjectArtifact } from "../project-artifact.ts";
+import type { ProjectArtifact } from "../artifact.ts";
 import type { ProjectFiles } from "../project-store.ts";
 import type { TailwindStylesheets } from "../tailwind.ts";
 

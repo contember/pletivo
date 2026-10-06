@@ -124,7 +124,7 @@ class ScanBarrier implements ContentBinding {
     return source;
   }
 
-  image(ref: string, path: string): ImageInfo | null | Promise<ImageInfo | null> {
+  image(ref: string, path: string): ImageInfo | null {
     return this.inner.image(ref, path);
   }
 }

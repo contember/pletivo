@@ -65,15 +65,6 @@ export interface ContentHandle {
   failure(): unknown;
 }
 
-/** Where the bytes come from, for the length of one render. */
-export interface ContentStore {
-  /** `files` is the project's text; `assets` is its binaries (images). */
-  open(
-    files: ProjectFiles,
-    assets?: ProjectAssets | ProjectAssetsView,
-  ): ContentHandle;
-}
-
 /**
  * Serves content out of a virtual file map — the host half of the binding.
  *
@@ -93,7 +84,7 @@ export interface ContentStore {
  * `ctx.exports.PletivoContent({})` takes an options object; called bare it throws,
  * and passed uncalled it is not serializable into a dynamic Worker's `env`.
  */
-export class ContentFiles implements ContentBinding, ContentStore {
+export class ContentFiles implements ContentBinding {
   readonly #open = new Map<string, OpenProject>();
   #next = 0;
 
@@ -102,6 +93,7 @@ export class ContentFiles implements ContentBinding, ContentStore {
     return this.#open.size;
   }
 
+  /** A handle on one render's sources: `files` is its text, `assets` its binaries (images). */
   open(
     files: ProjectFiles,
     assets?: ProjectAssets | ProjectAssetsView,
@@ -132,15 +124,10 @@ export class ContentFiles implements ContentBinding, ContentStore {
     return recording(project, () => project.files.get(path) ?? null);
   }
 
-  image(ref: string, path: string): ImageInfo | null | Promise<ImageInfo | null> {
+  image(ref: string, path: string): ImageInfo | null {
     // `#project` first: an asset map may be absent, a finished render's ref may not.
     const project = this.#project(ref);
-    const info = recording(project, () => project.assets?.info(path) ?? null);
-    if (!(info instanceof Promise)) return info;
-    return info.catch((error: unknown) => {
-      project.failure ??= { error };
-      throw error;
-    });
+    return recording(project, () => project.assets?.info(path) ?? null);
   }
 
   #project(ref: string): OpenProject {

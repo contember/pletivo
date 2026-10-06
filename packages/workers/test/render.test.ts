@@ -12,7 +12,7 @@ import {
   typescriptSuspects,
   type WorkerLoaderBinding,
 } from "../src/render.ts";
-import { loadProjectArtifact } from "../src/project-artifact.ts";
+import { loadProjectArtifact } from "../src/artifact.ts";
 import { IsolateProtocolError } from "../src/isolate-protocol.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";

@@ -1,9 +1,11 @@
-import type {
-  ArtifactModule,
-  ArtifactResolutionTarget,
-  ModuleId,
-  PreparedSite,
+import {
+  parsePreparedSite,
+  type ArtifactModule,
+  type ArtifactResolutionTarget,
+  type ModuleId,
+  type PreparedSite,
 } from "@pletivo/core/artifact";
+import { HOST_ALIASES } from "./host-aliases.ts";
 import { normalizeProjectPath } from "./project-path.ts";
 
 export type { PreparedSite };
@@ -39,11 +41,20 @@ export interface ArtifactResolver {
   modules(): readonly ArtifactModule[];
 }
 
-/** Index a validated graph and bind it to the host externals it may use. */
-export function bindArtifactResolver(
-  prepared: PreparedSite,
-  supportedExternals: ReadonlySet<string>,
-): ArtifactResolver {
+/**
+ * A `pletivo prepare` artifact, validated and bound to this host once.
+ * Everything a render needs from it is derived here, not per render.
+ */
+export interface ProjectArtifact {
+  readonly prepared: PreparedSite;
+  readonly resolver: ArtifactResolver;
+  /** Artifact Loader names, used only to keep startup diagnostics source-aware. */
+  readonly moduleNames: ReadonlySet<string>;
+}
+
+/** Validate an untrusted artifact and bind it to the host externals it may use. */
+export function loadProjectArtifact(value: unknown): ProjectArtifact {
+  const prepared = parsePreparedSite(value);
   const modules = new Map<ModuleId, ArtifactModule>();
   for (const module of prepared.artifact.modules) {
     const reserved = RESERVED_ARTIFACT_PREFIXES.find((prefix) => module.id.startsWith(prefix));
@@ -58,10 +69,7 @@ export function bindArtifactResolver(
 
   const resolutions = new Map<ModuleId, Map<string, ArtifactResolutionTarget>>();
   for (const resolution of prepared.artifact.resolutions) {
-    if (
-      resolution.target.kind === "external" &&
-      !supportedExternals.has(resolution.target.specifier)
-    ) {
+    if (resolution.target.kind === "external" && !HOST_ALIASES.has(resolution.target.specifier)) {
       throw new UnsupportedArtifactExternalError(resolution.target.specifier);
     }
     let bySpecifier = resolutions.get(resolution.importer);
@@ -73,11 +81,22 @@ export function bindArtifactResolver(
   }
 
   return {
-    module: (id) => modules.get(id) ?? null,
-    resolve: (importer, specifier) => resolutions.get(importer)?.get(specifier) ?? null,
-    modules: () => prepared.artifact.modules,
+    prepared,
+    resolver: {
+      module: (id) => modules.get(id) ?? null,
+      resolve: (importer, specifier) => resolutions.get(importer)?.get(specifier) ?? null,
+      modules: () => prepared.artifact.modules,
+    },
+    moduleNames: new Set(prepared.artifact.modules.map((module) => executionNameForModuleId(module.id))),
   };
 }
+
+/** The resolver of a render with no artifact: every bare specifier is left to the Loader. */
+export const EMPTY_ARTIFACT_RESOLVER: ArtifactResolver = {
+  module: () => null,
+  resolve: () => null,
+  modules: () => [],
+};
 
 /** Project source identity used by both producer edges and the Worker compiler. */
 export function projectModuleId(path: string): ModuleId {

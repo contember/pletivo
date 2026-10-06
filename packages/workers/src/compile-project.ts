@@ -11,7 +11,7 @@ import { linkModule, linkStylesheet } from "./compile/link.ts";
 import { ImportResolver } from "./compile/resolve.ts";
 import type { CompiledProject, CompileProjectOptions } from "./compile/types.ts";
 import { CompileWalk } from "./compile/walk-state.ts";
-import { EMPTY_ARTIFACT_RESOLVER } from "./project-artifact.ts";
+import { EMPTY_ARTIFACT_RESOLVER } from "./artifact.ts";
 
 export { isExecutableModule } from "./compile/module-kind.ts";
 export { UnsupportedFileError } from "./compile/source-module.ts";

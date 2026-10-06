@@ -22,7 +22,7 @@ import {
   digestArtifactInput,
   type ArtifactInput,
 } from "@pletivo/core/artifact";
-import { loadProjectArtifact, type ProjectArtifact } from "./project-artifact.ts";
+import { loadProjectArtifact, type ProjectArtifact } from "./artifact.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
 import {

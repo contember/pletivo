@@ -16,8 +16,7 @@ import {
   type RouteParams,
 } from "@pletivo/core/router";
 import { parseMarkdown } from "@pletivo/core/content/markdown";
-import { projectModuleId } from "./artifact.ts";
-import type { ProjectArtifact } from "./project-artifact.ts";
+import { projectModuleId, type ProjectArtifact } from "./artifact.ts";
 import type { ProjectFiles } from "./project-store.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
@@ -26,7 +25,7 @@ import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
 import type { ProjectAssetsView } from "./asset-port.ts";
-import type { ContentBinding, ContentHandle, ContentStore } from "./content-files.ts";
+import type { ContentBinding, ContentFiles, ContentHandle } from "./content-files.ts";
 import {
   assertEnvFits,
   envModules,
@@ -109,7 +108,7 @@ export interface ContentAccess {
   /** The loopback stub the isolate calls, e.g. `ctx.exports.PletivoContent({})`. */
   binding: ContentBinding;
   /** Where the bytes come from. A handle is opened per render and closed after it. */
-  store: ContentStore;
+  store: ContentFiles;
 }
 
 /** What every entrypoint here needs: the project, and somewhere to run it. */

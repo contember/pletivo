@@ -5,11 +5,7 @@
  */
 
 import type { ProjectAssetsView } from "./asset-port.ts";
-import {
-  createProjectAssetsView,
-  projectAssetsView,
-  type ProjectAssets,
-} from "./content-files.ts";
+import { projectAssetsView, type ProjectAssets } from "./content-files.ts";
 
 /** Project sources as one revision sees them. A `ReadonlyMap<string, string>` satisfies it. */
 export interface ProjectFiles {
@@ -66,19 +62,10 @@ export function createMapProjectStore(
   revision = "static",
 ): ProjectStore {
   const snapshotFiles = new Map(files);
-  const snapshotAssets = isAssetMap(assets)
-    ? createProjectAssetsView(assets)
-    : projectAssetsView(assets);
   const snapshot: ProjectSnapshot = {
     files: snapshotFiles,
-    assets: snapshotAssets,
+    assets: projectAssetsView(assets),
     revision,
   };
   return { snapshot: () => Promise.resolve(snapshot) };
-}
-
-function isAssetMap(
-  assets: ProjectAssets | ProjectAssetsView,
-): assets is ProjectAssets {
-  return !("info" in assets && "resolveOutput" in assets);
 }

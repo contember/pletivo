@@ -150,30 +150,6 @@ describe("compileProject, demand-driven assets", () => {
     return { info, resolveOutput: () => null };
   }
 
-  test("awaits an asynchronous asset view", async () => {
-    const started = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const assets = view(async (source) => {
-      expect(source).toBe("src/assets/logo.png");
-      started.resolve();
-      await release.promise;
-      return imageInfo;
-    });
-    const building = compileProject({
-      files: new Map([
-        ["src/pages/index.ts", 'import logo from "../assets/logo.png"; export default logo;\n'],
-      ]),
-      entries: ["src/pages/index.ts"],
-      assets,
-      compiler,
-    });
-
-    await started.promise;
-    release.resolve();
-    const built = await building;
-    expect(moduleCode(built, "generated:image:project:src/assets/logo.png")).toContain('src":"/_astro/logo.1234abcd.png"');
-  });
-
   test("does not probe an image imported only by an unreached module", async () => {
     const probed: string[] = [];
     const assets = view((source) => {
@@ -195,7 +171,7 @@ describe("compileProject, demand-driven assets", () => {
 
   test("probes one canonical image source once across importers", async () => {
     const probed: string[] = [];
-    const assets = view(async (source) => {
+    const assets = view((source) => {
       probed.push(source);
       return imageInfo;
     });

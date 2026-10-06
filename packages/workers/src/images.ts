@@ -17,7 +17,7 @@ const CDN_CGI_PREFIX = "/cdn-cgi/image/";
 export function serveImage(
   pathname: string,
   assets: ProjectAssets | ProjectAssetsView,
-): ServedImage | null | Promise<ServedImage | null> {
+): ServedImage | null {
   return projectAssetsView(assets).resolveOutput(pathname);
 }
 

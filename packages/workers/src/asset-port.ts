@@ -17,6 +17,6 @@ export interface ServedProjectAsset {
 
 /** Demand-driven project asset access owned by the outer host. */
 export interface ProjectAssetsView {
-  info(source: string): ProjectAssetInfo | null | Promise<ProjectAssetInfo | null>;
-  resolveOutput(pathname: string): ServedProjectAsset | null | Promise<ServedProjectAsset | null>;
+  info(source: string): ProjectAssetInfo | null;
+  resolveOutput(pathname: string): ServedProjectAsset | null;
 }

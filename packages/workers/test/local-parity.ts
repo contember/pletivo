@@ -13,7 +13,7 @@ import path from "node:path";
 import { Glob } from "bun";
 import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
 import { minifyCss } from "../../pletivo/src/css-minify.ts";
-import { loadProjectArtifact } from "../src/project-artifact.ts";
+import { loadProjectArtifact } from "../src/artifact.ts";
 import { serveImage } from "../src/images.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles, createProjectAssetsView } from "../src/content-files.ts";
