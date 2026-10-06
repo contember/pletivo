@@ -21,6 +21,7 @@ import { compileProject, type CompiledProject } from "../src/compile-project.ts"
 import { createProjectAssetsView } from "../src/content-files.ts";
 import { IMPORT_META_ENV_GLOBAL } from "../src/env.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
+import { codeOf, importsOf, stylesheetsOf, stylesOf } from "./compiled.ts";
 
 const compiler = createAstroCompiler(await astroWasmModule());
 
@@ -183,8 +184,8 @@ describe("a warm cache", () => {
     const b = await compileProject({ ...options, entries: ["src/pages/b.astro"] });
 
     expect(counting.transformed).toEqual(["src/pages/a.astro", "src/pages/b.astro"]);
-    expect(a.styles.get("src/pages/a.astro")?.scope).not.toBe(
-      b.styles.get("src/pages/b.astro")?.scope,
+    expect(stylesOf(a, "src/pages/a.astro")?.scope).not.toBe(
+      stylesOf(b, "src/pages/b.astro")?.scope,
     );
   });
 
@@ -230,8 +231,8 @@ describe("what a cache entry has to carry", () => {
     const { warm } = await twice();
     // Missed on a hit, the page would throw at frontmatter with the substitution still
     // in the module and nothing answering it.
-    expect(warm.importMetaEnv).toBe(true);
-    expect(warm.modules[warm.moduleNames.get(PAGE) ?? ""]).toContain(
+    expect(warm.program.requirements.importMetaEnv).toBe(true);
+    expect(codeOf(warm, PAGE)).toContain(
       `globalThis.${IMPORT_META_ENV_GLOBAL}`,
     );
   });
@@ -240,30 +241,30 @@ describe("what a cache entry has to carry", () => {
     const { warm } = await twice();
     // A dropped name is `SyntaxError: does not provide an export named 'API_TOKEN'`,
     // and the isolate refuses to start.
-    expect(warm.env).toEqual({ client: null, server: ["API_TOKEN"] });
+    expect(warm.program.requirements.env).toEqual({ client: null, server: ["API_TOKEN"] });
   });
 
   test("the <style> blocks survive, scope included", async () => {
     const { cold, warm } = await twice();
-    const scope = warm.styles.get(PAGE)?.scope;
+    const scope = stylesOf(warm, PAGE)?.scope;
 
-    expect(warm.styles.get(PAGE)?.blocks).toEqual([
+    expect(stylesOf(warm, PAGE)?.blocks).toEqual([
       { global: false, css: `a:where(.astro-${scope}){color:rebeccapurple}` },
       { global: true, css: "body { margin: 0; }" },
     ]);
-    expect(warm.styles.get("src/components/Layout.astro")).toEqual(
-      cold.styles.get("src/components/Layout.astro"),
+    expect(stylesOf(warm, "src/components/Layout.astro")).toEqual(
+      stylesOf(cold, "src/components/Layout.astro"),
     );
     // The scope the HTML carries and the scope the CSS was written for are one value.
-    expect(warm.modules[warm.moduleNames.get(PAGE) ?? ""]).toContain(`astro-${scope}`);
+    expect(codeOf(warm, PAGE)).toContain(`astro-${scope}`);
   });
 
   test("a .css file still contributes a stylesheet edge and no import edge", async () => {
     const { warm } = await twice();
-    expect(warm.cssImports.get(PAGE)).toEqual(["src/styles/site.css"]);
-    expect(warm.imports.get(PAGE)).not.toContain("src/styles/site.css");
+    expect(stylesheetsOf(warm, PAGE)).toEqual(["src/styles/site.css"]);
+    expect(importsOf(warm, PAGE)).not.toContain("src/styles/site.css");
     // CSS owns an explicit empty execution list; its own @imports, if any, are style edges.
-    expect(warm.imports.get("src/styles/site.css")).toEqual([]);
+    expect(importsOf(warm, "src/styles/site.css")).toEqual([]);
   });
 
   test("a .js file keeps its edges and its substituted code together", async () => {
@@ -279,11 +280,11 @@ describe("what a cache entry has to carry", () => {
     const cold = await build(files, cache);
     const warm = await build(files, cache);
 
-    expect(warm.cssImports.get("src/lib/name.js")).toEqual(["src/styles/site.css"]);
-    expect(warm.modules[warm.moduleNames.get("src/lib/name.js") ?? ""]).toBe(
-      cold.modules[cold.moduleNames.get("src/lib/name.js") ?? ""],
+    expect(stylesheetsOf(warm, "src/lib/name.js")).toEqual(["src/styles/site.css"]);
+    expect(codeOf(warm, "src/lib/name.js")).toBe(
+      codeOf(cold, "src/lib/name.js"),
     );
-    expect(warm.importMetaEnv).toBe(true);
+    expect(warm.program.requirements.importMetaEnv).toBe(true);
   });
 
   test("the effects that ride on resolve are free", async () => {
@@ -291,15 +292,15 @@ describe("what a cache entry has to carry", () => {
     // everything `resolve` does happens again without being stored.
     const { cold, warm } = await twice();
 
-    expect(warm.content).toEqual({ configModule: cold.content?.configModule ?? null });
-    expect(warm.content?.configModule).toBeString();
-    expect(warm.images).toBe(true);
+    expect(warm.program.requirements.content).toEqual(cold.program.requirements.content);
+    expect(warm.program.requirements.content?.configExecutionName).toBeString();
+    expect(warm.program.requirements.images).toBe(true);
     expect(warm.urlAssets).toEqual(cold.urlAssets);
     expect([...warm.urlAssets.keys()]).toEqual([expect.stringMatching(/^\/_astro\/form\./)]);
     // The image metadata module is written inside `resolve` and carried by nothing.
-    const logo = warm.moduleNames.get("src/assets/logo.png") ?? "";
-    expect(warm.modules[logo]).toBe(cold.modules[logo]);
-    expect(warm.modules[logo]).toContain(`"width":4`);
+    const logo = "generated:image:project:src/assets/logo.png";
+    expect(codeOf(warm, logo)).toBe(codeOf(cold, logo));
+    expect(codeOf(warm, logo)).toContain(`"width":4`);
   });
 
   test("refreshes image metadata without recompiling a warm importer", async () => {
@@ -322,8 +323,8 @@ describe("what a cache entry has to carry", () => {
     const cold = await compileProject({ ...options, assets: firstAssets });
     counting.transformed.length = 0;
     const warm = await compileProject({ ...options, assets: secondAssets });
-    const coldLogo = cold.modules[cold.moduleNames.get("src/assets/logo.png") ?? ""];
-    const warmLogo = warm.modules[warm.moduleNames.get("src/assets/logo.png") ?? ""];
+    const coldLogo = codeOf(cold, "generated:image:project:src/assets/logo.png");
+    const warmLogo = codeOf(warm, "generated:image:project:src/assets/logo.png");
 
     expect(counting.transformed).toEqual([]);
     expect(coldLogo).toContain('/_astro/logo.11111111.png');

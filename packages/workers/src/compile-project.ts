@@ -4,6 +4,7 @@
  */
 
 import { normalizeProjectPath } from "./artifact.ts";
+import type { ExecutableEntry } from "./compiled-program.ts";
 import { bundled, compileCached } from "./compile/compile-file.ts";
 import { emitProject } from "./compile/emit.ts";
 import { linkModule, linkStylesheet } from "./compile/link.ts";
@@ -12,18 +13,9 @@ import type { CompiledProject, CompileProjectOptions } from "./compile/types.ts"
 import { CompileWalk } from "./compile/walk-state.ts";
 import { EMPTY_ARTIFACT_RESOLVER } from "./project-artifact.ts";
 
-export { classifyStyles } from "./compile/compile-file.ts";
 export { isExecutableModule } from "./compile/module-kind.ts";
-export { importQuery, isContentApi } from "./compile/resolve.ts";
-export { resolveInFiles } from "./compile/resolve-in-files.ts";
 export { UnsupportedFileError } from "./compile/source-module.ts";
-export type {
-  AstroStyles,
-  CompiledProject,
-  CompileProjectOptions,
-  ProjectContent,
-  StyleBlock,
-} from "./compile/types.ts";
+export type { CompiledProject, CompileProjectOptions } from "./compile/types.ts";
 
 /**
  * Compile what `entries` reaches, or every module-shaped file when it names none.
@@ -42,9 +34,10 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
 
   // Materialised before the walk: the project gains `astro:assets` sources during it.
   const seeds = (options.entries ?? walk.projectPaths()).map(normalizeProjectPath);
-  const entries: string[] = [];
+  const entries: ExecutableEntry[] = [];
   for (const seed of seeds) {
-    if (walk.projectModule(seed) !== null) entries.push(seed);
+    const module = walk.projectModule(seed);
+    if (module !== null) entries.push({ moduleId: module.id, executionName: module.executionName });
   }
 
   // Linking one file claims the files it imports, which appends them to this walk.

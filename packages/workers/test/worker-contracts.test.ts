@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { ExecutableProgram, ResolvedStyleGraph } from "../src/compiled-program.ts";
 import {
   ExecutionIdentityError,
   isolateKey,
@@ -18,7 +17,6 @@ import {
   type IsolateRenderedResponse,
   type IsolateUnresolvedResponse,
 } from "../src/isolate-protocol.ts";
-import type { ResolvedModuleGraph } from "../src/module-graph.ts";
 
 function renderEnvelope(overrides: Record<string, unknown> = {}): object {
   return {
@@ -461,46 +459,5 @@ describe("isolate protocol", () => {
         IsolateProtocolError,
       );
     }
-  });
-});
-
-describe("compiler DTO boundaries", () => {
-  test("keeps logical, compilation, and execution identities separate", () => {
-    const graph: ResolvedModuleGraph = {
-      modules: [
-        {
-          identity: {
-            id: "artifact:widget/component.astro",
-            compilePath: "node_modules/widget/component.astro",
-            executionName: "artifact.widget.component.js",
-          },
-          kind: "astro",
-          source: "<p>widget</p>",
-        },
-      ],
-      edges: [],
-    };
-    const program: ExecutableProgram = {
-      mainModule: "pletivo-entry.js",
-      modules: { "artifact.widget.component.js": "export default function () {}" },
-      entries: [
-        {
-          moduleId: "artifact:widget/component.astro",
-          executionName: "artifact.widget.component.js",
-        },
-      ],
-      requirements: { content: null, images: false, importMetaEnv: false, env: null },
-    };
-    const styles: ResolvedStyleGraph = {
-      modules: ["artifact:widget/component.astro"],
-      executionEdges: [],
-      styleEdges: [],
-      styles: [],
-    };
-
-    expect(graph.modules[0]?.identity.id).toBe("artifact:widget/component.astro");
-    expect(graph.modules[0]?.identity.compilePath).toBe("node_modules/widget/component.astro");
-    expect(graph.modules[0]?.identity.executionName).toBe("artifact.widget.component.js");
-    expect(program.entries[0]?.moduleId).toBe(styles.modules[0]);
   });
 });

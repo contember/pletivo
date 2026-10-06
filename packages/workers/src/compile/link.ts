@@ -18,42 +18,24 @@ export async function linkModule(
   module: SourceModule,
   entry: CompiledFile,
 ): Promise<void> {
-  const { legacyKey, executionName } = module;
   if (entry.importMetaEnv) walk.usesImportMetaEnv = true;
-  if (entry.styles !== null) walk.styles.set(legacyKey, entry.styles);
+  if (entry.styles !== null) walk.styles.set(module.id, entry.styles);
   const bySpecifier = new Map<string, ResolutionUse>();
-  const executionTargets: string[] = [];
-  const styleTargets: string[] = [];
-  const seenExecution = new Set<string>();
-  const seenStyles = new Set<string>();
   for (const specifier of entry.specifiers) {
     let use = bySpecifier.get(specifier);
     if (use === undefined) {
       use = await resolver.resolve(module, specifier);
       bySpecifier.set(specifier, use);
-      walk.graphEdges.push(use.edge);
+      if (use.kind === "module") walk.addEdge(module, use.module);
     }
-    if (use.edge.target.kind === "external") {
-      const alias = HOST_ALIASES.get(use.edge.target.specifier);
-      if (alias?.kind === "env") {
-        walk.useEnv(use.edge.target.specifier, entry.envNames?.get(specifier) ?? []);
-      }
-    }
-    if (use.targetLegacyKey === null) continue;
-    if (use.edge.kind === "style") {
-      if (!seenStyles.has(use.targetLegacyKey)) styleTargets.push(use.targetLegacyKey);
-      seenStyles.add(use.targetLegacyKey);
-    } else {
-      if (!seenExecution.has(use.targetLegacyKey)) executionTargets.push(use.targetLegacyKey);
-      seenExecution.add(use.targetLegacyKey);
+    if (use.kind === "external" && HOST_ALIASES.get(use.specifier)?.kind === "env") {
+      walk.useEnv(use.specifier, entry.envNames?.get(specifier) ?? []);
     }
   }
-  walk.imports.set(legacyKey, executionTargets);
-  walk.cssImports.set(legacyKey, styleTargets);
   const compiledCode = module.kind === "astro"
     ? replaceAstroTrackingId(entry.code ?? entry.source, module.compilePath, module.id)
     : (entry.code ?? entry.source);
-  walk.modules[executionName] = rewriteImports(compiledCode, {
+  walk.modules[module.executionName] = rewriteImports(compiledCode, {
     importer: module.compilePath,
     resolve(_resolved, specifier) {
       const use = bySpecifier.get(specifier);
@@ -71,19 +53,13 @@ export async function linkStylesheet(
   resolver: ImportResolver,
   module: SourceModule,
 ): Promise<void> {
-  const targets: string[] = [];
-  const seen = new Set<string>();
   for (const specifier of collectCssSpecifiers(module.source)) {
     const use = await resolver.resolve(module, specifier);
-    walk.graphEdges.push(use.edge);
-    if (use.edge.kind !== "style" || use.targetLegacyKey === null) {
+    if (use.kind !== "module" || use.module.kind !== "css") {
       throw unresolvedImport(module, specifier, "CSS @import must resolve to a CSS module");
     }
-    if (!seen.has(use.targetLegacyKey)) targets.push(use.targetLegacyKey);
-    seen.add(use.targetLegacyKey);
+    walk.addEdge(module, use.module);
   }
-  walk.imports.set(module.legacyKey, []);
-  walk.cssImports.set(module.legacyKey, targets);
   walk.modules[module.executionName] = "export {};\n";
 }
 

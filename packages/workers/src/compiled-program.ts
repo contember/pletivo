@@ -1,4 +1,5 @@
 import type { ModuleId } from "@pletivo/core/artifact";
+import type { ProjectEnvUse } from "./env.ts";
 
 export interface ExecutableEntry {
   moduleId: ModuleId;
@@ -10,18 +11,13 @@ export interface ProgramContentRequirement {
   configExecutionName: string | null;
 }
 
-export interface ProgramEnvRequirement {
-  /** Null means the corresponding `astro:env` module is not reached. */
-  client: string[] | null;
-  server: string[] | null;
-}
-
 /** Features the generated isolate entry must install. */
 export interface ExecutableRequirements {
   content: ProgramContentRequirement | null;
   images: boolean;
   importMetaEnv: boolean;
-  env: ProgramEnvRequirement | null;
+  /** Set when the project imports `astro:env`; values never enter the module map. See `env.ts`. */
+  env: ProjectEnvUse | null;
 }
 
 /** Loader-ready output; sources and CSS graph stay outside it. */

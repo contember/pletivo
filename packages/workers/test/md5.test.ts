@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { md5Hex } from "../src/md5.ts";
+import { md5Hex } from "@pletivo/core/md5";
 
 /** The digest the Bun host names the stylesheet from. */
 function bunMd5(text: string): string {

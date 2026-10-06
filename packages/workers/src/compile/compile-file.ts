@@ -89,10 +89,10 @@ async function compileFile(module: SourceModule, compiler: AstroCompiler): Promi
  * Read off the source, not the compiled CSS: a scoped block of only `body`/`html`/`:root`
  * rules compiles unscoped yet is not global.
  */
-export async function classifyStyles(
+async function classifyStyles(
   css: string[],
   source: string,
-  compiler: AstroCompiler = bundled,
+  compiler: AstroCompiler,
 ): Promise<StyleBlock[]> {
   const { ast } = await compiler.parse(source);
   const blocks: StyleBlock[] = [];

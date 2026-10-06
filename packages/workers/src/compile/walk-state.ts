@@ -1,24 +1,15 @@
 import type { ModuleId } from "@pletivo/core/artifact";
-import {
-  executionNameForModuleId,
-  ModuleIdentityCollisionError,
-  projectModuleId,
-  type ArtifactResolver,
-} from "../artifact.ts";
+import { executionNameForModuleId, projectModuleId, type ArtifactResolver } from "../artifact.ts";
 import { ASSETS_SOURCES } from "../astro-assets.ts";
+import type { OrderedExecutionEdge, OrderedStyleEdge, ProgramContentRequirement } from "../compiled-program.ts";
 import { ENV_MODULES } from "../env.ts";
 import { RUNTIME_MODULES } from "../generated/runtime-modules.ts";
-import type { ResolvedModule, ResolvedModuleEdge } from "../module-graph.ts";
 import type { ProjectFiles } from "../project-store.ts";
 import type { TailwindStylesheets } from "../tailwind.ts";
 import { projectModuleKind } from "./module-kind.ts";
 import { CompileSources, NormalizedProjectFiles } from "./project-files.ts";
 import { resolveInFiles } from "./resolve-in-files.ts";
-import {
-  UnsupportedFileError,
-  type ModuleDescriptor,
-  type SourceModule,
-} from "./source-module.ts";
+import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
 import type { AstroStyles } from "./types.ts";
 
 /** Content config paths relative to `srcDir`, in the Bun host's `initCollections` order. */
@@ -46,13 +37,19 @@ export class CompileWalk {
   /** URL path -> the file's text, for every `?url` import the project made. */
   readonly urlAssets = new Map<string, string>();
   readonly modules: Record<string, string> = { ...RUNTIME_MODULES };
-  readonly moduleNames = new Map<string, string>();
-  readonly styles = new Map<string, AstroStyles>();
-  readonly imports = new Map<string, string[]>();
-  readonly cssImports = new Map<string, string[]>();
-  readonly graphModules: ResolvedModule[] = [];
-  readonly graphEdges: ResolvedModuleEdge[] = [];
+  /** Every claimed module, in claim order. */
+  readonly moduleIds: ModuleId[] = [];
+  /** Module-to-module edges, one per distinct specifier of an importer, in source order. */
+  readonly executionEdges: OrderedExecutionEdge[] = [];
+  readonly styleEdges: OrderedStyleEdge[] = [];
+  readonly styles = new Map<ModuleId, AstroStyles>();
+  /** Names taken from `astro:env/client` and `astro:env/server`, across the whole walk. */
+  readonly envNames = new Map<string, Set<string>>(
+    [...ENV_MODULES.keys()].map((specifier) => [specifier, new Set<string>()]),
+  );
+  readonly usedEnv = new Set<string>();
   usesImportMetaEnv = false;
+  usesImages = false;
 
   readonly #projectFiles: NormalizedProjectFiles;
   readonly #artifact: ArtifactResolver;
@@ -61,15 +58,8 @@ export class CompileWalk {
   readonly #claimed = new Map<ModuleId, SourceModule>();
   /** Named and not yet compiled. Appended to *while* it is walked; see `pending`. */
   readonly #queue: SourceModule[] = [];
-  /** Names taken from `astro:env/client` and `astro:env/server`, across the whole walk. */
-  readonly #envNames = new Map<string, Set<string>>(
-    [...ENV_MODULES.keys()].map((specifier) => [specifier, new Set<string>()]),
-  );
-  readonly #usedEnv = new Set<string>();
-  #usesContent = false;
-  /** The content config, seeded the moment something reaches for the content API. */
-  #contentConfig: string | null = null;
-  #usesImages = false;
+  /** Set the moment something reaches for the content API, with the config it seeded. */
+  #content: ProgramContentRequirement | null = null;
 
   constructor(files: ProjectFiles, artifact: ArtifactResolver, srcDir: string | undefined) {
     this.#projectFiles = new NormalizedProjectFiles(files);
@@ -78,29 +68,8 @@ export class CompileWalk {
     this.sources = new CompileSources(this.#projectFiles, artifact);
   }
 
-  get usesContent(): boolean {
-    return this.#usesContent;
-  }
-
-  get contentConfig(): string | null {
-    return this.#contentConfig;
-  }
-
-  get usesImages(): boolean {
-    return this.#usesImages;
-  }
-
-  get usedEnv(): ReadonlySet<string> {
-    return this.#usedEnv;
-  }
-
-  get envNames(): ReadonlyMap<string, ReadonlySet<string>> {
-    return this.#envNames;
-  }
-
-  /** The legacy key a claimed module was named under, or `undefined` if it was never claimed. */
-  claimedLegacyKey(id: ModuleId): string | undefined {
-    return this.#claimed.get(id)?.legacyKey;
+  get content(): ProgramContentRequirement | null {
+    return this.#content;
   }
 
   /**
@@ -136,7 +105,6 @@ export class CompileWalk {
     if (source === undefined || kind === null) return null;
     return this.#claim({
       id: projectModuleId(file),
-      legacyKey: file,
       kind,
       source,
       compilePath: file,
@@ -151,7 +119,6 @@ export class CompileWalk {
     }
     return this.#claim({
       id: module.id,
-      legacyKey: module.id,
       kind: module.kind,
       source: module.source,
       compilePath: module.compilePath ?? module.id,
@@ -164,7 +131,6 @@ export class CompileWalk {
     this.sources.addGenerated(id, source);
     return this.#claim({
       id,
-      legacyKey: id,
       kind: "css",
       source,
       compilePath: id,
@@ -173,33 +139,12 @@ export class CompileWalk {
   }
 
   /** A module whose code is final when it is claimed, so it never joins the queue. */
-  generatedModule(id: ModuleId, legacyKey: string, code: string): SourceModule {
-    const known = this.#claimed.get(id);
-    const descriptor: ModuleDescriptor = {
-      id,
-      legacyKey,
-      kind: "js",
-      source: code,
-      compilePath: id,
-      origin: "generated",
-    };
-    if (known !== undefined) {
-      if (!sameDescriptor(descriptor, known)) {
-        throw new ModuleIdentityCollisionError(id, "the generated module descriptors differ");
-      }
-      this.moduleNames.set(legacyKey, known.executionName);
-      return known;
-    }
-    const executionName = this.#claimBundleName(id);
-    const module: SourceModule = { ...descriptor, executionName };
-    this.#claimed.set(id, module);
-    this.moduleNames.set(legacyKey, executionName);
-    this.modules[executionName] = code;
-    this.graphModules.push({
-      identity: { id, compilePath: id, executionName },
-      kind: "js",
-      source: code,
-    });
+  generatedModule(id: ModuleId, code: string): SourceModule {
+    const module = this.#claim(
+      { id, kind: "js", source: code, compilePath: id, origin: "generated" },
+      { queue: false },
+    );
+    this.modules[module.executionName] = code;
     return module;
   }
 
@@ -213,47 +158,37 @@ export class CompileWalk {
    * imports it, so a pruned walk would never reach it otherwise.
    */
   useContent(): void {
-    if (this.#usesContent) return;
-    this.#usesContent = true;
-    this.#contentConfig = this.#findContentConfig();
-    if (this.#contentConfig !== null) this.projectModule(this.#contentConfig);
-  }
-
-  markImagesUsed(): void {
-    this.#usesImages = true;
+    if (this.#content !== null) return;
+    const configFile = this.#findContentConfig();
+    const config = configFile === null ? null : this.projectModule(configFile);
+    this.#content = { configExecutionName: config?.executionName ?? null };
   }
 
   /** Record an `astro:env` module as used, with the names one importer takes from it. */
   useEnv(specifier: string, names: readonly string[]): void {
-    this.#usedEnv.add(specifier);
-    const into = this.#envNames.get(specifier);
+    this.usedEnv.add(specifier);
+    const into = this.envNames.get(specifier);
     if (into !== undefined) for (const name of names) into.add(name);
   }
 
+  /** A stylesheet target is a style edge; anything else an importer reaches executes. */
+  addEdge(importer: SourceModule, target: SourceModule): void {
+    const edge = { importer: importer.id, target: target.id };
+    if (target.kind === "css") this.styleEdges.push(edge);
+    else this.executionEdges.push(edge);
+  }
+
   /** Names without compiling, so an importer can reference a module not yet compiled. */
-  #claim(descriptor: ModuleDescriptor): SourceModule {
+  #claim(
+    descriptor: Omit<SourceModule, "executionName">,
+    { queue }: { queue: boolean } = { queue: true },
+  ): SourceModule {
     const known = this.#claimed.get(descriptor.id);
-    if (known !== undefined) {
-      if (!sameDescriptor(descriptor, known)) {
-        throw new ModuleIdentityCollisionError(descriptor.id, "the claimed module descriptors differ");
-      }
-      this.moduleNames.set(descriptor.legacyKey, known.executionName);
-      return known;
-    }
-    const executionName = this.#claimBundleName(descriptor.id);
-    const sourceModule: SourceModule = { ...descriptor, executionName };
+    if (known !== undefined) return known;
+    const sourceModule: SourceModule = { ...descriptor, executionName: this.#claimBundleName(descriptor.id) };
     this.#claimed.set(descriptor.id, sourceModule);
-    this.moduleNames.set(descriptor.legacyKey, executionName);
-    this.graphModules.push({
-      identity: {
-        id: descriptor.id,
-        compilePath: descriptor.compilePath,
-        executionName,
-      },
-      kind: descriptor.kind,
-      source: descriptor.source,
-    });
-    this.#queue.push(sourceModule);
+    this.moduleIds.push(descriptor.id);
+    if (queue) this.#queue.push(sourceModule);
     return sourceModule;
   }
 
@@ -294,11 +229,3 @@ export class CompileWalk {
   }
 }
 
-function sameDescriptor(left: ModuleDescriptor, right: SourceModule): boolean {
-  return (
-    left.kind === right.kind &&
-    left.source === right.source &&
-    left.compilePath === right.compilePath &&
-    left.origin === right.origin
-  );
-}

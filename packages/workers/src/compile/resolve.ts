@@ -1,10 +1,10 @@
 import { imageOutputPath } from "@pletivo/core/image";
+import { md5Hex } from "@pletivo/core/md5";
 import { projectModuleId, type ArtifactResolver } from "../artifact.ts";
 import type { ProjectAssetInfo, ProjectAssetsView } from "../asset-port.ts";
 import { ASSETS_DIR } from "../astro-assets.ts";
 import { CONTENT_MODULE_NAME, IMAGE_MODULE_NAME } from "../generated/runtime-modules.ts";
 import { HOST_ALIASES } from "../host-aliases.ts";
-import { md5Hex } from "../md5.ts";
 import { resolveSpecifier } from "../rewrite-imports.ts";
 import {
   isTailwindStylesheetSpecifier,
@@ -23,16 +23,11 @@ const UNSUPPORTED_PACKAGE_ROOTS = new Set(["pletivo", "@pletivo/runtime", "@plet
  */
 const PLETIVO_CONTENT_PATH = /(?:^|\/)pletivo\/src\/content\/(?:collection|index)(?:\.ts)?$/;
 
-/** Whether a resolved specifier is the content API. */
-export function isContentApi(resolved: string): boolean {
-  return HOST_ALIASES.get(resolved)?.kind === "content" || PLETIVO_CONTENT_PATH.test(resolved);
-}
-
 /**
  * Vite's import suffixes: `?raw` and `?inline` mean the file's text, as on the Bun
  * host; `?url` means the URL of the emitted file.
  */
-export function importQuery(resolved: string): { file: string; kind: "text" | "url" } | null {
+function importQuery(resolved: string): { file: string; kind: "text" | "url" } | null {
   const mark = resolved.indexOf("?");
   if (mark === -1) return null;
   const query = resolved.slice(mark + 1);
@@ -76,17 +71,13 @@ export class ImportResolver {
       if (frozen.kind === "external") {
         return this.#externalUse(importer, rawSpecifier, frozen.specifier);
       }
-      return moduleResolution(importer, rawSpecifier, this.#walk.artifactModule(frozen.id));
+      return moduleResolution(this.#walk.artifactModule(frozen.id));
     }
 
     if (importer.kind === "css" && isTailwindStylesheetSpecifier(rawSpecifier)) {
       const { tailwind } = this.#options;
       if (tailwind === undefined) throw new TailwindNotConfiguredError(importer.id);
-      return moduleResolution(
-        importer,
-        rawSpecifier,
-        this.#walk.hostStylesheet(rawSpecifier, tailwind[rawSpecifier]),
-      );
+      return moduleResolution(this.#walk.hostStylesheet(rawSpecifier, tailwind[rawSpecifier]));
     }
 
     if (UNSUPPORTED_PACKAGE_ROOTS.has(rawSpecifier)) {
@@ -104,7 +95,7 @@ export class ImportResolver {
     importer: SourceModule,
     rawSpecifier: string,
   ): Promise<ResolutionUse | null> {
-    const resolved = resolveSpecifier(importer.legacyKey, rawSpecifier);
+    const resolved = resolveSpecifier(importer.compilePath, rawSpecifier);
 
     const query = importQuery(resolved);
     if (query !== null) {
@@ -115,12 +106,9 @@ export class ImportResolver {
       }
       const value = query.kind === "text" ? source : urlAssetHref(target, source, this.#walk.urlAssets);
       const code = `export default ${JSON.stringify(value)};\n`;
-      const generated = this.#walk.generatedModule(
-        `generated:query:${projectModuleId(target)}:${query.kind}`,
-        resolved,
-        code,
+      return moduleResolution(
+        this.#walk.generatedModule(`generated:query:${projectModuleId(target)}:${query.kind}`, code),
       );
-      return moduleResolution(importer, rawSpecifier, generated);
     }
 
     const local = this.#walk.resolveProjectFile(resolved);
@@ -129,7 +117,7 @@ export class ImportResolver {
       if (target === null) {
         throw unresolvedImport(importer, rawSpecifier, "the target kind is unsupported");
       }
-      return moduleResolution(importer, rawSpecifier, target);
+      return moduleResolution(target);
     }
 
     if (isImageSource(resolved)) {
@@ -138,12 +126,8 @@ export class ImportResolver {
         throw unresolvedImport(importer, rawSpecifier, "the image metadata is missing or unreadable");
       }
       const code = imageModule(resolved, info);
-      this.#walk.markImagesUsed();
-      return moduleResolution(
-        importer,
-        rawSpecifier,
-        this.#walk.generatedModule(`generated:image:${projectModuleId(resolved)}`, resolved, code),
-      );
+      this.#walk.usesImages = true;
+      return moduleResolution(this.#walk.generatedModule(`generated:image:${projectModuleId(resolved)}`, code));
     }
 
     if (PLETIVO_CONTENT_PATH.test(resolved)) {
@@ -159,20 +143,20 @@ export class ImportResolver {
     }
     if (alias.kind === "content") {
       this.#walk.useContent();
-      return externalResolution(importer, rawSpecifier, external, CONTENT_MODULE_NAME);
+      return externalResolution(external, CONTENT_MODULE_NAME);
     }
     if (alias.kind === "assets") {
-      this.#walk.markImagesUsed();
+      this.#walk.usesImages = true;
       this.#walk.addAssetSources();
       const target = this.#walk.projectModule(`${ASSETS_DIR}/index.ts`);
       if (target === null) throw unresolvedImport(importer, rawSpecifier, "generated asset entry is missing");
-      return moduleResolution(importer, rawSpecifier, target);
+      return moduleResolution(target);
     }
     if (alias.kind === "image") {
-      this.#walk.markImagesUsed();
-      return externalResolution(importer, rawSpecifier, external, IMAGE_MODULE_NAME);
+      this.#walk.usesImages = true;
+      return externalResolution(external, IMAGE_MODULE_NAME);
     }
-    return externalResolution(importer, rawSpecifier, external, alias.executionName);
+    return externalResolution(external, alias.executionName);
   }
 
   #readAssetInfo(source: string): Promise<ProjectAssetInfo | null> {
@@ -186,39 +170,12 @@ export class ImportResolver {
   }
 }
 
-function moduleResolution(
-  importer: SourceModule,
-  specifier: string,
-  target: SourceModule,
-): ResolutionUse {
-  return {
-    edge: {
-      importer: importer.id,
-      specifier,
-      target: { kind: "module", id: target.id },
-      kind: target.kind === "css" ? "style" : "execution",
-    },
-    rewritten: `./${target.executionName}`,
-    targetLegacyKey: target.legacyKey,
-  };
+function moduleResolution(module: SourceModule): ResolutionUse {
+  return { kind: "module", module, rewritten: `./${module.executionName}` };
 }
 
-function externalResolution(
-  importer: SourceModule,
-  specifier: string,
-  external: string,
-  executionName: string,
-): ResolutionUse {
-  return {
-    edge: {
-      importer: importer.id,
-      specifier,
-      target: { kind: "external", specifier: external },
-      kind: "execution",
-    },
-    rewritten: `./${executionName}`,
-    targetLegacyKey: null,
-  };
+function externalResolution(specifier: string, executionName: string): ResolutionUse {
+  return { kind: "external", specifier, rewritten: `./${executionName}` };
 }
 
 /** The URL a `?url` import resolves to, registering the file; matches the Bun host's `url-asset.ts`. */

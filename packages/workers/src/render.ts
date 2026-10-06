@@ -593,22 +593,23 @@ async function callIsolate(input: {
   body: IsolateRequest;
 }): Promise<{ bundleId: string; payload: IsolateResponse }> {
   const { project, options, label, body } = input;
+  const { requirements } = project.program;
   // Only env names are in the map (ESM exports are static); values ride in bindings,
   // so rotating a secret keeps the bundle.
-  const env = project.env === null ? null : envPayload(options.env);
+  const env = requirements.env === null ? null : envPayload(options.env);
   // Only for a project that reads it, so other bundles stay unchanged.
-  const importMetaEnv = project.importMetaEnv ? importMetaEnvPayload(options.importMetaEnv) : null;
+  const importMetaEnv = requirements.importMetaEnv ? importMetaEnvPayload(options.importMetaEnv) : null;
   assertEnvFits(env, importMetaEnv);
   const modules = {
     ...project.program.modules,
-    ...(project.env === null ? {} : envModules(project.env, env)),
+    ...(requirements.env === null ? {} : envModules(requirements.env, env)),
     ...ISOLATE_ENTRY_MODULES,
     [ISOLATE_PROGRAM_MODULE_NAME]: programModule(project.program),
   };
   const bundleId = await programHash({ mainModule: ISOLATE_ENTRY_MODULE_NAME, modules });
 
-  const content = project.content === null ? null : options.content;
-  if (project.content !== null && !content) throw new ContentUnavailableError();
+  const content = requirements.content === null ? null : options.content;
+  if (requirements.content !== null && !content) throw new ContentUnavailableError();
   const stateful = content !== null || outboundKind(options.outbound) === "proxy";
   if (stateful && options.executionNamespace === undefined) {
     throw new ExecutionIdentityError(

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
-import { compileProject, isContentApi } from "../src/compile-project.ts";
+import { compileProject } from "../src/compile-project.ts";
 import { imageOutputPath } from "@pletivo/core/image";
 import {
   ContentFiles,
@@ -19,6 +19,7 @@ import {
 } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
+import { codeOf, nameOf } from "./compiled.ts";
 
 /**
  * Content collections on the Workers host.
@@ -294,16 +295,16 @@ describe("the content module in the bundle", () => {
       entries: ENTRIES,
       compiler,
     });
-    expect(bare.content).toBeNull();
-    expect(bare.modules[CONTENT_MODULE_NAME]).toBeUndefined();
+    expect(bare.program.requirements.content).toBeNull();
+    expect(bare.program.modules[CONTENT_MODULE_NAME]).toBeUndefined();
 
     const withContent = await compileProject({
       files: project({ "a.md": note("Alpha") }),
       entries: ENTRIES,
       compiler,
     });
-    expect(withContent.content).not.toBeNull();
-    expect(withContent.modules[CONTENT_MODULE_NAME]).toBeString();
+    expect(withContent.program.requirements.content).not.toBeNull();
+    expect(withContent.program.modules[CONTENT_MODULE_NAME]).toBeString();
   });
 
   test("names the config module for the isolate to execute", async () => {
@@ -312,11 +313,11 @@ describe("the content module in the bundle", () => {
       entries: ENTRIES,
       compiler,
     });
-    const configModule = compiled.content?.configModule;
-    expect(configModule).toBe(compiled.moduleNames.get("src/content.config.ts"));
+    const configModule = compiled.program.requirements.content?.configExecutionName;
+    expect(configModule).toBe(nameOf("src/content.config.ts"));
     // The isolate imports it behind a thunk, so a throw at its module scope fails the
     // render rather than the isolate.
-    expect(compiled.modules[configModule ?? ""]).toContain("defineCollection");
+    expect(compiled.program.modules[configModule ?? ""]).toContain("defineCollection");
   });
 
   test("finds the config under the srcDir the caller named", async () => {
@@ -330,7 +331,7 @@ describe("the content module in the bundle", () => {
       srcDir: "site/src",
       compiler,
     });
-    expect(compiled.content?.configModule).toBe(compiled.moduleNames.get("site/src/content.config.ts"));
+    expect(compiled.program.requirements.content?.configExecutionName).toBe(nameOf("site/src/content.config.ts"));
   });
 
   test("is reached from a page and from the config through one specifier", async () => {
@@ -339,8 +340,8 @@ describe("the content module in the bundle", () => {
       entries: ENTRIES,
       compiler,
     });
-    const config = compiled.modules[compiled.moduleNames.get("src/content.config.ts") ?? ""];
-    const page = compiled.modules[compiled.moduleNames.get("src/pages/index.astro") ?? ""];
+    const config = codeOf(compiled, "src/content.config.ts");
+    const page = codeOf(compiled, "src/pages/index.astro");
     // Two compilers (`@astrojs/compiler` and sucrase) and two specifiers
     // (`astro:content`, `astro/loaders`), one module — otherwise `initCollections`
     // would fill a store the page never reads.
@@ -348,18 +349,32 @@ describe("the content module in the bundle", () => {
     expect(page).toContain(`"./${CONTENT_MODULE_NAME}"`);
   });
 
-  test("recognises the shapes a project reaches the API by", () => {
-    for (const specifier of ["astro:content", "astro/loaders", "pletivo/content"]) {
-      expect([specifier, isContentApi(specifier)]).toEqual([specifier, true]);
-    }
+  test("recognises the shapes a project reaches the API by", async () => {
     // This repo's own fixtures reach in by relative path; `resolveSpecifier` lands
-    // every one of them on this key, whatever depth the importer sits at.
-    expect(isContentApi("packages/pletivo/src/content/collection")).toBe(true);
-    expect(isContentApi("node_modules/pletivo/src/content/index.ts")).toBe(true);
+    // every one of them on a `pletivo/src/content/…` key, whatever depth the importer sits at.
+    const reaches = [
+      "astro:content",
+      "astro/loaders",
+      "pletivo/content",
+      "../../packages/pletivo/src/content/collection",
+      "../../node_modules/pletivo/src/content/index.ts",
+    ];
+    for (const specifier of reaches) {
+      const compiled = await compileProject({
+        files: new Map([["src/lib/use.ts", `import * as api from ${JSON.stringify(specifier)};\nexport { api };\n`]]),
+        compiler,
+      });
+      expect([specifier, compiled.program.requirements.content]).toEqual([specifier, { configExecutionName: null }]);
+    }
 
-    expect(isContentApi("src/content/collection.ts")).toBe(false);
-    expect(isContentApi("astro:assets")).toBe(false);
-    expect(isContentApi("./content.ts")).toBe(false);
+    const local = await compileProject({
+      files: new Map([
+        ["src/lib/use.ts", `import * as api from "../content/collection.ts";\nexport { api };\n`],
+        ["src/content/collection.ts", "export const own = true;\n"],
+      ]),
+      compiler,
+    });
+    expect(local.program.requirements.content).toBeNull();
   });
 });
 

@@ -4,6 +4,7 @@ import type { ProjectAssetInfo, ProjectAssetsView } from "../src/asset-port.ts";
 import { compileProject, isExecutableModule } from "../src/compile-project.ts";
 import { typescriptSuspects } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
+import { codeOf, hasModule, importsOf, nameOf, stylesOf } from "./compiled.ts";
 
 const compiler = createAstroCompiler(await astroWasmModule());
 
@@ -38,9 +39,7 @@ const ENTRIES = ["src/pages/index.astro"];
 const project = await compileProject({ files: PROJECT, entries: ENTRIES, compiler });
 
 function moduleCode(built: Awaited<ReturnType<typeof compileProject>>, file: string): string {
-  const name = built.moduleNames.get(file);
-  if (name === undefined) throw new Error(`missing module name for ${file}`);
-  const code = built.modules[name];
+  const code = codeOf(built, file);
   if (code === undefined) throw new Error(`missing module body for ${file}`);
   return code;
 }
@@ -49,12 +48,12 @@ describe("compileProject", () => {
   test("names a module for every file the entry reaches, and nothing else", () => {
     // All five are reachable from `index.astro`; the `.md` files and the `README` are
     // not modules at all, so nothing would name them either way.
-    expect([...project.moduleNames.keys()].sort()).toEqual([
-      "src/components/Header.astro",
-      "src/components/Layout.astro",
-      "src/lib/name.js",
-      "src/pages/index.astro",
-      "src/styles/site.css",
+    expect([...project.styleGraph.modules].sort()).toEqual([
+      "project:src/components/Header.astro",
+      "project:src/components/Layout.astro",
+      "project:src/lib/name.js",
+      "project:src/pages/index.astro",
+      "project:src/styles/site.css",
     ]);
   });
 
@@ -62,21 +61,23 @@ describe("compileProject", () => {
     const orphaned = new Map(PROJECT);
     orphaned.set("src/components/Orphan.astro", "<p>nobody imports this</p>\n<style>p{}</style>\n");
     const pruned = await compileProject({ files: orphaned, entries: ENTRIES, compiler });
-    expect(pruned.moduleNames.has("src/components/Orphan.astro")).toBe(false);
-    expect(Object.keys(pruned.modules).sort()).toEqual(Object.keys(project.modules).sort());
+    expect(hasModule(pruned, "src/components/Orphan.astro")).toBe(false);
+    expect(Object.keys(pruned.program.modules).sort()).toEqual(Object.keys(project.program.modules).sort());
   });
 
   test("reports the entries the bundle was built for", () => {
-    expect(project.entries).toEqual(ENTRIES);
+    expect(project.program.entries).toEqual(
+      ENTRIES.map((file) => ({ moduleId: `project:${file}`, executionName: nameOf(file) })),
+    );
   });
 
   test("flattens every module to the bundle root, so `./name` always resolves", () => {
-    for (const name of project.moduleNames.values()) expect(name).not.toContain("/");
-    expect(project.moduleNames.get("src/pages/index.astro")).toStartWith("module-");
+    for (const name of Object.keys(project.program.modules)) expect(name).not.toContain("/");
+    expect(nameOf("src/pages/index.astro")).toStartWith("module-");
   });
 
   test("ships @pletivo/runtime alongside the project", () => {
-    expect(project.modules["pletivo-runtime.js"]).toContain("renderAstroPage");
+    expect(project.program.modules["pletivo-runtime.js"]).toContain("renderAstroPage");
   });
 
   test("points compiled output at the runtime module", () => {
@@ -85,36 +86,36 @@ describe("compileProject", () => {
 
   test("rewrites a component import to its bundle name", () => {
     expect(moduleCode(project, "src/pages/index.astro")).toContain(
-      `"./${project.moduleNames.get("src/components/Layout.astro")}"`,
+      `"./${nameOf("src/components/Layout.astro")}"`,
     );
   });
 
   test("resolves a `.js` import and carries the module verbatim", () => {
     expect(moduleCode(project, "src/pages/index.astro")).toContain(
-      `"./${project.moduleNames.get("src/lib/name.js")}"`,
+      `"./${nameOf("src/lib/name.js")}"`,
     );
     expect(moduleCode(project, "src/lib/name.js")).toBe('export const NAME = "pletivo";\n');
   });
 
   test("resolves a side-effect CSS import to an empty module", () => {
     expect(moduleCode(project, "src/pages/index.astro")).toContain(
-      `"./${project.moduleNames.get("src/styles/site.css")}"`,
+      `"./${nameOf("src/styles/site.css")}"`,
     );
     expect(moduleCode(project, "src/styles/site.css")).toBe("export {};\n");
   });
 
   test("strips the compiler's virtual style imports, which nothing resolves", () => {
-    for (const source of Object.values(project.modules)) {
+    for (const source of Object.values(project.program.modules)) {
       expect(source).not.toContain("?astro&type=style");
     }
   });
 
   test("records the import graph in execution order, without the CSS stub", () => {
-    expect(project.imports.get("src/pages/index.astro")).toEqual([
+    expect(importsOf(project, "src/pages/index.astro")).toEqual([
       "src/components/Layout.astro",
       "src/lib/name.js",
     ]);
-    expect(project.imports.get("src/components/Layout.astro")).toEqual([
+    expect(importsOf(project, "src/components/Layout.astro")).toEqual([
       "src/components/Header.astro",
     ]);
   });
@@ -122,16 +123,16 @@ describe("compileProject", () => {
   test("classifies a scoped block and an is:global one apart", () => {
     // The compiler rewrites and minifies a scoped block; an is:global one comes
     // back exactly as written, which is why the two cannot be told apart by shape.
-    expect(project.styles.get("src/components/Layout.astro")?.blocks).toEqual([
+    expect(stylesOf(project, "src/components/Layout.astro")?.blocks).toEqual([
       { global: false, css: "body{margin:0}" },
     ]);
-    expect(project.styles.get("src/components/Header.astro")?.blocks).toEqual([
+    expect(stylesOf(project, "src/components/Header.astro")?.blocks).toEqual([
       { global: true, css: ".h { color: red; }" },
     ]);
   });
 
   test("keeps the scope hash the page HTML will carry", () => {
-    const scope = project.styles.get("src/components/Layout.astro")?.scope;
+    const scope = stylesOf(project, "src/components/Layout.astro")?.scope;
     expect(scope).toMatch(/^[a-z0-9]+$/);
     expect(moduleCode(project, "src/components/Layout.astro")).toContain(`astro-${scope}`);
   });
@@ -170,7 +171,7 @@ describe("compileProject, demand-driven assets", () => {
     await started.promise;
     release.resolve();
     const built = await building;
-    expect(moduleCode(built, "src/assets/logo.png")).toContain('src":"/_astro/logo.1234abcd.png"');
+    expect(moduleCode(built, "generated:image:project:src/assets/logo.png")).toContain('src":"/_astro/logo.1234abcd.png"');
   });
 
   test("does not probe an image imported only by an unreached module", async () => {
@@ -239,13 +240,13 @@ describe("compileProject, paths that flatten to the same name", () => {
   test("names each from its own path, so discovery order cannot move a name", async () => {
     const forward = await compileProject({ files: new Map(ALIKE), compiler });
     const reversed = await compileProject({ files: new Map([...ALIKE].reverse()), compiler });
-    const nested = forward.moduleNames.get("src/a/b.js");
-    const flat = forward.moduleNames.get("src/a_b.js");
+    const nested = nameOf("src/a/b.js");
+    const flat = nameOf("src/a_b.js");
     expect(nested).not.toBe(flat);
     // A compile pruned to one page's graph reaches files in an order of its own, and a
     // name that moved with it would give one program two bundles.
-    expect(reversed.moduleNames.get("src/a/b.js")).toBe(nested);
-    expect(reversed.moduleNames.get("src/a_b.js")).toBe(flat);
+    expect(nameOf("src/a/b.js")).toBe(nested);
+    expect(nameOf("src/a_b.js")).toBe(flat);
   });
 
   test("keeps a shared module's name when two pages reach it in opposite orders", async () => {
@@ -261,14 +262,14 @@ describe("compileProject, paths that flatten to the same name", () => {
     const one = await compileProject({ files, entries: ["src/pages/one.astro"], compiler });
     const two = await compileProject({ files, entries: ["src/pages/two.astro"], compiler });
     for (const shared of ["src/a/b.js", "src/a_b.js"]) {
-      expect([shared, two.moduleNames.get(shared)]).toEqual([
+      expect([shared, nameOf(shared)]).toEqual([
         shared,
-        one.moduleNames.get(shared),
+        nameOf(shared),
       ]);
     }
     // …and neither page is in the other's bundle, which is what the pruning is for.
-    expect(one.moduleNames.has("src/pages/two.astro")).toBe(false);
-    expect(two.moduleNames.has("src/pages/one.astro")).toBe(false);
+    expect(hasModule(one, "src/pages/two.astro")).toBe(false);
+    expect(hasModule(two, "src/pages/one.astro")).toBe(false);
   });
 });
 
@@ -283,8 +284,8 @@ describe("compileProject, blocks in source order", () => {
       ]),
       compiler,
     });
-    const scope = one.styles.get("src/pages/index.astro")?.scope;
-    expect(one.styles.get("src/pages/index.astro")?.blocks).toEqual([
+    const scope = stylesOf(one, "src/pages/index.astro")?.scope;
+    expect(stylesOf(one, "src/pages/index.astro")?.blocks).toEqual([
       { global: false, css: `.m:where(.astro-${scope}){--a: 1}` },
       { global: true, css: ".g { --b: 2; }" },
     ]);
@@ -327,22 +328,22 @@ export interface Props {}
 
   test("every generated module parses as JavaScript", async () => {
     const typed = await compileProject({ files: TYPED, compiler });
-    for (const [name, source] of Object.entries(typed.modules)) {
+    for (const [name, source] of Object.entries(typed.program.modules)) {
       expect(() => asJavaScript.transformSync(source), name).not.toThrow();
     }
   });
 
   test("leaves no TypeScript for the isolate's diagnostic to find", async () => {
     const typed = await compileProject({ files: TYPED, compiler });
-    expect(typescriptSuspects(typed.modules)).toEqual([]);
+    expect(typescriptSuspects(typed.program.modules)).toEqual([]);
   });
 
   test("keeps the import graph the cascade order walks", async () => {
     const typed = await compileProject({ files: TYPED, compiler });
     // The component import survives; the `import type` does not, and never was an edge.
-    expect(typed.imports.get("src/pages/index.astro")).toEqual(["src/components/Card.astro"]);
+    expect(importsOf(typed, "src/pages/index.astro")).toEqual(["src/components/Card.astro"]);
     expect(moduleCode(typed, "src/pages/index.astro")).toContain(
-      `"./${typed.moduleNames.get("src/components/Card.astro")}"`,
+      `"./${nameOf("src/components/Card.astro")}"`,
     );
     expect(moduleCode(typed, "src/pages/index.astro")).not.toContain("../lib/types.ts");
   });
@@ -400,7 +401,7 @@ describe("compileProject, refusals", () => {
       ["src/components/Broken.astro", "<slot name/>"],
     ]);
     const pruned = await compileProject({ files, entries: ["src/pages/index.astro"], compiler });
-    expect(pruned.moduleNames.has("src/components/Broken.astro")).toBe(false);
+    expect(hasModule(pruned, "src/components/Broken.astro")).toBe(false);
     // It is still loud the moment something reaches it.
     expect(
       compileProject({ files, entries: ["src/components/Broken.astro"], compiler }),
@@ -442,14 +443,14 @@ import { helper } from "../lib/util";
   test("resolves an extensionless import and a directory index, the way Bun does", async () => {
     const built = await compileProject({ files, compiler });
     const page = moduleCode(built, "src/pages/index.astro");
-    expect(page).toContain(`"./${built.moduleNames.get("src/layouts/Layout.astro")}"`);
-    expect(page).toContain(`"./${built.moduleNames.get("src/lib/util/index.ts")}"`);
+    expect(page).toContain(`"./${nameOf("src/layouts/Layout.astro")}"`);
+    expect(page).toContain(`"./${nameOf("src/lib/util/index.ts")}"`);
   });
 
   test("resolves `./x.js` to the `x.ts` it lands on — TypeScript's own convention", async () => {
     const built = await compileProject({ files, compiler });
     expect(moduleCode(built, "src/pages/index.astro")).toContain(
-      `"./${built.moduleNames.get("src/lib/name.ts")}"`,
+      `"./${nameOf("src/lib/name.ts")}"`,
     );
   });
 
@@ -457,7 +458,7 @@ import { helper } from "../lib/util";
     const built = await compileProject({ files, compiler });
     // The CSS cascade is ordered by this list, so a specifier the bundle resolves and
     // the graph does not would move a component's styles.
-    expect(built.imports.get("src/pages/index.astro")).toEqual([
+    expect(importsOf(built, "src/pages/index.astro")).toEqual([
       "src/layouts/Layout.astro",
       "src/lib/name.ts",
       "src/lib/util/index.ts",

@@ -1,10 +1,8 @@
 import type { ArtifactModuleKind, ModuleId } from "@pletivo/core/artifact";
-import type { ResolvedModuleEdge } from "../module-graph.ts";
 
 /** A module the walk has claimed a bundle name for. */
 export interface SourceModule {
   id: ModuleId;
-  legacyKey: string;
   kind: ArtifactModuleKind;
   source: string;
   compilePath: string;
@@ -12,14 +10,10 @@ export interface SourceModule {
   origin: "project" | "artifact" | "generated";
 }
 
-export type ModuleDescriptor = Omit<SourceModule, "executionName">;
-
-/** One specifier of one importer, resolved: the graph edge and the rewritten specifier. */
-export interface ResolutionUse {
-  edge: ResolvedModuleEdge;
-  rewritten: string;
-  targetLegacyKey: string | null;
-}
+/** One specifier of one importer, resolved: what it names and what the bundle spells it as. */
+export type ResolutionUse =
+  | { kind: "module"; module: SourceModule; rewritten: string }
+  | { kind: "external"; specifier: string; rewritten: string };
 
 /** A project file the isolate cannot be given, and why. */
 export class UnsupportedFileError extends Error {

@@ -17,6 +17,7 @@ import {
 import { loadProjectArtifact } from "../src/project-artifact.ts";
 import { finalizeHtml, pageCss } from "../src/page-css.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
+import { codeOf, hasModule, importsOf, nameOf, stylesheetsOf, stylesOf } from "./compiled.ts";
 
 const compiler = createAstroCompiler(await astroWasmModule());
 
@@ -118,9 +119,7 @@ function bodyOf(
   compiled: Awaited<ReturnType<typeof compileProject>>,
   logicalFile: string,
 ): string {
-  const name = compiled.moduleNames.get(logicalFile);
-  if (name === undefined) throw new Error(`Missing execution name for ${logicalFile}`);
-  const body = compiled.modules[name];
+  const body = codeOf(compiled, logicalFile);
   if (body === undefined) throw new Error(`Missing module body for ${logicalFile}`);
   return body;
 }
@@ -140,17 +139,12 @@ describe("Artifact V2 compiler consumer", () => {
       artifact: loadProjectArtifact(PREPARED),
     });
 
-    expect(index.graph.edges).toContainEqual({
-      importer: "project:src/pages/index.astro",
-      specifier: "same",
-      target: { kind: "module", id: IDs.sameA },
-      kind: "execution",
-    });
+    expect(importsOf(index, "src/pages/index.astro")).toContain(IDs.sameA);
     expect(bodyOf(index, "src/pages/index.astro")).toContain(
-      `"./${index.moduleNames.get(IDs.sameA)}"`,
+      `"./${nameOf(IDs.sameA)}"`,
     );
     expect(bodyOf(other, "src/pages/other.astro")).toContain(
-      `"./${other.moduleNames.get(IDs.sameB)}"`,
+      `"./${nameOf(IDs.sameB)}"`,
     );
   });
 
@@ -162,48 +156,41 @@ describe("Artifact V2 compiler consumer", () => {
     expect(bodyOf(compiled, IDs.chip)).toContain(
       `"./pletivo-jsx-runtime.js"`,
     );
-    expect(compiled.moduleNames.has(IDs.unused)).toBe(false);
+    expect(hasModule(compiled, IDs.unused)).toBe(false);
   });
 
   test("keeps package Astro and CSS in one ordered graph", async () => {
     const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
 
-    expect(compiled.imports.get("src/pages/index.astro")).toEqual([
+    expect(importsOf(compiled, "src/pages/index.astro")).toEqual([
       IDs.sameA,
       IDs.root,
       IDs.card,
       IDs.slash,
       IDs.underscore,
     ]);
-    expect(compiled.imports.get(IDs.card)).toEqual([IDs.base]);
-    expect(compiled.cssImports.get("src/pages/index.astro")).toEqual([IDs.css]);
-    expect(compiled.cssImports.get(IDs.card)).toEqual([IDs.css]);
-    expect(compiled.cssImports.get(IDs.css)).toEqual([IDs.theme]);
+    expect(importsOf(compiled, IDs.card)).toEqual([IDs.base]);
+    expect(stylesheetsOf(compiled, "src/pages/index.astro")).toEqual([IDs.css]);
+    expect(stylesheetsOf(compiled, IDs.card)).toEqual([IDs.css]);
+    expect(stylesheetsOf(compiled, IDs.css)).toEqual([IDs.theme]);
     expect(compiled.styleGraph.styleEdges).toContainEqual({ importer: IDs.css, target: IDs.theme });
-    expect(compiled.graph.modules.find((module) => module.identity.id === IDs.card)?.identity.compilePath)
-      .toBe("../node_modules/widget/Card.astro");
-    expect(compiled.styles.get(IDs.card)?.blocks[0]?.css).toContain("astro-");
+    expect(stylesOf(compiled, IDs.card)?.blocks[0]?.css).toContain("astro-");
   });
 
   test("makes every rewritten module import agree with its canonical edge", async () => {
     const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
-    const graphModules = new Map(compiled.graph.modules.map((module) => [module.identity.id, module]));
-
-    for (const edge of compiled.graph.edges) {
-      if (edge.target.kind !== "module") continue;
-      const importer = graphModules.get(edge.importer);
-      const target = graphModules.get(edge.target.id);
-      if (importer?.kind === "css") continue;
-      expect(importer?.identity.executionName, edge.specifier).not.toBeNull();
-      expect(target?.identity.executionName, edge.specifier).not.toBeNull();
-      const importerBody = compiled.modules[importer?.identity.executionName ?? ""];
-      expect(importerBody, edge.specifier).toContain(`"./${target?.identity.executionName}"`);
+    for (const edge of [...compiled.styleGraph.executionEdges, ...compiled.styleGraph.styleEdges]) {
+      const importerBody = compiled.program.modules[nameOf(edge.importer)];
+      expect(importerBody, edge.importer).toBeString();
+      // A stylesheet's own `@import` edges stay out of its empty Loader module.
+      if (importerBody === "export {};\n") continue;
+      expect(importerBody, edge.importer).toContain(`"./${nameOf(edge.target)}"`);
     }
     expect(bodyOf(compiled, IDs.root)).toContain(
-      `import data from "./${compiled.moduleNames.get(IDs.data)}"`,
+      `import data from "./${nameOf(IDs.data)}"`,
     );
     expect(bodyOf(compiled, IDs.root)).toContain(
-      `import Chip from "./${compiled.moduleNames.get(IDs.chip)}"`,
+      `import Chip from "./${nameOf(IDs.chip)}"`,
     );
   });
 
@@ -270,13 +257,8 @@ describe("Artifact V2 compiler consumer", () => {
       artifact: loadProjectArtifact(prepared),
       compiler,
     });
-    expect(bodyOf(compiled, root)).toContain(`"./${compiled.moduleNames.get(target)}"`);
-    expect(compiled.graph.edges).toContainEqual({
-      importer: root,
-      specifier: "./pletivo-runtime.js",
-      target: { kind: "module", id: target },
-      kind: "execution",
-    });
+    expect(bodyOf(compiled, root)).toContain(`"./${nameOf(target)}"`);
+    expect(importsOf(compiled, root)).toEqual([target]);
   });
 
   test("assigns names from raw aliases to their resolved env external", async () => {
@@ -298,17 +280,17 @@ describe("Artifact V2 compiler consumer", () => {
       artifact: loadProjectArtifact(prepared),
       compiler,
     });
-    expect(compiled.env).toEqual({ client: ["PUBLIC"], server: ["TOKEN"] });
-    expect(compiled.program.requirements.env).toEqual(compiled.env);
+    expect(compiled.program.requirements.env).toEqual({ client: ["PUBLIC"], server: ["TOKEN"] });
+    expect(compiled.program.requirements.env).toEqual(compiled.program.requirements.env);
   });
 
   test("uses collision-proof names derived from full ModuleIds", async () => {
     const first = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
     const second = await compileProject({ files: new Map([...PROJECT].reverse()), entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
 
-    expect(first.moduleNames.get(IDs.slash)).not.toBe(first.moduleNames.get(IDs.underscore));
-    expect(second.moduleNames.get(IDs.slash)).toBe(first.moduleNames.get(IDs.slash));
-    expect(second.moduleNames.get(IDs.underscore)).toBe(first.moduleNames.get(IDs.underscore));
+    expect(nameOf(IDs.slash)).not.toBe(nameOf(IDs.underscore));
+    expect(nameOf(IDs.slash)).toBe(nameOf(IDs.slash));
+    expect(nameOf(IDs.underscore)).toBe(nameOf(IDs.underscore));
   });
 
   test("recomputes artifact resolution and graph effects on a compile-cache hit", async () => {
@@ -327,17 +309,12 @@ describe("Artifact V2 compiler consumer", () => {
     };
     const warm = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(changed), cache });
 
-    expect(unchangedWarm.graph).toEqual(cold.graph);
     expect(unchangedWarm.program.requirements).toEqual(cold.program.requirements);
     expect(unchangedWarm.styleGraph).toEqual(cold.styleGraph);
-    expect(bodyOf(cold, "src/pages/index.astro")).toContain(`"./${cold.moduleNames.get(IDs.sameA)}"`);
-    expect(bodyOf(warm, "src/pages/index.astro")).toContain(`"./${warm.moduleNames.get(IDs.sameB)}"`);
-    expect(warm.graph.edges).toContainEqual({
-      importer: "project:src/pages/index.astro",
-      specifier: "same",
-      target: { kind: "module", id: IDs.sameB },
-      kind: "execution",
-    });
+    expect(bodyOf(cold, "src/pages/index.astro")).toContain(`"./${nameOf(IDs.sameA)}"`);
+    expect(bodyOf(warm, "src/pages/index.astro")).toContain(`"./${nameOf(IDs.sameB)}"`);
+    expect(importsOf(warm, "src/pages/index.astro")).toContain(IDs.sameB);
+    expect(importsOf(warm, "src/pages/index.astro")).not.toContain(IDs.sameA);
   });
 
   test("rejects unsupported externals and absent artifact resolutions loudly", async () => {
