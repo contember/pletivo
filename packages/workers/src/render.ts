@@ -55,7 +55,6 @@ import {
   CONTENT_BINDING,
   decodeParams,
   encodeParams,
-  ISOLATE_PROTOCOL_VERSION,
   IsolateProtocolError,
   parseIsolateResponse,
   type IsolateProgramExport,
@@ -415,7 +414,6 @@ async function isolatePaths(
     options,
     label: "resolving getStaticPaths",
     body: {
-      protocol: ISOLATE_PROTOCOL_VERSION,
       op: "paths",
       routes: routes.map((route) => ({ file: prefix + route.file, route })),
     },
@@ -725,7 +723,6 @@ async function renderModule(input: {
     options,
     label: `rendering ${file}`,
     body: {
-      protocol: ISOLATE_PROTOCOL_VERSION,
       op: "render",
       file,
       params: encodeParams(params),

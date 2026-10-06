@@ -308,7 +308,7 @@ export async function generateRuntimeModules(): Promise<string> {
     "/** The module `astro:assets` and an `image()` schema resolve through. Added only when reached for. */",
     'export const IMAGE_MODULE_NAME = "pletivo-image.js";',
     "",
-    "/** The request parser shared by the host and the isolate entry. */",
+    "/** The protocol module shared by the host and the isolate entry. */",
     'export const ISOLATE_PROTOCOL_MODULE_NAME = "pletivo-isolate-protocol.js";',
     "",
     "/** The Loader's main module. Never a project path. */",

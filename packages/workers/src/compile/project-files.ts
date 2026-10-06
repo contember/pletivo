@@ -1,9 +1,9 @@
 import {
   ModuleIdentityCollisionError,
-  normalizeProjectPath,
   projectModuleId,
   type ArtifactResolver,
 } from "../artifact.ts";
+import { normalizeProjectPath } from "../project-path.ts";
 import type { ProjectFiles } from "../project-store.ts";
 import { UnsupportedFileError } from "./source-module.ts";
 

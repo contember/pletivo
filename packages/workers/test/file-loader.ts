@@ -55,9 +55,10 @@ export class FileLoader implements WorkerLoaderBinding {
       }
       // `env` is the second argument a Worker's fetch takes, and the content binding
       // arrives that way — so it has to be handed over here too, or the collection
-      // path would only ever be exercised in workerd.
+      // path would only ever be exercised in workerd. workerd binds an empty `env` when
+      // the code sets none.
       return {
-        fetch: (request) => Promise.resolve(fetchHandler.call(handler, request, bundle.env)),
+        fetch: (request) => Promise.resolve(fetchHandler.call(handler, request, bundle.env ?? {})),
       };
     };
     let entry = this.#entries.get(id);

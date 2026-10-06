@@ -29,11 +29,8 @@ export interface ContentBinding {
   scan(ref: string, dir: string, pattern: string): Promise<ContentFileRef[]> | ContentFileRef[];
   /** A file's text, or `null` when the project has no such file. */
   read(ref: string, path: string): Promise<string | null> | string | null;
-  /**
-   * What a binary asset is, or `null` when the project has no such file. Optional, so a
-   * host with no binaries stays a valid binding and an `image()` schema fails by name.
-   */
-  image?(ref: string, path: string): Promise<ImageInfo | null> | ImageInfo | null;
+  /** What a binary asset is, or `null` when the project has no such file. */
+  image(ref: string, path: string): Promise<ImageInfo | null> | ImageInfo | null;
 }
 
 /**

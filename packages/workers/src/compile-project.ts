@@ -3,7 +3,7 @@
  * Every module the isolate sees is compiled here; workerd has no `eval`. See `compile/`.
  */
 
-import { normalizeProjectPath } from "./artifact.ts";
+import { normalizeProjectPath } from "./project-path.ts";
 import type { ExecutableEntry } from "./compiled-program.ts";
 import { bundled, compileCached } from "./compile/compile-file.ts";
 import { emitProject } from "./compile/emit.ts";

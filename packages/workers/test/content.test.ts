@@ -9,6 +9,7 @@ import {
   ProjectAssetOutputAmbiguityError,
   type ContentBinding,
   type ContentFileRef,
+  type ImageInfo,
 } from "../src/content-files.ts";
 import { CONTENT_MODULE_NAME } from "../src/generated/runtime-modules.ts";
 import {
@@ -121,6 +122,10 @@ class ScanBarrier implements ContentBinding {
     const source = this.inner.read(ref, path);
     if (source?.includes(this.rejectedText)) throw new Error("forced content read failure");
     return source;
+  }
+
+  image(ref: string, path: string): ImageInfo | null | Promise<ImageInfo | null> {
+    return this.inner.image(ref, path);
   }
 }
 

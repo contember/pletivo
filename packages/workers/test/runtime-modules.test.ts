@@ -65,19 +65,18 @@ describe("generated runtime modules", () => {
     ]);
   });
 
-  test("carry the source request parser as a stateless Loader module", () => {
+  test("carry the param codec as a stateless Loader module", () => {
     const source = GENERATED_MODULES[ISOLATE_PROTOCOL_MODULE_NAME];
-    expect(source).toContain("function parseIsolateRequest");
-    expect(source).toContain("ISOLATE_PROTOCOL_VERSION");
-    expect(source.slice(source.lastIndexOf("export {"))).toContain("parseIsolateRequest");
-    expect(source.slice(source.lastIndexOf("export {"))).toContain("ISOLATE_PROTOCOL_VERSION");
+    expect(source).toContain("function decodeParams");
+    expect(source.slice(source.lastIndexOf("export {"))).toContain("decodeParams");
+    expect(source.slice(source.lastIndexOf("export {"))).toContain("CONTENT_BINDING");
     expect(source).not.toMatch(/(?:node:|node\/fs|Bun\.)/);
   });
 
   test("import the runtime and the protocol into the isolate entry, never a copy", () => {
     const handler = GENERATED_MODULES["pletivo-isolate-entry.js"];
     expect(handler).not.toContain("new AsyncLocalStorage");
-    expect(handler).not.toContain("function parseIsolateRequest");
+    expect(handler).not.toContain("function decodeParams");
     expect(Object.keys(ISOLATE_ENTRY_MODULES)).toEqual([
       ISOLATE_ENTRY_MODULE_NAME,
       "pletivo-isolate-entry.js",

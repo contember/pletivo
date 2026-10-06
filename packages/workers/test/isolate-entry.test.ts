@@ -6,11 +6,11 @@ import { createComponent, render } from "@pletivo/runtime/astro-shim";
 import {
   createIsolateEntry,
   resolveFrom,
+  type IsolateEnv,
   type IsolateProgram,
   type PageModule,
 } from "../src/isolate-entry.ts";
 import {
-  ISOLATE_PROTOCOL_VERSION,
   parseIsolateResponse,
   type IsolateParamPair,
   type IsolateRequest,
@@ -67,7 +67,7 @@ function routeOf(file: string): Route {
 async function callWith(
   entryProgram: IsolateProgram,
   body: IsolateRequest,
-  env: unknown = {},
+  env: IsolateEnv = {},
 ): Promise<IsolateResponse> {
   const request = new Request("http://pletivo.invalid/render", {
     method: "POST",
@@ -78,7 +78,7 @@ async function callWith(
   return parseIsolateResponse(await response.json());
 }
 
-function call(body: IsolateRequest, env: unknown = {}): Promise<IsolateResponse> {
+function call(body: IsolateRequest, env: IsolateEnv = {}): Promise<IsolateResponse> {
   return callWith(PROGRAM, body, env);
 }
 
@@ -86,7 +86,6 @@ function call(body: IsolateRequest, env: unknown = {}): Promise<IsolateResponse>
 function pathsOf(result: unknown): Promise<IsolateResponse> {
   const pages = program({ [PAGED]: { default: pageText, getStaticPaths: () => result } });
   return callWith(pages, {
-    protocol: ISOLATE_PROTOCOL_VERSION,
     op: "paths",
     routes: [{ file: PAGED, route: routeOf(PAGED) }],
   });
@@ -99,7 +98,6 @@ function errorMessage(response: IsolateResponse): string {
 
 function renderRequest(file: string, params: IsolateParamPair[], route: Route | null): IsolateRequest {
   return {
-    protocol: ISOLATE_PROTOCOL_VERSION,
     op: "render",
     file,
     params,
@@ -111,7 +109,6 @@ function renderRequest(file: string, params: IsolateParamPair[], route: Route | 
 describe("isolate entry", () => {
   test("renders a static page", async () => {
     expect(await call(renderRequest(INDEX, [], null))).toEqual({
-      protocol: ISOLATE_PROTOCOL_VERSION,
       status: "rendered",
       html: "<h1>home</h1>",
       renderedModules: [],
@@ -136,7 +133,6 @@ describe("isolate entry", () => {
 
   test("answers no-static-path when getStaticPaths lists no such params", async () => {
     expect(await call(renderRequest(PAGED, [["page", "9"]], routeOf(PAGED)))).toEqual({
-      protocol: ISOLATE_PROTOCOL_VERSION,
       status: "unresolved",
       reason: "no-static-path",
     });
@@ -158,7 +154,6 @@ describe("isolate entry", () => {
 
   test("lists param sets for the paths op, and skips routes that declare none", async () => {
     const response = await call({
-      protocol: ISOLATE_PROTOCOL_VERSION,
       op: "paths",
       routes: [
         { file: INDEX, route: routeOf(INDEX) },
@@ -166,7 +161,6 @@ describe("isolate entry", () => {
       ],
     });
     expect(response).toEqual({
-      protocol: ISOLATE_PROTOCOL_VERSION,
       status: "paths",
       paths: { [PAGED]: [[["page", null]], [["page", "2"]]] },
     });
@@ -174,22 +168,14 @@ describe("isolate entry", () => {
 
   test("rejects prerender = false in the paths op too", async () => {
     const response = await call({
-      protocol: ISOLATE_PROTOCOL_VERSION,
       op: "paths",
       routes: [{ file: ON_DEMAND, route: routeOf(ON_DEMAND) }],
     });
     expect(response).toMatchObject({ status: "error" });
   });
 
-  test("reports a malformed request as an error payload", async () => {
-    const request = new Request("http://pletivo.invalid/render", { method: "POST", body: "{}" });
-    const response = await createIsolateEntry(PROGRAM).fetch(request, {});
-    expect(parseIsolateResponse(await response.json())).toMatchObject({ status: "error" });
-  });
-
   test("reads a null param as undefined, in both ops", async () => {
     expect(await pathsOf([{ params: { page: null } }])).toEqual({
-      protocol: ISOLATE_PROTOCOL_VERSION,
       status: "paths",
       paths: { [PAGED]: [[["page", null]]] },
     });
@@ -276,6 +262,9 @@ describe("isolate entry content scope", () => {
     },
     read(ref, path) {
       return sources[ref]?.[path] ?? null;
+    },
+    image() {
+      return null;
     },
   };
   const contentProgram: IsolateProgram = {

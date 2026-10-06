@@ -6,35 +6,13 @@ import {
   type IsolateKeyInput,
 } from "../src/execution-identity.ts";
 import {
-  ISOLATE_PROTOCOL_VERSION,
   IsolateProtocolError,
-  parseIsolateRequest,
   parseIsolateResponse,
-  type IsolatePathsRequest,
   type IsolatePathsResponse,
   type IsolateErrorResponse,
-  type IsolateRenderRequest,
   type IsolateRenderedResponse,
   type IsolateUnresolvedResponse,
 } from "../src/isolate-protocol.ts";
-
-function renderEnvelope(overrides: Record<string, unknown> = {}): object {
-  return {
-    protocol: ISOLATE_PROTOCOL_VERSION,
-    op: "render",
-    file: "src/pages/[slug].astro",
-    params: [["slug", "one"]],
-    route: null,
-    url: "https://example.test/one",
-    ...overrides,
-  };
-}
-
-function sparseParams(): unknown[] {
-  const params: unknown[] = [];
-  params.length = 1;
-  return params;
-}
 
 function baseIdentity(program: string): IsolateKeyInput {
   return {
@@ -264,194 +242,45 @@ describe("execution identity", () => {
   });
 });
 
-describe("isolate protocol", () => {
-  test("round-trips render requests while preserving undefined params as null", () => {
-    const request: IsolateRenderRequest = {
-      protocol: ISOLATE_PROTOCOL_VERSION,
-      op: "render",
-      file: "src/pages/[...page].astro",
-      params: [["page", null]],
-      route: {
-        file: "[...page].astro",
-        segments: [{ type: "rest", value: "page" }],
-        isDynamic: true,
-        priority: 100,
-        isEndpoint: false,
-      },
-      url: "https://example.test/",
-      site: "https://example.test",
-      contentRef: "render-1",
-      rootDir: "",
-    };
-
-    expect(parseIsolateRequest(JSON.parse(JSON.stringify(request)))).toEqual(request);
-  });
-
-  test("round-trips paths requests", () => {
-    const request: IsolatePathsRequest = {
-      protocol: ISOLATE_PROTOCOL_VERSION,
-      op: "paths",
-      routes: [
-        {
-          file: "src/pages/[slug].astro",
-          route: {
-            file: "[slug].astro",
-            segments: [{ type: "param", value: "slug" }],
-            isDynamic: true,
-            priority: 10,
-            isEndpoint: false,
-          },
-        },
-      ],
-    };
-
-    expect(parseIsolateRequest(JSON.parse(JSON.stringify(request)))).toEqual(request);
-  });
-
+describe("isolate response boundary", () => {
   test("round-trips every response variant", () => {
     const rendered: IsolateRenderedResponse = {
-      protocol: ISOLATE_PROTOCOL_VERSION,
       status: "rendered",
       html: "<p>ok</p>",
       renderedModules: ["project:src/pages/index.astro"],
       tsxStyles: ["p { color: red; }"],
     };
-    const unresolved: IsolateUnresolvedResponse = {
-      protocol: ISOLATE_PROTOCOL_VERSION,
-      status: "unresolved",
-      reason: "no-static-path",
-    };
+    const unresolved: IsolateUnresolvedResponse = { status: "unresolved", reason: "no-static-path" };
     const paths: IsolatePathsResponse = {
-      protocol: ISOLATE_PROTOCOL_VERSION,
       status: "paths",
-      paths: { "src/pages/[slug].astro": [[ ["slug", "one"] ]] },
+      paths: { "src/pages/[slug].astro": [[["slug", "one"]], [["slug", null]]] },
     };
-    const error: IsolateErrorResponse = {
-      protocol: ISOLATE_PROTOCOL_VERSION,
-      status: "error",
-      message: "render failed",
-      stack: "stack",
-    };
+    const error: IsolateErrorResponse = { status: "error", message: "render failed", stack: "stack" };
 
     for (const response of [rendered, unresolved, paths, error]) {
       expect(parseIsolateResponse(JSON.parse(JSON.stringify(response)))).toEqual(response);
     }
   });
 
-  test("rejects malformed request envelopes", () => {
+  test("rejects malformed responses", () => {
     const malformed: Array<{ name: string; value: unknown }> = [
+      { name: "not an object", value: "rendered" },
+      { name: "unknown status", value: { status: "redirect" } },
+      { name: "missing html", value: { status: "rendered", renderedModules: [], tsxStyles: [] } },
       {
-        name: "wrong version",
-        value: renderEnvelope({ protocol: ISOLATE_PROTOCOL_VERSION + 1 }),
-      },
-      { name: "unknown variant", value: { protocol: ISOLATE_PROTOCOL_VERSION, op: "inspect" } },
-      { name: "unknown field", value: renderEnvelope({ extra: true }) },
-      {
-        name: "missing field",
-        value: {
-          protocol: ISOLATE_PROTOCOL_VERSION,
-          op: "render",
-          file: "src/pages/index.astro",
-          params: [],
-          route: null,
-        },
-      },
-      { name: "half content fields", value: renderEnvelope({ contentRef: "render-1" }) },
-      {
-        name: "duplicate params",
-        value: renderEnvelope({ params: [["slug", "one"], ["slug", "two"]] }),
-      },
-      { name: "sparse params", value: renderEnvelope({ params: sparseParams() }) },
-      {
-        name: "bad segment",
-        value: renderEnvelope({
-          route: {
-            file: "[slug].astro",
-            segments: [{ type: "wildcard", value: "slug" }],
-            isDynamic: true,
-            priority: 10,
-            isEndpoint: false,
-          },
-        }),
+        name: "non-string html",
+        value: { status: "rendered", html: 1, renderedModules: [], tsxStyles: [] },
       },
       {
-        name: "bad priority",
-        value: renderEnvelope({
-          route: {
-            file: "[slug].astro",
-            segments: [{ type: "param", value: "slug" }],
-            isDynamic: true,
-            priority: Number.POSITIVE_INFINITY,
-            isEndpoint: false,
-          },
-        }),
+        name: "non-string rendered module",
+        value: { status: "rendered", html: "", renderedModules: [1], tsxStyles: [] },
       },
-    ];
-
-    for (const scenario of malformed) {
-      expect(() => parseIsolateRequest(scenario.value), scenario.name).toThrow(
-        IsolateProtocolError,
-      );
-    }
-  });
-
-  test("rejects malformed response envelopes and reserved path keys", () => {
-    const malformed: Array<{ name: string; value: unknown }> = [
-      {
-        name: "unknown variant",
-        value: { protocol: ISOLATE_PROTOCOL_VERSION, status: "redirect" },
-      },
-      {
-        name: "missing rendered field",
-        value: {
-          protocol: ISOLATE_PROTOCOL_VERSION,
-          status: "rendered",
-          renderedModules: [],
-          tsxStyles: [],
-        },
-      },
-      {
-        name: "bad unresolved reason",
-        value: {
-          protocol: ISOLATE_PROTOCOL_VERSION,
-          status: "unresolved",
-          reason: "redirected",
-        },
-      },
+      { name: "bad unresolved reason", value: { status: "unresolved", reason: "redirected" } },
       {
         name: "malformed paths",
-        value: {
-          protocol: ISOLATE_PROTOCOL_VERSION,
-          status: "paths",
-          paths: { "src/pages/[slug].astro": ["not-param-sets"] },
-        },
+        value: { status: "paths", paths: { "src/pages/[slug].astro": ["not-param-sets"] } },
       },
-      {
-        name: "empty error message",
-        value: { protocol: ISOLATE_PROTOCOL_VERSION, status: "error", message: "" },
-      },
-      {
-        name: "proto path",
-        value: JSON.parse(
-          `{"protocol":${ISOLATE_PROTOCOL_VERSION},"status":"paths","paths":{"__proto__":[]}}`,
-        ),
-      },
-      {
-        name: "prototype path",
-        value: {
-          protocol: ISOLATE_PROTOCOL_VERSION,
-          status: "paths",
-          paths: { prototype: [] },
-        },
-      },
-      {
-        name: "constructor path",
-        value: {
-          protocol: ISOLATE_PROTOCOL_VERSION,
-          status: "paths",
-          paths: { constructor: [] },
-        },
-      },
+      { name: "missing error message", value: { status: "error" } },
     ];
 
     for (const scenario of malformed) {
@@ -459,5 +288,12 @@ describe("isolate protocol", () => {
         IsolateProtocolError,
       );
     }
+  });
+
+  test("keeps a __proto__ path key as data", () => {
+    const response = parseIsolateResponse(JSON.parse('{"status":"paths","paths":{"__proto__":[]}}'));
+    if (response.status !== "paths") throw new Error("expected paths");
+    expect(Object.getPrototypeOf(response.paths)).toBe(Object.prototype);
+    expect(Object.keys(response.paths)).toEqual(["__proto__"]);
   });
 });

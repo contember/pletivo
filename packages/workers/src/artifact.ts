@@ -4,6 +4,7 @@ import type {
   ModuleId,
   PreparedSite,
 } from "@pletivo/core/artifact";
+import { normalizeProjectPath } from "./project-path.ts";
 
 export type { PreparedSite };
 
@@ -81,20 +82,6 @@ export function bindArtifactResolver(
 /** Project source identity used by both producer edges and the Worker compiler. */
 export function projectModuleId(path: string): ModuleId {
   return `project:${normalizeProjectPath(path)}`;
-}
-
-/** Normalize separators and dot segments without touching URL/package semantics. */
-export function normalizeProjectPath(path: string): string {
-  const normalized: string[] = [];
-  for (const segment of path.replace(/\\/g, "/").split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      normalized.pop();
-      continue;
-    }
-    normalized.push(segment);
-  }
-  return normalized.join("/");
 }
 
 /** Reversible Loader name derived from every byte of the logical identity. */

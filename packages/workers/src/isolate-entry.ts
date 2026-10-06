@@ -29,19 +29,18 @@ import {
   CONTENT_BINDING,
   decodeParams,
   encodeParams,
-  ISOLATE_PROTOCOL_VERSION,
-  parseIsolateRequest,
   type IsolateParamPair,
   type IsolatePathRoute,
   type IsolatePathsResponse,
   type IsolateRenderedResponse,
   type IsolateRenderRequest,
   type IsolateRequest,
-  type IsolateUnresolvedReason,
   type IsolateUnresolvedResponse,
   type IsolateErrorResponse,
   type IsolateProgramExport,
 } from "./isolate-protocol.ts";
+import { normalizeProjectPath } from "./project-path.ts";
+import type { UnresolvedReason } from "./render.ts";
 
 /** A compiled page module. Every field is user code, so each is checked before use. */
 export interface PageModule {
@@ -89,8 +88,15 @@ export type ProgramExportsMatch = Assert<SameKeys<keyof IsolateProgram, IsolateP
 type SameKeys<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Assert<T extends true> = T;
 
+/** The isolate's `env`, as the host's `callIsolate` builds it. */
+export interface IsolateEnv {
+  [CONTENT_BINDING]?: ContentBinding;
+  [ENV_BINDING]?: EnvPayload;
+  [IMPORT_META_ENV_BINDING]?: Record<string, string>;
+}
+
 export interface IsolateEntry {
-  fetch(request: Request, env: unknown): Promise<Response>;
+  fetch(request: Request, env: IsolateEnv): Promise<Response>;
 }
 
 // The Workers host has no `base` yet, so paginate's URLs are root-relative.
@@ -102,16 +108,19 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
       // An error payload, not a throw: across the Loader boundary a throw looks the same
       // as a bundle that failed to start.
       try {
-        const body = parseIsolateRequest(await request.json());
-        const bindings = parseBindings(env);
-        if (program.importMetaEnv) installImportMetaEnv(bindings);
-        for (const install of program.envInstallers) install(envValues(bindings));
-        return await withContent(program, bindings, body, () =>
+        const body: IsolateRequest = JSON.parse(await request.text());
+        // Installed before any page is imported, since frontmatter reads it at import time.
+        if (program.importMetaEnv) {
+          Reflect.set(globalThis, IMPORT_META_ENV_GLOBAL, env[IMPORT_META_ENV_BINDING] ?? {});
+        }
+        // Module state is safe for these, unlike content: the isolate's `env` is fixed at
+        // creation and covered by its id.
+        for (const install of program.envInstallers) install(env[ENV_BINDING] ?? {});
+        return await withContent(program, env[CONTENT_BINDING], body, () =>
           body.op === "paths" ? listPaths(program, body.routes) : render(program, body),
         );
       } catch (error) {
         const response: IsolateErrorResponse = {
-          protocol: ISOLATE_PROTOCOL_VERSION,
           status: "error",
           message: error instanceof Error ? error.message : String(error),
           ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
@@ -143,7 +152,7 @@ async function resolveDynamic(
   route: Route,
   urlParams: RouteParams,
   file: string,
-): Promise<StaticPath | IsolateUnresolvedReason> {
+): Promise<StaticPath | UnresolvedReason> {
   const paths = await staticPaths(module, route, file);
   if (paths === null) return "not-enumerable";
   // `Astro.params` is the path's own param set, not the URL's: an entry may carry
@@ -230,7 +239,7 @@ async function listPaths(
     if (list === null) continue;
     paths[file] = list.map((entry) => encodeParams(entry.params));
   }
-  const response: IsolatePathsResponse = { protocol: ISOLATE_PROTOCOL_VERSION, status: "paths", paths };
+  const response: IsolatePathsResponse = { status: "paths", paths };
   return Response.json(response);
 }
 
@@ -248,7 +257,6 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
     const resolved = await resolveDynamic(module, route, params, file);
     if (typeof resolved === "string") {
       const response: IsolateUnresolvedResponse = {
-        protocol: ISOLATE_PROTOCOL_VERSION,
         status: "unresolved",
         reason: resolved,
       };
@@ -267,7 +275,6 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
     }),
   );
   const response: IsolateRenderedResponse = {
-    protocol: ISOLATE_PROTOCOL_VERSION,
     status: "rendered",
     html: value,
     renderedModules: [...renderedModules],
@@ -276,69 +283,12 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
   return Response.json(response);
 }
 
-interface IsolateBindings {
-  content: ContentBinding | null;
-  env: unknown;
-  importMetaEnv: unknown;
-}
-
-function parseBindings(env: unknown): IsolateBindings {
-  if (!isRecord(env)) return { content: null, env: undefined, importMetaEnv: undefined };
-  const content = env[CONTENT_BINDING];
-  return {
-    content: isContentBinding(content) ? content : null,
-    env: env[ENV_BINDING],
-    importMetaEnv: env[IMPORT_META_ENV_BINDING],
-  };
-}
-
-/**
- * The `astro:env` values. Module state is safe for them, unlike content: they come
- * out of the isolate's own `env`, which is fixed at creation and covered by its id.
- */
-function envValues(bindings: IsolateBindings): Partial<EnvPayload> {
-  const values = bindings.env;
-  if (!isRecord(values)) return {};
-  return {
-    ...(values.client === undefined ? {} : { client: stringRecord(values.client, "client") }),
-    ...(values.server === undefined ? {} : { server: stringRecord(values.server, "server") }),
-  };
-}
-
-/** Installed before any page is imported, since frontmatter reads it at import time. */
-function installImportMetaEnv(bindings: IsolateBindings): void {
-  const values = bindings.importMetaEnv;
-  Reflect.set(
-    globalThis,
-    IMPORT_META_ENV_GLOBAL,
-    values === undefined ? {} : stringRecord(values, "import.meta.env"),
-  );
-}
-
-function stringRecord(value: unknown, label: string): Record<string, string> {
-  if (!isRecord(value)) throw new Error(`[pletivo-workers] ${label} values must be an object`);
-  const record: Record<string, string> = {};
-  for (const [name, entry] of Object.entries(value)) {
-    if (typeof entry !== "string") {
-      throw new Error(`[pletivo-workers] ${label} value ${JSON.stringify(name)} must be a string`);
-    }
-    record[name] = entry;
-  }
-  return record;
-}
-
 /**
  * A path against a directory, as a file-map key. Normalised, not joined: a verbatim
  * `./content/x` base is a prefix no key starts with, silently emptying the collection.
  */
 export function resolveFrom(dir: string, relative: string): string {
-  const out: string[] = [];
-  for (const segment of [...(dir ? dir.split("/") : []), ...(relative ? relative.split("/") : [])]) {
-    if (segment === "." || segment === "") continue;
-    if (segment === "..") out.pop();
-    else out.push(segment);
-  }
-  return out.join("/");
+  return normalizeProjectPath(`${dir}/${relative}`);
 }
 
 function dirname(path: string): string {
@@ -352,13 +302,12 @@ function dirname(path: string): string {
  */
 async function withContent(
   program: IsolateProgram,
-  bindings: IsolateBindings,
+  files: ContentBinding | undefined,
   body: IsolateRequest,
   run: () => Promise<Response>,
 ): Promise<Response> {
   const modules = program.content;
   if (modules === null) return run();
-  const files = bindings.content;
   if (!files) throw new Error("[pletivo-workers] the render isolate has no content binding");
   const ref = body.contentRef;
   if (ref === undefined) throw new Error("[pletivo-workers] the render request carries no content ref");
@@ -384,7 +333,7 @@ async function withContent(
     image(entryDir) {
       return collections.imageSchemaFor(entryDir, async (dir, relative) => {
         const path = resolveFrom(dir, relative);
-        const info = files.image ? await files.image(ref, path) : null;
+        const info = await files.image(ref, path);
         if (!info) throw new Error("image not found: " + relative + " (resolved to " + path + ")");
         return images.makeImageMetadata({
           src: "/" + images.imageOutputPath(path, info.hash),
@@ -405,16 +354,6 @@ async function withContent(
     await collections.initCollections(body.rootDir || "");
     return run();
   });
-}
-
-function isContentBinding(value: unknown): value is ContentBinding {
-  // Read through `Reflect.get`: a loopback RPC stub answers property reads, not `in`.
-  return (
-    (typeof value === "object" || typeof value === "function") &&
-    value !== null &&
-    typeof Reflect.get(value, "scan") === "function" &&
-    typeof Reflect.get(value, "read") === "function"
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

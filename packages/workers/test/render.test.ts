@@ -168,14 +168,12 @@ describe("the isolate response boundary", () => {
     ).rejects.toBeInstanceOf(IsolateProtocolError);
   });
 
-  test("keeps a versioned isolate error distinct from protocol corruption", async () => {
+  test("keeps an isolate error distinct from protocol corruption", async () => {
     await expect(
       renderPage({
         files: new Map([["src/pages/index.astro", "<p>page</p>\n"]]),
         pathname: "/",
-        loader: responseLoader(
-          Response.json({ protocol: 1, status: "error", message: "page failed" }),
-        ),
+        loader: responseLoader(Response.json({ status: "error", message: "page failed" })),
         compiler,
       }),
     ).rejects.toBeInstanceOf(IsolateExecutionError);
