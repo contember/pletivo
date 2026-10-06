@@ -64,25 +64,11 @@ export interface ArtifactInput {
   digest: string;
 }
 
-/** Producer/consumer envelope kept distinct from the prepare report. */
+/** Producer/consumer envelope: the executable artifact plus its provenance. */
 export interface PreparedSite {
   artifact: SiteArtifact;
   /** Provenance for staleness checks; never part of program identity. */
   inputs?: ArtifactInput[];
-}
-
-export type PrepareDiagnosticSeverity = "fatal" | "warning";
-
-export interface PrepareDiagnostic {
-  severity: PrepareDiagnosticSeverity;
-  source: string;
-  hook: string;
-  reason: string;
-}
-
-/** Non-executable producer output that never participates in program identity. */
-export interface PrepareReport {
-  diagnostics: PrepareDiagnostic[];
 }
 
 /** An artifact from a generation this build cannot read. */
@@ -96,7 +82,7 @@ export class ArtifactVersionError extends Error {
   }
 }
 
-/** A malformed V2 artifact, named at the invalid field. */
+/** A malformed artifact, named at the invalid field. */
 export class ArtifactFormatError extends Error {
   constructor(
     readonly path: string,
@@ -112,7 +98,7 @@ export function assertArtifactVersion(artifact: { version: number }): void {
   if (artifact.version !== ARTIFACT_VERSION) throw new ArtifactVersionError(artifact.version);
 }
 
-/** Parse and fully validate a V2 producer/consumer envelope. */
+/** Parse and fully validate a producer/consumer envelope. */
 export function parsePreparedSite(value: unknown): PreparedSite {
   const prepared = requireObject(value, "$", "an object");
   const artifact = requireObject(requiredField(prepared, "artifact", "$"), "$.artifact", "an object");
@@ -160,7 +146,7 @@ export async function digestArtifactInput(bytes: Uint8Array): Promise<string> {
   return `sha256:${hex}`;
 }
 
-/** Serialize V2 with stable object, module, and resolution ordering. */
+/** Serialize with stable object, module, and resolution ordering. */
 export function serializePreparedSite(value: unknown): string {
   const prepared = parsePreparedSite(value);
   const modules = [...prepared.artifact.modules].sort((left, right) =>
@@ -461,6 +447,3 @@ function hasOwn(value: object, field: PropertyKey): boolean {
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
-
-/** The config a project with no prepared Astro config has. */
-export const DEFAULT_ARTIFACT_CONFIG: ArtifactConfig = {};

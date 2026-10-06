@@ -1,4 +1,4 @@
-/** Close every non-project import into Artifact V2 modules and resolutions. */
+/** Close every non-project import into artifact modules and resolutions. */
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +8,8 @@ import type {
   ArtifactResolution,
   ModuleId,
 } from "@pletivo/core/artifact";
+import { prepareFailure, PrepareError } from "./error";
+import { compareStrings, isInsideRoot, isMissingFile, normalizePath } from "./paths";
 import {
   classifySpecifier,
   extensionOf,
@@ -24,7 +26,6 @@ export interface ProjectImportSource {
 export interface FrozenVirtualSource {
   id: string;
   code: string;
-  loader: string;
 }
 
 export type FreezeVirtualSource = (
@@ -35,17 +36,6 @@ export type FreezeVirtualSource = (
 export interface PreparedGraph {
   modules: ArtifactModule[];
   resolutions: ArtifactResolution[];
-}
-
-export class PrepareGraphError extends Error {
-  constructor(
-    readonly source: string,
-    readonly hook: string,
-    readonly reason: string,
-  ) {
-    super(`${source} (${hook}): ${reason}`);
-    this.name = "PrepareGraphError";
-  }
 }
 
 interface ImportRequest {
@@ -75,7 +65,6 @@ export async function prepareModuleGraph(
   root: string,
   projectSources: readonly ProjectImportSource[],
   freezeVirtual: FreezeVirtualSource,
-  pathPrefix = "",
 ): Promise<PreparedGraph> {
   const modules = new Map<ModuleId, ArtifactModule>();
   const resolutions: ArtifactResolution[] = [];
@@ -98,7 +87,7 @@ export async function prepareModuleGraph(
       }
     } catch (error) {
       if (!(error instanceof ImportScanError)) throw error;
-      throw new PrepareGraphError(
+      throw prepareFailure(
         importerFile,
         "scan",
         `${error.reason}; importer ${JSON.stringify(importer)}`,
@@ -122,27 +111,11 @@ export async function prepareModuleGraph(
     const known = physicalIds.get(canonical);
     if (known) return known;
 
-    const packageIdentity = await packageIdentityFor(canonical);
-    if (!packageIdentity) {
-      throw new PrepareGraphError(
-        displayPath(root, canonical),
-        "resolve",
-        "resolved outside the project without an owning package.json",
-      );
-    }
-    const packageRelative = normalizePath(path.relative(packageIdentity.root, canonical));
-    if (packageRelative === "" || packageRelative.startsWith("../")) {
-      throw new PrepareGraphError(
-        displayPath(root, canonical),
-        "resolve",
-        "could not derive a package-relative module identity",
-      );
-    }
-    const id = `npm:${packageIdentity.digest}/${packageRelative}`;
+    const id = await npmModuleId(root, canonical, "resolve");
     const existing = modules.get(id);
     if (existing) {
-      if (existing.compilePath !== compilePathFor(root, canonical, pathPrefix)) {
-        throw new PrepareGraphError(id, "identity", "two resolved files produced the same module id");
+      if (existing.compilePath !== compilePathFor(root, canonical)) {
+        throw prepareFailure(id, "identity", "two resolved files produced the same module id");
       }
       physicalIds.set(canonical, id);
       return id;
@@ -153,7 +126,7 @@ export async function prepareModuleGraph(
     try {
       source = await Bun.file(canonical).text();
     } catch (error) {
-      throw new PrepareGraphError(
+      throw prepareFailure(
         displayPath(root, canonical),
         "load",
         error instanceof Error ? error.message : String(error),
@@ -163,7 +136,7 @@ export async function prepareModuleGraph(
       id,
       kind,
       source,
-      compilePath: compilePathFor(root, canonical, pathPrefix),
+      compilePath: compilePathFor(root, canonical),
     });
     physicalIds.set(canonical, id);
     enqueueImports(id, canonical, path.dirname(canonical), false, kind === "css", source);
@@ -183,14 +156,14 @@ export async function prepareModuleGraph(
 
     const kind = classifySpecifier(request.specifier);
     if (kind === "unsupported") {
-      throw new PrepareGraphError(
+      throw prepareFailure(
         request.importerFile,
         "import",
         `imports ${JSON.stringify(request.specifier)}, which the Workers host cannot provide`,
       );
     }
     if (kind === "builtin") {
-      throw new PrepareGraphError(
+      throw prepareFailure(
         request.importerFile,
         "import",
         `imports ${JSON.stringify(request.specifier)}, which is not a supported Workers host external`,
@@ -207,15 +180,15 @@ export async function prepareModuleGraph(
     if (kind === "virtual" || (kind === "relative" && request.relativeViaVite)) {
       const frozen = await freezeVirtual(request.specifier, request.importerFile);
       if (!frozen) {
-        throw new PrepareGraphError(
+        throw prepareFailure(
           request.importerFile,
           "vite.load",
           `could not resolve and load ${kind === "virtual" ? "virtual module" : "relative import from a non-file virtual module"} ` +
             JSON.stringify(request.specifier),
         );
       }
-      const moduleKind = kindForLoader(frozen.loader, frozen.id);
-      const frozenIdentity = await logicalFrozenIdentity(root, frozen.id, moduleKind, pathPrefix);
+      const moduleKind = kindForFrozenId(frozen.id);
+      const frozenIdentity = await logicalFrozenIdentity(root, frozen.id, moduleKind);
       const digest = digestText(
         `${frozenIdentity.logicalId}\0${moduleKind}\0${frozen.code}`,
       ).slice(0, 32);
@@ -266,8 +239,8 @@ export async function prepareModuleGraph(
         );
       }
     } catch (error) {
-      if (error instanceof PrepareGraphError) throw error;
-      throw new PrepareGraphError(
+      if (error instanceof PrepareError) throw error;
+      throw prepareFailure(
         request.importerFile,
         "resolve",
         `could not resolve ${JSON.stringify(request.specifier)}: ` +
@@ -275,7 +248,7 @@ export async function prepareModuleGraph(
       );
     }
     if (request.stylesheet && kindForFile(resolved) !== "css") {
-      throw new PrepareGraphError(
+      throw prepareFailure(
         request.importerFile,
         "resolve",
         `CSS @import ${JSON.stringify(request.specifier)} resolved to a non-CSS module`,
@@ -293,15 +266,8 @@ export async function prepareModuleGraph(
     });
   }
 
-  return {
-    modules: [...modules.values()].sort((left, right) => compareStrings(left.id, right.id)),
-    resolutions: resolutions.sort((left, right) => {
-      const importerOrder = compareStrings(left.importer, right.importer);
-      return importerOrder === 0
-        ? compareStrings(left.specifier, right.specifier)
-        : importerOrder;
-    }),
-  };
+  // Discovery order; serializePreparedSite owns the canonical order.
+  return { modules: [...modules.values()], resolutions };
 }
 
 function projectQueryFile(specifier: string): string | null {
@@ -335,8 +301,7 @@ async function resolveProjectQueryCandidate(candidate: string): Promise<string |
   return null;
 }
 
-function kindForFile(file: string): ArtifactModuleKind {
-  const extension = extensionOf(file);
+function kindForExtension(extension: string): ArtifactModuleKind | null {
   if (extension === ".js" || extension === ".mjs") return "js";
   if (extension === ".ts" || extension === ".mts") return "ts";
   if (extension === ".jsx") return "jsx";
@@ -344,25 +309,30 @@ function kindForFile(file: string): ArtifactModuleKind {
   if (extension === ".json") return "json";
   if (extension === ".astro") return "astro";
   if (extension === ".css") return "css";
+  return null;
+}
+
+function kindForFile(file: string): ArtifactModuleKind {
+  const extension = extensionOf(file);
+  const kind = kindForExtension(extension);
+  if (kind !== null) return kind;
   if (extension === ".cjs" || extension === ".cts") {
-    throw new PrepareGraphError(
+    throw prepareFailure(
       file,
       "loader",
       `CommonJS ${extension} modules cannot run in the Workers module graph`,
     );
   }
-  throw new PrepareGraphError(file, "loader", `unsupported module extension ${JSON.stringify(extension)}`);
+  throw prepareFailure(file, "loader", `unsupported module extension ${JSON.stringify(extension)}`);
 }
 
-function kindForLoader(loader: string, id: string): ArtifactModuleKind {
-  if (loader === "js") return "js";
-  if (loader === "ts") return "ts";
-  if (loader === "jsx") return "jsx";
-  if (loader === "tsx") return "tsx";
-  if (loader === "json") return "json";
-  if (loader === "css") return "css";
-  if (loader === "astro") return "astro";
-  throw new PrepareGraphError(id, "vite.load", `unsupported loader ${JSON.stringify(loader)}`);
+/** A Vite id without an extension (`virtual:x`) is TypeScript, as the Bun host loads it. */
+function kindForFrozenId(id: string): ArtifactModuleKind {
+  const extension = path.extname(id.replaceAll("\0", "")).toLowerCase();
+  if (extension === "") return "ts";
+  const kind = kindForExtension(extension);
+  if (kind !== null) return kind;
+  throw prepareFailure(id, "vite.load", `unsupported module extension ${JSON.stringify(extension)}`);
 }
 
 interface FrozenIdentity {
@@ -375,7 +345,6 @@ async function logicalFrozenIdentity(
   root: string,
   id: string,
   kind: ArtifactModuleKind,
-  pathPrefix: string,
 ): Promise<FrozenIdentity> {
   if (!path.isAbsolute(id)) {
     return {
@@ -386,34 +355,34 @@ async function logicalFrozenIdentity(
   }
   const canonical = await canonicalFile(id);
   const projectRelative = normalizePath(path.relative(root, canonical));
-  if (isProjectRelative(projectRelative)) {
-    return {
-      logicalId: `project:${projectRelative}`,
-      compilePath: compilePathFor(root, canonical, pathPrefix),
-      physicalFile: canonical,
-    };
-  }
+  return {
+    logicalId: isInsideRoot(projectRelative)
+      ? `project:${projectRelative}`
+      : await npmModuleId(root, canonical, "vite.resolveId"),
+    compilePath: compilePathFor(root, canonical),
+    physicalFile: canonical,
+  };
+}
+
+/** `npm:<package digest>/<package-relative path>` for a file outside the project. */
+async function npmModuleId(root: string, canonical: string, hook: string): Promise<ModuleId> {
   const packageIdentity = await packageIdentityFor(canonical);
   if (!packageIdentity) {
-    throw new PrepareGraphError(
+    throw prepareFailure(
       displayPath(root, canonical),
-      "vite.resolveId",
-      "absolute Vite id is outside the project and has no owning package.json",
+      hook,
+      "resolved outside the project without an owning package.json",
     );
   }
   const packageRelative = normalizePath(path.relative(packageIdentity.root, canonical));
-  if (!isProjectRelative(packageRelative) || packageRelative === "") {
-    throw new PrepareGraphError(
+  if (packageRelative === "" || !isInsideRoot(packageRelative)) {
+    throw prepareFailure(
       displayPath(root, canonical),
-      "vite.resolveId",
-      "could not derive a package-relative identity for absolute Vite id",
+      hook,
+      "could not derive a package-relative module identity",
     );
   }
-  return {
-    logicalId: `npm:${packageIdentity.digest}/${packageRelative}`,
-    compilePath: compilePathFor(root, canonical, pathPrefix),
-    physicalFile: canonical,
-  };
+  return `npm:${packageIdentity.digest}/${packageRelative}`;
 }
 
 async function resolveWorkerSpecifier(
@@ -448,7 +417,7 @@ async function resolveWorkerSpecifier(
   }
   const candidate = path.resolve(packageRecord.root, target);
   const relative = normalizePath(path.relative(packageRecord.root, candidate));
-  if (!isProjectRelative(relative)) {
+  if (!isInsideRoot(relative)) {
     throw new Error(`package export target ${JSON.stringify(target)} escapes its package root`);
   }
   const resolved = await resolveFileCandidate(candidate);
@@ -480,7 +449,7 @@ async function findPackage(resolveFrom: string, name: string): Promise<PackageRe
       return { root: await canonicalFile(packageRoot), manifest };
     } catch (error) {
       if (!isMissingFile(error)) {
-        throw new PrepareGraphError(
+        throw prepareFailure(
           manifestPath,
           "package.json",
           error instanceof Error ? error.message : String(error),
@@ -619,10 +588,6 @@ async function isDirectory(file: string): Promise<boolean> {
   }
 }
 
-function isProjectRelative(relative: string): boolean {
-  return relative !== ".." && !relative.startsWith("../") && !path.isAbsolute(relative);
-}
-
 async function canonicalFile(file: string): Promise<string> {
   try {
     return await fs.realpath(file);
@@ -644,7 +609,7 @@ async function packageIdentityFor(file: string): Promise<PackageIdentity | null>
       };
     } catch (error) {
       if (!isMissingFile(error)) {
-        throw new PrepareGraphError(manifestPath, "package.json", String(error));
+        throw prepareFailure(manifestPath, "package.json", String(error));
       }
     }
     const parent = path.dirname(directory);
@@ -660,15 +625,8 @@ function packageInstancePath(directory: string): string {
   return first === -1 ? path.posix.basename(normalized) : normalized.slice(first + 1);
 }
 
-function isMissingFile(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  return Reflect.get(error, "code") === "ENOENT";
-}
-
-function compilePathFor(root: string, file: string, pathPrefix: string): string {
-  const relative = normalizePath(path.relative(root, file));
-  if (!pathPrefix) return relative;
-  return path.posix.join(normalizePath(pathPrefix), relative);
+function compilePathFor(root: string, file: string): string {
+  return normalizePath(path.relative(root, file));
 }
 
 function virtualCompilePath(id: string, kind: ArtifactModuleKind): string {
@@ -685,14 +643,6 @@ function displayPath(root: string, file: string): string {
   return normalizePath(path.relative(root, file)) || normalizePath(file);
 }
 
-function normalizePath(value: string): string {
-  return value.split(path.sep).join("/");
-}
-
 function digestText(value: string): string {
   return new Bun.CryptoHasher("sha256").update(value).digest("hex");
-}
-
-function compareStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

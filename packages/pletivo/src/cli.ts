@@ -32,12 +32,12 @@ switch (command) {
     const { prepare, PrepareError } = await import("./prepare/index");
     const { emitArtifact } = await import("./prepare/emit");
     const outDir = readFlag(process.argv, ["--out"]) ?? ".pletivo";
-    let prepared: Awaited<ReturnType<typeof prepare>>;
+    let site: Awaited<ReturnType<typeof prepare>>;
     try {
-      prepared = await prepare(projectRoot);
+      site = await prepare(projectRoot);
     } catch (error) {
       if (!(error instanceof PrepareError)) throw error;
-      for (const diagnostic of error.report.diagnostics) {
+      for (const diagnostic of error.diagnostics) {
         console.error(
           `  ✗ ${diagnostic.source} (${diagnostic.hook}): ${diagnostic.reason}`,
         );
@@ -47,19 +47,16 @@ switch (command) {
     }
     const written = await emitArtifact(
       outDir.startsWith("/") ? outDir : `${projectRoot}/${outDir}`,
-      prepared.site,
+      site,
     );
-    const virtualCount = prepared.site.artifact.modules.filter((module) =>
+    const virtualCount = site.artifact.modules.filter((module) =>
       module.id.startsWith("virtual:"),
     ).length;
-    console.log(`  artifact v${prepared.site.artifact.version}`);
-    console.log(`    ${prepared.site.artifact.modules.length} carried module(s)`);
-    console.log(`    ${prepared.site.artifact.resolutions.length} frozen resolution(s)`);
+    console.log(`  artifact v${site.artifact.version}`);
+    console.log(`    ${site.artifact.modules.length} carried module(s)`);
+    console.log(`    ${site.artifact.resolutions.length} frozen resolution(s)`);
     console.log(`    ${virtualCount} frozen virtual module(s)`);
     console.log(`    ${(written.moduleBytes / 1024).toFixed(1)} kB of modules → ${written.modulePath}`);
-    for (const diagnostic of prepared.report.diagnostics) {
-      console.warn(`  ⚠ ${diagnostic.source} (${diagnostic.hook}): ${diagnostic.reason}`);
-    }
     break;
   }
 

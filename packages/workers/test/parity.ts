@@ -14,11 +14,12 @@
  * value of this script is the list of places the two disagree.
  */
 
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
-import { parsePreparedSite, serializePreparedSite } from "@pletivo/core/artifact";
+import { parsePreparedSite, serializePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
 import { withoutCdnCgi } from "../src/images.ts";
 import { builtPathname } from "./built-pathname.ts";
 import { imageUrls, readSources, sameBytes, SKIPPED } from "./sources.ts";
@@ -34,10 +35,10 @@ if (process.argv[2] === "--build") {
   // say so before 200 pages are written.
   if (artifactPath) {
     const { prepare } = await import("../../pletivo/src/prepare/index.ts");
-    const prepared = await prepare(root, { pathPrefix: pathPrefix ?? "" });
+    const site = await prepare(root);
     await Bun.write(
       artifactPath,
-      serializePreparedSite(prepared.site),
+      serializePreparedSite(prefixCompilePaths(site, root, pathPrefix ?? "")),
     );
   }
   const { build } = await import("../../pletivo/src/build.ts");
@@ -94,8 +95,8 @@ if ((await child.exited) !== 0) {
  * compiler derives the `astro-{scope}` hash from it. The Bun host names a module by
  * its path relative to `process.cwd()`, and the build above runs from the repo root
  * — so the virtual file map is keyed the same way, and so is the artifact
- * (`prepare({ pathPrefix })`). In real use both sides sit at the project root and
- * this prefix is empty.
+ * (`prefixCompilePaths`). In real use both sides sit at the project root and this
+ * prefix is empty.
  */
 const artifact = parsePreparedSite(JSON.parse(await Bun.file(artifactPath).text()));
 const sources = await readSources(root);
@@ -198,6 +199,17 @@ function pathnamesOf(body: unknown): Set<string> {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/** Move compile paths of files on disk under `prefix`; a virtual id names no file and keeps its own. */
+function prefixCompilePaths(site: PreparedSite, root: string, prefix: string): PreparedSite {
+  if (prefix === "") return site;
+  const modules = site.artifact.modules.map((module) =>
+    module.compilePath !== undefined && existsSync(path.resolve(root, module.compilePath))
+      ? { ...module, compilePath: path.posix.join(prefix, module.compilePath) }
+      : module,
+  );
+  return { ...site, artifact: { ...site.artifact, modules } };
+}
 
 /** Every HTML file `pletivo build` emitted, keyed by output path. */
 async function readBuiltHtml(dir: string): Promise<Map<string, string>> {

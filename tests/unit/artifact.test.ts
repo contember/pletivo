@@ -6,7 +6,6 @@ import {
   digestArtifactInput,
   parsePreparedSite,
   serializePreparedSite,
-  type PrepareReport,
   type PreparedSite,
 } from "@pletivo/core/artifact";
 
@@ -128,7 +127,7 @@ function formatError(value: unknown): ArtifactFormatError {
   throw new Error("expected ArtifactFormatError");
 }
 
-describe("Artifact V2", () => {
+describe("site artifact", () => {
   test("parses a valid self-contained artifact round-trip", () => {
     const serialized = serializePreparedSite(PREPARED);
     const parsed = parsePreparedSite(JSON.parse(serialized));
@@ -147,24 +146,6 @@ describe("Artifact V2", () => {
 
     expect(parsed.artifact.scripts.headInline).toEqual(["head-b", "head-a"]);
     expect(parsed.artifact.scripts.page).toEqual(["page-b", "page-a"]);
-  });
-
-  test("rejects a V1 envelope explicitly", () => {
-    const v1 = {
-      artifact: {
-        version: 1,
-        id: "old",
-        config: { base: "/", trailingSlash: "ignore", build: { format: "directory" } },
-        scripts: { headInline: [], page: [], beforeHydration: [] },
-        virtualModules: {},
-        vendor: {},
-        generatedSources: {},
-        diagnostics: [],
-      },
-      modules: {},
-    };
-
-    expect(() => parsePreparedSite(v1)).toThrow(ArtifactVersionError);
   });
 
   test("rejects an unknown artifact version", () => {
@@ -369,25 +350,12 @@ describe("Artifact V2", () => {
     ).toThrow(ArtifactFormatError);
   });
 
-  test("keeps diagnostics outside canonical executable data", () => {
-    const report: PrepareReport = {
-      diagnostics: [
-        {
-          severity: "warning",
-          source: "integration",
-          hook: "astro:config:setup",
-          reason: "diagnostic-only-marker",
-        },
-      ],
-    };
-    const serialized = serializePreparedSite(PREPARED);
-
-    expect(serialized).not.toContain(report.diagnostics[0]?.reason);
-    expect(() => parsePreparedSite({ ...PREPARED, report })).toThrow(ArtifactFormatError);
+  test("rejects unknown envelope fields", () => {
+    expect(() => parsePreparedSite({ ...PREPARED, report: { diagnostics: [] } })).toThrow(ArtifactFormatError);
   });
 });
 
-describe("Artifact V2 inputs", () => {
+describe("site artifact inputs", () => {
   test("accepts sorted inputs and keeps them through canonical serialization", () => {
     const inputs = [
       { path: "astro.config.mjs", digest: DIGEST_A },

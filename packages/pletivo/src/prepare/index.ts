@@ -3,50 +3,26 @@
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { Glob } from "bun";
-import {
-  ARTIFACT_VERSION,
-  type ArtifactConfig,
-  type PrepareDiagnostic,
-  type PreparedSite,
-  type PrepareReport,
-} from "@pletivo/core/artifact";
+import { ARTIFACT_VERSION, type ArtifactConfig, type PreparedSite } from "@pletivo/core/artifact";
 import type { AstroConfig } from "@pletivo/core/astro-host/types";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
+import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readPrepareInputs } from "./inputs";
-import {
-  PrepareGraphError,
-  prepareModuleGraph,
-  type PreparedGraph,
-  type ProjectImportSource,
-} from "./vendor";
+import { compareStrings, isInsideRoot, normalizePath } from "./paths";
+import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
 
-export class PrepareError extends Error {
-  constructor(
-    message: string,
-    readonly report: PrepareReport,
-  ) {
-    super(`[pletivo prepare] ${message}`);
-    this.name = "PrepareError";
-  }
-}
+export { PrepareError, type PrepareDiagnostic } from "./error";
 
 export interface PrepareOptions {
   /** Where to look for sources. Defaults to the project's configured `srcDir`. */
   srcDir?: string;
-  /** Compilation-path prefix used by parity harnesses whose source map has a parent root. */
-  pathPrefix?: string;
-}
-
-export interface PrepareResult {
-  site: PreparedSite;
-  report: PrepareReport;
 }
 
 const SKIPPED_DIRS = new Set(["node_modules", "dist", ".astro", ".wrangler", ".pletivo"]);
 
-export async function prepare(root: string, options: PrepareOptions = {}): Promise<PrepareResult> {
+export async function prepare(root: string, options: PrepareOptions = {}): Promise<PreparedSite> {
   const projectRoot = realpathSync(path.resolve(root));
   // Digest before loading: an edit racing prepare must read as stale, never as current.
   const inputs = await readPrepareInputs(projectRoot);
@@ -57,30 +33,12 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
     ...unsupportedProjectSemantics(projectConfig),
     ...unsupportedSemantics(host),
   ];
-  if (fatal.length > 0) throw prepareFailure(fatal);
+  if (fatal.length > 0) throw new PrepareError(fatal);
 
   const sources = await readSources(projectRoot, srcDir);
-  let graph: PreparedGraph;
-  try {
-    graph = await prepareModuleGraph(
-      projectRoot,
-      sources,
-      async (specifier, importer) => freezeViteVirtualModule(specifier, importer),
-      options.pathPrefix,
-    );
-  } catch (error) {
-    if (!(error instanceof PrepareGraphError)) throw error;
-    throw prepareFailure([
-      {
-        severity: "fatal",
-        source: error.source,
-        hook: error.hook,
-        reason: error.reason,
-      },
-    ]);
-  }
+  const graph = await prepareModuleGraph(projectRoot, sources, freezeViteVirtualModule);
 
-  const site: PreparedSite = {
+  return {
     artifact: {
       version: ARTIFACT_VERSION,
       config: freezeConfig(host?.config),
@@ -93,44 +51,30 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
     },
     inputs,
   };
-  return { site, report: { diagnostics: [] } };
 }
 
 async function readSources(root: string, srcDir: string): Promise<ProjectImportSource[]> {
   const base = path.resolve(root, srcDir);
   const lexicalRelative = normalizePath(path.relative(root, base));
-  if (!isInsideProject(lexicalRelative)) {
-    throw prepareFailure([
-      {
-        severity: "fatal",
-        source: "pletivo.config",
-        hook: "srcDir",
-        reason: `source directory ${JSON.stringify(srcDir)} escapes the project root`,
-      },
-    ]);
+  if (!isInsideRoot(lexicalRelative)) {
+    throw prepareFailure(
+      "pletivo.config",
+      "srcDir",
+      `source directory ${JSON.stringify(srcDir)} escapes the project root`,
+    );
   }
   if (!existsSync(base)) {
-    throw prepareFailure([
-      {
-        severity: "fatal",
-        source: normalizePath(path.relative(root, base)) || srcDir,
-        hook: "scan",
-        reason: "source directory does not exist",
-      },
-    ]);
+    throw prepareFailure(lexicalRelative || srcDir, "scan", "source directory does not exist");
   }
   const physicalRoot = realpathSync(root);
   const physicalBase = realpathSync(base);
   const physicalRelative = normalizePath(path.relative(physicalRoot, physicalBase));
-  if (!isInsideProject(physicalRelative)) {
-    throw prepareFailure([
-      {
-        severity: "fatal",
-        source: "pletivo.config",
-        hook: "srcDir",
-        reason: `source directory ${JSON.stringify(srcDir)} resolves outside the project root`,
-      },
-    ]);
+  if (!isInsideRoot(physicalRelative)) {
+    throw prepareFailure(
+      "pletivo.config",
+      "srcDir",
+      `source directory ${JSON.stringify(srcDir)} resolves outside the project root`,
+    );
   }
   const sources: ProjectImportSource[] = [];
   for await (const rel of new Glob("**/*").scan({ cwd: physicalBase, dot: false })) {
@@ -190,7 +134,7 @@ function addProjectConfigDiagnostic(
   reason: string,
 ): void {
   if (!unsupported) return;
-  diagnostics.push({ severity: "fatal", source: "pletivo.config", hook, reason });
+  diagnostics.push({ source: "pletivo.config", hook, reason });
 }
 
 function freezeConfig(config: AstroConfig | undefined): ArtifactConfig {
@@ -202,7 +146,6 @@ function unsupportedSemantics(host: AstroHost | null): PrepareDiagnostic[] {
   const diagnostics: PrepareDiagnostic[] = [];
   for (const failure of host.setupErrors) {
     diagnostics.push({
-      severity: "fatal",
       source: failure.name,
       hook: "astro:config:setup",
       reason: failure.error instanceof Error ? failure.error.message : String(failure.error),
@@ -242,7 +185,6 @@ function unsupportedSemantics(host: AstroHost | null): PrepareDiagnostic[] {
   );
   for (const route of host.injectedRoutes) {
     diagnostics.push({
-      severity: "fatal",
       source: "injectRoute",
       hook: "astro:config:setup",
       reason: `${route.pattern} is not routed by the Workers host`,
@@ -260,7 +202,7 @@ function addConfigDiagnostic(
   reason: string,
 ): void {
   if (!unsupported) return;
-  diagnostics.push({ severity: "fatal", source: "astro.config", hook, reason });
+  diagnostics.push({ source: "astro.config", hook, reason });
 }
 
 function addScriptDiagnostic(
@@ -270,7 +212,6 @@ function addScriptDiagnostic(
 ): void {
   if (count === 0) return;
   diagnostics.push({
-    severity: "fatal",
     source: "injectScript",
     hook: stage,
     reason: `${count} script(s) use an injection stage the Workers host cannot preserve`,
@@ -287,20 +228,3 @@ function markdownPluginCount(markdown: unknown): number {
   return count;
 }
 
-function prepareFailure(diagnostics: PrepareDiagnostic[]): PrepareError {
-  const report = { diagnostics };
-  const summary = diagnostics.map((entry) => `${entry.source} (${entry.hook}): ${entry.reason}`).join("; ");
-  return new PrepareError(summary, report);
-}
-
-function normalizePath(value: string): string {
-  return value.split(path.sep).join("/");
-}
-
-function isInsideProject(relative: string): boolean {
-  return relative !== ".." && !relative.startsWith("../") && !path.isAbsolute(relative);
-}
-
-function compareStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
