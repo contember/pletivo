@@ -35,7 +35,7 @@ describe("stripTypes", () => {
   });
 
   test("keeps a value import nothing references, so the module graph does not move", () => {
-    // Default sucrase would elide this. `collectSpecifiers` and the CSS cascade read
+    // Default sucrase would elide this. `collectImports` and the CSS cascade read
     // the same prologue the isolate does, so the two must not disagree.
     const code = 'import Card from "./Card.astro";\nexport const x = 1;\n';
     expect(stripTypes(code, { file: "a.astro" })).toBe(code);

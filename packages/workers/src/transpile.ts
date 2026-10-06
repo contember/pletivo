@@ -3,7 +3,7 @@
  * and `.astro` frontmatter keeps its TypeScript. Sucrase, imported from the package root
  * only (its CLI entries pull Node deps); see docs/todos/016 for the size comparison.
  *
- * `keepUnusedImports` is load-bearing: the import prologue drives `collectSpecifiers`,
+ * `keepUnusedImports` is load-bearing: the import prologue drives `collectImports`,
  * `rewriteImports` and CSS cascade order, and it keeps TS-free input byte-identical.
  */
 

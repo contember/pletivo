@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
-import {
-  collectImportedNames,
-  collectSpecifiers,
-  resolveSpecifier,
-  rewriteImports,
-} from "../src/rewrite-imports.ts";
+import { collectImports, resolveSpecifier, rewriteImports } from "../src/rewrite-imports.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
+
+const collectSpecifiers = (code: string): string[] => collectImports(code).specifiers;
+const collectImportedNames = (code: string, specifier: string): string[] =>
+  collectImports(code).importedNames.get(specifier) ?? [];
 
 /** The module graph a worker host would hold: project path -> name in the bundle. */
 const PROJECT: Record<string, string> = {
@@ -57,7 +56,7 @@ describe("collectSpecifiers", () => {
     Reflect.deleteProperty(globalThis, "Bun");
     try {
       const withoutBun = await import("../src/rewrite-imports.ts?without-bun");
-      expect(withoutBun.collectSpecifiers(`import value from "./value.js";`)).toEqual([
+      expect(withoutBun.collectImports(`import value from "./value.js";`).specifiers).toEqual([
         "./value.js",
       ]);
     } finally {

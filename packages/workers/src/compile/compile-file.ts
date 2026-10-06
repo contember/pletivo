@@ -4,7 +4,7 @@ import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 import { compileAstro, parseAstro, type AstroCompiler } from "../astro-compiler.ts";
 import type { CompileCache, CompiledFile } from "../compile-cache.ts";
 import { IMPORT_META_ENV_GLOBAL } from "../env.ts";
-import { collectImportedNames, collectSpecifiers } from "../rewrite-imports.ts";
+import { collectImports } from "../rewrite-imports.ts";
 import { stripTypes, TranspileError } from "../transpile.ts";
 import { COMPILED } from "./module-kind.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
@@ -156,33 +156,17 @@ function fileEntry(
   kind: ArtifactModuleKind,
 ): CompiledFile {
   const substituted = substituteImportMetaEnv(text);
-  const specifiers = collectSpecifiers(text);
+  const { specifiers, importedNames } = collectImports(text);
   return {
     source,
     kind,
     code: substituted.code === source ? null : substituted.code,
     importMetaEnv: substituted.used,
     specifiers,
-    envNames: envNamesOf(text, specifiers),
+    // Carried per file so a cache hit keeps them: a dropped `astro:env` export stops the isolate.
+    envNames: importedNames.size === 0 ? null : importedNames,
     styles,
   };
-}
-
-/**
- * The names one file imports, per specifier. Carried per file so a cache hit keeps
- * them: a dropped `astro:env` export stops the isolate from starting.
- */
-function envNamesOf(
-  text: string,
-  specifiers: readonly string[],
-): ReadonlyMap<string, readonly string[]> | null {
-  let names: Map<string, readonly string[]> | null = null;
-  for (const specifier of new Set(specifiers)) {
-    const imported = collectImportedNames(text, specifier);
-    if (imported.length === 0) continue;
-    (names ??= new Map()).set(specifier, imported);
-  }
-  return names;
 }
 
 /** `stripTypes`, reported as an unsupported file; for `.astro` the position is in the compiled output. */

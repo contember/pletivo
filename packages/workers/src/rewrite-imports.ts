@@ -138,14 +138,24 @@ function property(value: unknown, key: string): unknown {
   return Reflect.get(value, key);
 }
 
-export function collectSpecifiers(code: string): string[] {
-  return importOccurrences(code).map((occurrence) => occurrence.specifier);
+export interface CollectedImports {
+  /** Every specifier, in source order, repeats kept. */
+  specifiers: string[];
+  /** Per specifier, the names its static imports take; holds only specifiers that take one. */
+  importedNames: Map<string, string[]>;
 }
 
-export function collectImportedNames(code: string, specifier: string): string[] {
-  return importOccurrences(code)
-    .filter((occurrence) => occurrence.specifier === specifier)
-    .flatMap((occurrence) => occurrence.importedNames);
+export function collectImports(code: string): CollectedImports {
+  const specifiers: string[] = [];
+  const importedNames = new Map<string, string[]>();
+  for (const occurrence of importOccurrences(code)) {
+    specifiers.push(occurrence.specifier);
+    if (occurrence.importedNames.length === 0) continue;
+    const names = importedNames.get(occurrence.specifier);
+    if (names === undefined) importedNames.set(occurrence.specifier, [...occurrence.importedNames]);
+    else names.push(...occurrence.importedNames);
+  }
+  return { specifiers, importedNames };
 }
 
 export function resolveSpecifier(importer: string, specifier: string): string {
