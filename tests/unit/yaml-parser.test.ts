@@ -1,7 +1,13 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import path from "path";
 import fs from "fs/promises";
-import { initCollections, getCollection, defineCollection, glob } from "../../packages/pletivo/src/content/collection";
+import {
+  initCollections,
+  getCollection,
+  defineCollection,
+  glob,
+  runWithBunContentRuntime,
+} from "../../packages/pletivo/src/content/collection";
 import { z } from "zod";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-yaml");
@@ -58,11 +64,11 @@ config: {debug: true, level: 5}
       }),
     };
     await fs.writeFile(configPath, `export const collections = (globalThis as Record<string, any>).__yamlTestCollections;\n`);
-    await initCollections(fixtureRoot);
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
   });
 
   test("YAML anchors and aliases work", async () => {
-    const entries = await getCollection("data");
+    const entries = await runWithBunContentRuntime(() => getCollection("data"));
     const entry = entries.find((e) => e.id === "anchors");
     expect(entry).toBeDefined();
     const data = entry!.data as Record<string, unknown>;
@@ -78,7 +84,7 @@ config: {debug: true, level: 5}
   });
 
   test("multiline strings work (folded and literal)", async () => {
-    const entries = await getCollection("data");
+    const entries = await runWithBunContentRuntime(() => getCollection("data"));
     const entry = entries.find((e) => e.id === "multiline");
     expect(entry).toBeDefined();
     const data = entry!.data as Record<string, unknown>;
@@ -92,7 +98,7 @@ config: {debug: true, level: 5}
   });
 
   test("flow mappings and sequences work", async () => {
-    const entries = await getCollection("data");
+    const entries = await runWithBunContentRuntime(() => getCollection("data"));
     const entry = entries.find((e) => e.id === "flow");
     expect(entry).toBeDefined();
     const data = entry!.data as Record<string, unknown>;

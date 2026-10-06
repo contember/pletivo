@@ -1,0 +1,13 @@
+{
+  // A Worker. `bun` stays in `types` only for node's types, which
+  // `nodejs_compat` provides at run time; no DOM lib, workerd has its own.
+  "extends": "../../../tsconfig.json",
+  "include": ["src/**/*.ts", "../src/astro-wasm.d.ts"],
+  "exclude": [],
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["bun", "@cloudflare/workers-types"],
+    "lib": ["ESNext"]
+  }
+}

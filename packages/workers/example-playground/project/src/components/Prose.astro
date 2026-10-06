@@ -1,0 +1,58 @@
+---
+// Markdown arrives as plain tags with no classes, so the styling lives in a
+// scoped block and reaches the slotted content through `:global()`.
+---
+
+<div class="prose flex flex-col gap-4 text-ink/90">
+  <slot />
+</div>
+
+<style>
+  .prose {
+    line-height: 1.75;
+  }
+
+  .prose :global(h2) {
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin-top: 0.75rem;
+  }
+
+  .prose :global(h3) {
+    font-size: 1.05rem;
+    font-weight: 600;
+  }
+
+  .prose :global(a) {
+    color: var(--color-signal);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .prose :global(ul),
+  .prose :global(ol) {
+    padding-left: 1.5rem;
+    list-style: disc;
+  }
+
+  .prose :global(blockquote) {
+    border-left: 3px solid var(--color-signal);
+    padding-left: 1rem;
+    font-style: italic;
+    color: color-mix(in oklab, var(--color-ink) 70%, transparent);
+  }
+
+  .prose :global(pre) {
+    overflow-x: auto;
+    border-radius: 0.5rem;
+    background: color-mix(in oklab, var(--color-ink) 6%, white);
+    padding: 1rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+
+  .prose :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+</style>

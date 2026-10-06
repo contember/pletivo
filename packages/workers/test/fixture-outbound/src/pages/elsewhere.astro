@@ -1,0 +1,15 @@
+---
+// The other half of "controlled": a proxy is not an open door. This page asks for an
+// origin the host's `PletivoOutbound` does not serve, and renders what it got back —
+// the refusal, not the site.
+const response = await fetch("https://elsewhere.test/secrets");
+const body = await response.text();
+---
+
+<html lang="en">
+  <head><title>Elsewhere</title></head>
+  <body>
+    <p id="status">{response.status}</p>
+    <p id="body">{body}</p>
+  </body>
+</html>

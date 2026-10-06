@@ -7,6 +7,7 @@ import {
   getCollection,
   glob,
   getValidationFailures,
+  runWithBunContentRuntime,
 } from "../../packages/pletivo/src/content/collection";
 import { z } from "zod";
 import { setImageMode } from "../../packages/pletivo/src/image";
@@ -36,12 +37,12 @@ describe("image() schema", () => {
           }),
       }),
     });
-    await initCollections(fixtureRoot);
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
   });
 
   test("resolves a relative frontmatter path to ImageMetadata in dev", async () => {
     setImageMode("dev");
-    const entries = await getCollection("items");
+    const entries = await runWithBunContentRuntime(() => getCollection("items"));
     expect(entries.length).toBe(1);
     const logo = entries[0].data.logo as {
       src: string;
@@ -61,7 +62,7 @@ describe("image() schema", () => {
 
   test("emits a hashed /_astro/ URL in build mode", async () => {
     setImageMode("build");
-    const entries = await getCollection("items");
+    const entries = await runWithBunContentRuntime(() => getCollection("items"));
     const logo = entries[0].data.logo as { src: string };
     expect(logo.src).toMatch(/^\/_astro\/test\.[0-9a-f]{8}\.png$/);
   });
@@ -82,8 +83,8 @@ describe("image() schema", () => {
           }),
       }),
     });
-    await initCollections(fixtureRoot);
-    const entries = await getCollection("items");
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
+    const entries = await runWithBunContentRuntime(() => getCollection("items"));
     // Validation fails → entry is dropped
     expect(entries.length).toBe(0);
   });
@@ -94,10 +95,10 @@ describe("image() schema", () => {
       path.join(fixtureRoot, "src/content/items/foo.md"),
       `---\nname: Foo\nlogo: /uploads/test.png\nurl: https://example.com\n---\n`,
     );
-    await initCollections(fixtureRoot);
-    const entries = await getCollection("items");
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
+    const entries = await runWithBunContentRuntime(() => getCollection("items"));
     expect(entries.length).toBe(0);
-    const failures = getValidationFailures();
+    const failures = runWithBunContentRuntime(() => getValidationFailures());
     expect(failures.length).toBe(1);
     expect(failures[0].errors).toContain("relative to the entry file");
     expect(failures[0].errors).toContain("public/");
@@ -114,10 +115,12 @@ describe("image() schema", () => {
       path.join(fixtureRoot, "src/content/items/foo.md"),
       `---\nname: Foo\nlogo: https://cdn.example.com/foo.png\nurl: https://example.com\n---\n`,
     );
-    await initCollections(fixtureRoot);
-    const entries = await getCollection("items");
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
+    const entries = await runWithBunContentRuntime(() => getCollection("items"));
     expect(entries.length).toBe(0);
-    expect(getValidationFailures()[0].errors).toContain("z.string().url()");
+    expect(runWithBunContentRuntime(() => getValidationFailures())[0].errors).toContain(
+      "z.string().url()",
+    );
     await fs.writeFile(
       path.join(fixtureRoot, "src/content/items/foo.md"),
       `---\nname: Foo\nlogo: ../../assets/test.png\nurl: https://example.com\n---\n\nBody of foo.\n`,
@@ -131,8 +134,8 @@ describe("image() schema", () => {
       path.join(fixtureRoot, "src/content/items/bar.md"),
       `---\nname: Bar\nlogo: ../../assets/test.png\nurl: https://example.com\n---\n\nBody of bar.\n`,
     );
-    await initCollections(fixtureRoot);
-    const entries = await getCollection("items");
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
+    const entries = await runWithBunContentRuntime(() => getCollection("items"));
     expect(entries.length).toBe(2);
     const fooLogo = entries.find((e) => e.id === "foo")!.data.logo as { src: string };
     const barLogo = entries.find((e) => e.id === "bar")!.data.logo as { src: string };
@@ -153,8 +156,8 @@ describe("image() schema", () => {
         }),
       }),
     });
-    await initCollections(fixtureRoot);
-    const entries = await getCollection("items");
+    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
+    const entries = await runWithBunContentRuntime(() => getCollection("items"));
     expect(entries.length).toBe(1);
     // Without image(), logo is just the literal string
     expect(entries[0].data.logo).toBe("../../assets/test.png");

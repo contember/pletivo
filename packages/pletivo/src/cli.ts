@@ -4,7 +4,7 @@ import { build } from "./build";
 import { dev } from "./dev";
 import { isSupervisedChild, superviseDev } from "./dev-supervisor";
 import { loadConfig } from "./config";
-import { applyCliOverrides, readArgvOptions } from "./cli-args";
+import { applyCliOverrides, readArgvOptions, readFlag } from "./cli-args";
 import { createRequire } from "module";
 
 const require_ = createRequire(import.meta.url);
@@ -25,6 +25,40 @@ switch (command) {
   case "build":
     await build(projectRoot, config, { incremental, clean });
     break;
+
+  case "prepare": {
+    // The config/integration phase, run once where a filesystem and npm exist. What
+    // comes out is what `@pletivo/workers` renders with — see packages/pletivo/src/prepare.
+    const { prepare, PrepareError } = await import("./prepare/index");
+    const { emitArtifact } = await import("./prepare/emit");
+    const outDir = readFlag(process.argv, ["--out"]) ?? ".pletivo";
+    let site: Awaited<ReturnType<typeof prepare>>;
+    try {
+      site = await prepare(projectRoot);
+    } catch (error) {
+      if (!(error instanceof PrepareError)) throw error;
+      for (const diagnostic of error.diagnostics) {
+        console.error(
+          `  ✗ ${diagnostic.source} (${diagnostic.hook}): ${diagnostic.reason}`,
+        );
+      }
+      process.exitCode = 1;
+      break;
+    }
+    const written = await emitArtifact(
+      outDir.startsWith("/") ? outDir : `${projectRoot}/${outDir}`,
+      site,
+    );
+    const virtualCount = site.artifact.modules.filter((module) =>
+      module.id.startsWith("virtual:"),
+    ).length;
+    console.log(`  artifact v${site.artifact.version}`);
+    console.log(`    ${site.artifact.modules.length} carried module(s)`);
+    console.log(`    ${site.artifact.resolutions.length} frozen resolution(s)`);
+    console.log(`    ${virtualCount} frozen virtual module(s)`);
+    console.log(`    ${(written.moduleBytes / 1024).toFixed(1)} kB of modules → ${written.modulePath}`);
+    break;
+  }
 
   case "dev":
     // The parent supervises, the child serves. `--no-restart` opts out of both,
@@ -52,6 +86,8 @@ switch (command) {
   Usage:
     pletivo build [--incremental] [--clean]  Build static site (full rebuild by default)
     pletivo dev [--port=3000] [--host]       Start dev server with HMR
+    pletivo prepare [--out=.pletivo]         Freeze astro.config + integrations + npm
+                                             into a site artifact for @pletivo/workers
 
   Options:
     --incremental            Reuse the build cache to skip unchanged pages (off by default)

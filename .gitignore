@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .astro/
+.wrangler/
 
 # Synthetic benchmark content — regenerated via scripts/benchmark.sh
 examples/basic/src/content/blog/generated/

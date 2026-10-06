@@ -1,0 +1,17 @@
+---
+import { Badge } from "pletivo-vendor-demo/components";
+import { slugLabel } from "pletivo-vendor-demo";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Vendored</title>
+  </head>
+  <body>
+    <h1>{slugLabel("in-stock-today")}</h1>
+    <p data-site={Astro.site?.href}>from the frozen config</p>
+    <Badge tone="positive" label="Ready" />
+    <Badge tone="unknown" label="Fallback" />
+  </body>
+</html>

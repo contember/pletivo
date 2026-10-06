@@ -1,0 +1,19 @@
+---
+// `image()` in a collection schema: the path comes out of frontmatter, so nothing
+// static resolves it — the isolate asks the content binding, entry by entry.
+import { getCollection } from "astro:content";
+const products = await getCollection("products");
+---
+<html>
+  <head><title>products</title></head>
+  <body>
+    <ul>
+      {products.map((product) => (
+        <li>
+          <img src={product.data.cover.src} width={product.data.cover.width} alt={product.data.title} />
+          <span>{product.data.title}</span>
+        </li>
+      ))}
+    </ul>
+  </body>
+</html>
