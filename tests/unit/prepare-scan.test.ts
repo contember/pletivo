@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   classifySpecifier,
   importableSource,
-  specifierUses,
   specifiersOf,
 } from "../../packages/pletivo/src/prepare/scan";
 
@@ -122,35 +121,5 @@ describe("classifySpecifier", () => {
   test("ignores anything a file map can resolve on its own", () => {
     expect(classifySpecifier("./Header.astro")).toBe("relative");
     expect(classifySpecifier("../lib/a.ts")).toBe("relative");
-  });
-});
-
-describe("specifierUses", () => {
-  test("reads the export names a package is imported for", () => {
-    const uses = specifierUses("src/a.ts", `import { getIconData, iconToSVG as build } from "@iconify/utils";\n`);
-    expect(uses.get("@iconify/utils")).toEqual({
-      names: new Set(["getIconData", "iconToSVG"]),
-      whole: false,
-    });
-  });
-
-  test("counts a default import as a name of its own", () => {
-    const uses = specifierUses("src/a.ts", `import marked, { parse } from "marked";\n`);
-    expect(uses.get("marked")?.names).toEqual(new Set(["default", "parse"]));
-  });
-
-  test("gives up on names for a namespace import or a dynamic one", () => {
-    expect(specifierUses("src/a.ts", `import * as all from "x";\n`).get("x")?.whole).toBe(true);
-    expect(specifierUses("src/a.ts", `const m = await import("y");\n`).get("y")?.whole).toBe(true);
-  });
-
-  test("records a side-effect import, which names nothing and still has to be carried", () => {
-    const uses = specifierUses("src/a.ts", `import "@fontsource/inter/400.css";\n`);
-    expect(uses.get("@fontsource/inter/400.css")).toEqual({ names: new Set(), whole: false });
-  });
-
-  test("merges the two forms across one file", () => {
-    const uses = specifierUses("src/a.ts", `import { a } from "x";\nexport { b } from "x";\n`);
-    expect(uses.get("x")?.names).toEqual(new Set(["a", "b"]));
   });
 });

@@ -344,75 +344,6 @@ function skipJavascriptQuoted(source: string, cursor: number, quote: string): nu
   return source.length;
 }
 
-/**
- * What one specifier is asked for: the export names, or everything.
- *
- * A bundler that is told which names a package is imported for can drop the rest —
- * which is not only smaller but *correct*: `Bun.build` on `@iconify/utils`' own entry
- * emits an export list naming 83 functions and defines a handful of them, and the
- * Loader then refuses the bundle with "Export 'buildParsedSVG' is not defined in
- * module". Bundling `export { getIconData, iconToSVG } from "…"` instead does not
- * reach that path, and is 3 kB smaller besides.
- */
-export interface SpecifierUse {
-  names: Set<string>;
-  /** A namespace import, a dynamic `import()` or an `export *`: nothing may be dropped. */
-  whole: boolean;
-}
-
-/** `import <clause> from "x"` / `export <clause> from "x"`. Clause may be empty. */
-const FROM_STATEMENT = /(?:^|[\s;}])(?:import|export)\s+([^'"]*?)\s*from\s*(["'])([^"']+)\2/g;
-/** `import "x"` — a side-effect import, which the `from` form cannot match. */
-const BARE_STATEMENT = /(?:^|[\s;}])import\s*(["'])([^"']+)\1/g;
-/** `import("x")` — no clause to read, so the whole module is in play. */
-const DYNAMIC_STATEMENT = /\bimport\s*\(\s*(["'])([^"']+)\1/g;
-/** What a name has to look like for a generated re-export to name it. */
-const EXPORT_NAME = /^(?:[A-Za-z_$][A-Za-z0-9_$]*|default)$/;
-
-/**
- * The export names each specifier is imported for, across one source file.
- *
- * Read from the same slice `specifiersOf` reads, so a code block in an `.astro`
- * template cannot contribute a name.
- */
-export function specifierUses(file: string, source: string): Map<string, SpecifierUse> {
-  const uses = new Map<string, SpecifierUse>();
-  const code = importableSource(file, source);
-  if (code === null) return uses;
-
-  const record = (specifier: string): SpecifierUse => {
-    let use = uses.get(specifier);
-    if (!use) {
-      use = { names: new Set<string>(), whole: false };
-      uses.set(specifier, use);
-    }
-    return use;
-  };
-
-  for (const match of code.matchAll(FROM_STATEMENT)) {
-    const clause = match[1].trim();
-    const use = record(match[3]);
-    if (clause.includes("*")) {
-      use.whole = true;
-      continue;
-    }
-    const braces = /\{([^}]*)\}/.exec(clause);
-    // Anything before the braces (or a clause with none) is a default import.
-    const outside = braces ? clause.slice(0, braces.index).replace(/,\s*$/, "").trim() : clause;
-    if (outside.length > 0 && !outside.startsWith("type ")) use.names.add("default");
-    for (const entry of braces ? braces[1].split(",") : []) {
-      const name = entry.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim();
-      if (EXPORT_NAME.test(name)) use.names.add(name);
-    }
-  }
-  // A side-effect import asks for no name at all — a stylesheet, or a module whose
-  // point is what running it does. Recorded so it is still vendored.
-  for (const match of code.matchAll(BARE_STATEMENT)) record(match[2]);
-  for (const match of code.matchAll(DYNAMIC_STATEMENT)) record(match[2]).whole = true;
-
-  return uses;
-}
-
 export function extensionOf(file: string): string {
   const at = file.lastIndexOf(".");
   const slash = file.lastIndexOf("/");
@@ -476,12 +407,11 @@ export function classifySpecifier(specifier: string): SpecifierKind {
   return "vendor";
 }
 
-/** The prefixes a Vite plugin claims. Same test `vite-plugins.ts` uses. */
-export function isVirtual(specifier: string): boolean {
+/** The prefixes a Vite plugin claims; `/@` is handled as relative by `classifySpecifier`. */
+function isVirtual(specifier: string): boolean {
   return (
     specifier.startsWith("virtual:") ||
     specifier.startsWith("\0virtual:") ||
-    specifier.startsWith("/@") ||
     specifier.startsWith("@id/")
   );
 }
