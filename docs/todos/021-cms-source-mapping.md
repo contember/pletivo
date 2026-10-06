@@ -17,11 +17,11 @@ Research + design. No code was changed. All measurements were produced by probes
 this scratchpad against the `@astrojs/compiler` 3.0.1 that pletivo already resolves
 (`bun.lock:139`, single workspace-wide version); probe scripts are listed in Appendix B.
 
-Absolute paths are used throughout.
+Paths are relative to each repository root:
 
-- pletivo: `/home/matej21/projects/oss/pletivo`
-- nuasite source: `/home/matej21/projects/contember/nuasite`
-- Astro checkout: `/home/matej21/projects/sandbox/astro`
+- pletivo: this repository
+- nuasite: `nuasite/` — [nuasite/nuasite](https://github.com/nuasite/nuasite)
+- Astro: `astro/` — [withastro/astro](https://github.com/withastro/astro)
 - real site: `<ssr-site>`
 
 ---
@@ -54,10 +54,10 @@ wrong, and getting this right changes the design.
 
 What actually ships to the browser carries only an **opaque join key**:
 
-- `/home/matej21/projects/contember/nuasite/packages/cms/src/html-processor.ts:873`
+- `nuasite/packages/cms/src/html-processor.ts:873`
   `node.setAttribute(attributeName, id)` — the value is `cms-0`, `cms-1`, … a plain per-page
   counter, reset every request
-  (`/home/matej21/projects/contember/nuasite/packages/cms/src/dev-middleware.ts:452`,
+  (`nuasite/packages/cms/src/dev-middleware.ts:452`,
   ``const idGenerator = () => `cms-${pageCounter++}` ``).
 
 The real mapping lives **server-side, in a side-channel JSON manifest** served at `/<page>.json`
@@ -65,7 +65,7 @@ The real mapping lives **server-side, in a side-channel JSON manifest** served a
 attributes are an **input to the server-side marking pass only**, and are deleted before the HTML
 reaches the browser:
 
-- `/home/matej21/projects/contember/nuasite/packages/cms/src/html-processor.ts:883-885` and `:1032-1036`
+- `nuasite/packages/cms/src/html-processor.ts:883-885` and `:1032-1036`
   — `removeAttribute` of `data-astro-source-file` / `data-astro-source-loc`.
 
 So `data-astro-source-file` is never *consumed in the browser* by nua at all. It is consumed by
@@ -73,7 +73,7 @@ nua's connect middleware, in Node, during an HTML rewrite.
 
 ### 1.2 nua's pipeline, end to end
 
-Registration — `/home/matej21/projects/contember/nuasite/packages/cms/src/index.ts:406`:
+Registration — `nuasite/packages/cms/src/index.ts:406`:
 
 ```ts
 'astro:server:setup': ({ server, logger }) =>
@@ -103,10 +103,10 @@ Two phases:
   `sourceSnippet`, and for every row still lacking `sourcePath`, fall back to a **content-based text
   search** over an AST index of `src/components`, `src/pages`, `src/layouts`
   (`dev-middleware.ts:635-665`, `findSourceLocation` at
-  `/home/matej21/projects/contember/nuasite/packages/cms/src/source-finder/source-lookup.ts:24`).
+  `nuasite/packages/cms/src/source-finder/source-lookup.ts:24`).
 
 Component-root detection — this is the part that needs Astro's attribute and nothing else
-(`/home/matej21/projects/contember/nuasite/packages/cms/src/html-processor.ts:294-360`):
+(`nuasite/packages/cms/src/html-processor.ts:294-360`):
 
 ```ts
 // A component root is detected by data-astro-source-file pointing to a component directory
@@ -125,7 +125,7 @@ It is pure string equality on the attribute value plus `split(':')[0]` on the lo
 (`html-processor.ts:33-49`, `:358-360`). It never resolves, normalises, or stats the path.
 `extractComponentName('src/components/Welcome.astro') -> 'Welcome'`.
 
-The write path — `/home/matej21/projects/contember/nuasite/packages/cms/src/handlers/source-writer.ts:18`:
+The write path — `nuasite/packages/cms/src/handlers/source-writer.ts:18`:
 
 ```ts
 const filePath = change.sourcePath                      // :40
@@ -137,7 +137,7 @@ await fs.writeFile(fullPath, newContent, 'utf-8')             // :77
 
 **The CMS edits the site's source files on disk by find-and-replace.** Not a Contember entity, not
 a re-render, not an "open in editor". Canonical payload shape,
-`/home/matej21/projects/contember/nuasite/packages/cms/README.md:84-104`:
+`nuasite/packages/cms/README.md:84-104`:
 `{ cmsId: 'cms-0', sourcePath: 'src/pages/index.astro', sourceLine: 42, sourceSnippet: '<h1>Original heading text</h1>' }`.
 
 Other attributes, for completeness (all emitted by nua, all in the same `cms-N` id space):
@@ -149,7 +149,7 @@ Other attributes, for completeness (all emitted by nua, all in the same `cms-N` 
 ### 1.3 Astro's `data-astro-source-*`
 
 **Producer: the Go/WASM compiler, and nothing else.** There is exactly one `transform()` call site in
-the whole Astro monorepo — `/home/matej21/projects/sandbox/astro/packages/astro/src/core/compile/compile.ts:44-71`
+the whole Astro monorepo — `astro/packages/astro/src/core/compile/compile.ts:44-71`
 — and the flag is at `:55-59`:
 
 ```ts
@@ -162,7 +162,7 @@ annotateSourceFile:
 
 No vite plugin, no babel transform, and nothing in `packages/astro/src/runtime/server/render/*`
 ever writes those strings. Astro pins `@astrojs/compiler` `^2.13.0`
-(`/home/matej21/projects/sandbox/astro/packages/astro/package.json:112`); pletivo resolves 3.0.1.
+(`astro/packages/astro/package.json:112`); pletivo resolves 3.0.1.
 Behaviour is identical across both (verified independently on each).
 
 Emitted shape, verbatim from my probe on 3.0.1:
@@ -196,14 +196,14 @@ column. Measured (probe `probe-loc2.mjs`):
 differ. Astro passes an absolute path, so Astro's attributes are absolute.
 
 **Consumer inside Astro: exactly one** — the dev-toolbar Audit app.
-`/home/matej21/projects/sandbox/astro/packages/astro/src/runtime/client/dev-toolbar/apps/audit/annotations.ts:11-12,26`
+`astro/packages/astro/src/runtime/client/dev-toolbar/apps/audit/annotations.ts:11-12,26`
 reads them into a `WeakMap`, and `:20` **`removeAttribute`s them from the live DOM**.
 `.../audit/ui/audit-ui.ts:75-90` then offers "Click to go to file" →
 `fetch('/__open-in-editor?file=' + encodeURIComponent(file + ':' + loc))`.
 
 ### 1.4 The coupling nobody designed on purpose
 
-`/home/matej21/projects/contember/nuasite/packages/nua/src/integration.ts:59-62`, verbatim:
+`nuasite/packages/nua/src/integration.ts:59-62`, verbatim:
 
 ```ts
 // Hide Astro's dev toolbar in dev mode.
@@ -237,12 +237,12 @@ The information does not "arrive and get dropped", and it also does not "never a
 **never requested**. The compiler is fully capable and is already the right version:
 
 - `TransformOptions.annotateSourceFile?: boolean` —
-  `/home/matej21/projects/oss/pletivo/node_modules/@astrojs/compiler/dist/shared/types.d.ts:50`
+  `node_modules/@astrojs/compiler/dist/shared/types.d.ts:50`
 - `bun.lock:139` → one resolved version workspace-wide, `@astrojs/compiler@3.0.1`.
 
 The two call sites, verbatim:
 
-**Bun host** — `/home/matej21/projects/oss/pletivo/packages/pletivo/src/astro-plugin.ts:366-371`
+**Bun host** — `packages/pletivo/src/astro-plugin.ts:366-371`
 
 ```ts
 const result = await transform(source, {
@@ -253,7 +253,7 @@ const result = await transform(source, {
 });
 ```
 
-**Workers host** — `/home/matej21/projects/oss/pletivo/packages/workers/src/compile-project.ts:397-402`
+**Workers host** — `packages/workers/src/compile-project.ts:397-402`
 
 ```ts
 const result = await compiler.transform(source, {
@@ -266,7 +266,7 @@ const result = await compiler.transform(source, {
 
 Structurally identical, and both already pass a **project-relative** `filename`
 (`rel` = `path.relative(process.cwd(), file)`,
-`/home/matej21/projects/oss/pletivo/packages/pletivo/src/astro-css-order.ts:70`; `file` = the virtual
+`packages/pletivo/src/astro-css-order.ts:70`; `file` = the virtual
 project path in the Workers graph). That is *better* than Astro's absolute path — it is exactly the
 form nua's own fixtures and README use, and `source-writer` resolves it with
 `path.resolve(projectRoot, filePath)` (`dev-middleware.ts:548,586`), which accepts either.
@@ -274,7 +274,7 @@ form nua's own fixtures and README use, and `source-writer` resolves it with
 Why the attributes would survive with no other change: the compiler bakes them as **literal text
 inside the static strings of the generated template literal**, and pletivo's astro shim
 `render(strings, ...values)`
-(`/home/matej21/projects/oss/pletivo/packages/runtime/src/astro-shim.ts:437`) simply concatenates
+(`packages/runtime/src/astro-shim.ts:437`) simply concatenates
 `strings`. There is no attribute-level processing to teach. Zero render-time cost.
 
 ### 2.1 The other two gaps behind the dogfood numbers
@@ -288,7 +288,7 @@ inside the static strings of the generated template literal**, and pletivo's ast
 2. **Text→source degrades from authoritative to heuristic.** Phase 1 leaves `sourcePath` empty, so
    everything falls to `findSourceLocation` text search (`dev-middleware.ts:657`). Whatever it
    cannot resolve is **visibly disabled** in the UI —
-   `/home/matej21/projects/contember/nuasite/packages/cms/src/editor/editor.ts:327-335`:
+   `nuasite/packages/cms/src/editor/editor.ts:327-335`:
    ```ts
    // Without a source path, the writer has nowhere to persist text edits — lock
    // the element so it can't be typed into and the user gets told why on click.
@@ -298,7 +298,7 @@ inside the static strings of the generated template literal**, and pletivo's ast
 3. **`data-cms-array-source` never appears** — it comes from a Vite `transform` hook on `.astro`
    source text (`vite-plugin-array-transform.ts:113`). pletivo runs integration vite `transform`
    hooks in exactly one place —
-   `/home/matej21/projects/oss/pletivo/packages/pletivo/src/astro-host/vite-plugins.ts:371-373` —
+   `packages/pletivo/src/astro-host/vite-plugins.ts:371-373` —
    and that chain lives inside `bundleVirtualEntry`, i.e. it is scoped to integration overlay
    sources. The project `.astro` loader (`astro-plugin.ts`) invokes no vite transform chain at all,
    verified by grep. So `cms-array-transform` never sees project files on either host. Independent
@@ -309,10 +309,10 @@ inside the static strings of the generated template literal**, and pletivo's ast
    not run `markdown.rehypePlugins`. Also independent.
 
 Worth stating plainly: **`astro:server:setup` and connect middleware already work under `pletivo dev`.**
-- `/home/matej21/projects/oss/pletivo/packages/pletivo/src/astro-host/runner.ts:355-368` runs the hook.
-- `/home/matej21/projects/oss/pletivo/packages/core/src/astro-host/server-shim.ts:45-68` implements
+- `packages/pletivo/src/astro-host/runner.ts:355-368` runs the hook.
+- `packages/core/src/astro-host/server-shim.ts:45-68` implements
   `middlewares.use`, and its comment says it exists because *"Nua CMS monkey-patches `watcher.emit`"*.
-- `/home/matej21/projects/oss/pletivo/packages/pletivo/src/astro-host/connect-bridge.ts:103-105`
+- `packages/pletivo/src/astro-host/connect-bridge.ts:103-105`
   explicitly lets middleware transform the response body.
 
 So under `pletivo dev` the *only* missing ingredient is the compiler flag.
@@ -403,14 +403,14 @@ Reasoning:
 
 One property at each of the two call sites, driven by one resolved boolean.
 
-- `/home/matej21/projects/oss/pletivo/packages/pletivo/src/astro-plugin.ts:366` — add
+- `packages/pletivo/src/astro-plugin.ts:366` — add
   `annotateSourceFile: <flag>` to the options object. The Bun plugin is registered once per process
   (`astro-plugin.ts:352`), so the flag is a per-process decision, which is fine: dev / build /
   prepare are separate processes.
-- `/home/matej21/projects/oss/pletivo/packages/workers/src/compile-project.ts:397` — same, threaded
+- `packages/workers/src/compile-project.ts:397` — same, threaded
   through `compileProject`'s existing options/`prepared` input.
 
-Do **not** touch `/home/matej21/projects/oss/pletivo/packages/pletivo/src/incremental/import-graph.ts:104`
+Do **not** touch `packages/pletivo/src/incremental/import-graph.ts:104`
 — that `transform()` output is thrown away after `scanImports`.
 
 Cache-key hazards, both must be handled or the flag silently no-ops:
@@ -431,7 +431,7 @@ every `sourcePath` is wrong by a prefix. Either pin the base to the project root
 Astro's mechanism has no answer here; this is pletivo's own runtime, so it is straightforward.
 
 The choke point is a single function.
-`/home/matej21/projects/oss/pletivo/packages/runtime/src/jsx-runtime.ts`:
+`packages/runtime/src/jsx-runtime.ts`:
 
 - `:143` `export function jsx(tag, props)` — **two parameters only**.
 - `:198` `export { jsx as jsxs, jsx as jsxDEV }` — all three names are the *same function object*, so
@@ -448,21 +448,21 @@ To wire it up:
    them, so `renderAttrs` gets a flat record and last-write wins).
 3. Turn on dev-runtime output where the flag is set:
    - Bun host: project tsconfig `"jsx": "react-jsxdev"`, or a per-file transform in the existing
-     `/home/matej21/projects/oss/pletivo/packages/pletivo/src/dev-ts-plugin.ts:41` `onLoad` hook
+     `packages/pletivo/src/dev-ts-plugin.ts:41` `onLoad` hook
      (already scoped to project `src/`, node_modules excluded by construction). Note that plugin is
      **dev-only** — a build-mode `.tsx` annotation needs it widened.
-   - Workers host: `/home/matej21/projects/oss/pletivo/packages/workers/src/transpile.ts:83-95`,
+   - Workers host: `packages/workers/src/transpile.ts:83-95`,
      flip `production: true` → `false`; sucrase then emits
      `jsxDEV(type, props, key, isStatic, {fileName, lineNumber, columnNumber}, this)`.
-   - MDX: `/home/matej21/projects/oss/pletivo/packages/pletivo/src/mdx-plugin.ts:243-246`,
+   - MDX: `packages/pletivo/src/mdx-plugin.ts:243-246`,
      `development: false` → `true`, which gives elements `_source` / `_jsxFileName`.
-   - `/home/matej21/projects/oss/pletivo/packages/pletivo/package.json:19` currently maps
+   - `packages/pletivo/package.json:19` currently maps
      `./jsx-dev-runtime` to the same file as `./jsx-runtime`; that mapping stays, the file just
      needs a real `jsxDEV`.
 
 **Mandatory follow-up:** the Worker isolate does not execute `packages/runtime/src/*.ts` — it runs
 the pre-transpiled string constants in
-`/home/matej21/projects/oss/pletivo/packages/workers/src/generated/runtime-modules.ts`. Any runtime
+`packages/workers/src/generated/runtime-modules.ts`. Any runtime
 edit requires `bun packages/workers/scripts/build-runtime.ts`, and
 `packages/workers/test/runtime-modules.test.ts` fails if the committed copy drifts.
 
@@ -500,7 +500,7 @@ The gap: the compiler annotates zero component invocations, so "which component 
 was it used" is reconstructed heuristically by nua in both dev and prod.
 
 pletivo already has the boundary Astro does not expose —
-`/home/matej21/projects/oss/pletivo/packages/runtime/src/astro-shim.ts:469-490`:
+`packages/runtime/src/astro-shim.ts:469-490`:
 
 ```ts
 export function createComponent(fn, moduleId: string = "", _propagation?) {   // :475
@@ -511,7 +511,7 @@ export function createComponent(fn, moduleId: string = "", _propagation?) {   //
 Every compiled `.astro` module is `$$createComponent(fn, '<project-relative filename>', undefined)`.
 So `wrapped` is a real per-component-instance boundary that already knows the source file, already
 runs once per instance, and already reports out of the isolate via `recordRenderedModule`
-(surfaced at `/home/matej21/projects/oss/pletivo/packages/workers/src/render.ts:944-948`).
+(surfaced at `packages/workers/src/render.ts:944-948`).
 
 Design: maintain a render-scoped instance counter in the existing render-tracking
 `AsyncLocalStorage` (`packages/runtime/src/render-context.ts`), and have `createComponent`'s wrapper
@@ -573,7 +573,7 @@ returns, and the `data-cms-locked` fallback stops firing for `.astro`-authored e
 **Worker isolate**
 
 Works, and this is the finding that matters most. The compiler is the same Go WASM running
-in-isolate (`/home/matej21/projects/oss/pletivo/packages/workers/src/astro-compiler.ts:86-92`), the
+in-isolate (`packages/workers/src/astro-compiler.ts:86-92`), the
 options object passes straight through, and the emitted attributes are literal text in generated
 module code. **No filesystem, no vite, no middleware is involved in producing the mapping.**
 
@@ -595,7 +595,7 @@ filesystem. The concrete shape that would work:
    with no server-side rewrite.
 2. Replace nua's per-page manifest middleware with a **Worker route** that reads the same virtual
    file map already in the isolate (`CompiledProject.sources`,
-   `/home/matej21/projects/oss/pletivo/packages/workers/src/compile-project.ts:56-97`) — the source
+   `packages/workers/src/compile-project.ts:56-97`) — the source
    text is in memory, so `sourceSnippet` can be produced without a filesystem *and* without the AST
    search index, because the file+line is already known.
 3. Replace `source-writer.ts`'s `fs.writeFile` with a DO write, then invalidate the bundle.
@@ -638,7 +638,7 @@ search index, two-phase manifest) exist precisely because the source attributes 
 
 ## Appendix A — file:line index
 
-**nua** (`/home/matej21/projects/contember/nuasite`) — note installed 0.47.5 vs source 0.49.3 are
+**nua** (`nuasite/`) — note installed 0.47.5 vs source 0.49.3 are
 byte-identical for `index.ts` and `html-processor.ts`; only `dev-middleware.ts` differs by a 3-line refactor.
 
 | what | where |
@@ -663,7 +663,7 @@ byte-identical for `index.ts` and `html-processor.ts`; only `dev-middleware.ts` 
 | canonical payload example | `packages/cms/README.md:84-104` |
 | unused `stableId` | `packages/cms/src/utils.ts:90-102` |
 
-**Astro** (`/home/matej21/projects/sandbox/astro`)
+**Astro** (`astro/`)
 
 | what | where |
 |---|---|
@@ -674,7 +674,7 @@ byte-identical for `index.ts` and `html-processor.ts`; only `dev-middleware.ts` 
 | devToolbar defaults | `packages/astro/src/core/config/schemas/base.ts:74-76,293-297`; `src/preferences/defaults.ts:2-5` |
 | compiler pin | `packages/astro/package.json:112` (`^2.13.0`) |
 
-**pletivo** (`/home/matej21/projects/oss/pletivo`)
+**pletivo** (this repository)
 
 | what | where |
 |---|---|
@@ -698,7 +698,7 @@ byte-identical for `index.ts` and `html-processor.ts`; only `dev-middleware.ts` 
 
 ## Appendix B — probes run
 
-All in this scratchpad, against `/home/matej21/projects/oss/pletivo/node_modules/@astrojs/compiler`
+All in this scratchpad, against `node_modules/@astrojs/compiler`
 (3.0.1), read-only, `bun <script>`:
 
 - `probe-annotate.mjs` — `transform()` with and without `annotateSourceFile`; established that the
@@ -715,4 +715,4 @@ All in this scratchpad, against `/home/matej21/projects/oss/pletivo/node_modules
 - `probe-size.mjs` — the raw/gzip/brotli table in §6.3, computed on the real built page.
 
 Also verified by grep, not inference: `annotateSourceFile` and `astro-source` have **zero**
-occurrences anywhere under `/home/matej21/projects/oss/pletivo/packages/`.
+occurrences anywhere under `packages/`.

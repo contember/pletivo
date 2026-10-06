@@ -481,17 +481,13 @@ Known follow-ups:
 - **a full page, in workerd:** `.astro` layout + component + slots + scoped CSS,
   and a `.md` route rendered on the host, both served from an in-memory file map
 
-## A diagnostic that lied, and what it teaches
+## Isolate start diagnostics
 
-`IsolateStartError` used to report TypeScript as the cause of *every* Loader
-start failure. Handing the host a file map with `..` in its keys produced
-unresolvable specifiers and the same message, pointing at annotations that were
-not in the sources. Fixed in `1101194`: the note is attached only when a
-generated module actually carries statement-level TypeScript, and names which.
-
-Worth remembering when adding the next diagnostic here — the isolate boundary
-hides the real error, so it is tempting to guess, and a confident wrong guess
-costs more than no guess.
+The isolate boundary hides the real start error. `IsolateStartError` names
+TypeScript as the cause only when a generated module actually carries
+statement-level TypeScript, and names which. A file map with `..` in its keys
+fails the same way for a different reason. Do not add a diagnostic that guesses:
+a confident wrong cause costs more than none.
 
 ## Files
 

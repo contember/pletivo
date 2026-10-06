@@ -1,7 +1,7 @@
 # 013 — The SSR hooks stub leaks into client island bundles
 
 **Priority:** S-tier
-**Status:** Done — `a7f816a`
+**Status:** Done — `9015d57`
 **Area:** Islands / Hydration
 
 ## Problem
@@ -72,7 +72,7 @@ examples and benchmarks build.
 
 `scripts/benchmark.sh` compared pletivo bundling a stub against Astro bundling
 a real framework. **Every island-bundle size and build-time number taken before
-`a7f816a` is not comparing the same work — re-run `scripts/benchmark.sh` before
+`9015d57` is not comparing the same work — re-run `scripts/benchmark.sh` before
 quoting any of them.**
 
 ## Resolution behaviour, measured
@@ -100,7 +100,7 @@ specifier escapes, because `paths` applies to bare specifiers only.
 through the nested `hooks/package.json` and yields the CJS `hooks.js`, while
 ground truth for an ESM bundle is the `import` condition, `hooks.mjs`.
 
-## Fix, as shipped in `a7f816a`
+## Fix, as shipped in `9015d57`
 
 The SSR mapping stays — SSR genuinely wants the no-op stub. `islandPlugin`
 resolves the client copy from preact's own `exports` map instead: find the
@@ -143,6 +143,6 @@ single snapshot line changing. That is the same blind spot that let this ship.
 - `packages/pletivo/src/islands-bundle.ts` — `islandPlugin()`, `resolveSubpath()`
 - `tests/unit/islands-preact-resolve.test.ts` — the regression coverage
 - `packages/runtime/src/hooks.ts` — the SSR stub (correct as-is; its doc comment
-  describes the client redirect, which is only true as of `a7f816a`)
+  describes the client redirect, which is only true as of `9015d57`)
 - `tsconfig.json`, `packages/pletivo/tsconfig.json` — the `preact/hooks` mapping,
   deliberately kept

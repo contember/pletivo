@@ -249,8 +249,8 @@ changes the next render, scoped CSS included, with no build step between the two
 public `filesystem.rev()` gate holds: two reads of an unchanged workspace
 return the same object, so the tree is walked once rather than once per request.
 
-Then verified on real Cloudflare (`pletivo-playground.contember.workers.dev`, account
-Contember), which is where the next two subsections come from — **neither is visible under
+Then verified on a real Cloudflare deployment, which is where the next two subsections
+come from — **neither is visible under
 `wrangler dev`, and both bit on the first deploy.**
 
 ### 10.1 A Durable Object and a `WorkerEntrypoint` are two isolates

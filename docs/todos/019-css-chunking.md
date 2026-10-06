@@ -1,7 +1,7 @@
 # 019 — CSS chunking: what Astro does, and the spec pletivo needs
 
 **Priority:** S-tier
-**Status:** Implemented in PR #23 (open, not merged) — three items still left, listed at the end
+**Status:** Implemented in PR #23 — three items still left, listed at the end
 **Area:** CSS pipeline
 
 Companion to [017](017-dogfood-static-site.md) item 1. That entry records the
