@@ -37,7 +37,7 @@ export interface ProjectSnapshot {
   readBytes?(path: string): Uint8Array<ArrayBuffer> | undefined;
 }
 
-/** The workspace moved off a snapshot's revision: during both listing walks, or before a read. */
+/** The workspace moved off a snapshot's revision: during the listing walk, or before a read. */
 export class WorkspaceSnapshotChangedError extends Error {
   constructor(
     readonly before: string,

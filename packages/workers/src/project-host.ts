@@ -23,12 +23,8 @@ import {
   type ArtifactInput,
 } from "@pletivo/core/artifact";
 import { loadProjectArtifact, type ProjectArtifact } from "./project-artifact.ts";
-import type { AstroCompiler } from "./astro-compiler.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
-import type { ProjectEnv } from "./env.ts";
-import type { ExecutionNamespace } from "./execution-identity.ts";
-import type { OutboundAccess } from "./outbound.ts";
 import {
   WorkspaceSnapshotChangedError,
   type ProjectSnapshot,
@@ -40,40 +36,18 @@ import {
   projectPaths,
   projectRoot,
   renderPage,
-  type ContentAccess,
   type ProjectOptions,
-  type RenderedAsset,
   type RenderedPage,
   type RoutePath,
-  type WorkerLoaderBinding,
 } from "./render.ts";
-import type { TailwindStylesheets } from "./tailwind.ts";
 
-export interface ProjectHostOptions {
+/** What `renderPage` takes, except what the host derives from its store and options. */
+export interface ProjectHostOptions
+  extends Omit<ProjectOptions, "files" | "assets" | "compileCache" | "artifact"> {
   /** Where the project is read from. See `project-store.ts`. */
   store: ProjectStore;
-  loader: WorkerLoaderBinding;
-  /** Required only for a project with content collections. */
-  content?: ContentAccess;
-  /** Tailwind's own stylesheets, which the isolate cannot read off disk. */
-  tailwind?: TailwindStylesheets;
-  /** What `astro:env` answers inside the isolate. The host's configuration, not the project's. */
-  env?: ProjectEnv;
-  /** What `import.meta.env` is inside the isolate. */
-  importMetaEnv?: Readonly<Record<string, string>>;
-  /** What a rendering page's `fetch()` may reach. Omitted, it reaches nothing. */
-  outbound?: OutboundAccess;
   /** Origin of `Astro.url`. Outranks the artifact's `site`. */
   site?: string;
-  pagesDir?: string;
-  srcDir?: string;
-  rootDir?: string;
-  /** `compatibility_date` for the render isolate. */
-  compatibilityDate?: string;
-  compatibilityFlags?: readonly string[];
-  executionNamespace?: ExecutionNamespace;
-  /** Only a test outside a Worker needs this — see `compileProject`. */
-  compiler?: AstroCompiler;
   /**
    * Compiled files kept between renders. Absent, a default cache; `false` for a host
    * handed a different project per request, where every lookup would miss.
@@ -110,21 +84,28 @@ const DEFAULT_GENERATED_ASSET_CACHE = { maxEntries: 32, maxBytes: 4 * 1024 * 102
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
 export function createProjectHost(options: ProjectHostOptions): ProjectHost {
+  const {
+    store,
+    site,
+    compileCache: compileCacheOption,
+    artifactPath,
+    artifact: artifactValue,
+    generatedAssetCache,
+    ...renderOptions
+  } = options;
   const directArtifact =
-    options.artifact === undefined ? undefined : loadProjectArtifact(options.artifact);
-  const served = new GeneratedAssetCache(
-    options.generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE,
-  );
+    artifactValue === undefined ? undefined : loadProjectArtifact(artifactValue);
+  const served = new GeneratedAssetCache(generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE);
   // Per host, not a module global: an entry's `.astro` output is bound to its compiler.
   const compileCache =
-    options.compileCache === false ? undefined : (options.compileCache ?? createCompileCache());
+    compileCacheOption === false ? undefined : (compileCacheOption ?? createCompileCache());
   let artifactFrom: { source: string; artifact: ProjectArtifact } | null = null;
   let staleFrom: { artifact: ProjectArtifact; revision: string; stale: string[] } | null = null;
 
   /** The artifact for this snapshot: the caller's, or the project's own file. */
   function artifactOf(snapshot: ProjectSnapshot): ProjectArtifact | undefined {
     if (directArtifact !== undefined) return directArtifact;
-    const path = options.artifactPath;
+    const path = artifactPath;
     if (path === undefined) return undefined;
     const source = snapshot.files.get(path);
     if (source === undefined) throw new ProjectArtifactError(path, "configured artifact is missing");
@@ -142,13 +123,13 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     snapshot: ProjectSnapshot,
     artifact: ProjectArtifact | undefined,
   ): Promise<string[]> {
-    if (options.artifactPath === undefined || artifact === undefined) return [];
+    if (artifactPath === undefined || artifact === undefined) return [];
     if (staleFrom?.artifact === artifact && staleFrom.revision === snapshot.revision) {
       return staleFrom.stale;
     }
     let stale: string[];
     try {
-      stale = await changedInputs(artifact.prepared.inputs ?? [], snapshot, projectRoot(options));
+      stale = await changedInputs(artifact.prepared.inputs ?? [], snapshot, projectRoot(renderOptions));
     } catch (error) {
       if (error instanceof WorkspaceSnapshotChangedError) throw error;
       return [];
@@ -163,40 +144,28 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
    */
   async function withSnapshot<T>(operation: (snapshot: ProjectSnapshot) => Promise<T>): Promise<T> {
     try {
-      return await operation(await options.store.snapshot());
+      return await operation(await store.snapshot());
     } catch (error) {
       if (!(error instanceof WorkspaceSnapshotChangedError)) throw error;
-      return operation(await options.store.snapshot());
+      return operation(await store.snapshot());
     }
   }
 
   /** Everything both entrypoints need, resolved against the store as it is now. */
   function projectOptions(snapshot: ProjectSnapshot): ProjectOptions {
     return {
+      ...renderOptions,
       files: snapshot.files,
       assets: snapshot.assets,
-      loader: options.loader,
-      content: options.content,
-      env: options.env,
-      importMetaEnv: options.importMetaEnv,
-      outbound: options.outbound,
-      pagesDir: options.pagesDir,
-      srcDir: options.srcDir,
-      rootDir: options.rootDir,
-      compatibilityDate: options.compatibilityDate,
-      compatibilityFlags: options.compatibilityFlags,
-      executionNamespace: options.executionNamespace,
-      compiler: options.compiler,
       compileCache,
       artifact: artifactOf(snapshot),
-      tailwind: options.tailwind,
     };
   }
 
   async function renderSnapshot(pathname: string, snapshot: ProjectSnapshot): Promise<RenderedPage> {
     const project = projectOptions(snapshot);
     const stale = await staleArtifactInputs(snapshot, project.artifact);
-    const page = await renderPage({ ...project, pathname, site: options.site });
+    const page = await renderPage({ ...project, pathname, site });
     const rejected = served.putAll(page.assets);
     if (rejected.length > 0) {
       throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
@@ -209,7 +178,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
 
     paths: () => withSnapshot((snapshot) => projectPaths(projectOptions(snapshot))),
 
-    snapshot: () => options.store.snapshot(),
+    snapshot: () => store.snapshot(),
 
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);

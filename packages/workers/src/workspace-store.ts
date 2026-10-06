@@ -1,10 +1,9 @@
 /**
  * A `ProjectStore` over a synchronous, Node-shaped virtual filesystem (docs/todos/023).
  *
- * A snapshot lists directories and reads no file; files are read on first use. With a
- * `revision` source, every read first checks the workspace is still at the snapshot's
- * revision and throws `WorkspaceSnapshotChangedError` otherwise, so a snapshot never
- * mixes two revisions. Without one, reads are unchecked and nothing is reused.
+ * A snapshot lists directories and reads no file; files are read on first use. Every
+ * read first checks the workspace is still at the snapshot's revision and throws
+ * `WorkspaceSnapshotChangedError` otherwise, so a snapshot never mixes two revisions.
  *
  * The filesystem is typed structurally, so this package takes no dependency on the
  * workspace provider or on `node:fs` types.
@@ -29,10 +28,9 @@ export interface WorkspaceDirent {
 
 /** The synchronous read surface a workspace has to offer. */
 export interface WorkspaceFiles {
-  readdirSync(path: string, options?: { withFileTypes?: boolean }): string[] | WorkspaceDirent[];
-  readFileSync(path: string, options?: { encoding?: string | null } | string | null): unknown;
+  readdirSync(path: string, options: { withFileTypes: true }): WorkspaceDirent[];
+  readFileSync(path: string, encoding?: "utf-8"): string | Uint8Array;
   statSync(path: string): { size: number };
-  existsSync(path: string): boolean;
 }
 
 export interface WorkspaceStoreOptions {
@@ -42,11 +40,7 @@ export interface WorkspaceStoreOptions {
    * Answers "has anything changed" without walking the tree. On an unchanged workspace
    * the previous snapshot is reused, and a lazy read can notice a later write (023 §3).
    */
-  revision?: () => string | number | undefined;
-  /** Directory names never descended into. */
-  skip?: Iterable<string>;
-  /** Extensions read as bytes rather than text. */
-  binaryExtensions?: Iterable<string>;
+  revision: () => string | number;
   /**
    * Largest file to read, in bytes; a larger file is left out of the listing. Unset, one
    * enormous file can exhaust the isolate heap. `ProjectSnapshot.readBytes` is not bound by it.
@@ -55,32 +49,26 @@ export interface WorkspaceStoreOptions {
 }
 
 /** Build products and dependencies. npm packages arrive through the artifact (023 §6). */
-const DEFAULT_SKIP = ["node_modules", ".git", ".wrangler", ".astro", "dist"];
+const SKIP = new Set(["node_modules", ".git", ".wrangler", ".astro", "dist"]);
 
 /**
  * Read as bytes; everything else is read as text. Must match `test/sources.ts`, or the
  * parity harness compares differently classified files.
  */
-const DEFAULT_BINARY = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"];
+const BINARY = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"]);
 
 export function createWorkspaceProjectStore(
   files: WorkspaceFiles,
-  options: WorkspaceStoreOptions = {},
+  options: WorkspaceStoreOptions,
 ): ProjectStore {
   const root = normalizeRoot(options.root ?? "/");
-  const skip = new Set(options.skip ?? DEFAULT_SKIP);
-  const binary = new Set(options.binaryExtensions ?? DEFAULT_BINARY);
-  const readRevision = options.revision;
   const maxFileBytes = options.maxFileBytes;
 
   /** The last snapshot, and what the workspace's revision was when it was listed. */
   let cached: { revision: string; snapshot: ProjectSnapshot } | null = null;
-  /** Stands in for a revision the workspace will not give, so nothing is reused. */
-  let fallback = 0;
 
-  function currentRevision(): string | undefined {
-    const revision = readRevision?.();
-    return revision === undefined ? undefined : String(revision);
+  function currentRevision(): string {
+    return String(options.revision());
   }
 
   /** Project key -> workspace path, for text and binary files. Stats, reads no file. */
@@ -94,7 +82,7 @@ export function createWorkspaceProjectStore(
       const absolute = relative === "" ? root || "/" : `${root}${relative}`;
       for (const entry of dirents(files, absolute)) {
         if (entry.isDirectory()) {
-          if (!skip.has(entry.name)) directories.push(`${relative}/${entry.name}`);
+          if (!SKIP.has(entry.name)) directories.push(`${relative}/${entry.name}`);
           continue;
         }
         // Symlinks and devices: a render has nothing to do with them.
@@ -102,18 +90,17 @@ export function createWorkspaceProjectStore(
         const key = relative === "" ? entry.name : `${relative.slice(1)}/${entry.name}`;
         const path = absolute === "/" ? `/${entry.name}` : `${absolute}/${entry.name}`;
         if (maxFileBytes !== undefined && sizeOf(files, path) > maxFileBytes) continue;
-        if (binary.has(extensionOf(entry.name))) binaryFiles.set(key, path);
+        if (BINARY.has(extensionOf(entry.name))) binaryFiles.set(key, path);
         else text.set(key, path);
       }
     }
     return { text, binary: binaryFiles };
   }
 
-  function snapshotOf(listing: Listing, revision: string, checked: boolean): ProjectSnapshot {
+  function snapshotOf(listing: Listing, revision: string): ProjectSnapshot {
     const assertCurrent = (): void => {
-      if (!checked) return;
       const now = currentRevision();
-      if (now !== revision) throw new WorkspaceSnapshotChangedError(revision, String(now));
+      if (now !== revision) throw new WorkspaceSnapshotChangedError(revision, now);
     };
     const readBytesOf = (source: string): Uint8Array<ArrayBuffer> | null => {
       const path = listing.binary.get(source);
@@ -135,41 +122,17 @@ export function createWorkspaceProjectStore(
     };
   }
 
-  function unknownSnapshot(listing: Listing): ProjectSnapshot {
-    return snapshotOf(listing, `unknown:${++fallback}`, false);
-  }
-
-  function stableSnapshot(listing: Listing, revision: string): ProjectSnapshot {
-    const snapshot = snapshotOf(listing, revision, true);
-    cached = { revision, snapshot };
-    return snapshot;
-  }
-
   return {
     async snapshot(): Promise<ProjectSnapshot> {
       const before = currentRevision();
-      if (before !== undefined && cached?.revision === before) {
-        return cached.snapshot;
-      }
-
-      const first = list();
+      if (cached?.revision === before) return cached.snapshot;
+      const listing = list();
       const after = currentRevision();
-      if (before === undefined || after === undefined) {
-        // No usable revision means no coherence proof and therefore no cache reuse.
-        return unknownSnapshot(first);
-      }
-      if (before === after) return stableSnapshot(first, before);
-
-      const retryBefore = currentRevision();
-      const retry = list();
-      const retryAfter = currentRevision();
-      if (retryBefore === undefined || retryAfter === undefined) {
-        return unknownSnapshot(retry);
-      }
-      if (retryBefore !== retryAfter) {
-        throw new WorkspaceSnapshotChangedError(retryBefore, retryAfter);
-      }
-      return stableSnapshot(retry, retryBefore);
+      // The caller retries the whole operation; see `withSnapshot` in project-host.ts.
+      if (before !== after) throw new WorkspaceSnapshotChangedError(before, after);
+      const snapshot = snapshotOf(listing, before);
+      cached = { revision: before, snapshot };
+      return snapshot;
     },
   };
 }
@@ -217,20 +180,12 @@ function normalizeRoot(root: string): string {
 }
 
 function dirents(files: WorkspaceFiles, path: string): WorkspaceDirent[] {
-  let entries: string[] | WorkspaceDirent[];
   try {
-    entries = files.readdirSync(path, { withFileTypes: true });
+    return files.readdirSync(path, { withFileTypes: true });
   } catch {
     // Vanished since its parent was listed; a snapshot of a live tree may miss it.
     return [];
   }
-  const dirents: WorkspaceDirent[] = [];
-  for (const entry of entries) {
-    // A provider that ignored `withFileTypes`; a bare name cannot be classified.
-    if (typeof entry === "string") continue;
-    dirents.push(entry);
-  }
-  return dirents;
 }
 
 function sizeOf(files: WorkspaceFiles, path: string): number {
@@ -241,33 +196,28 @@ function sizeOf(files: WorkspaceFiles, path: string): number {
   }
 }
 
+// The provider types every read as `string | Uint8Array`, whatever the encoding asked for.
 function readText(files: WorkspaceFiles, path: string): string | null {
-  let value: unknown;
+  let value: string | Uint8Array;
   try {
     value = files.readFileSync(path, "utf-8");
   } catch {
     return null;
   }
-  if (typeof value === "string") return value;
-  if (value instanceof Uint8Array) return new TextDecoder().decode(value);
-  return null;
+  return typeof value === "string" ? value : new TextDecoder().decode(value);
 }
 
 function readBytes(files: WorkspaceFiles, path: string): Uint8Array<ArrayBuffer> | null {
-  let value: unknown;
+  let value: string | Uint8Array;
   try {
     value = files.readFileSync(path);
   } catch {
     return null;
   }
-  if (value instanceof Uint8Array) {
-    const { buffer, byteOffset, byteLength } = value;
-    if (buffer instanceof ArrayBuffer) return new Uint8Array(buffer, byteOffset, byteLength);
-    // A Response body cannot be a view of a SharedArrayBuffer.
-    return new Uint8Array(value);
-  }
-  if (typeof value === "string") return new Uint8Array(new TextEncoder().encode(value));
-  return null;
+  if (typeof value === "string") return new TextEncoder().encode(value);
+  const { buffer, byteOffset, byteLength } = value;
+  // A Response body cannot be a view of a SharedArrayBuffer.
+  return buffer instanceof ArrayBuffer ? new Uint8Array(buffer, byteOffset, byteLength) : new Uint8Array(value);
 }
 
 function extensionOf(name: string): string {

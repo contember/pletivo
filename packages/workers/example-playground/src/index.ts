@@ -290,16 +290,13 @@ function walkFiles(provider: WorkspaceFiles, directory: string): string[] {
   while (pending.length > 0) {
     const current = pending.pop();
     if (current === undefined) continue;
-    let entries: string[] | WorkspaceDirent[];
+    let entries: WorkspaceDirent[];
     try {
       entries = provider.readdirSync(current, { withFileTypes: true });
     } catch {
       continue;
     }
     for (const entry of entries) {
-      // A provider that ignored `withFileTypes` would hand back names, and nothing can
-      // be decided from a name. Same guard as `workspace-store.ts`.
-      if (typeof entry === "string") continue;
       const path = `${current}/${entry.name}`;
       if (entry.isDirectory()) pending.push(path);
       else if (entry.isFile()) found.push(path);

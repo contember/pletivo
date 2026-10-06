@@ -68,8 +68,7 @@ class FakeWorkspace implements WorkspaceFiles {
     return [...this.#text.keys(), ...this.#bytes.keys()];
   }
 
-  readdirSync(path: string, options?: { withFileTypes?: boolean }): string[] | WorkspaceDirent[] {
-    if (options?.withFileTypes !== true) throw new Error("the store must ask for file types");
+  readdirSync(path: string): WorkspaceDirent[] {
     const prefix = path === "/" ? "/" : `${path}/`;
     const names = new Map<string, boolean>();
     for (const file of this.#paths()) {
@@ -86,13 +85,13 @@ class FakeWorkspace implements WorkspaceFiles {
     }));
   }
 
-  readFileSync(path: string, options?: { encoding?: string | null } | string | null): unknown {
+  readFileSync(path: string, encoding?: "utf-8"): string | Uint8Array {
     this.reads.push(path);
     this.onRead?.(path);
     const text = this.#text.get(path);
-    if (text !== undefined) return options ? text : new TextEncoder().encode(text);
+    if (text !== undefined) return encoding ? text : new TextEncoder().encode(text);
     const bytes = this.#bytes.get(path);
-    if (bytes !== undefined) return options ? new TextDecoder().decode(bytes) : bytes;
+    if (bytes !== undefined) return encoding ? new TextDecoder().decode(bytes) : bytes;
     throw Object.assign(new Error(`no such file: ${path}`), { code: "ENOENT" });
   }
 
@@ -102,10 +101,6 @@ class FakeWorkspace implements WorkspaceFiles {
     const bytes = this.#bytes.get(path);
     if (bytes !== undefined) return { size: bytes.byteLength };
     throw Object.assign(new Error(`no such file: ${path}`), { code: "ENOENT" });
-  }
-
-  existsSync(path: string): boolean {
-    return this.#text.has(path) || this.#bytes.has(path);
   }
 }
 
@@ -232,20 +227,6 @@ describe("createWorkspaceProjectStore", () => {
         "src/pages/about.astro",
         "src/pages/index.astro",
       ]);
-    });
-
-    test("without a revision source nothing is reused", async () => {
-      const workspace = new FakeWorkspace();
-      workspace.write("/src/pages/index.astro", PAGE);
-      const store = createWorkspaceProjectStore(workspace);
-
-      const first = await store.snapshot();
-      const second = await store.snapshot();
-
-      // Correct, and exactly as slow as having no store: a workspace that will not say
-      // whether it changed has to be re-read.
-      expect(second.files).not.toBe(first.files);
-      expect([...second.files.keys()]).toEqual([...first.files.keys()]);
     });
   });
 

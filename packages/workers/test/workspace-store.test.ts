@@ -30,8 +30,7 @@ class FakeWorkspace implements WorkspaceFiles {
     this.#revision++;
   }
 
-  readdirSync(path: string, options?: { withFileTypes?: boolean }): string[] | WorkspaceDirent[] {
-    if (options?.withFileTypes !== true) throw new Error("withFileTypes is required");
+  readdirSync(path: string): WorkspaceDirent[] {
     this.onReaddir?.(path);
     const prefix = path === "/" ? "/" : `${path}/`;
     const names = new Map<string, boolean>();
@@ -48,13 +47,13 @@ class FakeWorkspace implements WorkspaceFiles {
     }));
   }
 
-  readFileSync(path: string, options?: { encoding?: string | null } | string | null): unknown {
+  readFileSync(path: string, encoding?: "utf-8"): string | Uint8Array {
     this.reads.push(path);
     this.onRead?.(path);
     const text = this.#text.get(path);
-    if (text !== undefined) return options ? text : new TextEncoder().encode(text);
+    if (text !== undefined) return encoding ? text : new TextEncoder().encode(text);
     const bytes = this.#bytes.get(path);
-    if (bytes !== undefined) return options ? new TextDecoder().decode(bytes) : bytes;
+    if (bytes !== undefined) return encoding ? new TextDecoder().decode(bytes) : bytes;
     throw new Error(`No file ${path}`);
   }
 
@@ -64,10 +63,6 @@ class FakeWorkspace implements WorkspaceFiles {
     const bytes = this.#bytes.get(path);
     if (bytes !== undefined) return { size: bytes.byteLength };
     throw new Error(`No file ${path}`);
-  }
-
-  existsSync(path: string): boolean {
-    return this.#text.has(path) || this.#bytes.has(path);
   }
 }
 
@@ -124,60 +119,20 @@ describe("createWorkspaceProjectStore", () => {
     expect(workspace.reads.length).toBe(reads);
   });
 
-  test("retries once when the workspace changes during a walk", async () => {
+  test("fails when the workspace changes during the walk", async () => {
     const workspace = new FakeWorkspace();
-    workspace.write("/src/pages/index.astro", "<p>old</p>");
-    workspace.write("/src/assets/hero.gif", gif(1, 1, 1));
+    workspace.write("/src/pages/index.astro", "<p>page</p>");
     let changed = false;
     workspace.onReaddir = () => {
       if (changed) return;
       changed = true;
-      workspace.write("/src/pages/index.astro", "<p>new</p>");
-      workspace.write("/src/assets/hero.gif", gif(2, 3, 2));
-    };
-    const store = createWorkspaceProjectStore(workspace, {
-      revision: () => workspace.revision,
-    });
-
-    const snapshot = await store.snapshot();
-
-    expect(snapshot.revision).toBe(String(workspace.revision));
-    expect(snapshot.files.get("src/pages/index.astro")).toBe("<p>new</p>");
-    expect((await snapshot.assets.info("src/assets/hero.gif"))?.width).toBe(2);
-    // The walk lists; the reads above are the only ones.
-    expect(workspace.reads.filter((path) => path === "/src/pages/index.astro")).toHaveLength(1);
-    expect(workspace.reads.filter((path) => path === "/src/assets/hero.gif")).toHaveLength(1);
-  });
-
-  test("fails when the workspace changes during the retry", async () => {
-    const workspace = new FakeWorkspace();
-    workspace.write("/src/pages/index.astro", "<p>page</p>");
-    workspace.onReaddir = () => {
-      workspace.write("/churn.txt", String(workspace.revision));
+      workspace.write("/churn.txt", "x");
     };
     const store = createWorkspaceProjectStore(workspace, {
       revision: () => workspace.revision,
     });
 
     await expect(store.snapshot()).rejects.toBeInstanceOf(WorkspaceSnapshotChangedError);
-  });
-
-  test("does not reuse an unverified snapshot", async () => {
-    const workspace = new FakeWorkspace();
-    workspace.write("/src/pages/index.astro", "<p>page</p>");
-    const store = createWorkspaceProjectStore(workspace, {
-      revision: () => undefined,
-    });
-
-    const first = await store.snapshot();
-    first.files.get("src/pages/index.astro");
-    const reads = workspace.reads.length;
-    const second = await store.snapshot();
-    second.files.get("src/pages/index.astro");
-
-    expect(first.revision).not.toBe(second.revision);
-    expect(second).not.toBe(first);
-    expect(workspace.reads.length).toBeGreaterThan(reads);
   });
 
   test("builds an output index without probing unrelated binary bytes", async () => {
