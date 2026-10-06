@@ -206,18 +206,6 @@ describe("a warm cache", () => {
     expect(counting.transformed).toEqual([]);
     expect(warm).toEqual(cold);
   });
-
-  test("misses again once the entry is deleted", async () => {
-    const cache = createCompileCache();
-    const counting = countingCompiler();
-    await build(PROJECT, cache, counting.compiler);
-
-    cache.delete("src/components/Layout.astro");
-    counting.transformed.length = 0;
-    await build(PROJECT, cache, counting.compiler);
-
-    expect(counting.transformed).toEqual(["src/components/Layout.astro"]);
-  });
 });
 
 describe("what a cache entry has to carry", () => {
@@ -342,37 +330,44 @@ describe("what a cache entry has to carry", () => {
     expect(compileProject(broken)).rejects.toThrow(/slot\[name\] must be a static string/);
     expect(compileProject(broken)).rejects.toThrow(/slot\[name\] must be a static string/);
     expect(cache.get("src/pages/broken.astro")).toBeUndefined();
-    expect(cache.bytes).toBe(0);
   });
 });
 
 describe("createCompileCache, the bound", () => {
   function entryOf(source: string, code: string | null = null): CompiledFile {
-    return { source, code, importMetaEnv: false, specifiers: [], envNames: null, styles: null };
+    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null };
+  }
+
+  function retained(entry: CompiledFile, maxBytes: number): boolean {
+    const cache = createCompileCache({ maxBytes });
+    cache.set("file", entry);
+    return cache.get("file") !== undefined;
   }
 
   test("charges the source, the code, the specifiers and the style bytes", () => {
-    const cache = createCompileCache();
-    cache.set("a.js", entryOf("12345", "678"));
-    expect(cache.bytes).toBe(8);
+    expect(retained(entryOf("12345", "678"), 8)).toBe(true);
+    expect(retained(entryOf("12345", "678"), 7)).toBe(false);
 
-    cache.set("b.astro", {
+    const astro: CompiledFile = {
       ...entryOf("1234"),
       specifiers: ["./x"],
       styles: { scope: "abcd", blocks: [{ global: false, css: "p{}" }] },
-    });
-    expect(cache.bytes).toBe(8 + 4 + 3 + 4 + 3);
+    };
+    expect(retained(astro, 4 + 3 + 4 + 3)).toBe(true);
+    expect(retained(astro, 4 + 3 + 4 + 3 - 1)).toBe(false);
   });
 
   test("re-setting a file replaces its charge rather than adding to it", () => {
-    const cache = createCompileCache();
+    const cache = createCompileCache({ maxBytes: 7 });
     cache.set("a.js", entryOf("12345"));
     cache.set("a.js", entryOf("12"));
-    expect(cache.bytes).toBe(2);
+    cache.set("b.js", entryOf("12345"));
+    expect(cache.get("a.js")?.source).toBe("12");
+    expect(cache.get("b.js")).toBeDefined();
   });
 
   test("evicts the least recently used entry", () => {
-    const cache = createCompileCache({ maxEntries: 2 });
+    const cache = createCompileCache({ maxBytes: 2 });
     cache.set("a.js", entryOf("a"));
     cache.set("b.js", entryOf("b"));
     // `a` was set first, and this is what makes it the most recent instead.
@@ -391,7 +386,8 @@ describe("createCompileCache, the bound", () => {
     cache.set("c.js", entryOf("ccccc"));
 
     expect(cache.get("a.js")).toBeUndefined();
-    expect(cache.bytes).toBe(10);
+    expect(cache.get("b.js")).toBeDefined();
+    expect(cache.get("c.js")).toBeDefined();
   });
 
   test("refuses an entry that would not fit on its own", () => {
@@ -402,16 +398,5 @@ describe("createCompileCache, the bound", () => {
 
     expect(cache.get("huge.js")).toBeUndefined();
     expect(cache.get("small.js")).toBeDefined();
-    expect(cache.bytes).toBe(3);
-  });
-
-  test("delete drops the entry and its charge", () => {
-    const cache = createCompileCache();
-    cache.set("a.js", entryOf("aaaaa"));
-    cache.delete("a.js");
-    cache.delete("never-held.js");
-
-    expect(cache.get("a.js")).toBeUndefined();
-    expect(cache.bytes).toBe(0);
   });
 });

@@ -1,103 +1,64 @@
 import { describe, expect, test } from "bun:test";
 import { GeneratedAssetCache } from "../src/asset-cache.ts";
+import type { RenderedAsset } from "../src/render.ts";
 
-interface Asset {
-  path: string;
-  body: string | Uint8Array;
-  contentType: string;
-}
-
-function asset(path: string, body: string | Uint8Array): Asset {
+function asset(path: string, body: string): RenderedAsset {
   return { path, body, contentType: "text/plain" };
 }
 
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let settle: (() => void) | undefined;
-  const promise = new Promise<void>((resolve) => {
-    settle = resolve;
-  });
-  return {
-    promise,
-    resolve() {
-      if (!settle) throw new Error("Deferred promise was not initialized");
-      settle();
-    },
-  };
+function held(cache: GeneratedAssetCache, paths: readonly string[]): string[] {
+  return paths.filter((path) => cache.get(path) !== undefined);
 }
 
 describe("GeneratedAssetCache", () => {
   test("evicts the least recently used entry by count", () => {
-    const cache = new GeneratedAssetCache<Asset>({ maxEntries: 2, maxBytes: 100 });
-    cache.put(asset("/a", "a"));
-    cache.put(asset("/b", "b"));
+    const cache = new GeneratedAssetCache({ maxEntries: 2, maxBytes: 100 });
+    cache.putAll([asset("/a", "a"), asset("/b", "b")]);
     expect(cache.get("/a")?.path).toBe("/a");
-    cache.put(asset("/c", "c"));
+    cache.putAll([asset("/c", "c")]);
 
-    expect(cache.keys()).toEqual(["/a", "/c"]);
     expect(cache.get("/b")).toBeUndefined();
+    expect(held(cache, ["/a", "/c"])).toEqual(["/a", "/c"]);
   });
 
-  test("keeps both count and encoded byte budgets after every batch entry", () => {
-    const cache = new GeneratedAssetCache<Asset>({ maxEntries: 3, maxBytes: 4 });
-    function* batch(): Iterable<Asset> {
-      yield asset("/a", "aa");
-      expect(cache.count).toBeLessThanOrEqual(3);
-      expect(cache.byteSize).toBeLessThanOrEqual(4);
-      yield asset("/b", "€");
-      expect(cache.count).toBeLessThanOrEqual(3);
-      expect(cache.byteSize).toBeLessThanOrEqual(4);
-      yield asset("/c", Uint8Array.of(1, 2));
-    }
+  test("keeps the encoded byte budget after every batch entry", () => {
+    const cache = new GeneratedAssetCache({ maxEntries: 3, maxBytes: 4 });
+    // "€" is three UTF-8 bytes, so `/a` has to go to make room, and then `/b` for `/c`.
+    const rejected = cache.putAll([asset("/a", "aa"), asset("/b", "€"), asset("/c", "cc")]);
 
-    cache.putAll(batch());
-    expect(cache.keys()).toEqual(["/c"]);
-    expect(cache.byteSize).toBe(2);
+    expect(rejected.map((entry) => entry.path)).toEqual(["/a", "/b"]);
+    expect(held(cache, ["/a", "/b", "/c"])).toEqual(["/c"]);
   });
 
-  test("returns an oversized entry once without retaining it", () => {
-    const cache = new GeneratedAssetCache<Asset>({ maxEntries: 2, maxBytes: 3 });
-    cache.put(asset("/large", "ok"));
+  test("does not retain an oversized entry, and drops the one it replaces", () => {
+    const cache = new GeneratedAssetCache({ maxEntries: 2, maxBytes: 3 });
+    cache.putAll([asset("/large", "ok")]);
     const oversized = asset("/large", "too large");
 
-    expect(cache.put(oversized)).toBe(oversized);
+    expect(cache.putAll([oversized])).toEqual([oversized]);
     expect(cache.get("/large")).toBeUndefined();
-    expect(cache.count).toBe(0);
-    expect(cache.byteSize).toBe(0);
   });
 
   test("reports oversized and batch-evicted assets to the caller", () => {
-    const cache = new GeneratedAssetCache<Asset>({ maxEntries: 2, maxBytes: 2 });
+    const cache = new GeneratedAssetCache({ maxEntries: 2, maxBytes: 2 });
     const first = asset("/a", "a");
     const second = asset("/b", "b");
     const third = asset("/c", "c");
     const oversized = asset("/large", "large");
 
     expect(cache.putAll([first, second, third, oversized])).toEqual([first, oversized]);
-    expect(cache.keys()).toEqual(["/b", "/c"]);
-    expect(cache.count).toBe(2);
-    expect(cache.byteSize).toBe(2);
+    expect(held(cache, ["/a", "/b", "/c", "/large"])).toEqual(["/b", "/c"]);
   });
 
-  test("has deterministic atomic put/get semantics across async callers", async () => {
-    const cache = new GeneratedAssetCache<Asset>({ maxEntries: 2, maxBytes: 2 });
-    const firstPut = deferred();
-    const continueWriter = deferred();
-    const writer = async () => {
-      cache.put(asset("/a", "a"));
-      firstPut.resolve();
-      await continueWriter.promise;
-      cache.put(asset("/c", "c"));
-    };
+  test("rejects a budget that is not a non-negative finite number", () => {
+    expect(() => new GeneratedAssetCache({ maxEntries: 1.5, maxBytes: 1 })).toThrow(/maxEntries/);
+    expect(() => new GeneratedAssetCache({ maxEntries: 1, maxBytes: -1 })).toThrow(/maxBytes/);
+  });
 
-    const writing = writer();
-    await firstPut.promise;
-    expect(cache.get("/a")?.body).toBe("a");
-    cache.put(asset("/b", "b"));
-    continueWriter.resolve();
-    await writing;
-
-    expect(cache.keys()).toEqual(["/b", "/c"]);
-    expect(cache.count).toBe(2);
-    expect(cache.byteSize).toBe(2);
+  test("holds nothing with a zero entry budget", () => {
+    const cache = new GeneratedAssetCache({ maxEntries: 0, maxBytes: 100 });
+    const only = asset("/a", "a");
+    expect(cache.putAll([only])).toEqual([only]);
+    expect(cache.get("/a")).toBeUndefined();
   });
 });

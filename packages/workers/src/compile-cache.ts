@@ -5,6 +5,7 @@
  */
 
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
+import { BoundedLru } from "./bounded-lru.ts";
 import type { AstroStyles } from "./compile/types.ts";
 
 /** One file's compile, everything the file set decides left out. */
@@ -12,7 +13,7 @@ export interface CompiledFile {
   /** The source this was built from; comparing it is the whole freshness check. */
   source: string;
   /** Source interpretation; resolution is deliberately not cached with it. */
-  kind?: ArtifactModuleKind;
+  kind: ArtifactModuleKind;
   /**
    * The JavaScript `rewriteImports` runs over, after `import.meta.env` substitution.
    * `null` means "the source itself", so an unchanged module is not stored twice.
@@ -34,15 +35,10 @@ export interface CompiledFile {
 export interface CompileCache {
   get(file: string): CompiledFile | undefined;
   set(file: string, entry: CompiledFile): void;
-  /** Forget one file. Freshness never needs it; `source ===` already invalidates. */
-  delete(file: string): void;
-  /** What the held entries charge, by the measure `maxBytes` bounds. */
-  readonly bytes: number;
 }
 
 export interface CompileCacheOptions {
   maxBytes?: number;
-  maxEntries?: number;
 }
 
 /** 32 MiB of a Worker's 128 MiB heap: sized to hold one large project (`023 §1`), evicting beyond it. */
@@ -68,48 +64,13 @@ function chargeOf(entry: CompiledFile): number {
   return charge;
 }
 
-/** An insertion-ordered `Map` as an LRU: the front is the least recently used end. */
 export function createCompileCache(options: CompileCacheOptions = {}): CompileCache {
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-  const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
-  const held = new Map<string, { entry: CompiledFile; charge: number }>();
-  let bytes = 0;
-
-  const drop = (file: string): void => {
-    const found = held.get(file);
-    if (found === undefined) return;
-    held.delete(file);
-    bytes -= found.charge;
-  };
-
+  const held = new BoundedLru<CompiledFile>({
+    maxEntries: DEFAULT_MAX_ENTRIES,
+    maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,
+  });
   return {
-    get(file) {
-      const found = held.get(file);
-      if (found === undefined) return undefined;
-      // Re-insert to move it to the most recently used end.
-      held.delete(file);
-      held.set(file, found);
-      return found.entry;
-    },
-
-    set(file, entry) {
-      drop(file);
-      const charge = chargeOf(entry);
-      // An oversized entry would flush the whole cache and then evict itself.
-      if (charge > maxBytes) return;
-      held.set(file, { entry, charge });
-      bytes += charge;
-      while (bytes > maxBytes || held.size > maxEntries) {
-        const oldest: IteratorResult<string> = held.keys().next();
-        if (oldest.done === true) break;
-        drop(oldest.value);
-      }
-    },
-
-    delete: drop,
-
-    get bytes() {
-      return bytes;
-    },
+    get: (file) => held.get(file),
+    set: (file, entry) => held.set(file, entry, chargeOf(entry)),
   };
 }

@@ -112,7 +112,7 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const directArtifact =
     options.artifact === undefined ? undefined : loadProjectArtifact(options.artifact);
-  const served = new GeneratedAssetCache<RenderedAsset>(
+  const served = new GeneratedAssetCache(
     options.generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE,
   );
   // Per host, not a module global: an entry's `.astro` output is bound to its compiler.
