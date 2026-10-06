@@ -468,7 +468,7 @@ packages/workers/src/
 Changed, minimally:
 
 - `compile-project.ts:298-311` — `resolve()` gains two branches next to the existing
-  `JSX_IMPORT_SPECIFIER` and `isContentApi` ones: `artifact.virtualModules[resolved]`
+  `JSX_IMPORT_SPECIFIER` one: `artifact.virtualModules[resolved]`
   and `artifact.vendor[resolved]`. This is the whole vendor + virtual-module mechanism.
 - `render.ts` — `ProjectOptions` gains `artifact?: SiteArtifact` and
   `artifactModules?: ArtifactModules`; `projectRoutes()` merges `injectedRoutes`;
@@ -569,9 +569,9 @@ human is unchanged by this design.
 
 ## 7. What remains unsupported
 
-Listed so nobody re-derives them. In the current V2 contract they belong in the
-separate `PrepareReport`; a fatal item throws `PrepareError` and prevents artifact
-emission rather than producing a partially executable site.
+Listed so nobody re-derives them. In the current contract a fatal item throws
+`PrepareError` and prevents artifact emission rather than producing a partially
+executable site.
 
 **Cannot work at all in the isolate:**
 

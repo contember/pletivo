@@ -241,7 +241,7 @@ of it needs a Durable Object under it to be tested:
 | `src/project-host.ts` | `createProjectHost` — route, render, serve the generated assets, retry once when the workspace moves (§10.3), turn the throws into status codes |
 | `src/asset-port.ts` | `ProjectAssetsView` — `info(source)` and `resolveOutput(path)` without an eager project-wide asset scan |
 | `src/workspace-store.ts` | `createWorkspaceProjectStore` over `kompjutr`'s SQLite filesystem: lists the tree, reads a file on first use; typed structurally so this package depends on none of it |
-| `src/project-artifact.ts` | `loadProjectArtifact` — the one parser of a `pletivo prepare` artifact; everything after it takes the bound `ProjectArtifact` |
+| `src/artifact.ts` | `loadProjectArtifact` — the one parser of a `pletivo prepare` artifact; everything after it takes the bound `ProjectArtifact` |
 | `example-playground/` | the production-correct Durable Object workspace, with an editor in front of it |
 
 Verified under `wrangler dev` against a real workspace: a component written into SQLite
@@ -320,9 +320,6 @@ check is optimistic:
 make the check unnecessary, but the content binding is a stub to the same Durable Object
 (§10.1): the render re-enters the DO while it runs, and those calls would wait behind
 the render that needs them.
-
-A store with no revision source gets none of this. Its snapshots are `unknown:N`, never
-reused, and nothing is re-checked after the listing.
 
 ### 10.4 An artifact built from other files is reported, not trusted silently
 

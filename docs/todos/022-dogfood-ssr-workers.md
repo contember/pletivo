@@ -39,6 +39,9 @@ worth separating.
 
 ## 1. Type-only imports are vendored, and one of them cannot be bundled
 
+**Resolved:** `specifierUses` is gone; prepare reads imports only through
+`scanImports`, which elides type-only imports.
+
 `requestsFrom` reads `specifierUses`, a regex (`scan.ts:79-129`), while the
 vendored-source walk reads `specifiersOf`, `Bun.Transpiler.scanImports`
 (`scan.ts:49`). The two disagree about TypeScript's `type` modifier:
@@ -151,10 +154,9 @@ correctly returns `null` — `resolveSpecifier` drops a `..`, so such a key coul
 never resolve (`vendor.ts:248, 265-271`).
 
 Correct, and it means **no workspace monorepo with hoisted dependencies can
-carry a component library**. Every `.astro` from npm is this case. `vendorSpecifiers`
-already takes a `pathPrefix`; what is missing is a key space inside the project
-root for sources that come from outside it (`.pletivo-vendor/…` is what the
-harness used, and it worked).
+carry a component library**. Every `.astro` from npm is this case. What is missing is
+a key space inside the project root for sources that come from outside it
+(`.pletivo-vendor/…` is what the harness used, and it worked).
 
 ## 8. `Bun.build`'s errors are thrown away
 

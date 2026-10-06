@@ -19,7 +19,7 @@ These contracts landed after the measurements below. They are the current baseli
   and unsupported inputs. Fatal prepare diagnostics prevent emission; diagnostics
   stay outside the executable artifact and its canonical identity.
 - The host parses an artifact once, at its boundary. `loadProjectArtifact`
-  (`src/project-artifact.ts`) is the only parser: it validates the untrusted value and
+  (`src/artifact.ts`) is the only parser: it validates the untrusted value and
   binds it to the host externals it may use, so a binding error surfaces when the
   artifact is loaded, not at the first executable route. `renderPage`, `projectPaths`
   and `compileProject` take the bound `ProjectArtifact`. With `artifactPath` the parse
@@ -276,7 +276,7 @@ keeping.** It looked like one: `js-imported-css.ts:147` names the bundle with
 `Bun.hash`, which is wyhash and has no workerd equivalent. That token turns out to
 name a *virtual entrypoint* that never reaches the output. The real filename came
 from `css.ts:33-40` — `Bun.CryptoHasher("md5")` over the bundle text, first 8 hex
-chars — which is reproducible. `src/md5.ts` is a pure-JS MD5 held to
+chars — which is reproducible. `@pletivo/core/md5` is a pure-JS MD5 held to
 `Bun.CryptoHasher` across every padding boundary and the RFC 1321 vectors, and it
 is still what names `?url` assets. (`crypto.subtle` was not an option: workerd
 accepts `"MD5"` as a non-standard extension, Bun rejects it, so the two hosts
@@ -468,8 +468,6 @@ Known follow-ups:
    `findPletivoConfig`.
 2. An image that `resolveOutput` is asked for before `info` is read twice: once to
    probe it, once to serve it.
-3. A store with no revision source (`unknown:N` snapshots) re-checks nothing after the
-   listing.
 
 ## Parity that does hold
 
