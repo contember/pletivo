@@ -182,21 +182,11 @@ describe("execution identity", () => {
     }
   });
 
-  test("rejects missing namespace and platform identity", async () => {
+  test("rejects an empty tenant", async () => {
     const baseline = baseIdentity("program-v1:abc");
-    const invalid = [
-      { ...baseline, namespace: { ...baseline.namespace, tenant: "" } },
-      {
-        ...baseline,
-        namespace: { ...baseline.namespace, capabilityGeneration: "" },
-      },
-      { ...baseline, platform: { ...baseline.platform, hostAbi: "" } },
-      { ...baseline, platform: { ...baseline.platform, compatibilityDate: "" } },
-    ];
-
-    for (const input of invalid) {
-      await expect(isolateKey(input)).rejects.toBeInstanceOf(ExecutionIdentityError);
-    }
+    await expect(
+      isolateKey({ ...baseline, namespace: { ...baseline.namespace, tenant: " " } }),
+    ).rejects.toBeInstanceOf(ExecutionIdentityError);
   });
 
   test("distinguishes every outbound mode", async () => {
@@ -213,32 +203,6 @@ describe("execution identity", () => {
     );
 
     expect(new Set(keys).size).toBe(3);
-  });
-
-  test("rejects invalid outbound, flags, and module names", async () => {
-    const baseline = baseIdentity("program-v1:abc");
-    const invalidOutbound = JSON.parse(JSON.stringify(baseline));
-    invalidOutbound.policy.outbound = "open";
-
-    await expect(isolateKey(invalidOutbound)).rejects.toBeInstanceOf(ExecutionIdentityError);
-    await expect(
-      isolateKey({
-        ...baseline,
-        platform: { ...baseline.platform, compatibilityFlags: ["nodejs_compat", ""] },
-      }),
-    ).rejects.toBeInstanceOf(ExecutionIdentityError);
-    await expect(
-      isolateKey({
-        ...baseline,
-        platform: {
-          ...baseline.platform,
-          compatibilityFlags: ["nodejs_compat", "nodejs_compat"],
-        },
-      }),
-    ).rejects.toBeInstanceOf(ExecutionIdentityError);
-    await expect(
-      programHash({ mainModule: "entry.js", modules: { "": "export {};" } }),
-    ).rejects.toBeInstanceOf(ExecutionIdentityError);
   });
 });
 

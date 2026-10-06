@@ -51,103 +51,39 @@ export class ExecutionIdentityError extends Error {
 
 /** Hash the exact Loader program with unambiguous JSON framing. */
 export async function programHash(input: ProgramHashInput): Promise<ProgramHash> {
-  requireNonEmpty(input.mainModule, "program.mainModule");
-  const modules = sortedRecordEntries(input.modules, "program.modules");
+  const modules = sortedEntries(input.modules);
   return `program-v1:${await digest(JSON.stringify({ mainModule: input.mainModule, modules }))}`;
 }
 
 /** Name a reusable isolate by program and every immutable factory input. */
 export async function isolateKey(input: IsolateKeyInput): Promise<IsolateKey> {
-  requireNonEmpty(input.programHash, "isolate.programHash");
-  requireNonEmpty(input.namespace.tenant, "isolate.namespace.tenant");
-  requireNonEmpty(
-    input.namespace.capabilityGeneration,
-    "isolate.namespace.capabilityGeneration",
-  );
-  requireNonEmpty(input.platform.hostAbi, "isolate.platform.hostAbi");
-  requireNonEmpty(input.platform.compatibilityDate, "isolate.platform.compatibilityDate");
-
-  const compatibilityFlags = canonicalFlags(input.platform.compatibilityFlags);
-  const env =
-    input.policy.env === null
-      ? null
-      : {
-          client: sortedRecordEntries(input.policy.env.client, "isolate.policy.env.client"),
-          server: sortedRecordEntries(input.policy.env.server, "isolate.policy.env.server"),
-        };
-  const importMetaEnv =
-    input.policy.importMetaEnv === null
-      ? null
-      : sortedRecordEntries(
-          input.policy.importMetaEnv,
-          "isolate.policy.importMetaEnv",
-        );
-  const outbound = validateOutbound(input.policy.outbound);
+  const { namespace, platform, policy } = input;
+  // The tenant is the caller's; everything else here the host builds itself.
+  if (namespace.tenant.trim() === "") {
+    throw new ExecutionIdentityError("isolate.namespace.tenant", "expected a non-empty string");
+  }
   const canonical = {
     programHash: input.programHash,
-    namespace: {
-      tenant: input.namespace.tenant,
-      capabilityGeneration: input.namespace.capabilityGeneration,
-    },
+    namespace: { tenant: namespace.tenant, capabilityGeneration: namespace.capabilityGeneration },
     platform: {
-      hostAbi: input.platform.hostAbi,
-      compatibilityDate: input.platform.compatibilityDate,
-      compatibilityFlags,
+      hostAbi: platform.hostAbi,
+      compatibilityDate: platform.compatibilityDate,
+      compatibilityFlags: [...platform.compatibilityFlags].sort(compareStrings),
     },
     policy: {
-      outbound,
-      env,
-      importMetaEnv,
+      outbound: policy.outbound,
+      env:
+        policy.env === null
+          ? null
+          : { client: sortedEntries(policy.env.client), server: sortedEntries(policy.env.server) },
+      importMetaEnv: policy.importMetaEnv === null ? null : sortedEntries(policy.importMetaEnv),
     },
   };
   return `isolate-v1:${await digest(JSON.stringify(canonical))}`;
 }
 
-function validateOutbound(value: unknown): FactoryOutboundKind {
-  if (value === "blocked" || value === "proxy" || value === "inherit") return value;
-  throw new ExecutionIdentityError(
-    "isolate.policy.outbound",
-    'expected "blocked", "proxy", or "inherit"',
-  );
-}
-
-function canonicalFlags(flags: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const canonical: string[] = [];
-  for (let index = 0; index < flags.length; index++) {
-    const flag = flags[index];
-    requireNonEmpty(flag, `isolate.platform.compatibilityFlags[${index}]`);
-    if (seen.has(flag)) {
-      throw new ExecutionIdentityError(
-        `isolate.platform.compatibilityFlags[${index}]`,
-        `duplicate flag ${JSON.stringify(flag)}`,
-      );
-    }
-    seen.add(flag);
-    canonical.push(flag);
-  }
-  return canonical.sort(compareStrings);
-}
-
-function sortedRecordEntries(
-  record: Readonly<Record<string, string>>,
-  path: string,
-): Array<[string, string]> {
-  const entries: Array<[string, string]> = [];
-  for (const [name, body] of Object.entries(record)) {
-    requireNonEmpty(name, `${path}.name`);
-    if (typeof body !== "string") {
-      throw new ExecutionIdentityError(`${path}.${name}`, "expected a string");
-    }
-    entries.push([name, body]);
-  }
-  return entries.sort((left, right) => compareStrings(left[0], right[0]));
-}
-
-function requireNonEmpty(value: unknown, path: string): asserts value is string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ExecutionIdentityError(path, "expected a non-empty string");
-  }
+function sortedEntries(record: Readonly<Record<string, string>>): Array<[string, string]> {
+  return Object.entries(record).sort((left, right) => compareStrings(left[0], right[0]));
 }
 
 function compareStrings(left: string, right: string): number {

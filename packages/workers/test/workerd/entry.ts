@@ -87,12 +87,6 @@ interface QualificationReport {
 
 class ExecutionRecords {
   readonly ids: string[] = [];
-  readonly programHashes: string[] = [];
-
-  onLoaderGet(key: string, programHash: string): void {
-    this.ids.push(key);
-    this.programHashes.push(programHash);
-  }
 
   get lastId(): string {
     const id = this.ids[this.ids.length - 1];
@@ -254,6 +248,16 @@ export class QualificationDO extends DurableObject<Env> {
     return { identity, content, runtime, outbound };
   }
 
+  /** The Loader, recording every isolate id a render asks it for. */
+  #recordingLoader(): WorkerLoaderBinding {
+    return {
+      get: (id, code) => {
+        this.#execution.ids.push(id);
+        return this.env.LOADER.get(id, code);
+      },
+    };
+  }
+
   async #render(
     files: ReadonlyMap<string, string>,
     executionNamespace: ExecutionNamespace,
@@ -266,8 +270,7 @@ export class QualificationDO extends DurableObject<Env> {
     return renderPage({
       files,
       pathname: "/",
-      loader: this.env.LOADER,
-      executionObserver: this.#execution,
+      loader: this.#recordingLoader(),
       executionNamespace,
       ...(input.content
         ? { content: { binding: input.content, store: this.#content } }
@@ -327,8 +330,7 @@ export class QualificationDO extends DurableObject<Env> {
       await renderPage({
         files: contentProject("No namespace"),
         pathname: "/",
-        loader: this.env.LOADER,
-        executionObserver: this.#execution,
+        loader: this.#recordingLoader(),
         content: { binding, store: this.#content },
       });
     } catch (error) {

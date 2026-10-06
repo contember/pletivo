@@ -123,8 +123,6 @@ export interface ProjectOptions {
   assets?: ProjectAssetsView;
   loader: WorkerLoaderBinding;
   executionNamespace?: ExecutionNamespace;
-  /** Observes resolved execution identity without wrapping the Loader callback. */
-  executionObserver?: { onLoaderGet(key: string, programHash: string): void };
   /** Where pages live in `files`. */
   pagesDir?: string;
   /** Where the source tree starts in `files`. Defaults to the parent of `pagesDir`. */
@@ -640,7 +638,6 @@ async function callIsolate(input: {
     ...outboundConfig(options.outbound),
     ...(Object.keys(isolateEnv).length > 0 ? { env: isolateEnv } : {}),
   };
-  options.executionObserver?.onLoaderGet(key, bundleId);
   // Loader serializes the callback closure; only this immutable DTO may cross.
   const stub = options.loader.get(key, immutableCodeFactory(workerCode));
 
