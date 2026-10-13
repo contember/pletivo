@@ -182,6 +182,38 @@ describe("createWorkspaceProjectStore", () => {
     expect(workspace.reads).not.toContain("/outside.txt");
   });
 
+  test("asks for the revision of its own root, so writes elsewhere keep its snapshot", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/sessions/a/src/pages/index.astro", "<p>a</p>");
+    workspace.write("/sessions/b/src/pages/index.astro", "<p>b</p>");
+    // A subtree revision: how many writes landed under each root.
+    const writes = new Map<string, number>();
+    const write = (path: string, value: string): void => {
+      workspace.write(path, value);
+      for (const root of ["/sessions/a", "/sessions/b"]) {
+        if (path.startsWith(`${root}/`)) writes.set(root, (writes.get(root) ?? 0) + 1);
+      }
+    };
+    const asked: string[] = [];
+    const store = createWorkspaceProjectStore(workspace, {
+      root: "/sessions/a",
+      revision: (root) => {
+        asked.push(root);
+        return writes.get(root) ?? 0;
+      },
+    });
+
+    const before = await store.snapshot();
+    write("/sessions/b/src/pages/index.astro", "<p>b, edited</p>");
+    expect(await store.snapshot()).toBe(before);
+    // A read in flight is not failed by the other session's write either.
+    expect(before.files.get("src/pages/index.astro")).toBe("<p>a</p>");
+
+    write("/sessions/a/src/pages/index.astro", "<p>a, edited</p>");
+    expect((await store.snapshot()).files.get("src/pages/index.astro")).toBe("<p>a, edited</p>");
+    expect(new Set(asked)).toEqual(new Set(["/sessions/a"]));
+  });
+
   test("a snapshot reads no file until something asks", async () => {
     const workspace = new FakeWorkspace();
     workspace.write("/src/pages/index.astro", "<p>page</p>");

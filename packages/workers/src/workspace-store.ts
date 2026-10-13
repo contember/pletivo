@@ -37,10 +37,16 @@ export interface WorkspaceStoreOptions {
   /** Where the project starts in the workspace. Defaults to the workspace root. */
   root?: string;
   /**
-   * Answers "has anything changed" without walking the tree. On an unchanged workspace
-   * the previous snapshot is reused, and a lazy read can notice a later write (023 §3).
+   * Answers "has anything under `root` changed" without walking the tree. On an
+   * unchanged revision the previous snapshot is reused, and a lazy read can notice a
+   * later write (023 §3).
+   *
+   * Called with the store's absolute root (`"/"` for the workspace root). Pass a
+   * revision scoped to that subtree, so a write elsewhere (another session's checkout)
+   * neither discards this snapshot nor fails a read in flight. A whole-workspace
+   * counter, `() => fs.rev()`, is correct too, only coarser.
    */
-  revision: () => string | number;
+  revision: (root: string) => string | number;
   /**
    * Largest file to read, in bytes; a larger file is left out of the listing. Unset, one
    * enormous file can exhaust the isolate heap. `ProjectSnapshot.readBytes` is not bound by it.
@@ -67,8 +73,9 @@ export function createWorkspaceProjectStore(
   /** The last snapshot, and what the workspace's revision was when it was listed. */
   let cached: { revision: string; snapshot: ProjectSnapshot } | null = null;
 
+  const absoluteRoot = root === "" ? "/" : root;
   function currentRevision(): string {
-    return String(options.revision());
+    return String(options.revision(absoluteRoot));
   }
 
   /** Project key -> workspace path, for text and binary files. Stats, reads no file. */
