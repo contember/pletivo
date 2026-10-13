@@ -61,6 +61,9 @@ Bun workspace monorepo:
 packages/
   pletivo/             Core SSG engine (CLI, router, JSX runtime, islands,
                       content collections, CSS pipeline, dev server, astro shim)
+  runtime/            Render-time runtime (JSX SSR, astro shim, islands)
+  core/               Host-agnostic engine (router, content, markdown, images)
+  workers/            Cloudflare Worker host (@pletivo/workers)
   astro-jsx-pages/    Babel+Vite plugin enabling TSX pages inside Astro
 
 examples/
@@ -68,6 +71,14 @@ examples/
   basic-astro/        Pure Astro baseline (for benchmarking)
   basic-astro-native/ Pletivo running native .astro files
 ```
+
+## Cloudflare Workers
+
+`@pletivo/workers` renders a project inside a Cloudflare Worker, from source files
+held in memory or in a Durable Object, with no build step. It ships TypeScript
+source that your Worker's bundler compiles. See
+[`packages/workers/README.md`](https://github.com/contember/pletivo/blob/main/packages/workers/README.md) for the wrangler and
+TypeScript setup.
 
 ## Configuration
 
