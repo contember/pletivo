@@ -24,6 +24,7 @@ import {
 } from "@pletivo/core/artifact";
 import { loadProjectArtifact, type ProjectArtifact } from "./artifact.ts";
 import { browserModule, BrowserModuleError, isBrowserModulePath } from "./browser-modules.ts";
+import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
 import { publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
@@ -106,6 +107,8 @@ export interface ProjectHost {
   paths(): Promise<RoutePath[]>;
   /** The project as the next render will see it. */
   snapshot(): Promise<ProjectSnapshot>;
+  /** What the project uses that this host does not render; see `project-features.ts`. */
+  features(): Promise<ProjectFeatures>;
 }
 
 const DEFAULT_GENERATED_ASSET_CACHE = { maxEntries: 32, maxBytes: 4 * 1024 * 1024 };
@@ -253,6 +256,14 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     paths: () => withSnapshot((snapshot) => projectPaths(projectOptions(snapshot))),
 
     snapshot: () => store.snapshot(),
+
+    features: () =>
+      withSnapshot((snapshot) =>
+        detectProjectFeatures(snapshot.files, {
+          pagesDir: renderOptions.pagesDir,
+          compiler: renderOptions.compiler,
+        }),
+      ),
 
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
