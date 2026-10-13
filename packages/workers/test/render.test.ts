@@ -13,6 +13,7 @@ import {
   type WorkerLoaderBinding,
 } from "../src/render.ts";
 import { loadProjectArtifact } from "../src/artifact.ts";
+import { createCompileCache } from "../src/compile-cache.ts";
 import { IsolateProtocolError } from "../src/isolate-protocol.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
@@ -751,5 +752,26 @@ describe("typescriptSuspects", () => {
         "Page.astro.js": `import x from "./missing.js";\nexport default x;\n`,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("renderPage, source annotations", () => {
+  const files = new Map([
+    ["src/pages/index.astro", `---\nimport Card from "../components/Card.astro";\n---\n<main><h1>Home</h1><Card /></main>\n`],
+    ["src/components/Card.astro", `<article class="card">card</article>\n`],
+  ]);
+
+  test("marks every element with its source file and location when asked", async () => {
+    const page = await renderPage({ files, pathname: "/", loader, compiler, annotateSourceFile: true });
+    expect(page.html).toContain('<h1 data-astro-source-file="src/pages/index.astro" data-astro-source-loc="4:11">');
+    expect(page.html).toContain('data-astro-source-file="src/components/Card.astro"');
+  });
+
+  test("keeps a shared compile cache from serving one form for the other", async () => {
+    const compileCache = createCompileCache();
+    const annotated = await renderPage({ files, pathname: "/", loader, compiler, compileCache, annotateSourceFile: true });
+    const plain = await renderPage({ files, pathname: "/", loader, compiler, compileCache });
+    expect(annotated.html).toContain("data-astro-source-loc");
+    expect(plain.html).not.toContain("data-astro-source");
   });
 });

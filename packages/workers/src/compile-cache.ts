@@ -35,6 +35,8 @@ export interface CompiledFile {
    * `null` for one that loads an external `src`. Served to the browser, never executed here.
    */
   scripts: readonly (string | null)[];
+  /** Compiled with source annotations; only `.astro` output differs, so only it is `true`. */
+  annotated: boolean;
 }
 
 export interface CompileCache {

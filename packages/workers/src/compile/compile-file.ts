@@ -21,16 +21,33 @@ export async function compileCached(
   module: SourceModule,
   compiler: AstroCompiler,
   cache: CompileCache | undefined,
+  annotateSourceFile = false,
 ): Promise<CompiledFile> {
+  // Only the Astro compiler annotates; any other kind compiles the same either way.
+  const annotate = annotateSourceFile && module.kind === "astro";
   const held = cache?.get(module.compilePath);
-  if (held !== undefined && held.source === module.source && held.kind === module.kind) return held;
-  const entry = await compileFile(module, compiler);
+  if (
+    held !== undefined &&
+    held.source === module.source &&
+    held.kind === module.kind &&
+    held.annotated === annotate
+  ) {
+    return held;
+  }
+  const entry = await compileFile(module, compiler, annotate);
   cache?.set(module.compilePath, entry);
   return entry;
 }
 
-/** What depends only on the file's path, bytes and the compiler; the file set's part is `linkModule`. */
-async function compileFile(module: SourceModule, compiler: AstroCompiler): Promise<CompiledFile> {
+/**
+ * What depends only on the file's path, bytes, the compiler and `annotateSourceFile`;
+ * the file set's part is `linkModule`.
+ */
+async function compileFile(
+  module: SourceModule,
+  compiler: AstroCompiler,
+  annotateSourceFile: boolean,
+): Promise<CompiledFile> {
   const { source, compilePath, kind } = module;
   if (kind === "js") return fileEntry(source, source, null, kind, []);
   if (kind === "json") {
@@ -60,6 +77,8 @@ async function compileFile(module: SourceModule, compiler: AstroCompiler): Promi
     internalURL: "pletivo/astro-shim",
     sourcemap: false,
     resolvePath: async (specifier) => specifier,
+    // `data-astro-source-file` / `-loc` on every element, for a visual editor.
+    annotateSourceFile,
   });
   const errors = (result.diagnostics ?? []).filter((diagnostic) => diagnostic.severity === 1);
   if (errors.length > 0) {
@@ -77,13 +96,16 @@ async function compileFile(module: SourceModule, compiler: AstroCompiler): Promi
 
   // Types out before the graph is read: `import type` is not an edge, and with
   // `keepUnusedImports` nothing else in the prologue moves.
-  return fileEntry(
-    source,
-    transpile(stripStyleImports(result.code), { file: compilePath }),
-    declared,
-    kind,
-    result.scripts.map((script) => (script.type === "inline" ? script.code : null)),
-  );
+  return {
+    ...fileEntry(
+      source,
+      transpile(stripStyleImports(result.code), { file: compilePath }),
+      declared,
+      kind,
+      result.scripts.map((script) => (script.type === "inline" ? script.code : null)),
+    ),
+    annotated: annotateSourceFile,
+  };
 }
 
 /**
@@ -170,6 +192,7 @@ function fileEntry(
     envNames: importedNames.size === 0 ? null : importedNames,
     styles,
     scripts,
+    annotated: false,
   };
 }
 

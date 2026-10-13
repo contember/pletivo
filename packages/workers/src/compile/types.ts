@@ -57,4 +57,6 @@ export interface CompileProjectOptions {
   cache?: CompileCache;
   /** The isolate renders Markdown for the caller, so the Markdown pipeline is needed. */
   markdown?: boolean;
+  /** Compile `.astro` with `annotateSourceFile`; see `ProjectOptions.annotateSourceFile`. */
+  annotateSourceFile?: boolean;
 }

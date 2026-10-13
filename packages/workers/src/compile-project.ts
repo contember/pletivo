@@ -56,7 +56,8 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
       if (module.kind === "css") {
         await linkStylesheet(walk, resolver, module);
       } else {
-        await linkModule(walk, resolver, module, await compileCached(module, compiler, cache));
+        const compiled = await compileCached(module, compiler, cache, options.annotateSourceFile === true);
+        await linkModule(walk, resolver, module, compiled);
       }
     }
   };

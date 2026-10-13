@@ -232,6 +232,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
         artifact: artifactOf(snapshot),
         compiler: renderOptions.compiler,
         compileCache,
+        annotateSourceFile: renderOptions.annotateSourceFile,
       });
       return new Response(code, {
         // Unversioned URLs name the file as it is now; a reload must see an edit.

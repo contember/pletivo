@@ -169,6 +169,12 @@ export interface ProjectOptions {
    * map, so they are part of the program hash. See `artifact.ts`.
    */
   artifact?: ProjectArtifact;
+  /**
+   * Compile `.astro` with the Astro compiler's `annotateSourceFile`, as `astro dev` does:
+   * every element carries `data-astro-source-file` (the project path) and
+   * `data-astro-source-loc` (`line:column`), so a visual editor can map it to source.
+   */
+  annotateSourceFile?: boolean;
 }
 
 export interface RenderPageOptions extends ProjectOptions {
@@ -422,6 +428,7 @@ async function isolatePaths(
     artifact: options.artifact,
     assets: options.assets,
     cache: options.compileCache,
+    annotateSourceFile: options.annotateSourceFile,
     tailwind: options.tailwind,
   });
   const { payload } = await callIsolate({
@@ -503,6 +510,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     artifact: options.artifact,
     assets: options.assets,
     cache: options.compileCache,
+    annotateSourceFile: options.annotateSourceFile,
     tailwind: options.tailwind,
   });
   const rendered = await renderModule({
@@ -600,6 +608,7 @@ async function isolateMarkdownPage(
     artifact: options.artifact,
     assets: options.assets,
     cache: options.compileCache,
+    annotateSourceFile: options.annotateSourceFile,
     tailwind: options.tailwind,
     markdown: true,
   });

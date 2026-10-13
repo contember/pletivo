@@ -46,6 +46,8 @@ export interface BrowserModuleSource {
   artifact?: ProjectArtifact;
   compiler?: AstroCompiler;
   compileCache?: CompileCache;
+  /** As the page was compiled, so a shared cache entry is reused rather than replaced. */
+  annotateSourceFile?: boolean;
 }
 
 /** A request outside the browser-module namespace, or a malformed one. */
@@ -140,6 +142,7 @@ async function scriptCode(
     },
     project.compiler ?? bundled,
     project.compileCache,
+    project.annotateSourceFile === true,
   );
   const code = compiled.scripts[index];
   if (code === undefined || code === null) {
