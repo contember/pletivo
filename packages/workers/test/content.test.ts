@@ -423,6 +423,49 @@ describe("ContentFiles", () => {
     right.close();
     expect(store.openCount).toBe(0);
   });
+
+  test("hand out refs no render can derive from another's", () => {
+    const store = new ContentFiles();
+    const refs = Array.from({ length: 3 }, () => store.open(files).ref);
+    for (const ref of refs) expect(ref).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(new Set(refs).size).toBe(3);
+  });
+
+  test("answer an owner only for refs opened for that owner", async () => {
+    const store = new ContentFiles();
+    const mine = store.open(new Map([["x.md", "mine"]]), undefined, "session-a");
+    const theirs = store.open(new Map([["x.md", "theirs"]]), undefined, "session-b");
+    const binding = store.forOwner("session-a");
+    expect(await binding.read(mine.ref, "x.md")).toBe("mine");
+    expect(() => binding.read(theirs.ref, "x.md")).toThrow(/no open project/);
+    expect(() => binding.scan(theirs.ref, "", "*.md")).toThrow(/no open project/);
+    expect(() => binding.image(theirs.ref, "x.png")).toThrow(/no open project/);
+  });
+
+  test("an owner-bound render reads its content through its owner's binding", async () => {
+    // The isolate keeps the binding it was created with, so each owner has its own namespace.
+    const namespace = (tenant: string) => ({ tenant, capabilityGeneration: "content-v1" });
+    const store = new ContentFiles();
+    const page = await renderPage({
+      files: project({ "a.md": note("Alpha") }),
+      pathname: "/",
+      loader,
+      compiler,
+      content: { binding: store.forOwner("session-a"), store, owner: "session-a" },
+      executionNamespace: namespace("owner-tests:a"),
+    });
+    expect(page.html).toContain("<li>Alpha</li>");
+    await expect(
+      renderPage({
+        files: project({ "a.md": note("Alpha") }),
+        pathname: "/",
+        loader,
+        compiler,
+        content: { binding: store.forOwner("session-a"), store, owner: "session-b" },
+        executionNamespace: namespace("owner-tests:mismatch"),
+      }),
+    ).rejects.toThrow(/no open project/);
+  });
 });
 
 describe("createLazyProjectAssetsView", () => {

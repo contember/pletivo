@@ -111,6 +111,11 @@ export interface ContentAccess {
   binding: ContentBinding;
   /** Where the bytes come from. A handle is opened per render and closed after it. */
   store: ContentFiles;
+  /**
+   * Who this render's ref belongs to, e.g. a session id. The binding's entrypoint must
+   * answer through `store.forOwner(owner)`; see `ContentFiles`.
+   */
+  owner?: string;
 }
 
 /** What every entrypoint here needs: the project, and somewhere to run it. */
@@ -675,7 +680,7 @@ async function callIsolate(input: {
   const stub = options.loader.get(key, immutableCodeFactory(workerCode));
 
   // Opened per render: the isolate outlives the request, so the ref travels with it.
-  const handle = content ? content.store.open(options.files, options.assets) : null;
+  const handle = content ? content.store.open(options.files, options.assets, content.owner) : null;
   const requestBody: IsolateRequest = handle
     ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options) }
     : body;
