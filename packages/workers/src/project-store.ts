@@ -71,7 +71,8 @@ export function createMapProjectStore(
     revision,
     readBytes(path) {
       const text = snapshotFiles.get(path);
-      if (text !== undefined) return encoder.encode(text);
+      // Copied: older TypeScript libs type `encode` over `ArrayBufferLike`.
+      if (text !== undefined) return new Uint8Array(encoder.encode(text));
       const asset = ownedAssets?.get(path);
       return asset instanceof Uint8Array ? new Uint8Array(asset) : undefined;
     },
