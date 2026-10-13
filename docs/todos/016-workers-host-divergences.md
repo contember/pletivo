@@ -54,6 +54,16 @@ These contracts landed after the measurements below. They are the current baseli
 - Only `pletivo` is published. Release builds a self-contained staged tarball containing
   its private core/runtime source copies. `@pletivo/workers` remains private source for
   applications to bundle.
+- Hosted-preview behaviour that differs from a static build, by design:
+  - Processed `<script>` blocks are served unbundled, one ES module per file, as a Vite
+    dev server serves them; bare imports resolve through the artifact's browser graph
+    (`browserResolutions`). A CSS import from a script is applied as a `<style>` when it
+    runs, with no Tailwind or `@import` processing.
+  - `trailingSlash`, config `redirects` and i18n's default-locale and fallback redirects
+    are HTTP 301/302 responses, where a static build writes meta-refresh pages.
+  - Tailwind always compiles against the host-embedded release, not the project's
+    vendored one.
+  - `Astro.preferredLocale` stays unset: the isolate does not see request headers.
 - `example-playground/` is the sole live-workspace reference: the Durable Object owns
   the workspace, `ContentFiles`, and DO-self content binding. `example/` is an
   intentionally request-scoped, content-free preview.
