@@ -1,0 +1,13 @@
+---
+const title = "Scripts";
+---
+<html><body><h1>{title}</h1></body></html>
+<script>
+  import { greet } from "browser-pkg";
+  import { openMenu } from "../lib/menu";
+  greet();
+  openMenu();
+</script>
+<script is:inline>
+  import "inline-only-package";
+</script>

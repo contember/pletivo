@@ -11,6 +11,7 @@ import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readPrepareInputs } from "./inputs";
 import { compareStrings, isInsideRoot, normalizePath } from "./paths";
+import { processedScripts } from "./scripts";
 import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
 
 export { PrepareError, type PrepareDiagnostic } from "./error";
@@ -48,6 +49,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
       },
       modules: graph.modules,
       resolutions: graph.resolutions,
+      browserResolutions: graph.browserResolutions,
     },
     inputs,
   };
@@ -81,10 +83,13 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
     if (rel.split("/").some((segment) => SKIPPED_DIRS.has(segment))) continue;
     const projectPath = path.posix.join(physicalRelative, rel);
     const file = path.join(physicalBase, rel);
+    const source = await Bun.file(file).text();
+    const scripts = rel.endsWith(".astro") ? await processedScripts(file, source) : [];
     sources.push({
       id: `project:${projectPath}`,
       file,
-      source: await Bun.file(file).text(),
+      source,
+      ...(scripts.length > 0 ? { scripts } : {}),
     });
   }
   return sources.sort((left, right) => compareStrings(left.id, right.id));

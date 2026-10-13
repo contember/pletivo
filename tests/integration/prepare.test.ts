@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { parsePreparedSite, serializePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
+import {
+  ANY_PROJECT_IMPORTER,
+  parsePreparedSite,
+  serializePreparedSite,
+  type PreparedSite,
+} from "@pletivo/core/artifact";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import { emitArtifact } from "../../packages/pletivo/src/prepare/emit";
 import { PrepareError, prepare } from "../../packages/pletivo/src/prepare/index";
@@ -192,14 +197,28 @@ describe("pletivo prepare", () => {
     ]);
   });
 
-  test("emits the canonical site as a TypeScript module", async () => {
+  test("emits the canonical site as JSON and as a TypeScript module", async () => {
     const site = await prepare(project);
     const directory = await temporaryDirectory();
     const emitted = await emitArtifact(directory, site);
     const imported: unknown = await import(`${pathToFileURL(emitted.modulePath).href}?v=${Date.now()}`);
     const emittedSite = moduleExport(imported, "PREPARED");
     expect(JSON.stringify(emittedSite)).toBe(serializePreparedSite(site));
-    expect(await fs.readdir(directory)).toEqual(["pletivo-artifact.ts"]);
+    expect(await fs.readFile(emitted.jsonPath, "utf8")).toBe(serializePreparedSite(site));
+    expect(parsePreparedSite(JSON.parse(await fs.readFile(emitted.jsonPath, "utf8")))).toEqual(
+      parsePreparedSite(JSON.parse(serializePreparedSite(site))),
+    );
+    expect((await fs.readdir(directory)).sort()).toEqual(["pletivo-artifact.json", "pletivo-artifact.ts"]);
+  });
+
+  test("answers a package for any project file when every project importer agrees", async () => {
+    const site = await prepare(project);
+    const viaPage = targetFor(site, "project:src/pages/index.tsx", "parent-a");
+    expect(targetFor(site, ANY_PROJECT_IMPORTER, "parent-a")).toBe(viaPage);
+    // Relative imports stay importer-aware; only bare specifiers are shared.
+    expect(site.artifact.resolutions.some((edge) =>
+      edge.importer === ANY_PROJECT_IMPORTER && edge.specifier.startsWith(".")
+    )).toBe(false);
   });
 
   test("a failed CLI leaves an existing artifact unchanged", async () => {
@@ -270,6 +289,38 @@ describe("pletivo prepare", () => {
     const emitted = await emitArtifact(await temporaryDirectory(), site);
     const imported: unknown = await import(`${pathToFileURL(emitted.modulePath).href}?v=${Date.now()}`);
     expect(parsePreparedSite(moduleExport(imported, "PREPARED")).inputs).toEqual(expected);
+  });
+});
+
+describe("pletivo prepare, browser scripts", () => {
+  const browserProject = path.join(fixtures, "browser-scripts");
+
+  test("closes processed <script> imports with browser conditions, apart from the server graph", async () => {
+    const site = await prepare(browserProject);
+    const browser = site.artifact.browserResolutions ?? [];
+    const entry = browser.find((edge) => edge.importer === ANY_PROJECT_IMPORTER && edge.specifier === "browser-pkg");
+    const target = entry?.target;
+    if (target?.kind !== "module") throw new Error("browser-pkg has no browser resolution");
+    expect(moduleById(site, target.id).source).toContain("browser-condition");
+
+    // A project file the script imports contributes its own package imports.
+    expect(browser.some((edge) => edge.specifier === "browser-pkg/extra")).toBe(true);
+    // A carried module's imports are closed under its own identity.
+    expect(browser.some((edge) => edge.importer === target.id && edge.specifier === "browser-dep")).toBe(true);
+    // is:inline is the browser's business; nothing is carried for it.
+    expect(browser.some((edge) => edge.specifier === "inline-only-package")).toBe(false);
+    // The script's own imports never reach the server graph.
+    expect(site.artifact.resolutions.some((edge) => edge.specifier === "browser-pkg")).toBe(false);
+  });
+
+  test("refuses a script import that only exists on the server", async () => {
+    const directory = await temporaryDirectory();
+    await fs.cp(browserProject, directory, { recursive: true });
+    await fs.writeFile(
+      path.join(directory, "src/pages/index.astro"),
+      '<p>x</p>\n<script>\n  import { getCollection } from "astro:content";\n  getCollection("x");\n</script>\n',
+    );
+    await expectPrepareError(directory, "only exists on the server");
   });
 });
 

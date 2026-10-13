@@ -56,7 +56,8 @@ switch (command) {
     console.log(`    ${site.artifact.modules.length} carried module(s)`);
     console.log(`    ${site.artifact.resolutions.length} frozen resolution(s)`);
     console.log(`    ${virtualCount} frozen virtual module(s)`);
-    console.log(`    ${(written.moduleBytes / 1024).toFixed(1)} kB of modules → ${written.modulePath}`);
+    console.log(`    ${(written.moduleBytes / 1024).toFixed(1)} kB of modules → ${written.jsonPath}`);
+    console.log(`    as a module → ${written.modulePath}`);
     break;
   }
 

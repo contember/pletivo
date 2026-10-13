@@ -29,6 +29,13 @@ export interface ArtifactExternalTarget {
 
 export type ArtifactResolutionTarget = ArtifactModuleTarget | ArtifactExternalTarget;
 
+/**
+ * The importer of a resolution that answers for every project file. A project has one
+ * `node_modules` root, so a file added after `pletivo prepare` resolves a package the
+ * same way the files prepare saw do.
+ */
+export const ANY_PROJECT_IMPORTER = "project:*";
+
 /** One importer-aware answer for a source import. */
 export interface ArtifactResolution {
   importer: ModuleId;
@@ -54,6 +61,12 @@ export interface SiteArtifact {
   scripts: InjectedScripts;
   modules: ArtifactModule[];
   resolutions: ArtifactResolution[];
+  /**
+   * Resolutions of the browser graph: imports of processed `<script>` blocks and of
+   * what they reach, resolved with browser export conditions. Targets are `modules`
+   * entries; a project importer is always `ANY_PROJECT_IMPORTER`.
+   */
+  browserResolutions?: ArtifactResolution[];
 }
 
 /** A file `pletivo prepare` read, and the digest of its bytes at that time. */
@@ -112,7 +125,7 @@ export function parsePreparedSite(value: unknown): PreparedSite {
   assertExactFields(prepared, ["artifact", "inputs"], "$");
   assertExactFields(
     artifact,
-    ["version", "config", "scripts", "modules", "resolutions"],
+    ["version", "config", "scripts", "modules", "resolutions", "browserResolutions"],
     "$.artifact",
   );
 
@@ -122,6 +135,7 @@ export function parsePreparedSite(value: unknown): PreparedSite {
   const resolutions = parseResolutions(
     requiredField(artifact, "resolutions", "$.artifact"),
     modules,
+    "$.artifact.resolutions",
   );
 
   const site: PreparedSite = {
@@ -133,6 +147,21 @@ export function parsePreparedSite(value: unknown): PreparedSite {
       resolutions,
     },
   };
+  if (hasOwn(artifact, "browserResolutions")) {
+    const browserResolutions = parseResolutions(
+      Reflect.get(artifact, "browserResolutions"),
+      modules,
+      "$.artifact.browserResolutions",
+    );
+    const external = browserResolutions.findIndex((resolution) => resolution.target.kind !== "module");
+    if (external !== -1) {
+      throw new ArtifactFormatError(
+        `$.artifact.browserResolutions[${external}].target.kind`,
+        'a browser import must resolve to a "module"',
+      );
+    }
+    site.artifact.browserResolutions = browserResolutions;
+  }
   if (hasOwn(prepared, "inputs")) site.inputs = parseInputs(Reflect.get(prepared, "inputs"));
   return site;
 }
@@ -152,12 +181,6 @@ export function serializePreparedSite(value: unknown): string {
   const modules = [...prepared.artifact.modules].sort((left, right) =>
     compareStrings(left.id, right.id),
   );
-  const resolutions = [...prepared.artifact.resolutions].sort((left, right) => {
-    const importerOrder = compareStrings(left.importer, right.importer);
-    return importerOrder === 0
-      ? compareStrings(left.specifier, right.specifier)
-      : importerOrder;
-  });
 
   const canonical: PreparedSite = {
     artifact: {
@@ -168,9 +191,13 @@ export function serializePreparedSite(value: unknown): string {
         page: [...prepared.artifact.scripts.page],
       },
       modules: modules.map(canonicalModule),
-      resolutions: resolutions.map(canonicalResolution),
+      resolutions: canonicalResolutions(prepared.artifact.resolutions),
     },
   };
+  const { browserResolutions } = prepared.artifact;
+  if (browserResolutions !== undefined) {
+    canonical.artifact.browserResolutions = canonicalResolutions(browserResolutions);
+  }
   if (prepared.inputs !== undefined) {
     canonical.inputs = prepared.inputs.map((input) => ({ path: input.path, digest: input.digest }));
   }
@@ -239,9 +266,13 @@ function parseModules(value: unknown): ArtifactModule[] {
   return parsed;
 }
 
-function parseResolutions(value: unknown, modules: readonly ArtifactModule[]): ArtifactResolution[] {
+function parseResolutions(
+  value: unknown,
+  modules: readonly ArtifactModule[],
+  at: string,
+): ArtifactResolution[] {
   if (!Array.isArray(value)) {
-    throw new ArtifactFormatError("$.artifact.resolutions", "expected an array");
+    throw new ArtifactFormatError(at, "expected an array");
   }
 
   const moduleIds = new Set(modules.map((module) => module.id));
@@ -249,7 +280,7 @@ function parseResolutions(value: unknown, modules: readonly ArtifactModule[]): A
 
   const parsed: ArtifactResolution[] = [];
   for (let index = 0; index < value.length; index++) {
-    const path = `$.artifact.resolutions[${index}]`;
+    const path = `${at}[${index}]`;
     if (!hasOwn(value, index)) {
       throw new ArtifactFormatError(path, "sparse array entries are not allowed");
     }
@@ -396,6 +427,15 @@ function canonicalModule(module: ArtifactModule): ArtifactModule {
         source: module.source,
         compilePath: module.compilePath,
       };
+}
+
+function canonicalResolutions(resolutions: readonly ArtifactResolution[]): ArtifactResolution[] {
+  return [...resolutions]
+    .sort((left, right) => {
+      const importerOrder = compareStrings(left.importer, right.importer);
+      return importerOrder === 0 ? compareStrings(left.specifier, right.specifier) : importerOrder;
+    })
+    .map(canonicalResolution);
 }
 
 function canonicalResolution(resolution: ArtifactResolution): ArtifactResolution {

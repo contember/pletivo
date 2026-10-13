@@ -2,11 +2,13 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type {
-  ArtifactModule,
-  ArtifactModuleKind,
-  ArtifactResolution,
-  ModuleId,
+import {
+  ANY_PROJECT_IMPORTER,
+  type ArtifactModule,
+  type ArtifactModuleKind,
+  type ArtifactResolution,
+  type ArtifactResolutionTarget,
+  type ModuleId,
 } from "@pletivo/core/artifact";
 import { prepareFailure, PrepareError } from "./error";
 import { compareStrings, isInsideRoot, isMissingFile, normalizePath } from "./paths";
@@ -21,6 +23,8 @@ export interface ProjectImportSource {
   id: ModuleId;
   file: string;
   source: string;
+  /** Processed `<script>` bodies of an `.astro` file, which run in the browser. */
+  scripts?: readonly string[];
 }
 
 export interface FrozenVirtualSource {
@@ -36,6 +40,7 @@ export type FreezeVirtualSource = (
 export interface PreparedGraph {
   modules: ArtifactModule[];
   resolutions: ArtifactResolution[];
+  browserResolutions: ArtifactResolution[];
 }
 
 interface ImportRequest {
@@ -59,6 +64,7 @@ interface PackageRecord {
 
 const WORKER_EXPORT_CONDITIONS = ["workerd", "worker", "browser", "import", "default"];
 const STYLESHEET_EXPORT_CONDITIONS = ["style", ...WORKER_EXPORT_CONDITIONS];
+const BROWSER_EXPORT_CONDITIONS = ["browser", "import", "default"];
 
 /** Build the artifact-owned part of the project graph. */
 export async function prepareModuleGraph(
@@ -66,11 +72,11 @@ export async function prepareModuleGraph(
   projectSources: readonly ProjectImportSource[],
   freezeVirtual: FreezeVirtualSource,
 ): Promise<PreparedGraph> {
-  const modules = new Map<ModuleId, ArtifactModule>();
+  const carried = new CarriedModules(root);
+  const { modules } = carried;
   const resolutions: ArtifactResolution[] = [];
   const queue: ImportRequest[] = [];
   const seenRequests = new Map<ModuleId, Set<string>>();
-  const physicalIds = new Map<string, ModuleId>();
 
   const enqueueImports = (
     importer: ModuleId,
@@ -106,41 +112,15 @@ export async function prepareModuleGraph(
     );
   }
 
+  const serverExpanded = new Set<ModuleId>();
   const addPhysicalModule = async (file: string): Promise<ModuleId> => {
-    const canonical = await canonicalFile(file);
-    const known = physicalIds.get(canonical);
-    if (known) return known;
-
-    const id = await npmModuleId(root, canonical, "resolve");
-    const existing = modules.get(id);
-    if (existing) {
-      if (existing.compilePath !== compilePathFor(root, canonical)) {
-        throw prepareFailure(id, "identity", "two resolved files produced the same module id");
-      }
-      physicalIds.set(canonical, id);
-      return id;
+    const module = await carried.add(file);
+    if (!serverExpanded.has(module.id)) {
+      serverExpanded.add(module.id);
+      const canonical = await canonicalFile(file);
+      enqueueImports(module.id, canonical, path.dirname(canonical), false, module.kind === "css", module.source);
     }
-
-    const kind = kindForFile(canonical);
-    let source: string;
-    try {
-      source = await Bun.file(canonical).text();
-    } catch (error) {
-      throw prepareFailure(
-        displayPath(root, canonical),
-        "load",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-    modules.set(id, {
-      id,
-      kind,
-      source,
-      compilePath: compilePathFor(root, canonical),
-    });
-    physicalIds.set(canonical, id);
-    enqueueImports(id, canonical, path.dirname(canonical), false, kind === "css", source);
-    return id;
+    return module.id;
   };
 
   while (queue.length > 0) {
@@ -266,8 +246,193 @@ export async function prepareModuleGraph(
     });
   }
 
+  const browserResolutions = await prepareBrowserGraph(root, projectSources, carried);
   // Discovery order; serializePreparedSite owns the canonical order.
-  return { modules: [...modules.values()], resolutions };
+  return {
+    modules: [...modules.values()],
+    resolutions: [...resolutions, ...anyProjectResolutions(resolutions)],
+    browserResolutions,
+  };
+}
+
+/**
+ * One `ANY_PROJECT_IMPORTER` entry per bare specifier every project importer resolves
+ * alike, so a page written after prepare finds a package another page already reached.
+ */
+function anyProjectResolutions(resolutions: readonly ArtifactResolution[]): ArtifactResolution[] {
+  const bySpecifier = new Map<string, ArtifactResolutionTarget | null>();
+  for (const resolution of resolutions) {
+    if (!resolution.importer.startsWith("project:")) continue;
+    if (classifySpecifier(resolution.specifier) === "relative") continue;
+    const known = bySpecifier.get(resolution.specifier);
+    if (known === undefined) {
+      bySpecifier.set(resolution.specifier, resolution.target);
+    } else if (known !== null && !sameTarget(known, resolution.target)) {
+      bySpecifier.set(resolution.specifier, null);
+    }
+  }
+  const shared: ArtifactResolution[] = [];
+  for (const [specifier, target] of bySpecifier) {
+    if (target !== null) shared.push({ importer: ANY_PROJECT_IMPORTER, specifier, target });
+  }
+  return shared;
+}
+
+function sameTarget(left: ArtifactResolutionTarget, right: ArtifactResolutionTarget): boolean {
+  if (left.kind === "module") return right.kind === "module" && left.id === right.id;
+  return right.kind === "external" && left.specifier === right.specifier;
+}
+
+interface BrowserRequest {
+  /** A project file, or the carried module the import is written in. */
+  importer: ModuleId;
+  importerFile: string;
+  specifier: string;
+}
+
+/**
+ * The browser graph: every import a processed `<script>` makes, closed with browser
+ * export conditions. Project files stay the consumer's; only packages are carried.
+ */
+async function prepareBrowserGraph(
+  root: string,
+  projectSources: readonly ProjectImportSource[],
+  carried: CarriedModules,
+): Promise<ArtifactResolution[]> {
+  const resolutions = new Map<string, ArtifactResolution>();
+  const queue: BrowserRequest[] = [];
+  const expanded = new Set<string>();
+
+  const enqueue = (importer: ModuleId, importerFile: string, source: string, kind: ArtifactModuleKind): void => {
+    let specifiers: string[];
+    try {
+      specifiers = specifiersOf(importerFile, source, kind);
+    } catch (error) {
+      if (!(error instanceof ImportScanError)) throw error;
+      throw prepareFailure(importerFile, "scan", `${error.reason}; browser importer ${JSON.stringify(importer)}`);
+    }
+    for (const specifier of specifiers) queue.push({ importer, importerFile, specifier });
+  };
+
+  for (const project of projectSources) {
+    for (const script of project.scripts ?? []) enqueue(project.id, project.file, script, "ts");
+  }
+
+  while (queue.length > 0) {
+    const request = queue.shift();
+    if (!request) continue;
+    const kind = classifySpecifier(request.specifier);
+    if (kind !== "relative" && kind !== "vendor") {
+      throw prepareFailure(
+        request.importerFile,
+        "browser import",
+        `a <script> reaches ${JSON.stringify(request.specifier)}, which only exists on the server`,
+      );
+    }
+    const fromProject = request.importer.startsWith("project:");
+    let resolved: string;
+    try {
+      resolved = await resolveWorkerSpecifier(
+        request.specifier,
+        path.dirname(request.importerFile),
+        false,
+        BROWSER_EXPORT_CONDITIONS,
+      );
+    } catch (error) {
+      if (error instanceof PrepareError) throw error;
+      throw prepareFailure(
+        request.importerFile,
+        "browser resolve",
+        `could not resolve ${JSON.stringify(request.specifier)}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+    }
+    const moduleKind = kindForFile(resolved);
+    if (moduleKind !== "js" && moduleKind !== "ts" && moduleKind !== "json" && moduleKind !== "css") {
+      throw prepareFailure(
+        request.importerFile,
+        "browser import",
+        `${JSON.stringify(request.specifier)} is a .${moduleKind} module, which a browser script cannot import`,
+      );
+    }
+
+    if (kind === "relative" && fromProject) {
+      const projectRelative = normalizePath(path.relative(root, await canonicalFile(resolved)));
+      if (!isInsideRoot(projectRelative)) {
+        throw prepareFailure(request.importerFile, "browser import", `${JSON.stringify(request.specifier)} leaves the project`);
+      }
+      // A project file: the consumer serves it, but its own imports are part of the graph.
+      const file = await canonicalFile(resolved);
+      if (moduleKind !== "css" && !expanded.has(file)) {
+        expanded.add(file);
+        enqueue(`project:${projectRelative}`, file, await Bun.file(file).text(), moduleKind);
+      }
+      continue;
+    }
+
+    const module = await carried.add(resolved);
+    const importer = fromProject ? ANY_PROJECT_IMPORTER : request.importer;
+    const key = `${importer}\0${request.specifier}`;
+    const known = resolutions.get(key);
+    if (known !== undefined && !sameTarget(known.target, { kind: "module", id: module.id })) {
+      throw prepareFailure(
+        request.importerFile,
+        "browser resolve",
+        `${JSON.stringify(request.specifier)} resolves to two different files from two project files`,
+      );
+    }
+    resolutions.set(key, { importer, specifier: request.specifier, target: { kind: "module", id: module.id } });
+    if (!expanded.has(module.id)) {
+      expanded.add(module.id);
+      if (module.kind !== "css") enqueue(module.id, await canonicalFile(resolved), module.source, module.kind);
+    }
+  }
+  return [...resolutions.values()];
+}
+
+/** Carried npm files, keyed by their package-local identity. Shared by both graphs. */
+class CarriedModules {
+  readonly modules = new Map<ModuleId, ArtifactModule>();
+  readonly #physicalIds = new Map<string, ModuleId>();
+  readonly #root: string;
+
+  constructor(root: string) {
+    this.#root = root;
+  }
+
+  async add(file: string): Promise<ArtifactModule> {
+    const root = this.#root;
+    const canonical = await canonicalFile(file);
+    const known = this.#physicalIds.get(canonical);
+    const knownModule = known === undefined ? undefined : this.modules.get(known);
+    if (knownModule) return knownModule;
+
+    const id = await npmModuleId(root, canonical, "resolve");
+    const existing = this.modules.get(id);
+    if (existing) {
+      if (existing.compilePath !== compilePathFor(root, canonical)) {
+        throw prepareFailure(id, "identity", "two resolved files produced the same module id");
+      }
+      this.#physicalIds.set(canonical, id);
+      return existing;
+    }
+
+    const kind = kindForFile(canonical);
+    let source: string;
+    try {
+      source = await Bun.file(canonical).text();
+    } catch (error) {
+      throw prepareFailure(
+        displayPath(root, canonical),
+        "load",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const module: ArtifactModule = { id, kind, source, compilePath: compilePathFor(root, canonical) };
+    this.modules.set(id, module);
+    this.#physicalIds.set(canonical, id);
+    return module;
+  }
 }
 
 function projectQueryFile(specifier: string): string | null {
@@ -389,6 +554,7 @@ async function resolveWorkerSpecifier(
   specifier: string,
   resolveFrom: string,
   stylesheet: boolean,
+  scriptConditions: readonly string[] = WORKER_EXPORT_CONDITIONS,
 ): Promise<string> {
   if (specifier.startsWith(".") || specifier.startsWith("/")) {
     const candidate = specifier.startsWith("/")
@@ -404,7 +570,7 @@ async function resolveWorkerSpecifier(
   if (!packageRecord) {
     throw new Error(`package ${JSON.stringify(parsed.name)} was not found from ${JSON.stringify(resolveFrom)}`);
   }
-  const conditions = stylesheet ? STYLESHEET_EXPORT_CONDITIONS : WORKER_EXPORT_CONDITIONS;
+  const conditions = stylesheet ? STYLESHEET_EXPORT_CONDITIONS : scriptConditions;
   const target = resolvePackageEntry(packageRecord.manifest, parsed.subpath, conditions);
   if (!target) {
     throw new Error(

@@ -1,6 +1,8 @@
 import {
+  ANY_PROJECT_IMPORTER,
   parsePreparedSite,
   type ArtifactModule,
+  type ArtifactResolution,
   type ArtifactResolutionTarget,
   type ModuleId,
   type PreparedSite,
@@ -48,6 +50,8 @@ export interface ArtifactResolver {
 export interface ProjectArtifact {
   readonly prepared: PreparedSite;
   readonly resolver: ArtifactResolver;
+  /** The browser graph of processed `<script>` blocks; never consulted by a render. */
+  readonly browserResolver: ArtifactResolver;
   /** Artifact Loader names, used only to keep startup diagnostics source-aware. */
   readonly moduleNames: ReadonlySet<string>;
 }
@@ -67,11 +71,27 @@ export function loadProjectArtifact(value: unknown): ProjectArtifact {
     modules.set(module.id, module);
   }
 
-  const resolutions = new Map<ModuleId, Map<string, ArtifactResolutionTarget>>();
   for (const resolution of prepared.artifact.resolutions) {
     if (resolution.target.kind === "external" && !HOST_ALIASES.has(resolution.target.specifier)) {
       throw new UnsupportedArtifactExternalError(resolution.target.specifier);
     }
+  }
+
+  return {
+    prepared,
+    resolver: resolverOf(modules, prepared.artifact.resolutions),
+    browserResolver: resolverOf(modules, prepared.artifact.browserResolutions ?? []),
+    moduleNames: new Set(prepared.artifact.modules.map((module) => executionNameForModuleId(module.id))),
+  };
+}
+
+/** Exact importer first; a project file falls back to what every project file resolves. */
+function resolverOf(
+  modules: ReadonlyMap<ModuleId, ArtifactModule>,
+  entries: readonly ArtifactResolution[],
+): ArtifactResolver {
+  const resolutions = new Map<ModuleId, Map<string, ArtifactResolutionTarget>>();
+  for (const resolution of entries) {
     let bySpecifier = resolutions.get(resolution.importer);
     if (bySpecifier === undefined) {
       bySpecifier = new Map<string, ArtifactResolutionTarget>();
@@ -79,15 +99,15 @@ export function loadProjectArtifact(value: unknown): ProjectArtifact {
     }
     bySpecifier.set(resolution.specifier, resolution.target);
   }
-
+  const anyProject = resolutions.get(ANY_PROJECT_IMPORTER);
   return {
-    prepared,
-    resolver: {
-      module: (id) => modules.get(id) ?? null,
-      resolve: (importer, specifier) => resolutions.get(importer)?.get(specifier) ?? null,
-      modules: () => prepared.artifact.modules,
+    module: (id) => modules.get(id) ?? null,
+    resolve(importer, specifier) {
+      const exact = resolutions.get(importer)?.get(specifier);
+      if (exact !== undefined) return exact;
+      return importer.startsWith("project:") ? (anyProject?.get(specifier) ?? null) : null;
     },
-    moduleNames: new Set(prepared.artifact.modules.map((module) => executionNameForModuleId(module.id))),
+    modules: () => [...modules.values()],
   };
 }
 
