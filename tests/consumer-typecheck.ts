@@ -4,26 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { actualModuleSpecifiers } from "../scripts/package-pletivo";
-
-const MIN_TYPESCRIPT = "5.7.3";
-
-interface CommandResult {
-  ok: boolean;
-  output: string;
-}
-
-function run(command: string[], cwd: string): CommandResult {
-  const result = Bun.spawnSync(command, { cwd, stdout: "pipe", stderr: "pipe" });
-  return {
-    ok: result.exitCode === 0,
-    output: result.stdout.toString() + result.stderr.toString(),
-  };
-}
-
-function requireSuccess(label: string, result: CommandResult): void {
-  if (!result.ok) throw new Error(`${label} failed:\n${result.output}`);
-}
+import { actualModuleSpecifiers, readJson, sourceFiles } from "../scripts/package-pletivo";
+import { MIN_TYPESCRIPT, requireSuccess, run } from "./consumer-support";
 
 function tarballArgument(args: readonly string[]): string {
   let value: string | undefined;
@@ -43,32 +25,9 @@ function tarballArgument(args: readonly string[]): string {
   return value;
 }
 
-async function readObject(file: string): Promise<object> {
-  const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`${file} does not contain a JSON object`);
-  }
-  return parsed;
-}
-
-async function sourceFiles(root: string): Promise<string[]> {
-  const files: string[] = [];
-  const pending = [root];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    if (directory === undefined) break;
-    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-      const file = path.join(directory, entry.name);
-      if (entry.isDirectory()) pending.push(file);
-      else if (entry.isFile() && /\.[cm]?[jt]sx?$/.test(entry.name)) files.push(file);
-    }
-  }
-  return files.sort();
-}
-
 async function assertInstalledShape(project: string): Promise<object> {
   const packageRoot = path.join(project, "node_modules/pletivo");
-  const manifest = await readObject(path.join(packageRoot, "package.json"));
+  const manifest = await readJson(path.join(packageRoot, "package.json"));
   const dependencies: unknown = Reflect.get(manifest, "dependencies");
   const dependencyText = JSON.stringify(dependencies);
   if (dependencyText.includes("workspace:") || dependencyText.includes("@pletivo/")) {

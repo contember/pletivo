@@ -1,3 +1,5 @@
+/// <reference path="./astro-wasm.d.ts" />
+
 /**
  * `@astrojs/compiler` inside a Worker isolate. workerd forbids runtime
  * `WebAssembly.compile()`, so the Go wasm is a module the bundler compiled ahead of time,

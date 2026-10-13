@@ -107,7 +107,7 @@ const runtimeFiles = readSources(RUNTIME_SRC);
 const coreFiles = readSources(CORE_SRC);
 
 describe("package boundaries", () => {
-  test("only pletivo is publishable", () => {
+  test("only pletivo and the packages released with it are publishable", () => {
     const rootManifest: unknown = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
     if (typeof rootManifest !== "object" || rootManifest === null || Array.isArray(rootManifest)) {
       throw new Error("root package.json is not a JSON object");
@@ -140,7 +140,7 @@ describe("package boundaries", () => {
       }
       if (Reflect.get(manifest, "private") !== true) publishable.push(directory);
     }
-    expect(publishable).toEqual(["pletivo"]);
+    expect(publishable).toEqual(["core", "pletivo", "runtime", "workers"]);
   });
 
   test("the guard actually reads both packages", () => {

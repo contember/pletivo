@@ -63,15 +63,40 @@ jobs:
       - name: Workers host tests
         run: bun test packages/workers/test
 
-      - name: Package pletivo
+      # Prints one `<package>=<tarball>` line per release tarball.
+      - name: Package release tarballs
         id: package
+        run: bun run package:pletivo --version "${{ steps.tag.outputs.version }}" --output "$RUNNER_TEMP/pletivo-package" >> "$GITHUB_OUTPUT"
+
+      - name: Test the exact pletivo tarball as a consumer
+        run: bun run tests/consumer-typecheck.ts --tarball "${{ steps.package.outputs.pletivo }}"
+
+      - name: Test the exact Workers host tarballs as a consumer
+        run: >-
+          bun run tests/workers-consumer-check.ts
+          --tarball "${{ steps.package.outputs.runtime }}"
+          --tarball "${{ steps.package.outputs.core }}"
+          --tarball "${{ steps.package.outputs.workers }}"
+
+      # Dependency order: each package's exact-version @pletivo/* dependencies are
+      # already on the registry when it lands. A version already on the registry is
+      # skipped, so a release that failed partway can be re-run.
+      - name: Publish
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          RUNTIME_TARBALL: ${{ steps.package.outputs.runtime }}
+          CORE_TARBALL: ${{ steps.package.outputs.core }}
+          WORKERS_TARBALL: ${{ steps.package.outputs.workers }}
+          PLETIVO_TARBALL: ${{ steps.package.outputs.pletivo }}
         run: |
-          OUTPUT="$RUNNER_TEMP/pletivo-package"
-          TARBALL="$(bun run package:pletivo --version "${{ steps.tag.outputs.version }}" --output "$OUTPUT")"
-          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-
-      - name: Test the exact tarball as a consumer
-        run: bun run tests/consumer-typecheck.ts --tarball "${{ steps.package.outputs.tarball }}"
-
-      - name: Publish pletivo
-        run: npm publish "${{ steps.package.outputs.tarball }}" --provenance --access public
+          publish() {
+            if npm view "$1@$VERSION" version > /dev/null 2>&1; then
+              echo "$1@$VERSION is already on the registry, skipping"
+            else
+              npm publish "$2" --provenance --access public
+            fi
+          }
+          publish @pletivo/runtime "$RUNTIME_TARBALL"
+          publish @pletivo/core "$CORE_TARBALL"
+          publish @pletivo/workers "$WORKERS_TARBALL"
+          publish pletivo "$PLETIVO_TARBALL"

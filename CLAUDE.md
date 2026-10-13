@@ -41,14 +41,15 @@ second host (a Cloudflare Worker isolate) can reuse everything that is not Bun:
 
 - **`packages/runtime`** — `@pletivo/runtime`. What ships into the output and runs at render time: JSX runtime (SSR), astro shim, islands, hydration, base-path. Zero host dependencies; the only import outside itself is `node:async_hooks`.
 - **`packages/core`** — `@pletivo/core`. Host-agnostic logic: router, i18n, markdown pipeline, content collections, astro-host types, routes adapter, paginate, image service. May use `node:path`/`url`/`events`/`crypto` and pure-JS npm deps, but never `Bun.*`, `node:fs`, or `node:child_process`.
-- **`packages/pletivo`** — the Bun host, and the only package published to npm: CLI, build, dev server with HMR, Bun loader plugins, CSS pipeline (Tailwind v4), incremental cache, astro-host runner, and the Bun `ContentHost` implementation. `runWithBunContentRuntime()` enters the explicit `ContentRuntime`; collection state is not a process-global host singleton.
-- **`packages/workers`** — `@pletivo/workers`. The Cloudflare Worker host: `@astrojs/compiler` as Go wasm in-isolate, import rewriting against a virtual module graph, Tailwind v4 from a virtual file map. `compileProject` orchestrates `src/compile/` (walk, resolve, compile, link, emit). The isolate's logic is the typed `src/isolate-entry.ts`, bundled into the committed `src/generated/runtime-modules.ts` by `scripts/build-runtime.ts`. `bun run typecheck` covers the host, its tests and both examples, including the Durable Object playground. See `docs/todos/016` for where it diverges from Bun and `docs/todos/023` for the live workspace.
+- **`packages/pletivo`** — the Bun host, published to npm as `pletivo`: CLI, build, dev server with HMR, Bun loader plugins, CSS pipeline (Tailwind v4), incremental cache, astro-host runner, and the Bun `ContentHost` implementation. `runWithBunContentRuntime()` enters the explicit `ContentRuntime`; collection state is not a process-global host singleton.
+- **`packages/workers`** — `@pletivo/workers`, published to npm as source for a host Worker's bundler to compile (`packages/workers/README.md`). The Cloudflare Worker host: `@astrojs/compiler` as Go wasm in-isolate, import rewriting against a virtual module graph, Tailwind v4 from a virtual file map. `compileProject` orchestrates `src/compile/` (walk, resolve, compile, link, emit). The isolate's logic is the typed `src/isolate-entry.ts`, bundled into the committed `src/generated/runtime-modules.ts` by `scripts/build-runtime.ts`. `bun run typecheck` covers the host, its tests and both examples, including the Durable Object playground. See `docs/todos/016` for where it diverges from Bun and `docs/todos/023` for the live workspace.
 - **`packages/astro-jsx-pages`** — Babel+Vite plugin enabling TSX pages inside Astro. Built with tsc.
 - **`examples/`** — `basic` (pletivo-native), `basic-astro`, `basic-astro-native`.
 
-Neither `runtime` nor `core` has a build step. Both packages are private. The
-release packager copies their source under `pletivo/src/_internal/` and rewrites
-real module specifiers to package-private `#pletivo/*` imports. This keeps one
+Neither `runtime` nor `core` has a build step. Both are published as source for
+`@pletivo/workers`. The `pletivo` tarball does not depend on them: the release
+packager copies their source under `pletivo/src/_internal/` and rewrites real
+module specifiers to package-private `#pletivo/*` imports. This keeps one
 runtime module record while producing a self-contained `pletivo` tarball.
 
 `tests/unit/package-boundaries.test.ts` enforces the split. If it fires, the
@@ -62,12 +63,18 @@ directory. `runtime/astro-container.ts` and `i18n/virtual-module.ts` are pinned 
 
 ## Release
 
-Only `pletivo` is published to npm. Core, runtime, Workers, and Astro JSX pages
-are private workspace packages. Release stages a self-contained tarball — core
-and runtime source copied under `pletivo/src/_internal/`, their specifiers
-rewritten to package-private `#pletivo/*` imports — typechecks it as an external
-npm consumer, then publishes that exact tarball via npm OIDC. It never publishes
-a live workspace directory.
+One tag publishes four packages at the tag's version: `@pletivo/runtime`,
+`@pletivo/core`, `@pletivo/workers`, then `pletivo`, in that dependency order.
+Astro JSX pages stays private. The package.json `version` fields are not read.
+
+`bun run package:pletivo --version X --output DIR` stages and packs all four and
+prints one `<package>=<tarball>` line each. The three libraries ship their `src/`
+as it is, with `workspace:*` siblings pinned to `X`. `pletivo` is self-contained —
+core and runtime source copied under `pletivo/src/_internal/`, their specifiers
+rewritten to package-private `#pletivo/*` imports. `tests/consumer-typecheck.ts`
+and `tests/workers-consumer-check.ts` install the exact tarballs into an empty
+npm project before anything is published via npm OIDC. Release never publishes a
+live workspace directory; each source manifest's `prepublishOnly` refuses it.
 
 Release is triggered by pushing a `v*` tag (`.github/workflows/release.yml`).
 

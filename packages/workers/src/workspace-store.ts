@@ -214,10 +214,10 @@ function readBytes(files: WorkspaceFiles, path: string): Uint8Array<ArrayBuffer>
   } catch {
     return null;
   }
-  if (typeof value === "string") return new TextEncoder().encode(value);
-  const { buffer, byteOffset, byteLength } = value;
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  const { buffer, byteOffset, byteLength } = bytes;
   // A Response body cannot be a view of a SharedArrayBuffer.
-  return buffer instanceof ArrayBuffer ? new Uint8Array(buffer, byteOffset, byteLength) : new Uint8Array(value);
+  return buffer instanceof ArrayBuffer ? new Uint8Array(buffer, byteOffset, byteLength) : new Uint8Array(bytes);
 }
 
 function extensionOf(name: string): string {

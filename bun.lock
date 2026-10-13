@@ -70,6 +70,7 @@
       "dependencies": {
         "@mdx-js/mdx": "^3.1.0",
         "@pletivo/runtime": "workspace:*",
+        "@types/js-yaml": "^4.0.9",
         "js-yaml": "^4.1.1",
         "rehype-stringify": "^10.0.1",
         "remark-gfm": "^4.0.1",
@@ -77,9 +78,6 @@
         "remark-rehype": "^11.1.2",
         "unified": "^11.0.5",
         "zod": "^4.3.6",
-      },
-      "devDependencies": {
-        "@types/js-yaml": "^4.0.9",
       },
     },
     "packages/pletivo": {
@@ -141,9 +139,6 @@
       "peerDependencies": {
         "tailwindcss": "^4",
       },
-      "optionalPeers": [
-        "tailwindcss",
-      ],
     },
   },
   "packages": {
