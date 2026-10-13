@@ -1,4 +1,4 @@
-import type { ArtifactJson, ModuleId } from "@pletivo/core/artifact";
+import type { ArtifactI18nConfig, ArtifactJson, ModuleId } from "@pletivo/core/artifact";
 import type { ProjectEnvUse } from "./env.ts";
 
 export interface ExecutableEntry {
@@ -31,6 +31,11 @@ export interface ExecutableRequirements {
   content: ProgramContentRequirement | null;
   /** Set when Markdown renders in the isolate and the project configured it. */
   markdown: ProgramMarkdownRequirement | null;
+  /**
+   * Set when the project imports `astro:i18n`: the config its helpers read, `null` for a
+   * project with none (the helpers then throw, as on the Bun host).
+   */
+  i18n: { config: ArtifactI18nConfig | null } | null;
   images: boolean;
   importMetaEnv: boolean;
   /** Set when the project imports `astro:env`; values never enter the module map. See `env.ts`. */

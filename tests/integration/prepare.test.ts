@@ -174,11 +174,7 @@ describe("pletivo prepare", () => {
 
   test("rejects routing configuration the Workers host ignores", async () => {
     const error = await capturedPrepareError(path.join(fixtures, "fatal-routing"));
-    expect(error.diagnostics.map((entry) => entry.hook)).toEqual([
-      "base",
-      "trailingSlash",
-      "build.format",
-    ]);
+    expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["base", "build.format"]);
   });
 
   test("rejects Worker-relevant pletivo config and source directories outside the root", async () => {
@@ -187,15 +183,36 @@ describe("pletivo prepare", () => {
     await expectPrepareError(project, "source directory", { srcDir: path.resolve(fixtures) });
   });
 
-  test("rejects injected routes, untagged markdown plugins, redirects, and unsupported scripts", async () => {
+  test("rejects injected routes, untagged markdown plugins, and unsupported scripts", async () => {
     const error = await capturedPrepareError(path.join(fixtures, "fatal-semantics"));
     expect(error.diagnostics.map((entry) => entry.hook)).toEqual([
-      "redirects",
       "astro:config:setup",
       "before-hydration",
       "markdown",
     ]);
     expect(error.diagnostics.at(-1)?.reason).toContain("no portable module reference");
+  });
+
+  test("carries i18n, trailingSlash and redirects, and lets pages import astro:i18n", async () => {
+    const site = await prepare(path.join(fixtures, "routing"));
+    expect(site.artifact.config).toEqual({
+      i18n: {
+        defaultLocale: "en",
+        locales: ["en", { path: "spanish", codes: ["es", "es-AR"] }],
+        routing: { prefixDefaultLocale: false },
+        fallback: { es: "en" },
+      },
+      trailingSlash: "always",
+      redirects: [
+        { source: "/old", destination: "/new", status: 301 },
+        { source: "/blog/[slug]", destination: "/posts/[slug]", status: 302 },
+      ],
+    });
+    expect(site.artifact.resolutions).toContainEqual({
+      importer: "project:src/pages/index.astro",
+      specifier: "astro:i18n",
+      target: { kind: "external", specifier: "astro:i18n" },
+    });
   });
 
   test("carries tagged markdown plugins as portable references and vendors their module", async () => {

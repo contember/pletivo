@@ -16,6 +16,7 @@ import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readPrepareInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
+import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings, isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
 import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
@@ -37,10 +38,12 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const srcDir = options.srcDir ?? projectConfig.srcDir;
   const host = await initAstroHost(projectRoot, "build");
   const markdown = freezeMarkdown(host?.config.markdown);
+  const routing = freezeRouting(host?.config);
   const fatal = [
     ...unsupportedProjectSemantics(projectConfig),
     ...unsupportedSemantics(host),
     ...markdown.diagnostics,
+    ...routing.diagnostics,
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
@@ -53,7 +56,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   return {
     artifact: {
       version: ARTIFACT_VERSION,
-      config: freezeConfig(host?.config, markdown.config),
+      config: freezeConfig(host?.config, markdown.config, routing),
       scripts: {
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: [...(host?.injectedPageScripts ?? [])],
@@ -156,10 +159,14 @@ function addProjectConfigDiagnostic(
 function freezeConfig(
   config: AstroConfig | undefined,
   markdown: ArtifactMarkdownConfig | null,
+  routing: FrozenRouting,
 ): ArtifactConfig {
   const frozen: ArtifactConfig = {};
   if (config?.site) frozen.site = config.site;
   if (markdown !== null) frozen.markdown = markdown;
+  if (routing.i18n !== null) frozen.i18n = routing.i18n;
+  if (routing.trailingSlash !== null) frozen.trailingSlash = routing.trailingSlash;
+  if (routing.redirects.length > 0) frozen.redirects = routing.redirects;
   return frozen;
 }
 
@@ -181,22 +188,9 @@ function unsupportedSemantics(host: AstroHost | null): PrepareDiagnostic[] {
   );
   addConfigDiagnostic(
     diagnostics,
-    host.config.trailingSlash !== undefined && host.config.trailingSlash !== "ignore",
-    "trailingSlash",
-    `trailingSlash ${JSON.stringify(host.config.trailingSlash)} is not supported; use "ignore"`,
-  );
-  addConfigDiagnostic(
-    diagnostics,
     host.config.build?.format !== undefined && host.config.build.format !== "directory",
     "build.format",
     `build.format ${JSON.stringify(host.config.build?.format)} is not supported; use "directory"`,
-  );
-  const redirects = host.config.redirects ?? {};
-  addConfigDiagnostic(
-    diagnostics,
-    Object.keys(redirects).length > 0,
-    "redirects",
-    `${Object.keys(redirects).length} configured redirect(s) cannot be carried`,
   );
   for (const route of host.injectedRoutes) {
     diagnostics.push({

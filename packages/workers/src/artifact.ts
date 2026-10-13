@@ -7,6 +7,7 @@ import {
   type ModuleId,
   type PreparedSite,
 } from "@pletivo/core/artifact";
+import { resolveI18nConfig, type ResolvedI18nConfig } from "@pletivo/core/i18n/config";
 import { HOST_ALIASES } from "./host-aliases.ts";
 import { normalizeProjectPath } from "./project-path.ts";
 
@@ -54,6 +55,8 @@ export interface ProjectArtifact {
   readonly browserResolver: ArtifactResolver;
   /** Artifact Loader names, used only to keep startup diagnostics source-aware. */
   readonly moduleNames: ReadonlySet<string>;
+  /** `config.i18n`, resolved once; `null` for a project without one. */
+  readonly i18n: ResolvedI18nConfig | null;
 }
 
 /** Validate an untrusted artifact and bind it to the host externals it may use. */
@@ -82,6 +85,7 @@ export function loadProjectArtifact(value: unknown): ProjectArtifact {
     resolver: resolverOf(modules, prepared.artifact.resolutions),
     browserResolver: resolverOf(modules, prepared.artifact.browserResolutions ?? []),
     moduleNames: new Set(prepared.artifact.modules.map((module) => executionNameForModuleId(module.id))),
+    i18n: resolveI18nConfig(prepared.artifact.config.i18n),
   };
 }
 

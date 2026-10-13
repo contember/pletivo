@@ -70,7 +70,7 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
     : null;
   await link();
 
-  return emitProject(walk, entries, markdown);
+  return emitProject(walk, entries, markdown, options.artifact?.prepared.artifact.config.i18n ?? null);
 }
 
 /** Claim each plugin's module into the walk and name where the isolate imports it from. */

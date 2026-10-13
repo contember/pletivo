@@ -7,6 +7,7 @@ import { bundleRuntimeModule, strayImports } from "../scripts/build-runtime.ts";
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  I18N_MODULE_NAME,
   IMAGE_MODULE_NAME,
   ISOLATE_ENTRY_MODULES,
   ISOLATE_ENTRY_MODULE_NAME,
@@ -88,6 +89,7 @@ describe("generated runtime modules", () => {
       [RUNTIME_MODULE_NAME]: { allowed: [], nodeBuiltins: true },
       [CONTENT_MODULE_NAME]: { allowed: ["node:async_hooks"], nodeBuiltins: false },
       [IMAGE_MODULE_NAME]: { allowed: [], nodeBuiltins: false },
+      [I18N_MODULE_NAME]: { allowed: [], nodeBuiltins: false },
       [ISOLATE_PROTOCOL_MODULE_NAME]: { allowed: [], nodeBuiltins: false },
       "pletivo-isolate-entry.js": {
         allowed: [`./${RUNTIME_MODULE_NAME}`, `./${ISOLATE_PROTOCOL_MODULE_NAME}`],

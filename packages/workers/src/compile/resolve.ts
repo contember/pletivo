@@ -3,7 +3,7 @@ import { md5Hex } from "@pletivo/core/md5";
 import { projectModuleId, type ArtifactResolver } from "../artifact.ts";
 import type { ProjectAssetInfo, ProjectAssetsView } from "../asset-port.ts";
 import { ASSETS_DIR } from "../astro-assets.ts";
-import { CONTENT_MODULE_NAME, IMAGE_MODULE_NAME } from "../generated/runtime-modules.ts";
+import { CONTENT_MODULE_NAME, I18N_MODULE_NAME, IMAGE_MODULE_NAME } from "../generated/runtime-modules.ts";
 import { HOST_ALIASES } from "../host-aliases.ts";
 import { resolveSpecifier } from "../rewrite-imports.ts";
 import {
@@ -163,6 +163,10 @@ export class ImportResolver {
     if (alias.kind === "image") {
       this.#walk.usesImages = true;
       return externalResolution(external, IMAGE_MODULE_NAME);
+    }
+    if (alias.kind === "i18n") {
+      this.#walk.usesI18n = true;
+      return externalResolution(external, I18N_MODULE_NAME);
     }
     return externalResolution(external, alias.executionName);
   }

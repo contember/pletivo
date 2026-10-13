@@ -4,9 +4,11 @@ import type {
   ResolvedStyleGraph,
 } from "../compiled-program.ts";
 import { ENV_CLIENT_SPECIFIER, ENV_SERVER_SPECIFIER, type ProjectEnvUse } from "../env.ts";
+import type { ArtifactI18nConfig } from "@pletivo/core/artifact";
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  I18N_MODULE_NAME,
   IMAGE_MODULE_NAME,
   ISOLATE_ENTRY_MODULE_NAME,
 } from "../generated/runtime-modules.ts";
@@ -19,7 +21,9 @@ export function emitProject(
   walk: CompileWalk,
   entries: ExecutableEntry[],
   markdown: ProgramMarkdownRequirement | null,
+  i18nConfig: ArtifactI18nConfig | null,
 ): CompiledProject {
+  if (walk.usesI18n) walk.modules[I18N_MODULE_NAME] = GENERATED_MODULES[I18N_MODULE_NAME];
   const { content } = walk;
   // The Markdown pipeline lives in the content module.
   if (content !== null || markdown !== null) {
@@ -43,6 +47,7 @@ export function emitProject(
       requirements: {
         content,
         markdown,
+        i18n: walk.usesI18n ? { config: i18nConfig } : null,
         images,
         importMetaEnv: walk.usesImportMetaEnv,
         env: envUse(walk.usedEnv, walk.envNames),

@@ -60,6 +60,12 @@ const ENTRIES: Record<string, Entry> = {
     // Keep workerd's AsyncLocalStorage; the browser target would stub it.
     external: ["node:async_hooks"],
   },
+  /** `astro:i18n`, configured per render from the artifact's `i18n`. */
+  "pletivo-i18n.js": {
+    specifier: path.join(PACKAGE_DIR, "scripts/i18n-entry.ts"),
+    target: "browser",
+    forbidNodeBuiltins: true,
+  },
   /** The image pipeline; in the isolate because `getImage()` runs in page frontmatter. */
   "pletivo-image.js": {
     specifier: "@pletivo/core/image",
@@ -306,6 +312,9 @@ export async function generateRuntimeModules(): Promise<string> {
     "",
     "/** The module a project's content API resolves to. Added only when it is reached for. */",
     'export const CONTENT_MODULE_NAME = "pletivo-content.js";',
+    "",
+    "/** The module `astro:i18n` resolves to. Added only when reached for. */",
+    'export const I18N_MODULE_NAME = "pletivo-i18n.js";',
     "",
     "/** The module `astro:assets` and an `image()` schema resolve through. Added only when reached for. */",
     'export const IMAGE_MODULE_NAME = "pletivo-image.js";',

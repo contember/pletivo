@@ -75,10 +75,42 @@ export interface ArtifactMarkdownConfig {
   gfm?: boolean;
 }
 
+/** A locale as Astro's `i18n.locales` spells it. */
+export type ArtifactLocale = string | { path: string; codes: string[] };
+
+/**
+ * `i18n` from the Astro config, as `resolveI18nConfig` reads it. A type literal, not an
+ * interface, so it is assignable to that function's index-signature parameter.
+ */
+export type ArtifactI18nConfig = {
+  defaultLocale: string;
+  locales: ArtifactLocale[];
+  routing?: {
+    prefixDefaultLocale?: boolean;
+    redirectToDefaultLocale?: boolean;
+    fallbackType?: "rewrite" | "redirect";
+  };
+  /** Target locale -> the locale its missing pages fall back to. */
+  fallback?: { [locale: string]: string };
+};
+
+/** One `redirects` entry: a route pattern (`/blog/[slug]`) and where it points. */
+export interface ArtifactRedirect {
+  source: string;
+  destination: string;
+  status: number;
+}
+
+export type ArtifactTrailingSlash = "always" | "never" | "ignore";
+
 /** Config fields the Workers host currently consumes. */
 export interface ArtifactConfig {
   site?: string;
   markdown?: ArtifactMarkdownConfig;
+  i18n?: ArtifactI18nConfig;
+  trailingSlash?: ArtifactTrailingSlash;
+  /** In config order; the first whose source matches wins. */
+  redirects?: ArtifactRedirect[];
 }
 
 /** Injected scripts the Workers host currently emits, in semantic order. */
@@ -240,7 +272,7 @@ export function serializePreparedSite(value: unknown): string {
 function parseConfig(value: unknown): ArtifactConfig {
   const at = "$.artifact.config";
   const config = requireObject(value, at, "an object");
-  assertExactFields(config, ["site", "markdown"], at);
+  assertExactFields(config, ["site", "markdown", "i18n", "trailingSlash", "redirects"], at);
   const parsed: ArtifactConfig = {};
   if (hasOwn(config, "site")) {
     const site = Reflect.get(config, "site");
@@ -248,8 +280,87 @@ function parseConfig(value: unknown): ArtifactConfig {
     parsed.site = site;
   }
   if (hasOwn(config, "markdown")) parsed.markdown = parseMarkdownConfig(Reflect.get(config, "markdown"), `${at}.markdown`);
+  if (hasOwn(config, "i18n")) parsed.i18n = parseI18nConfig(Reflect.get(config, "i18n"), `${at}.i18n`);
+  if (hasOwn(config, "trailingSlash")) {
+    const trailingSlash = Reflect.get(config, "trailingSlash");
+    if (trailingSlash !== "always" && trailingSlash !== "never" && trailingSlash !== "ignore") {
+      throw new ArtifactFormatError(`${at}.trailingSlash`, 'expected "always", "never" or "ignore"');
+    }
+    parsed.trailingSlash = trailingSlash;
+  }
+  if (hasOwn(config, "redirects")) parsed.redirects = parseRedirects(Reflect.get(config, "redirects"), `${at}.redirects`);
   return parsed;
 }
+
+function parseI18nConfig(value: unknown, at: string): ArtifactI18nConfig {
+  const i18n = requireObject(value, at, "an object");
+  assertExactFields(i18n, ["defaultLocale", "locales", "routing", "fallback"], at);
+  const locales = requiredField(i18n, "locales", at);
+  if (!Array.isArray(locales)) throw new ArtifactFormatError(`${at}.locales`, "expected an array");
+  const parsed: ArtifactI18nConfig = {
+    defaultLocale: requireNonEmptyString(requiredField(i18n, "defaultLocale", at), `${at}.defaultLocale`),
+    locales: locales.map((locale: unknown, index): ArtifactLocale => {
+      const path = `${at}.locales[${index}]`;
+      if (typeof locale === "string") return requireNonEmptyString(locale, path);
+      const entry = requireObject(locale, path, "a string or an object");
+      assertExactFields(entry, ["path", "codes"], path);
+      const codes = parseStringArray(requiredField(entry, "codes", path), `${path}.codes`);
+      if (codes.length === 0) throw new ArtifactFormatError(`${path}.codes`, "expected at least one code");
+      return { path: requireNonEmptyString(requiredField(entry, "path", path), `${path}.path`), codes };
+    }),
+  };
+  if (hasOwn(i18n, "routing")) {
+    const routingAt = `${at}.routing`;
+    const routing = requireObject(Reflect.get(i18n, "routing"), routingAt, "an object");
+    assertExactFields(routing, ["prefixDefaultLocale", "redirectToDefaultLocale", "fallbackType"], routingAt);
+    parsed.routing = {};
+    for (const field of ["prefixDefaultLocale", "redirectToDefaultLocale"] as const) {
+      if (!hasOwn(routing, field)) continue;
+      const flag = Reflect.get(routing, field);
+      if (typeof flag !== "boolean") throw new ArtifactFormatError(`${routingAt}.${field}`, "expected a boolean");
+      parsed.routing[field] = flag;
+    }
+    if (hasOwn(routing, "fallbackType")) {
+      const fallbackType = Reflect.get(routing, "fallbackType");
+      if (fallbackType !== "rewrite" && fallbackType !== "redirect") {
+        throw new ArtifactFormatError(`${routingAt}.fallbackType`, 'expected "rewrite" or "redirect"');
+      }
+      parsed.routing.fallbackType = fallbackType;
+    }
+  }
+  if (hasOwn(i18n, "fallback")) {
+    const fallbackAt = `${at}.fallback`;
+    const fallback = requireObject(Reflect.get(i18n, "fallback"), fallbackAt, "an object");
+    const entries = Object.keys(fallback).map((locale): [string, string] => [
+      locale,
+      requireNonEmptyString(Reflect.get(fallback, locale), `${fallbackAt}.${locale}`),
+    ]);
+    parsed.fallback = Object.fromEntries(entries);
+  }
+  return parsed;
+}
+
+function parseRedirects(value: unknown, at: string): ArtifactRedirect[] {
+  if (!Array.isArray(value)) throw new ArtifactFormatError(at, "expected an array");
+  return value.map((entry: unknown, index): ArtifactRedirect => {
+    const path = `${at}[${index}]`;
+    const redirect = requireObject(entry, path, "an object");
+    assertExactFields(redirect, ["source", "destination", "status"], path);
+    const source = requireNonEmptyString(requiredField(redirect, "source", path), `${path}.source`);
+    if (!source.startsWith("/")) throw new ArtifactFormatError(`${path}.source`, 'expected a path starting with "/"');
+    const status = requiredField(redirect, "status", path);
+    if (typeof status !== "number" || !REDIRECT_STATUSES.has(status)) {
+      throw new ArtifactFormatError(`${path}.status`, "expected 301, 302, 303, 307 or 308");
+    }
+    return {
+      source,
+      destination: requireNonEmptyString(requiredField(redirect, "destination", path), `${path}.destination`),
+      status,
+    };
+  });
+}
+
+export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
 function parseMarkdownConfig(value: unknown, at: string): ArtifactMarkdownConfig {
   const markdown = requireObject(value, at, "an object");
@@ -529,6 +640,37 @@ function canonicalConfig(config: ArtifactConfig): ArtifactConfig {
   const canonical: ArtifactConfig = {};
   if (config.site !== undefined) canonical.site = config.site;
   if (config.markdown !== undefined) canonical.markdown = canonicalMarkdown(config.markdown);
+  if (config.i18n !== undefined) canonical.i18n = canonicalI18n(config.i18n);
+  if (config.trailingSlash !== undefined) canonical.trailingSlash = config.trailingSlash;
+  if (config.redirects !== undefined) {
+    canonical.redirects = config.redirects.map((redirect) => ({
+      source: redirect.source,
+      destination: redirect.destination,
+      status: redirect.status,
+    }));
+  }
+  return canonical;
+}
+
+function canonicalI18n(i18n: ArtifactI18nConfig): ArtifactI18nConfig {
+  const canonical: ArtifactI18nConfig = {
+    defaultLocale: i18n.defaultLocale,
+    locales: i18n.locales.map((locale) =>
+      typeof locale === "string" ? locale : { path: locale.path, codes: [...locale.codes] },
+    ),
+  };
+  if (i18n.routing !== undefined) {
+    const { prefixDefaultLocale, redirectToDefaultLocale, fallbackType } = i18n.routing;
+    canonical.routing = {};
+    if (prefixDefaultLocale !== undefined) canonical.routing.prefixDefaultLocale = prefixDefaultLocale;
+    if (redirectToDefaultLocale !== undefined) canonical.routing.redirectToDefaultLocale = redirectToDefaultLocale;
+    if (fallbackType !== undefined) canonical.routing.fallbackType = fallbackType;
+  }
+  if (i18n.fallback !== undefined) {
+    const { fallback } = i18n;
+    const locales = Object.keys(fallback).sort(compareStrings);
+    canonical.fallback = Object.fromEntries(locales.map((locale): [string, string] => [locale, fallback[locale]]));
+  }
   return canonical;
 }
 

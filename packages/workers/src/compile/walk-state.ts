@@ -57,6 +57,7 @@ export class CompileWalk {
   readonly usedEnv = new Set<string>();
   usesImportMetaEnv = false;
   usesImages = false;
+  usesI18n = false;
 
   readonly #projectFiles: NormalizedProjectFiles;
   readonly #artifact: ArtifactResolver;

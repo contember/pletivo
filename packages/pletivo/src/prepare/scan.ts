@@ -365,6 +365,8 @@ const HOST_SPECIFIERS = new Set([
   // `getImage()` needs an image's dimensions, and the host worker reads them off the
   // bytes it holds. See `packages/workers/src/astro-assets.ts`.
   "astro:assets",
+  // Locale helpers over the `i18n` config the artifact carries.
+  "astro:i18n",
 ]);
 
 /** Astro virtual modules that only exist where a build pipeline does. */
@@ -373,7 +375,6 @@ const UNSUPPORTED_SPECIFIERS = new Set([
   "astro:transitions/client",
   "astro:middleware",
   "astro:actions",
-  "astro:i18n",
   "astro:components",
   "astro:schema",
 ]);

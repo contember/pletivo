@@ -25,6 +25,7 @@ import {
 import { loadProjectArtifact, type ProjectArtifact } from "./artifact.ts";
 import { browserModule, BrowserModuleError, isBrowserModulePath } from "./browser-modules.ts";
 import { publicFileResponse } from "./public-files.ts";
+import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
 import type { GeneratedAssetStore } from "./generated-asset-store.ts";
@@ -38,6 +39,7 @@ import {
   UnsupportedRouteError,
   projectPaths,
   projectRoot,
+  projectRoutes,
   renderPage,
   type ProjectOptions,
   type RenderedAsset,
@@ -177,10 +179,14 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     };
   }
 
-  async function renderSnapshot(pathname: string, snapshot: ProjectSnapshot): Promise<RenderedPage> {
+  async function renderSnapshot(
+    pathname: string,
+    snapshot: ProjectSnapshot,
+    search?: string,
+  ): Promise<RenderedPage> {
     const project = projectOptions(snapshot);
     const stale = await staleArtifactInputs(snapshot, project.artifact);
-    const page = await renderPage({ ...project, pathname, site });
+    const page = await renderPage({ ...project, pathname, search, site });
     if (generatedAssetStore !== undefined && page.assets.length > 0) {
       await generatedAssetStore.put(page.assets);
     }
@@ -256,7 +262,16 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
             });
           }
 
-          const page = await renderSnapshot(url.pathname, snapshot);
+          const artifact = artifactOf(snapshot);
+          const redirect = routeRedirect(
+            url,
+            artifact?.prepared.artifact.config,
+            artifact?.i18n ?? null,
+            projectRoutes(snapshot.files, renderOptions.pagesDir),
+          );
+          if (redirect !== null) return redirectResponse(redirect.location, redirect.status);
+
+          const page = await renderSnapshot(url.pathname, snapshot, url.search);
           const headers = new Headers({
             "content-type": "text/html; charset=utf-8",
             "x-pletivo-page": page.file,
@@ -334,7 +349,12 @@ function parseArtifact(source: string, path: string): ProjectArtifact {
   }
 }
 
+function redirectResponse(location: string, status: number): Response {
+  return new Response(null, { status, headers: { location } });
+}
+
 function errorResponse(error: unknown): Response {
+  if (error instanceof RouteRedirect) return redirectResponse(error.location, error.status);
   if (error instanceof WorkspaceSnapshotChangedError) {
     return new Response(error.message, {
       status: 503,

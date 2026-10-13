@@ -488,6 +488,97 @@ describe("createProjectHost", () => {
     },
   );
 
+  describe("routing config", () => {
+    const LOCALE_PAGE = `---\nimport { getRelativeLocaleUrl } from "astro:i18n";\n---\n<p>locale={Astro.currentLocale} link={getRelativeLocaleUrl("es", "about")}</p>\n`;
+
+    function routingHost(config: Record<string, unknown>, files: Record<string, string>) {
+      return createProjectHost({
+        store: createMapProjectStore(new Map(Object.entries(files))),
+        artifact: {
+          artifact: {
+            version: ARTIFACT_VERSION,
+            config,
+            scripts: { headInline: [], page: [] },
+            modules: [],
+            resolutions: [],
+          },
+        },
+        loader,
+        compiler,
+      });
+    }
+
+    async function get(host: ReturnType<typeof routingHost>, path: string) {
+      const response = await host.fetch(new Request(`https://example.test${path}`));
+      return { status: response.status, location: response.headers.get("location"), body: await response.text() };
+    }
+
+    test("passes the query string to Astro.url", async () => {
+      const host = routingHost({}, { "src/pages/index.astro": "<p>search={Astro.url.search}</p>\n" });
+      expect((await get(host, "/?q=1&lang=en")).body).toContain("search=?q=1&amp;lang=en");
+    });
+
+    test("redirects to the trailingSlash form, keeping the query, but not a file-like path", async () => {
+      const always = routingHost({ trailingSlash: "always" }, { "src/pages/about.astro": "<p>about</p>\n" });
+      expect(await get(always, "/about?x=1")).toMatchObject({ status: 301, location: "/about/?x=1" });
+      expect((await get(always, "/about/")).body).toContain("about");
+      expect((await get(always, "/feed.xml")).status).toBe(404);
+
+      const never = routingHost({ trailingSlash: "never" }, { "src/pages/about.astro": "<p>about</p>\n" });
+      expect(await get(never, "/about/")).toMatchObject({ status: 301, location: "/about" });
+      expect((await get(never, "/")).status).toBe(404);
+    });
+
+    test("answers config redirects, filling the destination's params", async () => {
+      const host = routingHost(
+        {
+          redirects: [
+            { source: "/old", destination: "/new", status: 301 },
+            { source: "/blog/[slug]", destination: "/posts/[slug]", status: 302 },
+          ],
+        },
+        { "src/pages/old.astro": "<p>shadowed by the redirect</p>\n" },
+      );
+      expect(await get(host, "/old")).toMatchObject({ status: 301, location: "/new" });
+      expect(await get(host, "/blog/hello")).toMatchObject({ status: 302, location: "/posts/hello" });
+    });
+
+    const I18N = {
+      defaultLocale: "en",
+      locales: ["en", { path: "spanish", codes: ["es", "es-AR"] }],
+      fallback: { es: "en" },
+    };
+    const LOCALIZED = {
+      "src/pages/index.astro": LOCALE_PAGE,
+      "src/pages/about.astro": LOCALE_PAGE,
+      "src/pages/spanish/index.astro": LOCALE_PAGE,
+    };
+
+    test("sets Astro.currentLocale and installs the astro:i18n helpers", async () => {
+      const host = routingHost({ i18n: I18N }, LOCALIZED);
+      expect((await get(host, "/")).body).toContain("locale=en link=/spanish/about");
+      expect((await get(host, "/spanish/")).body).toContain("locale=es link=/spanish/about");
+    });
+
+    test("renders a page a locale lacks from its fallback, or redirects to it", async () => {
+      const rewrite = routingHost({ i18n: I18N }, LOCALIZED);
+      const page = await get(rewrite, "/spanish/about");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain("locale=es");
+
+      const redirect = routingHost({ i18n: { ...I18N, routing: { fallbackType: "redirect" } } }, LOCALIZED);
+      expect(await get(redirect, "/spanish/about")).toMatchObject({ status: 302, location: "/about" });
+    });
+
+    test("redirects an unprefixed path to the default locale when it is prefixed", async () => {
+      const host = routingHost(
+        { i18n: { defaultLocale: "en", locales: ["en", "de"], routing: { prefixDefaultLocale: true } } },
+        { "src/pages/en/about.astro": LOCALE_PAGE.replace('"es"', '"de"') },
+      );
+      expect(await get(host, "/about")).toMatchObject({ status: 302, location: "/en/about" });
+    });
+  });
+
   describe("public files", () => {
     const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x80, 0x0a]);
 

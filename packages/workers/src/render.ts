@@ -16,6 +16,10 @@ import {
   type RouteParams,
 } from "@pletivo/core/router";
 import { parseMarkdown } from "@pletivo/core/content/markdown";
+import type { ResolvedI18nConfig } from "@pletivo/core/i18n/config";
+import { resolveFallbackRoute } from "@pletivo/core/i18n/fallback";
+import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { RouteRedirect } from "./routing.ts";
 import { projectModuleId, type ProjectArtifact } from "./artifact.ts";
 import type { ProjectFiles } from "./project-store.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
@@ -65,6 +69,7 @@ import {
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  I18N_MODULE_NAME,
   IMAGE_MODULE_NAME,
   ISOLATE_ENTRY_MODULE_NAME,
   ISOLATE_ENTRY_MODULES,
@@ -168,6 +173,8 @@ export interface ProjectOptions {
 export interface RenderPageOptions extends ProjectOptions {
   /** URL pathname to render, e.g. `/` or `/blog/hello`. */
   pathname: string;
+  /** The request's query string, `?` included, for `Astro.url.search`. */
+  search?: string;
   /** `site` from the project config. Sets the origin of `Astro.url`. */
   site?: string;
 }
@@ -440,8 +447,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const srcDir = srcDirOf(options);
   const rootDir = projectRoot(options);
 
-  const match = findRoute(projectRoutes(files, pagesDir), pathname);
-  if (!match) throw new RouteNotFoundError(pathname);
+  const { match, currentLocale } = matchPage(projectRoutes(files, pagesDir), pathname, options.artifact?.i18n ?? null);
   const file = prefix + match.route.file;
 
   if (match.route.isEndpoint) {
@@ -501,6 +507,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     // The isolate treats a page without a route as static.
     route: match.route.isDynamic ? match.route : null,
     site,
+    currentLocale,
     options,
   });
   const css = pageCss({
@@ -747,9 +754,10 @@ async function renderModule(input: {
   /** The matched route when it is dynamic, `null` when it is static. */
   route: Route | null;
   site: string | undefined;
+  currentLocale: string | undefined;
   options: RenderPageOptions;
 }): Promise<IsolateRender> {
-  const { project, file, params, route, site, options } = input;
+  const { project, file, params, route, site, currentLocale, options } = input;
 
   // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost stand-in.
   const origin = site ? new URL(site).origin : "http://localhost/";
@@ -762,8 +770,9 @@ async function renderModule(input: {
       file,
       params: encodeParams(params),
       route,
-      url: pageUrl(options.pathname, origin),
+      url: pageUrl(options.pathname, options.search ?? "", origin),
       site,
+      ...(currentLocale === undefined ? {} : { currentLocale }),
     },
   });
   if (payload.status === "unresolved") {
@@ -775,8 +784,29 @@ async function renderModule(input: {
   return { ...payload, bundleId };
 }
 
-function pageUrl(pathname: string, origin: string): string {
-  return new URL("/" + pathname.replace(/^\//, ""), origin).href;
+function pageUrl(pathname: string, search: string, origin: string): string {
+  return new URL("/" + pathname.replace(/^\//, "") + search, origin).href;
+}
+
+/**
+ * The route a pathname renders, and `Astro.currentLocale` for it. Under i18n, a page a
+ * locale lacks renders from its fallback locale (rewrite), or redirects to it.
+ */
+function matchPage(
+  routes: Route[],
+  pathname: string,
+  i18n: ResolvedI18nConfig | null,
+): { match: { route: Route; params: RouteParams }; currentLocale: string | undefined } {
+  const match = findRoute(routes, pathname);
+  if (match !== null) {
+    return { match, currentLocale: i18n === null ? undefined : detectRouteLocale(match.route, i18n).locale?.code };
+  }
+  const fallback = i18n === null ? null : resolveFallbackRoute(pathname, routes, i18n, "/");
+  if (fallback === null) throw new RouteNotFoundError(pathname);
+  if (fallback.mode === "redirect" && fallback.redirectTo !== undefined) {
+    throw new RouteRedirect(fallback.redirectTo, 302);
+  }
+  return { match: { route: fallback.route, params: fallback.params }, currentLocale: fallback.targetLocale };
 }
 
 /**
@@ -825,6 +855,12 @@ function programModule(program: ExecutableProgram): string {
       `remarkRehype: ${JSON.stringify(markdown.remarkRehype ?? null)}, gfm: ${JSON.stringify(markdown.gfm ?? null)} }`;
   }
 
+  let i18nModule = "null";
+  if (program.requirements.i18n !== null) {
+    imports.push(`import * as $$i18n from ${moduleSpecifier(I18N_MODULE_NAME)};`);
+    i18nModule = `{ module: $$i18n, config: ${JSON.stringify(program.requirements.i18n.config)} }`;
+  }
+
   const installers: string[] = [];
   const useEnv = (names: string[] | null, local: string, module: string): void => {
     if (names === null) return;
@@ -841,6 +877,7 @@ function programModule(program: ExecutableProgram): string {
     content: contentModules,
     markdown: markdownPipeline,
     scripts: JSON.stringify(program.scripts),
+    i18n: i18nModule,
     envInstallers: `[${installers.join(", ")}]`,
     importMetaEnv: String(importMetaEnv),
   };

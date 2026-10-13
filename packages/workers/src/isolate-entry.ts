@@ -9,6 +9,8 @@
 
 import type * as ContentCollection from "@pletivo/core/content/collection";
 import type * as Markdown from "@pletivo/core/content/markdown";
+import type { resolveI18nConfig, ResolvedI18nConfig } from "@pletivo/core/i18n/config";
+import type { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import type * as Images from "@pletivo/core/image";
 import type { Route, RouteParams } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
@@ -89,6 +91,17 @@ export interface IsolateMarkdown {
   gfm: boolean | null;
 }
 
+/** The `astro:i18n` module, and what the generated program installs in it. */
+export interface I18nModule {
+  resolveI18nConfig: typeof resolveI18nConfig;
+  setI18nRuntimeState: typeof setI18nRuntimeState;
+}
+
+export interface IsolateI18n {
+  module: I18nModule;
+  config: Parameters<typeof resolveI18nConfig>[0] | null;
+}
+
 /** An `astro:env` module's installer; the values arrive in the isolate's `env`. */
 export type EnvInstaller = (values: Partial<EnvPayload>) => void;
 
@@ -106,6 +119,8 @@ export interface IsolateProgram {
   markdown: IsolateMarkdown | null;
   /** `$$renderScript` id -> the URL the host serves that script at. */
   scripts: Readonly<Record<string, string>>;
+  /** Set when the program imports `astro:i18n`. */
+  i18n: IsolateI18n | null;
   envInstallers: readonly EnvInstaller[];
   importMetaEnv: boolean;
 }
@@ -131,6 +146,7 @@ const BASE = "/";
 
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
   let markdownConfigured = false;
+  let i18nConfig: ResolvedI18nConfig | null | undefined;
   // Module state is safe: the map is part of the program, so of the isolate's id.
   setScriptUrlResolver((id) => (Object.hasOwn(program.scripts, id) ? program.scripts[id] : null));
   return {
@@ -151,6 +167,12 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
         // Module state is safe for these, unlike content: the isolate's `env` is fixed at
         // creation and covered by its id.
         for (const install of program.envInstallers) install(env[ENV_BINDING] ?? {});
+        const { i18n } = program;
+        if (i18n !== null && body.op === "render") {
+          i18nConfig ??= i18n.config === null ? null : i18n.module.resolveI18nConfig(i18n.config);
+          // Per request: `site` is the request's, and the helpers read it.
+          i18n.module.setI18nRuntimeState(i18nConfig, "/", body.site);
+        }
         return await withContent(program, env[CONTENT_BINDING], body, () => {
           if (body.op === "paths") return listPaths(program, body.routes);
           if (body.op === "markdown") return renderMarkdownPage(program, body);
@@ -319,7 +341,7 @@ async function listPaths(
 }
 
 async function render(program: IsolateProgram, request: IsolateRenderRequest): Promise<Response> {
-  const { file, route, url, site } = request;
+  const { file, route, url, site, currentLocale } = request;
   const module = await loadPage(program, file);
   if (!module) return new Response("no module for " + file, { status: 404 });
   assertStaticOnly(module, file);
@@ -346,6 +368,7 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
       url: new URL(url),
       site: site ? new URL(site) : undefined,
       params,
+      currentLocale,
       preferredLocaleList: [],
     }),
   );

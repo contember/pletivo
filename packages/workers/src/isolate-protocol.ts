@@ -14,6 +14,7 @@ export type IsolateProgramExport =
   | "content"
   | "markdown"
   | "scripts"
+  | "i18n"
   | "envInstallers"
   | "importMetaEnv";
 
@@ -51,6 +52,8 @@ export interface IsolateRenderRequest extends IsolateRequestBase {
   route: Route | null;
   url: string;
   site?: string;
+  /** `Astro.currentLocale`: the route's locale, or the target of an i18n fallback. */
+  currentLocale?: string;
 }
 
 export interface IsolatePathsRequest extends IsolateRequestBase {
