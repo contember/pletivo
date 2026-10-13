@@ -12,6 +12,7 @@ export type IsolateProgramExport =
   | "pages"
   | "contentConfig"
   | "content"
+  | "markdown"
   | "envInstallers"
   | "importMetaEnv";
 
@@ -56,7 +57,14 @@ export interface IsolatePathsRequest extends IsolateRequestBase {
   routes: IsolatePathRoute[];
 }
 
-export type IsolateRequest = IsolateRenderRequest | IsolatePathsRequest;
+/** Render a `.md` page with the program's Markdown pipeline. */
+export interface IsolateMarkdownRequest extends IsolateRequestBase {
+  op: "markdown";
+  file: string;
+  source: string;
+}
+
+export type IsolateRequest = IsolateRenderRequest | IsolatePathsRequest | IsolateMarkdownRequest;
 
 export interface IsolateRenderedResponse {
   status: "rendered";

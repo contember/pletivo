@@ -84,6 +84,31 @@ Two complete hosts live in the repository:
   — a live workspace in a Durable Object, with content collections and an editor. This is
   the reference for a production binding topology.
 
+## Prepared projects
+
+A project with npm dependencies or Astro integrations is rendered with the artifact
+`pletivo prepare` writes: `.pletivo/pletivo-artifact.json` (pass it as `artifact`, or name
+it with `artifactPath`), and the same value as a TypeScript module.
+
+### Portable Markdown plugins
+
+A remark or rehype plugin is a live function, and an artifact is data. A plugin can say
+where the render isolate imports the same function from:
+
+```js
+// in the package that ships the plugin
+export function remarkExample(options) { /* ... */ }
+remarkExample[Symbol.for("pletivo.portableModule")] = {
+  module: "example-package/remark", // a bare specifier the project can import
+  export: "remarkExample",          // the named export of that same function
+};
+```
+
+`pletivo prepare` records `{ module, export, options }` for a tagged plugin and vendors
+`module`. Options (the second element of `[plugin, options]`) must be JSON data. The
+isolate imports the plugins and installs them in config order, for collection entries and
+`.md` pages alike. An untagged plugin still fails `prepare` with a diagnostic naming it.
+
 ## Versioning
 
 The modules are the API, and they are pre-1.0: a minor release can change them. Pin the

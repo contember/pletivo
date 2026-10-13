@@ -58,6 +58,7 @@ export class CompileWalk {
   readonly #claimed = new Map<ModuleId, SourceModule>();
   /** Named and not yet compiled. Appended to *while* it is walked; see `pending`. */
   readonly #queue: SourceModule[] = [];
+  #cursor = 0;
   /** Set the moment something reaches for the content API, with the config it seeded. */
   #content: ProgramContentRequirement | null = null;
 
@@ -73,11 +74,11 @@ export class CompileWalk {
   }
 
   /**
-   * Every module claimed for compiling, in claim order. Claiming while this is iterated
-   * appends to it, so it is walked with an index cursor rather than `shift()`.
+   * Every module claimed and not yet handed out, in claim order. Claiming while this is
+   * iterated appends to it, and a later call resumes where the last one stopped.
    */
   *pending(): Generator<SourceModule> {
-    for (let index = 0; index < this.#queue.length; index++) yield this.#queue[index];
+    while (this.#cursor < this.#queue.length) yield this.#queue[this.#cursor++];
   }
 
   /** The one place a project file's contents are read. */

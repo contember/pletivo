@@ -1,4 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { ANY_PROJECT_IMPORTER, ARTIFACT_VERSION } from "@pletivo/core/artifact";
+import { loadProjectArtifact } from "../src/artifact.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { compileProject } from "../src/compile-project.ts";
 import { imageOutputPath } from "@pletivo/core/image";
@@ -487,5 +489,89 @@ describe("globMatcher", () => {
     const match = globMatcher("**/*.md");
     expect(match("a+b.md")).toBe(true);
     expect(globMatcher("v1.0/*.md")("v1x0/a.md")).toBe(false);
+  });
+});
+
+describe("portable Markdown plugins", () => {
+  const PLUGINS = `const PORTABLE = Symbol.for("pletivo.portableModule");
+function visit(node, fn) {
+  fn(node);
+  for (const child of node.children ?? []) visit(child, fn);
+}
+export function remarkShout(options = {}) {
+  return (tree) => visit(tree, (node) => { if (node.type === "text") node.value += options.suffix ?? ""; });
+}
+export function rehypeMark() {
+  return (tree) => visit(tree, (node) => {
+    if (node.type === "element" && node.tagName === "p") node.properties = { ...node.properties, className: ["marked"] };
+  });
+}
+export const notAFunction = 1;
+`;
+
+  function artifact(remarkExport = "remarkShout") {
+    return loadProjectArtifact({
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {
+          markdown: {
+            remarkPlugins: [{ module: "portable-markdown", export: remarkExport, options: { suffix: "!" } }],
+            rehypePlugins: [{ module: "portable-markdown", export: "rehypeMark" }],
+          },
+        },
+        scripts: { headInline: [], page: [] },
+        modules: [{ id: "npm:portable-markdown/index.js", kind: "js", source: PLUGINS }],
+        resolutions: [
+          {
+            importer: ANY_PROJECT_IMPORTER,
+            specifier: "portable-markdown",
+            target: { kind: "module", id: "npm:portable-markdown/index.js" },
+          },
+        ],
+      },
+    });
+  }
+
+  test("a collection entry renders through the configured plugins, in order", async () => {
+    const files = project({ "a.md": note("Alpha", "Hello") });
+    files.set(
+      "src/pages/index.astro",
+      `---\nimport { getEntry, render } from "astro:content";\nconst entry = await getEntry("notes", "a");\nconst { Content } = await render(entry);\n---\n<html><body><Content /></body></html>\n`,
+    );
+    const page = await renderPage({
+      files,
+      pathname: "/",
+      loader,
+      compiler,
+      content: contentAccess(),
+      executionNamespace: EXECUTION_NAMESPACE,
+      artifact: artifact(),
+    });
+    expect(page.html).toContain('<p class="marked">Hello!</p>');
+  });
+
+  test("a .md page renders in the isolate with the same plugins", async () => {
+    const page = await renderPage({
+      files: new Map([["src/pages/index.md", "---\ntitle: Plugins\n---\n\nHello\n"]]),
+      pathname: "/",
+      loader,
+      compiler,
+      artifact: artifact(),
+    });
+    expect(page.html).toContain("<title>Plugins</title>");
+    expect(page.html).toContain('<p class="marked">Hello!</p>');
+    expect(page.bundleId).not.toBe("");
+  });
+
+  test("names an export that is not a plugin function", async () => {
+    await expect(
+      renderPage({
+        files: new Map([["src/pages/index.md", "Hello\n"]]),
+        pathname: "/",
+        loader,
+        compiler,
+        artifact: artifact("notAFunction"),
+      }),
+    ).rejects.toThrow('Markdown plugin export "notAFunction" is not a function');
   });
 });

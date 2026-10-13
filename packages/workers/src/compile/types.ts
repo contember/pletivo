@@ -53,4 +53,6 @@ export interface CompileProjectOptions {
   assets?: ProjectAssetsView;
   /** Compiled files kept between calls, keyed by path and checked by `source ===`. */
   cache?: CompileCache;
+  /** The isolate renders Markdown for the caller, so the Markdown pipeline is needed. */
+  markdown?: boolean;
 }

@@ -71,6 +71,8 @@ export async function prepareModuleGraph(
   root: string,
   projectSources: readonly ProjectImportSource[],
   freezeVirtual: FreezeVirtualSource,
+  /** Bare specifiers the config names (portable plugins), resolved from the project root. */
+  configImports: readonly string[] = [],
 ): Promise<PreparedGraph> {
   const carried = new CarriedModules(root);
   const { modules } = carried;
@@ -110,6 +112,17 @@ export async function prepareModuleGraph(
       extensionOf(project.file) === ".css",
       project.source,
     );
+  }
+
+  for (const specifier of configImports) {
+    queue.push({
+      importer: ANY_PROJECT_IMPORTER,
+      importerFile: path.join(root, "astro.config"),
+      resolveFrom: root,
+      relativeViaVite: false,
+      stylesheet: false,
+      specifier,
+    });
   }
 
   const serverExpanded = new Set<ModuleId>();
@@ -250,7 +263,7 @@ export async function prepareModuleGraph(
   // Discovery order; serializePreparedSite owns the canonical order.
   return {
     modules: [...modules.values()],
-    resolutions: [...resolutions, ...anyProjectResolutions(resolutions)],
+    resolutions: withoutDuplicates([...resolutions, ...anyProjectResolutions(resolutions)]),
     browserResolutions,
   };
 }
@@ -276,6 +289,24 @@ function anyProjectResolutions(resolutions: readonly ArtifactResolution[]): Arti
     if (target !== null) shared.push({ importer: ANY_PROJECT_IMPORTER, specifier, target });
   }
   return shared;
+}
+
+/** A config import and a project file can both produce the same project-wide answer. */
+function withoutDuplicates(resolutions: readonly ArtifactResolution[]): ArtifactResolution[] {
+  const byKey = new Map<string, ArtifactResolution>();
+  for (const resolution of resolutions) {
+    const key = `${resolution.importer}\0${resolution.specifier}`;
+    const known = byKey.get(key);
+    if (known !== undefined && !sameTarget(known.target, resolution.target)) {
+      throw prepareFailure(
+        resolution.importer,
+        "resolve",
+        `${JSON.stringify(resolution.specifier)} resolves to two different targets`,
+      );
+    }
+    byKey.set(key, resolution);
+  }
+  return [...byKey.values()];
 }
 
 function sameTarget(left: ArtifactResolutionTarget, right: ArtifactResolutionTarget): boolean {

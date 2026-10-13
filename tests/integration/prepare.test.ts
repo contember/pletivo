@@ -187,14 +187,26 @@ describe("pletivo prepare", () => {
     await expectPrepareError(project, "source directory", { srcDir: path.resolve(fixtures) });
   });
 
-  test("rejects injected routes, markdown plugins, redirects, and unsupported scripts", async () => {
+  test("rejects injected routes, untagged markdown plugins, redirects, and unsupported scripts", async () => {
     const error = await capturedPrepareError(path.join(fixtures, "fatal-semantics"));
     expect(error.diagnostics.map((entry) => entry.hook)).toEqual([
       "redirects",
-      "markdown",
       "astro:config:setup",
       "before-hydration",
+      "markdown",
     ]);
+    expect(error.diagnostics.at(-1)?.reason).toContain("no portable module reference");
+  });
+
+  test("carries tagged markdown plugins as portable references and vendors their module", async () => {
+    const site = await prepare(path.join(fixtures, "markdown-plugins"));
+    expect(site.artifact.config.markdown).toEqual({
+      remarkPlugins: [{ module: "portable-markdown", export: "remarkShout", options: { suffix: "!" } }],
+      rehypePlugins: [{ module: "portable-markdown", export: "rehypeMark" }],
+      remarkRehype: { allowDangerousHtml: true },
+    });
+    const plugins = targetFor(site, ANY_PROJECT_IMPORTER, "portable-markdown");
+    expect(moduleById(site, plugins).source).toContain("remarkShout");
   });
 
   test("emits the canonical site as JSON and as a TypeScript module", async () => {

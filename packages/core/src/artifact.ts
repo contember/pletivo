@@ -43,9 +43,42 @@ export interface ArtifactResolution {
   target: ArtifactResolutionTarget;
 }
 
+/** A value that survives `JSON.stringify` and `JSON.parse` unchanged. */
+export type ArtifactJson =
+  | null
+  | boolean
+  | number
+  | string
+  | ArtifactJson[]
+  | { [key: string]: ArtifactJson };
+
+/**
+ * The property a remark/rehype plugin function carries to say where an isolate can
+ * import the same function: `plugin[PORTABLE_MODULE] = { module, export }`. `module`
+ * is a bare specifier importable from the project; `export` is its named export.
+ */
+export const PORTABLE_MODULE: unique symbol = Symbol.for("pletivo.portableModule");
+
+/** A markdown plugin as the artifact carries it: where to import it, and its options. */
+export interface PortablePlugin {
+  module: string;
+  export: string;
+  /** The second element of the `[plugin, options]` tuple, when there was one. */
+  options?: ArtifactJson;
+}
+
+/** `markdown` from the Astro config, with its plugins as portable references. */
+export interface ArtifactMarkdownConfig {
+  remarkPlugins: PortablePlugin[];
+  rehypePlugins: PortablePlugin[];
+  remarkRehype?: { [key: string]: ArtifactJson };
+  gfm?: boolean;
+}
+
 /** Config fields the Workers host currently consumes. */
 export interface ArtifactConfig {
   site?: string;
+  markdown?: ArtifactMarkdownConfig;
 }
 
 /** Injected scripts the Workers host currently emits, in semantic order. */
@@ -205,14 +238,92 @@ export function serializePreparedSite(value: unknown): string {
 }
 
 function parseConfig(value: unknown): ArtifactConfig {
-  const config = requireObject(value, "$.artifact.config", "an object");
-  assertExactFields(config, ["site"], "$.artifact.config");
-  if (!hasOwn(config, "site")) return {};
-  const site = Reflect.get(config, "site");
-  if (typeof site !== "string") {
-    throw new ArtifactFormatError("$.artifact.config.site", "expected a string");
+  const at = "$.artifact.config";
+  const config = requireObject(value, at, "an object");
+  assertExactFields(config, ["site", "markdown"], at);
+  const parsed: ArtifactConfig = {};
+  if (hasOwn(config, "site")) {
+    const site = Reflect.get(config, "site");
+    if (typeof site !== "string") throw new ArtifactFormatError(`${at}.site`, "expected a string");
+    parsed.site = site;
   }
-  return { site };
+  if (hasOwn(config, "markdown")) parsed.markdown = parseMarkdownConfig(Reflect.get(config, "markdown"), `${at}.markdown`);
+  return parsed;
+}
+
+function parseMarkdownConfig(value: unknown, at: string): ArtifactMarkdownConfig {
+  const markdown = requireObject(value, at, "an object");
+  assertExactFields(markdown, ["remarkPlugins", "rehypePlugins", "remarkRehype", "gfm"], at);
+  const parsed: ArtifactMarkdownConfig = {
+    remarkPlugins: parsePlugins(requiredField(markdown, "remarkPlugins", at), `${at}.remarkPlugins`),
+    rehypePlugins: parsePlugins(requiredField(markdown, "rehypePlugins", at), `${at}.rehypePlugins`),
+  };
+  if (hasOwn(markdown, "remarkRehype")) {
+    const options = parseJson(Reflect.get(markdown, "remarkRehype"), `${at}.remarkRehype`);
+    if (!isJsonObject(options)) throw new ArtifactFormatError(`${at}.remarkRehype`, "expected an object");
+    parsed.remarkRehype = options;
+  }
+  if (hasOwn(markdown, "gfm")) {
+    const gfm = Reflect.get(markdown, "gfm");
+    if (typeof gfm !== "boolean") throw new ArtifactFormatError(`${at}.gfm`, "expected a boolean");
+    parsed.gfm = gfm;
+  }
+  return parsed;
+}
+
+function parsePlugins(value: unknown, at: string): PortablePlugin[] {
+  if (!Array.isArray(value)) throw new ArtifactFormatError(at, "expected an array");
+  const plugins: PortablePlugin[] = [];
+  for (let index = 0; index < value.length; index++) {
+    const path = `${at}[${index}]`;
+    if (!hasOwn(value, index)) throw new ArtifactFormatError(path, "sparse array entries are not allowed");
+    const plugin = requireObject(value[index], path, "an object");
+    assertExactFields(plugin, ["module", "export", "options"], path);
+    const parsed: PortablePlugin = {
+      module: requireNonEmptyString(requiredField(plugin, "module", path), `${path}.module`),
+      export: requireNonEmptyString(requiredField(plugin, "export", path), `${path}.export`),
+    };
+    if (hasOwn(plugin, "options")) parsed.options = parseJson(Reflect.get(plugin, "options"), `${path}.options`);
+    plugins.push(parsed);
+  }
+  return plugins;
+}
+
+/** Validate a JSON value, rebuilt so nothing but plain data survives. */
+export function parseJson(value: unknown, at: string): ArtifactJson {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new ArtifactFormatError(at, "expected a finite number");
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const items: ArtifactJson[] = [];
+    for (let index = 0; index < value.length; index++) {
+      if (!hasOwn(value, index)) throw new ArtifactFormatError(`${at}[${index}]`, "sparse array entries are not allowed");
+      items.push(parseJson(value[index], `${at}[${index}]`));
+    }
+    return items;
+  }
+  if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const entries = Object.keys(value).map((key): [string, ArtifactJson] => [
+      key,
+      parseJson(Reflect.get(value, key), `${at}.${key}`),
+    ]);
+    return Object.fromEntries(entries);
+  }
+  throw new ArtifactFormatError(at, "expected JSON data (null, boolean, number, string, array or plain object)");
+}
+
+export function isJsonObject(value: ArtifactJson): value is { [key: string]: ArtifactJson } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Object keys sorted, so equal values serialize to equal text. */
+function canonicalJson(value: ArtifactJson): ArtifactJson {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (!isJsonObject(value)) return value;
+  const keys = Object.keys(value).sort(compareStrings);
+  return Object.fromEntries(keys.map((key): [string, ArtifactJson] => [key, canonicalJson(value[key])]));
 }
 
 function parseScripts(value: unknown): InjectedScripts {
@@ -415,7 +526,28 @@ function parseStringArray(value: unknown, path: string): string[] {
 }
 
 function canonicalConfig(config: ArtifactConfig): ArtifactConfig {
-  return config.site === undefined ? {} : { site: config.site };
+  const canonical: ArtifactConfig = {};
+  if (config.site !== undefined) canonical.site = config.site;
+  if (config.markdown !== undefined) canonical.markdown = canonicalMarkdown(config.markdown);
+  return canonical;
+}
+
+function canonicalMarkdown(markdown: ArtifactMarkdownConfig): ArtifactMarkdownConfig {
+  // Plugin order is semantic: the pipeline runs them as listed.
+  const plugin = (entry: PortablePlugin): PortablePlugin =>
+    entry.options === undefined
+      ? { module: entry.module, export: entry.export }
+      : { module: entry.module, export: entry.export, options: canonicalJson(entry.options) };
+  const canonical: ArtifactMarkdownConfig = {
+    remarkPlugins: markdown.remarkPlugins.map(plugin),
+    rehypePlugins: markdown.rehypePlugins.map(plugin),
+  };
+  if (markdown.remarkRehype !== undefined) {
+    const options = canonicalJson(markdown.remarkRehype);
+    if (isJsonObject(options)) canonical.remarkRehype = options;
+  }
+  if (markdown.gfm !== undefined) canonical.gfm = markdown.gfm;
+  return canonical;
 }
 
 function canonicalModule(module: ArtifactModule): ArtifactModule {

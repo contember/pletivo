@@ -46,6 +46,7 @@ function program(pages: Record<string, PageModule>): IsolateProgram {
     pages: loaders,
     contentConfig: null,
     content: null,
+    markdown: null,
     envInstallers: [],
     importMetaEnv: false,
   };

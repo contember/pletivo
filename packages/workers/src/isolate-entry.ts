@@ -8,6 +8,7 @@
  */
 
 import type * as ContentCollection from "@pletivo/core/content/collection";
+import type * as Markdown from "@pletivo/core/content/markdown";
 import type * as Images from "@pletivo/core/image";
 import type { Route, RouteParams } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
@@ -29,6 +30,7 @@ import {
   CONTENT_BINDING,
   decodeParams,
   encodeParams,
+  type IsolateMarkdownRequest,
   type IsolateParamPair,
   type IsolatePathRoute,
   type IsolatePathsResponse,
@@ -39,6 +41,7 @@ import {
   type IsolateErrorResponse,
   type IsolateProgramExport,
 } from "./isolate-protocol.ts";
+import { markdownPageHtml } from "./markdown-page.ts";
 import { normalizeProjectPath } from "./project-path.ts";
 import type { UnresolvedReason } from "./render.ts";
 
@@ -66,6 +69,25 @@ export interface ContentModules {
   images: ImageModule;
 }
 
+/** The content module's Markdown half; the same module record collections render with. */
+export type MarkdownModule = Pick<typeof Markdown, "configureMarkdown" | "parseMarkdown">;
+
+/** One configured plugin: the Loader module namespace it is exported from. */
+export interface IsolateMarkdownPlugin {
+  module: object;
+  exportName: string;
+  options?: unknown;
+}
+
+/** The project's Markdown pipeline, as the generated program module spells it. */
+export interface IsolateMarkdown {
+  module: MarkdownModule;
+  remarkPlugins: readonly IsolateMarkdownPlugin[];
+  rehypePlugins: readonly IsolateMarkdownPlugin[];
+  remarkRehype: Record<string, unknown> | null;
+  gfm: boolean | null;
+}
+
 /** An `astro:env` module's installer; the values arrive in the isolate's `env`. */
 export type EnvInstaller = (values: Partial<EnvPayload>) => void;
 
@@ -79,6 +101,8 @@ export interface IsolateProgram {
   /** `content.config.*`, behind a thunk for the same reason pages are. */
   contentConfig: (() => Promise<ContentConfigModule>) | null;
   content: ContentModules | null;
+  /** Set when the program renders Markdown with the project's own plugins. */
+  markdown: IsolateMarkdown | null;
   envInstallers: readonly EnvInstaller[];
   importMetaEnv: boolean;
 }
@@ -103,12 +127,18 @@ export interface IsolateEntry {
 const BASE = "/";
 
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
+  let markdownConfigured = false;
   return {
     async fetch(request, env) {
       // An error payload, not a throw: across the Loader boundary a throw looks the same
       // as a bundle that failed to start.
       try {
         const body: IsolateRequest = JSON.parse(await request.text());
+        // Module state is safe here: the plugins are part of the program, so of its id.
+        if (program.markdown !== null && !markdownConfigured) {
+          configureMarkdown(program.markdown);
+          markdownConfigured = true;
+        }
         // Installed before any page is imported, since frontmatter reads it at import time.
         if (program.importMetaEnv) {
           Reflect.set(globalThis, IMPORT_META_ENV_GLOBAL, env[IMPORT_META_ENV_BINDING] ?? {});
@@ -116,9 +146,11 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
         // Module state is safe for these, unlike content: the isolate's `env` is fixed at
         // creation and covered by its id.
         for (const install of program.envInstallers) install(env[ENV_BINDING] ?? {});
-        return await withContent(program, env[CONTENT_BINDING], body, () =>
-          body.op === "paths" ? listPaths(program, body.routes) : render(program, body),
-        );
+        return await withContent(program, env[CONTENT_BINDING], body, () => {
+          if (body.op === "paths") return listPaths(program, body.routes);
+          if (body.op === "markdown") return renderMarkdownPage(program, body);
+          return render(program, body);
+        });
       } catch (error) {
         const response: IsolateErrorResponse = {
           status: "error",
@@ -129,6 +161,44 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
       }
     },
   };
+}
+
+type Pluggable = NonNullable<Markdown.MarkdownOptions["remarkPlugins"]>[number];
+type Plugin = Extract<Pluggable, (...parameters: never[]) => unknown>;
+
+function isPlugin(value: unknown): value is Plugin {
+  return typeof value === "function";
+}
+
+function pluggable(plugin: IsolateMarkdownPlugin): Pluggable {
+  const value: unknown = Reflect.get(plugin.module, plugin.exportName);
+  if (!isPlugin(value)) {
+    throw new Error(
+      `[pletivo-workers] Markdown plugin export ${JSON.stringify(plugin.exportName)} is not a function`,
+    );
+  }
+  return plugin.options === undefined ? value : [value, plugin.options];
+}
+
+function configureMarkdown(markdown: IsolateMarkdown): void {
+  markdown.module.configureMarkdown({
+    remarkPlugins: markdown.remarkPlugins.map(pluggable),
+    rehypePlugins: markdown.rehypePlugins.map(pluggable),
+    remarkRehype: markdown.remarkRehype ?? {},
+    gfm: markdown.gfm ?? true,
+  });
+}
+
+async function renderMarkdownPage(program: IsolateProgram, request: IsolateMarkdownRequest): Promise<Response> {
+  if (program.markdown === null) throw new Error("[pletivo-workers] this program has no Markdown pipeline");
+  const { html, frontmatter } = await program.markdown.module.parseMarkdown(request.source);
+  const response: IsolateRenderedResponse = {
+    status: "rendered",
+    html: markdownPageHtml(html, frontmatter),
+    renderedModules: [],
+    tsxStyles: [],
+  };
+  return Response.json(response);
 }
 
 function loadPage(program: IsolateProgram, file: string): Promise<PageModule> | null {

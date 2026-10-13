@@ -47,13 +47,14 @@ const ENTRIES: Record<string, Entry> = {
     target: "node",
   },
   /**
-   * Content collections run in the isolate, where `content.config.*` and the page
-   * execute. One module, because its AsyncLocalStorage is module state.
-   * Named by specifier, not path: a path through the workspace symlink resolves
-   * dependencies from `packages/workers`, where `js-yaml` and friends are not.
+   * Content collections and the Markdown pipeline run in the isolate, where
+   * `content.config.*` and the page execute. One module, because its AsyncLocalStorage
+   * and the configured Markdown plugins are module state. The entry re-exports by
+   * specifier: a path into `packages/core` would resolve its dependencies from
+   * `packages/workers`, where `js-yaml` and friends are not.
    */
   "pletivo-content.js": {
-    specifier: "@pletivo/core/content/collection",
+    specifier: path.join(PACKAGE_DIR, "scripts/content-entry.ts"),
     target: "browser",
     conditions: ["workerd"],
     // Keep workerd's AsyncLocalStorage; the browser target would stub it.

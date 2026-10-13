@@ -21,6 +21,7 @@ import type { ProjectFiles } from "./project-store.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
+import { markdownPageHtml } from "./markdown-page.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
@@ -68,7 +69,7 @@ import {
   ISOLATE_ENTRY_MODULES,
   ISOLATE_PROGRAM_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
-import type { ExecutableProgram } from "./compiled-program.ts";
+import type { ExecutableProgram, ProgramMarkdownPlugin } from "./compiled-program.ts";
 
 // Declared structurally rather than imported from `@cloudflare/workers-types`, so
 // the package keeps working whichever typings the host app has installed.
@@ -449,7 +450,10 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     if (match.route.isDynamic) {
       throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
     }
-    const html = await renderMarkdownPage(source);
+    const markdown = options.artifact?.prepared.artifact.config.markdown === undefined
+      ? { html: await renderMarkdownPage(source), bundleId: "" }
+      : await isolateMarkdownPage(file, source, options);
+    const { html } = markdown;
     // A `.md` page has no module graph, so its CSS needs no compile and no merged map.
     const stylesheet = await pageStylesheet({
       files,
@@ -464,7 +468,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     return {
       html: finalizeHtml(html, [stylesheet ?? ""], scripts),
       file,
-      bundleId: "",
+      bundleId: markdown.bundleId,
       assets: [],
       staleArtifactInputs: [],
     };
@@ -554,11 +558,39 @@ function urlAssetContentType(path: string): string {
 /** A `.md` page, rendered as `build.ts` renders one. No isolate involved. */
 export async function renderMarkdownPage(source: string): Promise<string> {
   const { html, frontmatter } = await parseMarkdown(source);
-  const title = typeof frontmatter.title === "string" ? frontmatter.title : "";
-  return (
-    `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-    `${title ? `<title>${title}</title>` : ""}</head><body>${html}</body></html>`
-  );
+  return markdownPageHtml(html, frontmatter);
+}
+
+/**
+ * A `.md` page of a project with configured Markdown plugins. The plugins are code from
+ * the artifact, so they run where project code runs: in the isolate.
+ */
+async function isolateMarkdownPage(
+  file: string,
+  source: string,
+  options: RenderPageOptions,
+): Promise<{ html: string; bundleId: string }> {
+  const project = await compileProject({
+    files: options.files,
+    entries: [],
+    srcDir: srcDirOf(options),
+    compiler: options.compiler,
+    artifact: options.artifact,
+    assets: options.assets,
+    cache: options.compileCache,
+    tailwind: options.tailwind,
+    markdown: true,
+  });
+  const { bundleId, payload } = await callIsolate({
+    project,
+    options,
+    label: `rendering ${file}`,
+    body: { op: "markdown", file, source },
+  });
+  if (payload.status !== "rendered") {
+    throw new Error("[pletivo-workers] the render isolate returned an unexpected Markdown payload");
+  }
+  return { html: payload.html, bundleId };
 }
 
 interface IsolateRender {
@@ -745,7 +777,7 @@ function pageUrl(pathname: string, origin: string): string {
  * because this text is in the Loader program. Optional modules are imported only when reached.
  */
 function programModule(program: ExecutableProgram): string {
-  const { content, env, importMetaEnv } = program.requirements;
+  const { content, markdown, env, importMetaEnv } = program.requirements;
   const imports: string[] = [];
   const pages = [...program.entries]
     .sort((left, right) => left.moduleId < right.moduleId ? -1 : left.moduleId > right.moduleId ? 1 : 0)
@@ -754,17 +786,36 @@ function programModule(program: ExecutableProgram): string {
       return `  ${JSON.stringify(file)}: () => import(${moduleSpecifier(executionName)}),`;
     });
 
+  if (content !== null || markdown !== null) {
+    imports.push(`import * as $$content from ${moduleSpecifier(CONTENT_MODULE_NAME)};`);
+  }
   let contentModules = "null";
   let contentConfig = "null";
   if (content !== null) {
-    imports.push(
-      `import * as $$collections from ${moduleSpecifier(CONTENT_MODULE_NAME)};`,
-      `import * as $$images from ${moduleSpecifier(IMAGE_MODULE_NAME)};`,
-    );
-    contentModules = "{ collections: $$collections, images: $$images }";
+    imports.push(`import * as $$images from ${moduleSpecifier(IMAGE_MODULE_NAME)};`);
+    contentModules = "{ collections: $$content, images: $$images }";
     if (content.configExecutionName !== null) {
       contentConfig = `() => import(${moduleSpecifier(content.configExecutionName)})`;
     }
+  }
+
+  let markdownPipeline = "null";
+  if (markdown !== null) {
+    const pluginModules = new Map<string, string>();
+    const plugins = (entries: readonly ProgramMarkdownPlugin[]): string =>
+      `[${entries.map((entry) => {
+        let local = pluginModules.get(entry.executionName);
+        if (local === undefined) {
+          local = `$$markdownPlugin${pluginModules.size}`;
+          pluginModules.set(entry.executionName, local);
+          imports.push(`import * as ${local} from ${moduleSpecifier(entry.executionName)};`);
+        }
+        const options = entry.options === undefined ? "" : `, options: ${JSON.stringify(entry.options)}`;
+        return `{ module: ${local}, exportName: ${JSON.stringify(entry.exportName)}${options} }`;
+      }).join(", ")}]`;
+    markdownPipeline = `{ module: $$content, remarkPlugins: ${plugins(markdown.remarkPlugins)}, ` +
+      `rehypePlugins: ${plugins(markdown.rehypePlugins)}, ` +
+      `remarkRehype: ${JSON.stringify(markdown.remarkRehype ?? null)}, gfm: ${JSON.stringify(markdown.gfm ?? null)} }`;
   }
 
   const installers: string[] = [];
@@ -781,6 +832,7 @@ function programModule(program: ExecutableProgram): string {
     pages: `{\n${pages.join("\n")}\n}`,
     contentConfig,
     content: contentModules,
+    markdown: markdownPipeline,
     envInstallers: `[${installers.join(", ")}]`,
     importMetaEnv: String(importMetaEnv),
   };

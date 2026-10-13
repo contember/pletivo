@@ -3,13 +3,19 @@
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { Glob } from "bun";
-import { ARTIFACT_VERSION, type ArtifactConfig, type PreparedSite } from "@pletivo/core/artifact";
+import {
+  ARTIFACT_VERSION,
+  type ArtifactConfig,
+  type ArtifactMarkdownConfig,
+  type PreparedSite,
+} from "@pletivo/core/artifact";
 import type { AstroConfig } from "@pletivo/core/astro-host/types";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readPrepareInputs } from "./inputs";
+import { freezeMarkdown } from "./markdown";
 import { compareStrings, isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
 import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
@@ -30,19 +36,24 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const projectConfig = await loadConfig(projectRoot);
   const srcDir = options.srcDir ?? projectConfig.srcDir;
   const host = await initAstroHost(projectRoot, "build");
+  const markdown = freezeMarkdown(host?.config.markdown);
   const fatal = [
     ...unsupportedProjectSemantics(projectConfig),
     ...unsupportedSemantics(host),
+    ...markdown.diagnostics,
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
   const sources = await readSources(projectRoot, srcDir);
-  const graph = await prepareModuleGraph(projectRoot, sources, freezeViteVirtualModule);
+  const pluginModules = markdown.config === null
+    ? []
+    : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
+  const graph = await prepareModuleGraph(projectRoot, sources, freezeViteVirtualModule, pluginModules);
 
   return {
     artifact: {
       version: ARTIFACT_VERSION,
-      config: freezeConfig(host?.config),
+      config: freezeConfig(host?.config, markdown.config),
       scripts: {
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: [...(host?.injectedPageScripts ?? [])],
@@ -142,8 +153,14 @@ function addProjectConfigDiagnostic(
   diagnostics.push({ source: "pletivo.config", hook, reason });
 }
 
-function freezeConfig(config: AstroConfig | undefined): ArtifactConfig {
-  return config?.site ? { site: config.site } : {};
+function freezeConfig(
+  config: AstroConfig | undefined,
+  markdown: ArtifactMarkdownConfig | null,
+): ArtifactConfig {
+  const frozen: ArtifactConfig = {};
+  if (config?.site) frozen.site = config.site;
+  if (markdown !== null) frozen.markdown = markdown;
+  return frozen;
 }
 
 function unsupportedSemantics(host: AstroHost | null): PrepareDiagnostic[] {
@@ -181,13 +198,6 @@ function unsupportedSemantics(host: AstroHost | null): PrepareDiagnostic[] {
     "redirects",
     `${Object.keys(redirects).length} configured redirect(s) cannot be carried`,
   );
-  const pluginCount = markdownPluginCount(host.config.markdown);
-  addConfigDiagnostic(
-    diagnostics,
-    pluginCount > 0,
-    "markdown",
-    `${pluginCount} remark/rehype plugin(s) are live functions and cannot be carried`,
-  );
   for (const route of host.injectedRoutes) {
     diagnostics.push({
       source: "injectRoute",
@@ -222,14 +232,3 @@ function addScriptDiagnostic(
     reason: `${count} script(s) use an injection stage the Workers host cannot preserve`,
   });
 }
-
-function markdownPluginCount(markdown: unknown): number {
-  if (typeof markdown !== "object" || markdown === null) return 0;
-  let count = 0;
-  for (const key of ["remarkPlugins", "rehypePlugins"]) {
-    const value: unknown = Reflect.get(markdown, key);
-    if (Array.isArray(value)) count += value.length;
-  }
-  return count;
-}
-
