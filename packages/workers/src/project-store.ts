@@ -5,7 +5,7 @@
  */
 
 import type { ProjectAssetsView } from "./asset-port.ts";
-import { projectAssetsView, type ProjectAssets } from "./content-files.ts";
+import { isProjectAssetsView, projectAssetsView, type ProjectAssets } from "./content-files.ts";
 
 /** Project sources as one revision sees them. A `ReadonlyMap<string, string>` satisfies it. */
 export interface ProjectFiles {
@@ -27,8 +27,9 @@ export interface ProjectSnapshot {
    */
   revision: string;
   /**
-   * A file's raw bytes, read now and not kept. Checked against `revision`; not bound by
-   * a store's size limit. Absent on stores that hold only text.
+   * A regular file's raw bytes, read now and not kept; `undefined` for a path the store
+   * does not list (a symlink, a directory, nothing). Checked against `revision`; not
+   * bound by a store's size limit. Absent on stores that hold only text.
    */
   readBytes?(path: string): Uint8Array<ArrayBuffer> | undefined;
 }
@@ -62,10 +63,18 @@ export function createMapProjectStore(
   revision = "static",
 ): ProjectStore {
   const snapshotFiles = new Map(files);
+  const ownedAssets = isProjectAssetsView(assets) ? null : new Map(assets);
+  const encoder = new TextEncoder();
   const snapshot: ProjectSnapshot = {
     files: snapshotFiles,
-    assets: projectAssetsView(assets),
+    assets: projectAssetsView(ownedAssets ?? assets),
     revision,
+    readBytes(path) {
+      const text = snapshotFiles.get(path);
+      if (text !== undefined) return encoder.encode(text);
+      const asset = ownedAssets?.get(path);
+      return asset instanceof Uint8Array ? new Uint8Array(asset) : undefined;
+    },
   };
   return { snapshot: () => Promise.resolve(snapshot) };
 }

@@ -75,6 +75,7 @@ export function createWorkspaceProjectStore(
   function list(): Listing {
     const text = new Map<string, string>();
     const binaryFiles = new Map<string, string>();
+    const regular = new Map<string, string>();
     const directories = [""];
 
     while (directories.length > 0) {
@@ -89,12 +90,13 @@ export function createWorkspaceProjectStore(
         if (!entry.isFile()) continue;
         const key = relative === "" ? entry.name : `${relative.slice(1)}/${entry.name}`;
         const path = absolute === "/" ? `/${entry.name}` : `${absolute}/${entry.name}`;
+        regular.set(key, path);
         if (maxFileBytes !== undefined && sizeOf(files, path) > maxFileBytes) continue;
         if (BINARY.has(extensionOf(entry.name))) binaryFiles.set(key, path);
         else text.set(key, path);
       }
     }
-    return { text, binary: binaryFiles };
+    return { text, binary: binaryFiles, regular };
   }
 
   function snapshotOf(listing: Listing, revision: string): ProjectSnapshot {
@@ -116,8 +118,11 @@ export function createWorkspaceProjectStore(
       assets: createLazyProjectAssetsView(listing.binary.keys(), readBytesOf),
       revision,
       readBytes: (key) => {
+        // Listed keys only: the walk skipped symlinks, so a read cannot leave the tree.
+        const path = listing.regular.get(key);
+        if (path === undefined) return undefined;
         assertCurrent();
-        return readBytes(files, root === "" ? `/${key}` : `${root}/${key}`) ?? undefined;
+        return readBytes(files, path) ?? undefined;
       },
     };
   }
@@ -140,6 +145,8 @@ export function createWorkspaceProjectStore(
 interface Listing {
   text: ReadonlyMap<string, string>;
   binary: ReadonlyMap<string, string>;
+  /** Every regular file, whatever its size: what `readBytes` may read. */
+  regular: ReadonlyMap<string, string>;
 }
 
 /** Text files of one snapshot, each read on its first `get` and kept for the snapshot. */

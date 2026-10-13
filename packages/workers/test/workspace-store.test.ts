@@ -162,6 +162,26 @@ describe("createWorkspaceProjectStore", () => {
     expect(workspace.reads).not.toContain("/large.png");
   });
 
+  test("reads the bytes of any listed regular file, and of nothing else", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/site/public/doc.pdf", Uint8Array.of(1, 2, 3, 0xff));
+    workspace.write("/site/public/large.bin", new Uint8Array(32));
+    workspace.write("/outside.txt", "not the project");
+    const store = createWorkspaceProjectStore(workspace, {
+      root: "/site",
+      revision: () => workspace.revision,
+      maxFileBytes: 10,
+    });
+
+    const snapshot = await store.snapshot();
+    expect(snapshot.readBytes?.("public/doc.pdf")).toEqual(Uint8Array.of(1, 2, 3, 0xff));
+    // Over the listing's size limit, yet still a listed regular file.
+    expect(snapshot.readBytes?.("public/large.bin")?.byteLength).toBe(32);
+    expect(snapshot.readBytes?.("../outside.txt")).toBeUndefined();
+    expect(snapshot.readBytes?.("public")).toBeUndefined();
+    expect(workspace.reads).not.toContain("/outside.txt");
+  });
+
   test("a snapshot reads no file until something asks", async () => {
     const workspace = new FakeWorkspace();
     workspace.write("/src/pages/index.astro", "<p>page</p>");

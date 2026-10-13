@@ -233,7 +233,7 @@ export function projectAssetsView(
   return isProjectAssetsView(assets) ? assets : createProjectAssetsView(assets);
 }
 
-function isProjectAssetsView(
+export function isProjectAssetsView(
   assets: ProjectAssets | ProjectAssetsView,
 ): assets is ProjectAssetsView {
   return "info" in assets && "resolveOutput" in assets;

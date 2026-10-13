@@ -24,6 +24,7 @@ import {
 } from "@pletivo/core/artifact";
 import { loadProjectArtifact, type ProjectArtifact } from "./artifact.ts";
 import { browserModule, BrowserModuleError, isBrowserModulePath } from "./browser-modules.ts";
+import { publicFileResponse } from "./public-files.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
 import {
@@ -67,7 +68,8 @@ export interface ProjectHostOptions
 
 export interface ProjectHost {
   /**
-   * Serve one request: a generated asset, an image, or a rendered page. Throws nothing:
+   * Serve one request, first match wins: a generated asset, a processed script and what
+   * it imports, a `public/` file, an image output, then a rendered page. Throws nothing:
    * failures become status codes. Call `render()` to handle them yourself.
    */
   fetch(request: Request): Promise<Response>;
@@ -215,6 +217,10 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       try {
         return await withSnapshot(async (snapshot) => {
           if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url.pathname, snapshot);
+
+          // Before routing, as Astro's dev server does: a public file shadows a page.
+          const publicFile = publicFileResponse(request, url.pathname, snapshot, projectRoot(renderOptions));
+          if (publicFile !== null) return publicFile;
 
           // `/_astro/<name>.<hash>.<ext>` and the `/cdn-cgi/image/` form a page links to.
           const image = await snapshot.assets.resolveOutput(url.pathname);

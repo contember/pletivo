@@ -448,6 +448,68 @@ describe("createProjectHost", () => {
     },
   );
 
+  describe("public files", () => {
+    const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x80, 0x0a]);
+
+    function publicHost() {
+      const workspace = new FakeWorkspace();
+      workspace.write("/site/src/pages/index.astro", PAGE);
+      workspace.write("/site/src/pages/about.astro", PAGE);
+      workspace.write("/site/public/assets/brochure.pdf", PDF);
+      workspace.write("/site/public/favicon.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+      workspace.write("/site/public/about", "a public file named like a page");
+      workspace.write("/site/public/.env", "SECRET=1");
+      workspace.write("/site/public/fonts/large.woff2", new Uint8Array(4096).fill(7));
+      return createProjectHost({
+        store: createWorkspaceProjectStore(workspace, {
+          root: "/site",
+          revision: () => workspace.revision,
+          maxFileBytes: 1024,
+        }),
+        loader,
+        compiler,
+      });
+    }
+
+    test("serves the exact bytes with the file's type", async () => {
+      const response = await publicHost().fetch(new Request("https://example.test/assets/brochure.pdf"));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("application/pdf");
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(PDF);
+
+      const svg = await publicHost().fetch(new Request("https://example.test/favicon.svg"));
+      expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+      expect(await svg.text()).toContain("<svg");
+    });
+
+    test("serves a file over the listing's size limit", async () => {
+      const response = await publicHost().fetch(new Request("https://example.test/fonts/large.woff2"));
+      expect(response.headers.get("content-type")).toBe("font/woff2");
+      expect((await response.arrayBuffer()).byteLength).toBe(4096);
+    });
+
+    test("answers HEAD with the headers and no body", async () => {
+      const response = await publicHost().fetch(new Request("https://example.test/assets/brochure.pdf", { method: "HEAD" }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-length")).toBe(String(PDF.byteLength));
+      expect(await response.text()).toBe("");
+    });
+
+    test("takes precedence over a page at the same path", async () => {
+      const response = await publicHost().fetch(new Request("https://example.test/about"));
+      expect(await response.text()).toBe("a public file named like a page");
+      expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    });
+
+    test("serves nothing outside public/ and no dotfile", async () => {
+      const host = publicHost();
+      for (const path of ["/..%2Fsrc%2Fpages%2Findex.astro", "/.env", "/%2e%2e/src/pages/index.astro", "/assets/"]) {
+        const response = await host.fetch(new Request(`https://example.test${path}`));
+        expect([path, response.status]).toEqual([path, 404]);
+      }
+    });
+  });
+
   describe("processed scripts", () => {
     const PAGE_WITH_SCRIPT = `---
 import "../styles/global.css";
