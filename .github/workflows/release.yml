@@ -79,15 +79,24 @@ jobs:
           --tarball "${{ steps.package.outputs.workers }}"
 
       # Dependency order: each package's exact-version @pletivo/* dependencies are
-      # already on the registry when it lands.
-      - name: Publish @pletivo/runtime
-        run: npm publish "${{ steps.package.outputs.runtime }}" --provenance --access public
-
-      - name: Publish @pletivo/core
-        run: npm publish "${{ steps.package.outputs.core }}" --provenance --access public
-
-      - name: Publish @pletivo/workers
-        run: npm publish "${{ steps.package.outputs.workers }}" --provenance --access public
-
-      - name: Publish pletivo
-        run: npm publish "${{ steps.package.outputs.pletivo }}" --provenance --access public
+      # already on the registry when it lands. A version already on the registry is
+      # skipped, so a release that failed partway can be re-run.
+      - name: Publish
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          RUNTIME_TARBALL: ${{ steps.package.outputs.runtime }}
+          CORE_TARBALL: ${{ steps.package.outputs.core }}
+          WORKERS_TARBALL: ${{ steps.package.outputs.workers }}
+          PLETIVO_TARBALL: ${{ steps.package.outputs.pletivo }}
+        run: |
+          publish() {
+            if npm view "$1@$VERSION" version > /dev/null 2>&1; then
+              echo "$1@$VERSION is already on the registry, skipping"
+            else
+              npm publish "$2" --provenance --access public
+            fi
+          }
+          publish @pletivo/runtime "$RUNTIME_TARBALL"
+          publish @pletivo/core "$CORE_TARBALL"
+          publish @pletivo/workers "$WORKERS_TARBALL"
+          publish pletivo "$PLETIVO_TARBALL"
