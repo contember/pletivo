@@ -4,11 +4,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  LIBRARY_PACKAGES,
   actualModuleSpecifiers,
   assertOnlyHandledDependencyFields,
   mergeDependencies,
   packagePletivo,
+  packageRelease,
+  pinWorkspaceDependencies,
   rewriteInternalSpecifiers,
+  stageLibraryPackage,
   stagePackage,
   validatePackageVersion,
 } from "../../scripts/package-pletivo";
@@ -203,5 +207,87 @@ const runtime = require("@pletivo/runtime/legacy");
       const separator = entry.indexOf("\t");
       return separator !== -1 && entry.slice(0, separator).endsWith(".js");
     })).toBe(false);
+  }, 30_000);
+});
+
+function libraryPackage(name: string) {
+  const library = LIBRARY_PACKAGES.find((candidate) => candidate.name === name);
+  if (library === undefined) throw new Error(`${name} is not a library package`);
+  return library;
+}
+
+describe("library package distribution", () => {
+  test("pins workspace siblings to the release version and keeps public ranges", () => {
+    expect(pinWorkspaceDependencies("fixture", {
+      "@pletivo/runtime": "workspace:*",
+      acorn: "^8.16.0",
+    }, "4.5.6")).toEqual({ "@pletivo/runtime": "4.5.6", acorn: "^8.16.0" });
+  });
+
+  test("refuses a sibling the release does not publish or a non-workspace sibling range", () => {
+    expect(() => pinWorkspaceDependencies("fixture", { "@pletivo/astro-jsx-pages": "workspace:*" }, "1.0.0"))
+      .toThrow("which this release does not publish");
+    expect(() => pinWorkspaceDependencies("fixture", { "@pletivo/core": "^0.1.0" }, "1.0.0"))
+      .toThrow("only released @pletivo/* siblings use workspace:*");
+    expect(() => pinWorkspaceDependencies("fixture", { preact: "workspace:*" }, "1.0.0"))
+      .toThrow("only released @pletivo/* siblings use workspace:*");
+  });
+
+  test("stages @pletivo/workers with its source, README and pinned siblings", async () => {
+    const stage = path.join(temporary, "stage-workers");
+    await stageLibraryPackage(libraryPackage("@pletivo/workers"), stage, "7.6.5");
+    const manifest = await readObject(path.join(stage, "package.json"));
+    expect(Reflect.get(manifest, "version")).toBe("7.6.5");
+    expect(Reflect.get(manifest, "exports")).toEqual({ "./*": "./src/*.ts" });
+    expect(Reflect.get(manifest, "files")).toEqual(["src", "README.md"]);
+    // The source manifest's prepublishOnly guard must not follow the tarball.
+    expect(Reflect.get(manifest, "scripts")).toBeUndefined();
+    expect(Reflect.get(manifest, "devDependencies")).toBeUndefined();
+    expect(Reflect.get(manifest, "dependencies")).toMatchObject({
+      "@pletivo/core": "7.6.5",
+      "@pletivo/runtime": "7.6.5",
+    });
+    expect(JSON.stringify(manifest)).not.toContain("workspace:");
+    await fs.access(path.join(stage, "README.md"));
+    await fs.access(path.join(stage, "src/project-host.ts"));
+    await fs.access(path.join(stage, "src/vendor/wasm_exec.js"));
+    await expect(fs.access(path.join(stage, "test"))).rejects.toThrow();
+  });
+
+  test("refuses to stage a bare import the manifest does not declare", async () => {
+    const directory = path.join(temporary, "undeclared-import");
+    await fs.mkdir(path.join(directory, "src"), { recursive: true });
+    await fs.writeFile(path.join(directory, "package.json"), JSON.stringify({
+      name: "@pletivo/runtime",
+      files: ["src"],
+      exports: { "./*": "./src/*.ts" },
+      dependencies: { acorn: "^8" },
+    }));
+    await fs.writeFile(
+      path.join(directory, "src/index.ts"),
+      'import "acorn";\nimport "node:path";\nimport "path";\nimport "./local.ts";\nimport "sucrase/dist/x";\n',
+    );
+    await expect(stageLibraryPackage(
+      { key: "runtime", name: "@pletivo/runtime", directory },
+      path.join(temporary, "stage-undeclared"),
+      "1.0.0",
+    )).rejects.toThrow('src/index.ts imports "sucrase/dist/x"');
+  });
+
+  test("packs every release tarball in dependency order", async () => {
+    const output = path.join(temporary, "release");
+    const tarballs = await packageRelease({ version: "9.8.7", output });
+    expect(tarballs.map(({ key, name }) => [key, name])).toEqual([
+      ["runtime", "@pletivo/runtime"],
+      ["core", "@pletivo/core"],
+      ["workers", "@pletivo/workers"],
+      ["pletivo", "pletivo"],
+    ]);
+    expect(tarballs.map(({ tarball }) => path.relative(output, tarball))).toEqual([
+      "pletivo-runtime-9.8.7.tgz",
+      "pletivo-core-9.8.7.tgz",
+      "pletivo-workers-9.8.7.tgz",
+      "pletivo-9.8.7.tgz",
+    ]);
   }, 30_000);
 });

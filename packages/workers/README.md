@@ -1,0 +1,90 @@
+# @pletivo/workers
+
+The Cloudflare Worker host for [Pletivo](https://github.com/contember/pletivo). A host
+Worker hands it a project's source files; it compiles them (`.astro`, TSX, Markdown, CSS,
+Tailwind v4) into a module graph and renders pages in a dynamic isolate created through a
+[Worker Loader](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/)
+binding. No build step and no file system: the project can live in a Durable Object and
+change between requests.
+
+```bash
+npm install @pletivo/workers
+```
+
+It depends on `@pletivo/core` and `@pletivo/runtime`, which are released in lockstep with
+it under the same version.
+
+## Consuming it
+
+The package ships TypeScript source, not a build. `exports` maps every module under
+`src/` (`@pletivo/workers/project-host`, `@pletivo/workers/render`, …) to its `.ts` file,
+and **your Worker's bundler compiles it** together with your own code. That is deliberate:
+only the host Worker's bundler can embed `@astrojs/compiler`'s `astro.wasm` and
+Tailwind's stylesheets.
+
+Your `wrangler.jsonc` needs:
+
+```jsonc
+{
+  // The render isolate's Astro shim imports `node:async_hooks`.
+  "compatibility_flags": ["nodejs_compat"],
+  // The binding that creates the render isolates.
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "rules": [
+    // `@astrojs/compiler/astro.wasm` must arrive as a WebAssembly.Module:
+    // workerd forbids `WebAssembly.compile()` at run time.
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
+    // Only when projects use Tailwind: its stylesheets, embedded as text.
+    { "type": "Text", "globs": ["**/*.css"], "fallthrough": true }
+  ]
+}
+```
+
+`tailwindcss` is a peer dependency. The host imports it, so your bundler needs it
+installed even when no project uses Tailwind. Pass its four stylesheets as `tailwind` to
+`createProjectHost` only if your projects use Tailwind; without them, a project that
+imports Tailwind fails with `TailwindNotConfiguredError`.
+
+The smallest host:
+
+```ts
+import { createProjectHost } from "@pletivo/workers/project-host";
+import { createMapProjectStore } from "@pletivo/workers/project-store";
+import type { WorkerLoaderBinding } from "@pletivo/workers/render";
+
+interface Env {
+  LOADER: WorkerLoaderBinding;
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const host = createProjectHost({
+      store: createMapProjectStore(new Map([["src/pages/index.astro", "<h1>Hello</h1>"]])),
+      loader: env.LOADER,
+      compatibilityDate: "2026-01-01",
+      compatibilityFlags: ["nodejs_compat"],
+      outbound: { kind: "blocked" },
+    });
+    const page = await host.render(new URL(request.url).pathname);
+    return new Response(page.html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  },
+};
+```
+
+Your TypeScript program checks this source as part of your own code. It needs
+`@cloudflare/workers-types` and `@types/node` in `types`, `"moduleResolution": "bundler"`,
+and `"allowImportingTsExtensions": true` (with `noEmit`), because the modules import each
+other with `.ts` extensions.
+
+Two complete hosts live in the repository:
+
+- [`example/`](https://github.com/contember/pletivo/tree/main/packages/workers/example) — a
+  stateless preview that renders a project posted as JSON.
+- [`example-playground/`](https://github.com/contember/pletivo/tree/main/packages/workers/example-playground)
+  — a live workspace in a Durable Object, with content collections and an editor. This is
+  the reference for a production binding topology.
+
+## Versioning
+
+The modules are the API, and they are pre-1.0: a minor release can change them. Pin the
+version and upgrade `@pletivo/workers`, `@pletivo/core` and `@pletivo/runtime` together.

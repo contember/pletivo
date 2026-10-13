@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import fs from "node:fs/promises";
+import { builtinModules } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import * as ts from "typescript";
@@ -9,6 +10,7 @@ const REPO_ROOT = path.resolve(import.meta.dir, "..");
 const PLETIVO_DIR = path.join(REPO_ROOT, "packages/pletivo");
 const CORE_DIR = path.join(REPO_ROOT, "packages/core");
 const RUNTIME_DIR = path.join(REPO_ROOT, "packages/runtime");
+const WORKERS_DIR = path.join(REPO_ROOT, "packages/workers");
 const INTERNAL_PREFIXES = ["@pletivo/core", "@pletivo/runtime"];
 
 export interface PackagePletivoOptions {
@@ -16,14 +18,56 @@ export interface PackagePletivoOptions {
   output: string;
 }
 
+export interface LibraryPackage {
+  /** The release workflow's step output key for this tarball. */
+  key: string;
+  name: string;
+  directory: string;
+}
+
+/**
+ * Published as they are in the workspace, source and all, in dependency order:
+ * each one's `@pletivo/*` dependencies come earlier in the list.
+ */
+export const LIBRARY_PACKAGES: readonly LibraryPackage[] = [
+  { key: "runtime", name: "@pletivo/runtime", directory: RUNTIME_DIR },
+  { key: "core", name: "@pletivo/core", directory: CORE_DIR },
+  { key: "workers", name: "@pletivo/workers", directory: WORKERS_DIR },
+];
+
+export interface ReleaseTarball {
+  key: string;
+  name: string;
+  tarball: string;
+}
+
+/** Every release tarball, in the order they can be published without a dangling dependency. */
+export async function packageRelease(options: PackagePletivoOptions): Promise<ReleaseTarball[]> {
+  validatePackageVersion(options.version);
+  const output = path.resolve(options.output);
+  await ensureEmptyOutput(output);
+  const tarballs: ReleaseTarball[] = [];
+  for (const library of LIBRARY_PACKAGES) {
+    const tarball = await packStaged(output, (stage) => stageLibraryPackage(library, stage, options.version));
+    tarballs.push({ key: library.key, name: library.name, tarball });
+  }
+  const pletivo = await packStaged(output, (stage) => stagePackage(stage, options.version));
+  tarballs.push({ key: "pletivo", name: "pletivo", tarball: pletivo });
+  return tarballs;
+}
+
 export async function packagePletivo(options: PackagePletivoOptions): Promise<string> {
   validatePackageVersion(options.version);
   const output = path.resolve(options.output);
   await ensureEmptyOutput(output);
+  return packStaged(output, (stage) => stagePackage(stage, options.version));
+}
+
+async function packStaged(output: string, stageInto: (stage: string) => Promise<void>): Promise<string> {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-package-"));
   const stage = path.join(temporary, "stage");
   try {
-    await stagePackage(stage, options.version);
+    await stageInto(stage);
     const packed = Bun.spawnSync(
       ["npm", "pack", "--json", "--pack-destination", output, stage],
       { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" },
@@ -63,6 +107,108 @@ export async function stagePackage(stage: string, version: string): Promise<void
   if (manifestText.includes("workspace:*")) {
     throw new Error("staged package.json still contains workspace:*");
   }
+}
+
+/** The fields a library tarball carries; scripts and devDependencies stay behind. */
+const LIBRARY_MANIFEST_FIELDS = [
+  "description", "type", "license", "repository", "homepage", "bugs",
+  "files", "exports", "peerDependencies", "peerDependenciesMeta", "engines", "publishConfig",
+];
+
+const LIBRARY_DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "peerDependenciesMeta"];
+
+export async function stageLibraryPackage(library: LibraryPackage, stage: string, version: string): Promise<void> {
+  validatePackageVersion(version);
+  const source = await readJson(path.join(library.directory, "package.json"));
+  if (Reflect.get(source, "name") !== library.name) {
+    throw new Error(`${library.directory}/package.json is not ${library.name}`);
+  }
+  assertOnlyHandledDependencyFields(library.name, source, LIBRARY_DEPENDENCY_FIELDS);
+  const files: unknown = Reflect.get(source, "files");
+  if (!Array.isArray(files) || files.length === 0 || !files.every((entry) => typeof entry === "string")) {
+    throw new Error(`${library.name} package.json must declare a non-empty files array`);
+  }
+
+  await fs.mkdir(stage, { recursive: true });
+  for (const entry of files) {
+    await fs.cp(path.join(library.directory, entry), path.join(stage, entry), { recursive: true });
+  }
+
+  const manifest: Record<string, unknown> = { name: library.name, version };
+  for (const field of LIBRARY_MANIFEST_FIELDS) {
+    const value = Reflect.get(source, field);
+    if (value !== undefined) manifest[field] = value;
+  }
+  manifest.dependencies = sortedRecord(
+    pinWorkspaceDependencies(
+      library.name,
+      dependencyMap(Reflect.get(source, "dependencies"), `${library.name} dependencies`),
+      version,
+    ),
+  );
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+  if (manifestText.includes("workspace:")) {
+    throw new Error(`staged ${library.name} package.json still contains a workspace: range`);
+  }
+  await fs.writeFile(path.join(stage, "package.json"), manifestText);
+  await assertImportsDeclared(library.name, stage, manifest);
+}
+
+/**
+ * Lockstep release: a sibling is pinned to the exact version being published,
+ * and only a sibling that this release publishes may be named at all.
+ */
+export function pinWorkspaceDependencies(
+  label: string,
+  dependencies: Record<string, string>,
+  version: string,
+): Record<string, string> {
+  const released = new Set(LIBRARY_PACKAGES.map((library) => library.name));
+  const pinned: Record<string, string> = {};
+  for (const [name, range] of Object.entries(dependencies)) {
+    const internal = name.startsWith("@pletivo/");
+    if (internal !== range.startsWith("workspace:")) {
+      throw new Error(`${label} depends on ${name}@${range}; only released @pletivo/* siblings use workspace:*`);
+    }
+    if (!internal) {
+      pinned[name] = range;
+      continue;
+    }
+    if (range !== "workspace:*" || !released.has(name)) {
+      throw new Error(`${label} depends on ${name}@${range}, which this release does not publish`);
+    }
+    pinned[name] = version;
+  }
+  return pinned;
+}
+
+/**
+ * A bare import the manifest does not declare still resolves in the workspace,
+ * where everything is hoisted, and fails only in a consumer's install.
+ */
+async function assertImportsDeclared(label: string, stage: string, manifest: Record<string, unknown>): Promise<void> {
+  const declared = new Set([
+    ...Object.keys(dependencyMap(manifest.dependencies, `${label} dependencies`)),
+    ...Object.keys(dependencyMap(manifest.peerDependencies, `${label} peerDependencies`)),
+  ]);
+  const violations: string[] = [];
+  for (const file of await sourceFiles(stage)) {
+    const source = await fs.readFile(file, "utf8");
+    for (const specifier of actualModuleSpecifiers(file, source)) {
+      if (specifier.startsWith(".") || specifier.startsWith("node:") || builtinModules.includes(specifier)) continue;
+      if (!declared.has(packageName(specifier))) {
+        violations.push(`${path.relative(stage, file)} imports ${JSON.stringify(specifier)}`);
+      }
+    }
+  }
+  if (violations.length > 0) {
+    throw new Error(`${label} imports packages its manifest does not declare:\n${violations.join("\n")}`);
+  }
+}
+
+function packageName(specifier: string): string {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
 async function stagedManifest(version: string): Promise<Record<string, unknown>> {
@@ -224,7 +370,7 @@ function internalAlias(specifier: string): string | null {
   return null;
 }
 
-async function sourceFiles(root: string): Promise<string[]> {
+export async function sourceFiles(root: string): Promise<string[]> {
   const files: string[] = [];
   const directories = [root];
   while (directories.length > 0) {
@@ -246,7 +392,7 @@ function scriptKind(file: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
-async function readJson(file: string): Promise<object> {
+export async function readJson(file: string): Promise<object> {
   const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`${file} does not contain a JSON object`);
@@ -276,9 +422,13 @@ function dependencyMap(value: unknown, label: string): Record<string, string> {
  */
 const HANDLED_DEPENDENCY_FIELDS = ["dependencies", "devDependencies"];
 
-export function assertOnlyHandledDependencyFields(label: string, manifest: object): void {
+export function assertOnlyHandledDependencyFields(
+  label: string,
+  manifest: object,
+  handled: readonly string[] = HANDLED_DEPENDENCY_FIELDS,
+): void {
   for (const [field, value] of Object.entries(manifest)) {
-    if (!/dependencies/i.test(field) || HANDLED_DEPENDENCY_FIELDS.includes(field)) continue;
+    if (!/dependencies/i.test(field) || handled.includes(field)) continue;
     if (typeof value !== "object" || value === null || Object.keys(value).length === 0) continue;
     throw new Error(
       `${label} declares ${field}, which the staged manifest cannot carry — teach stagedManifest() to merge it`,
@@ -350,6 +500,8 @@ function commandLineOptions(args: readonly string[]): PackagePletivoOptions {
 }
 
 if (import.meta.main) {
-  const tarball = await packagePletivo(commandLineOptions(process.argv.slice(2)));
-  console.log(tarball);
+  // `key=path` lines, so the release workflow can append stdout to $GITHUB_OUTPUT.
+  for (const { key, tarball } of await packageRelease(commandLineOptions(process.argv.slice(2)))) {
+    console.log(`${key}=${tarball}`);
+  }
 }

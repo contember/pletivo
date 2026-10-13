@@ -1,6 +1,6 @@
 {
   "name": "@pletivo/runtime",
-  "private": true,
+  "description": "Pletivo render-time runtime: JSX SSR runtime, Astro shim, islands and hydration. Ships TypeScript source.",
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -9,8 +9,19 @@
     "url": "git+https://github.com/contember/pletivo.git",
     "directory": "packages/runtime"
   },
+  "homepage": "https://github.com/contember/pletivo",
+  "bugs": "https://github.com/contember/pletivo/issues",
+  "publishConfig": {
+    "access": "public"
+  },
   "//": "No build step, by design. `exports` points at source. A dist/ build would give modules that hold process-global state (base, the island registry, the render-tracking store) two module records when one importer resolves through exports and another through a relative path.",
   "exports": {
     "./*": "./src/*.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "prepublishOnly": "echo 'publish the staged tarball from scripts/package-pletivo.ts, not this directory' >&2 && exit 1"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@pletivo/workers",
-  "private": true,
+  "description": "Pletivo's Cloudflare Worker host: compiles and renders a project inside a Worker Loader isolate. Ships TypeScript source for the host Worker to bundle.",
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -9,11 +9,21 @@
     "url": "git+https://github.com/contember/pletivo.git",
     "directory": "packages/workers"
   },
-  "//": "No build step, by design \u2014 see the note in @pletivo/runtime. The host worker's bundler is the only thing that can embed astro.wasm and Tailwind's stylesheets, so this package ships source and is bundled by the app.",
+  "homepage": "https://github.com/contember/pletivo",
+  "bugs": "https://github.com/contember/pletivo/issues",
+  "publishConfig": {
+    "access": "public"
+  },
+  "//": "No build step, by design — see the note in @pletivo/runtime. The host worker's bundler is the only thing that can embed astro.wasm and Tailwind's stylesheets, so this package ships source and is bundled by the app.",
   "exports": {
     "./*": "./src/*.ts"
   },
+  "files": [
+    "src",
+    "README.md"
+  ],
   "scripts": {
+    "prepublishOnly": "echo 'publish the staged tarball from scripts/package-pletivo.ts, not this directory' >&2 && exit 1",
     "test:workerd": "bun test/workerd/run.ts"
   },
   "dependencies": {
@@ -25,11 +35,6 @@
   },
   "peerDependencies": {
     "tailwindcss": "^4"
-  },
-  "peerDependenciesMeta": {
-    "tailwindcss": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260810.1",
