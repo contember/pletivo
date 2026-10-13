@@ -24,6 +24,7 @@ import {
   GeneratedAssetRetentionError,
   ProjectArtifactError,
 } from "../src/project-host.ts";
+import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
 import { createMapProjectStore, type ProjectStore } from "../src/project-store.ts";
 import {
   createWorkspaceProjectStore,
@@ -351,6 +352,45 @@ describe("createProjectHost", () => {
     const response = await host.fetch(new Request("https://example.test/"));
     expect(response.status).toBe(500);
     expect(await response.text()).toContain("GeneratedAssetRetentionError");
+  });
+
+  describe("a durable generated asset store", () => {
+    const files = new Map([
+      [
+        "src/pages/index.astro",
+        `---\nimport script from "../scripts/large.js?url";\n---\n<script src={script}></script>\n`,
+      ],
+      ["src/scripts/large.js", "export const payload = 'larger than the cache';\n"],
+    ]);
+
+    function storeHost(store: MemoryGeneratedAssetStore, cache = { maxEntries: 2, maxBytes: 4 }) {
+      return createProjectHost({
+        store: createMapProjectStore(files),
+        loader,
+        compiler,
+        generatedAssetCache: cache,
+        generatedAssetStore: store,
+      });
+    }
+
+    test("holds what the memory cache cannot, before the page returns", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const page = await storeHost(store).render("/");
+      expect(page.assets).toHaveLength(1);
+      expect(store.size).toBe(1);
+    });
+
+    test("serves a host that never rendered the page", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const [asset] = (await storeHost(store).render("/")).assets;
+      if (asset === undefined) throw new Error("no generated asset");
+
+      const cold = storeHost(store, { maxEntries: 32, maxBytes: 1024 * 1024 });
+      const response = await cold.fetch(new Request(`https://example.test${asset.path}`));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(await response.text()).toBe(asset.body);
+    });
   });
 
   test("inlines only CSS reached from the page import graph", async () => {

@@ -27,6 +27,7 @@ import { browserModule, BrowserModuleError, isBrowserModulePath } from "./browse
 import { publicFileResponse } from "./public-files.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
+import type { GeneratedAssetStore } from "./generated-asset-store.ts";
 import {
   WorkspaceSnapshotChangedError,
   type ProjectSnapshot,
@@ -39,6 +40,7 @@ import {
   projectRoot,
   renderPage,
   type ProjectOptions,
+  type RenderedAsset,
   type RenderedPage,
   type RoutePath,
 } from "./render.ts";
@@ -62,8 +64,14 @@ export interface ProjectHostOptions
   artifactPath?: string;
   /** `pletivo prepare`'s output as a value, validated once when the host is created. */
   artifact?: unknown;
-  /** How many generated (content-hashed) files to keep for the browser's follow-up GET. */
+  /** How many generated (content-hashed) files to keep in memory for the browser's follow-up GET. */
   generatedAssetCache?: { maxEntries: number; maxBytes: number };
+  /**
+   * Durable storage for generated files, written before a page's HTML is returned and
+   * read when the in-memory cache misses. Without it, a file the cache cannot retain
+   * fails the page (`GeneratedAssetRetentionError`).
+   */
+  generatedAssetStore?: GeneratedAssetStore;
 }
 
 export interface ProjectHost {
@@ -83,6 +91,9 @@ export interface ProjectHost {
 
 const DEFAULT_GENERATED_ASSET_CACHE = { maxEntries: 32, maxBytes: 4 * 1024 * 1024 };
 
+/** Where `?url` imports are emitted; see `urlAssetHref` in compile/resolve.ts. */
+const GENERATED_ASSET_PREFIX = "/_astro/";
+
 /** Content-hashed names, so nothing served under one can go stale. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
@@ -94,6 +105,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     artifactPath,
     artifact: artifactValue,
     generatedAssetCache,
+    generatedAssetStore,
     ...renderOptions
   } = options;
   const directArtifact =
@@ -169,11 +181,24 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     const project = projectOptions(snapshot);
     const stale = await staleArtifactInputs(snapshot, project.artifact);
     const page = await renderPage({ ...project, pathname, site });
+    if (generatedAssetStore !== undefined && page.assets.length > 0) {
+      await generatedAssetStore.put(page.assets);
+    }
     const rejected = served.putAll(page.assets);
-    if (rejected.length > 0) {
+    if (rejected.length > 0 && generatedAssetStore === undefined) {
       throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
     }
     return { ...page, staleArtifactInputs: stale };
+  }
+
+  /** The memory cache, then the durable store for a path only a generated asset can have. */
+  async function generatedAsset(pathname: string): Promise<RenderedAsset | null> {
+    const cached = served.get(pathname);
+    if (cached !== undefined) return cached;
+    if (generatedAssetStore === undefined || !pathname.startsWith(GENERATED_ASSET_PREFIX)) return null;
+    const stored = await generatedAssetStore.get(pathname);
+    if (stored !== null) served.putAll([stored]);
+    return stored;
   }
 
   async function serveBrowserModule(pathname: string, snapshot: ProjectSnapshot): Promise<Response> {
@@ -207,14 +232,14 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
 
-      const asset = served.get(url.pathname);
-      if (asset) {
-        return new Response(asset.body, {
-          headers: { "content-type": asset.contentType, "cache-control": IMMUTABLE },
-        });
-      }
-
       try {
+        const asset = await generatedAsset(url.pathname);
+        if (asset !== null) {
+          return new Response(asset.body, {
+            headers: { "content-type": asset.contentType, "cache-control": IMMUTABLE },
+          });
+        }
+
         return await withSnapshot(async (snapshot) => {
           if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url.pathname, snapshot);
 
