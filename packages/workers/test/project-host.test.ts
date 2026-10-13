@@ -23,6 +23,7 @@ import {
   createProjectHost,
   GeneratedAssetRetentionError,
   ProjectArtifactError,
+  type RenderEvent,
 } from "../src/project-host.ts";
 import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
 import { createMapProjectStore, type ProjectStore } from "../src/project-store.ts";
@@ -487,6 +488,29 @@ describe("createProjectHost", () => {
       expect(html).not.toContain("another Tailwind release");
     },
   );
+
+  test("reports each render's console output to onRender", async () => {
+    const events: RenderEvent[] = [];
+    const host = createProjectHost({
+      store: createMapProjectStore(
+        new Map([
+          ["src/pages/index.astro", `---\nconsole.info("rendering home");\n---\n<p>home</p>\n`],
+          ["src/pages/broken.astro", `---\nconsole.warn("about to throw");\nthrow new Error("broken page");\n---\n`],
+        ]),
+      ),
+      loader,
+      compiler,
+      onRender: (event) => events.push(event),
+    });
+
+    expect((await host.fetch(new Request("https://example.test/"))).status).toBe(200);
+    expect((await host.fetch(new Request("https://example.test/broken"))).status).toBe(500);
+
+    expect(events.map((event) => [event.pathname, event.file, event.logs.logs, event.error !== undefined])).toEqual([
+      ["/", "src/pages/index.astro", [{ level: "info", message: "rendering home" }], false],
+      ["/broken", undefined, [{ level: "warn", message: "about to throw" }], true],
+    ]);
+  });
 
   describe("routing config", () => {
     const LOCALE_PAGE = `---\nimport { getRelativeLocaleUrl } from "astro:i18n";\n---\n<p>locale={Astro.currentLocale} link={getRelativeLocaleUrl("es", "about")}</p>\n`;

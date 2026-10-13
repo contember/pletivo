@@ -11,3 +11,4 @@ export * from "@pletivo/runtime/astro-shim";
 export { jsx, jsxs, jsxDEV, Fragment as jsxFragment } from "@pletivo/runtime/jsx-runtime";
 export { createPaginate } from "@pletivo/core/paginate";
 export { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
+export { runWithLogCapture } from "../src/log-capture.ts";

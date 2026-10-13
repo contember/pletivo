@@ -34,7 +34,9 @@ import {
   type ProjectSnapshot,
   type ProjectStore,
 } from "./project-store.ts";
+import type { IsolateLogs } from "./isolate-protocol.ts";
 import {
+  IsolateExecutionError,
   RouteNotFoundError,
   UnsupportedRouteError,
   projectPaths,
@@ -74,6 +76,21 @@ export interface ProjectHostOptions
    * fails the page (`GeneratedAssetRetentionError`).
    */
   generatedAssetStore?: GeneratedAssetStore;
+  /**
+   * Called once per page `fetch` rendered or failed to render, with what the page's code
+   * logged in the isolate. For a host's diagnostics; it must not throw.
+   */
+  onRender?: (event: RenderEvent) => void;
+}
+
+/** One page render `fetch` served, for diagnostics. */
+export interface RenderEvent {
+  pathname: string;
+  /** The page file, when a route matched and rendered. */
+  file?: string;
+  logs: IsolateLogs;
+  /** Why the render failed; absent on success. */
+  error?: unknown;
 }
 
 export interface ProjectHost {
@@ -108,6 +125,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     artifact: artifactValue,
     generatedAssetCache,
     generatedAssetStore,
+    onRender,
     ...renderOptions
   } = options;
   const directArtifact =
@@ -271,7 +289,18 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
           );
           if (redirect !== null) return redirectResponse(redirect.location, redirect.status);
 
-          const page = await renderSnapshot(url.pathname, snapshot, url.search);
+          let page: RenderedPage;
+          try {
+            page = await renderSnapshot(url.pathname, snapshot, url.search);
+          } catch (error) {
+            // A moved workspace is retried by `withSnapshot`; the retry reports.
+            if (!(error instanceof WorkspaceSnapshotChangedError)) {
+              const logs = error instanceof IsolateExecutionError ? error.logs : { logs: [], droppedLogs: 0 };
+              onRender?.({ pathname: url.pathname, logs, error });
+            }
+            throw error;
+          }
+          onRender?.({ pathname: url.pathname, file: page.file, logs: page.logs });
           const headers = new Headers({
             "content-type": "text/html; charset=utf-8",
             "x-pletivo-page": page.file,

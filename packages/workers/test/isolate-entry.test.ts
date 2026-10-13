@@ -11,9 +11,10 @@ import {
   type PageModule,
 } from "../src/isolate-entry.ts";
 import {
-  parseIsolateResponse,
+  parseIsolateReply,
   type IsolateParamPair,
   type IsolateRequest,
+  type IsolateReply,
   type IsolateResponse,
 } from "../src/isolate-protocol.ts";
 import type { ContentBinding } from "../src/content-files.ts";
@@ -71,22 +72,22 @@ async function callWith(
   entryProgram: IsolateProgram,
   body: IsolateRequest,
   env: IsolateEnv = {},
-): Promise<IsolateResponse> {
+): Promise<IsolateReply> {
   const request = new Request("http://pletivo.invalid/render", {
     method: "POST",
     body: JSON.stringify(body),
   });
   const response = await createIsolateEntry(entryProgram).fetch(request, env);
   expect(response.ok).toBe(true);
-  return parseIsolateResponse(await response.json());
+  return parseIsolateReply(await response.json());
 }
 
-function call(body: IsolateRequest, env: IsolateEnv = {}): Promise<IsolateResponse> {
+function call(body: IsolateRequest, env: IsolateEnv = {}): Promise<IsolateReply> {
   return callWith(PROGRAM, body, env);
 }
 
 /** The paths op over one dynamic page whose `getStaticPaths` returns `result`. */
-function pathsOf(result: unknown): Promise<IsolateResponse> {
+function pathsOf(result: unknown): Promise<IsolateReply> {
   const pages = program({ [PAGED]: { default: pageText, getStaticPaths: () => result } });
   return callWith(pages, {
     op: "paths",
@@ -110,8 +111,54 @@ function renderRequest(file: string, params: IsolateParamPair[], route: Route | 
 }
 
 describe("isolate entry", () => {
+  test("returns what a request logged, on success and on failure", async () => {
+    const LOUD = "src/pages/loud.tsx";
+    const FAILING = "src/pages/failing.tsx";
+    const loud = program({
+      [LOUD]: {
+        default: () => {
+          console.log("rendering", { page: 1 });
+          console.warn("careful");
+          return "<p>loud</p>";
+        },
+      },
+      [FAILING]: {
+        default: () => {
+          console.error("about to fail");
+          throw new Error("boom");
+        },
+      },
+    });
+
+    const rendered = await callWith(loud, renderRequest(LOUD, [], null));
+    expect(rendered.logs).toEqual([
+      { level: "log", message: 'rendering {"page":1}' },
+      { level: "warn", message: "careful" },
+    ]);
+    const failed = await callWith(loud, renderRequest(FAILING, [], null));
+    expect(failed.status).toBe("error");
+    expect(failed.logs).toEqual([{ level: "error", message: "about to fail" }]);
+  });
+
+  test("bounds what one request may log", async () => {
+    const CHATTY = "src/pages/chatty.tsx";
+    const chatty = program({
+      [CHATTY]: {
+        default: () => {
+          for (let line = 0; line < 500; line++) console.debug(`line ${line}`);
+          return "<p>chatty</p>";
+        },
+      },
+    });
+    const reply = await callWith(chatty, renderRequest(CHATTY, [], null));
+    expect(reply.logs).toHaveLength(200);
+    expect(reply.droppedLogs).toBe(300);
+  });
+
   test("renders a static page", async () => {
     expect(await call(renderRequest(INDEX, [], null))).toEqual({
+      logs: [],
+      droppedLogs: 0,
       status: "rendered",
       html: "<h1>home</h1>",
       renderedModules: [],
@@ -136,6 +183,8 @@ describe("isolate entry", () => {
 
   test("answers no-static-path when getStaticPaths lists no such params", async () => {
     expect(await call(renderRequest(PAGED, [["page", "9"]], routeOf(PAGED)))).toEqual({
+      logs: [],
+      droppedLogs: 0,
       status: "unresolved",
       reason: "no-static-path",
     });
@@ -164,6 +213,8 @@ describe("isolate entry", () => {
       ],
     });
     expect(response).toEqual({
+      logs: [],
+      droppedLogs: 0,
       status: "paths",
       paths: { [PAGED]: [[["page", null]], [["page", "2"]]] },
     });
@@ -179,6 +230,8 @@ describe("isolate entry", () => {
 
   test("reads a null param as undefined, in both ops", async () => {
     expect(await pathsOf([{ params: { page: null } }])).toEqual({
+      logs: [],
+      droppedLogs: 0,
       status: "paths",
       paths: { [PAGED]: [[["page", null]]] },
     });

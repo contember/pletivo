@@ -61,8 +61,9 @@ import {
   decodeParams,
   encodeParams,
   IsolateProtocolError,
-  parseIsolateResponse,
+  parseIsolateReply,
   type IsolateProgramExport,
+  type IsolateLogs,
   type IsolateRequest,
   type IsolateResponse,
 } from "./isolate-protocol.ts";
@@ -206,6 +207,8 @@ export interface RenderedPage {
    * Always empty from `renderPage`; `createProjectHost` fills it.
    */
   staleArtifactInputs: string[];
+  /** What the page's code wrote to `console` in the isolate, bounded. */
+  logs: IsolateLogs;
 }
 
 /** No route in the project matches the pathname. */
@@ -324,7 +327,8 @@ const DEFAULT_PAGES_DIR = "src/pages";
 /** Recent enough for `Response.json` and the modern module registry in the isolate. */
 const DEFAULT_COMPATIBILITY_DATE = "2026-01-01";
 const DEFAULT_COMPATIBILITY_FLAGS = ["nodejs_compat"];
-const WORKER_HOST_ABI = "pletivo-workers-v2";
+/** Bumped when the isolate protocol changes, so a stale isolate is never reused. v3: logs. */
+const WORKER_HOST_ABI = "pletivo-workers-v3";
 const SHARED_NAMESPACE: ExecutionNamespace = {
   tenant: "pletivo-workers-stateless",
   capabilityGeneration: "none",
@@ -463,7 +467,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
       throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
     }
     const markdown = options.artifact?.prepared.artifact.config.markdown === undefined
-      ? { html: await renderMarkdownPage(source), bundleId: "" }
+      ? { html: await renderMarkdownPage(source), bundleId: "", logs: NO_LOGS }
       : await isolateMarkdownPage(file, source, options);
     const { html } = markdown;
     // A `.md` page has no module graph, so its CSS needs no compile and no merged map.
@@ -483,6 +487,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
       bundleId: markdown.bundleId,
       assets: [],
       staleArtifactInputs: [],
+      logs: markdown.logs,
     };
   }
   if (!isExecutableModule(file)) {
@@ -537,8 +542,11 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     bundleId: rendered.bundleId,
     assets: assetsOf(project.urlAssets),
     staleArtifactInputs: [],
+    logs: rendered.logs,
   };
 }
+
+const NO_LOGS: IsolateLogs = { logs: [], droppedLogs: 0 };
 
 const EMPTY_STYLE_GRAPH = { modules: [], executionEdges: [], styleEdges: [], styles: [] };
 
@@ -583,7 +591,7 @@ async function isolateMarkdownPage(
   file: string,
   source: string,
   options: RenderPageOptions,
-): Promise<{ html: string; bundleId: string }> {
+): Promise<{ html: string; bundleId: string; logs: IsolateLogs }> {
   const project = await compileProject({
     files: options.files,
     entries: [],
@@ -595,7 +603,7 @@ async function isolateMarkdownPage(
     tailwind: options.tailwind,
     markdown: true,
   });
-  const { bundleId, payload } = await callIsolate({
+  const { bundleId, payload, logs } = await callIsolate({
     project,
     options,
     label: `rendering ${file}`,
@@ -604,7 +612,7 @@ async function isolateMarkdownPage(
   if (payload.status !== "rendered") {
     throw new Error("[pletivo-workers] the render isolate returned an unexpected Markdown payload");
   }
-  return { html: payload.html, bundleId };
+  return { html: payload.html, bundleId, logs };
 }
 
 interface IsolateRender {
@@ -613,10 +621,16 @@ interface IsolateRender {
   renderedModules: string[];
   tsxStyles: string[];
   bundleId: string;
+  logs: IsolateLogs;
 }
 
 export class IsolateExecutionError extends Error {
-  constructor(readonly detail: string, readonly isolateStack?: string) {
+  constructor(
+    readonly detail: string,
+    readonly isolateStack?: string,
+    /** What the failed request logged before it failed. */
+    readonly logs: IsolateLogs = { logs: [], droppedLogs: 0 },
+  ) {
     super(`[pletivo-workers] render isolate execution failed: ${detail}`);
     this.name = "IsolateExecutionError";
   }
@@ -632,7 +646,7 @@ async function callIsolate(input: {
   /** Names the operation in an error, e.g. `rendering src/pages/index.astro`. */
   label: string;
   body: IsolateRequest;
-}): Promise<{ bundleId: string; payload: IsolateResponse }> {
+}): Promise<{ bundleId: string; payload: IsolateResponse; logs: IsolateLogs }> {
   const { project, options, label, body } = input;
   const { requirements } = project.program;
   // Only env names are in the map (ESM exports are static); values ride in bindings,
@@ -716,9 +730,10 @@ async function callIsolate(input: {
       `expected a JSON response: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const payload = parseIsolateResponse(responseValue);
-  if (payload.status === "error") throw new IsolateExecutionError(payload.message, payload.stack);
-  return { bundleId, payload };
+  const payload = parseIsolateReply(responseValue);
+  const logs: IsolateLogs = { logs: payload.logs, droppedLogs: payload.droppedLogs };
+  if (payload.status === "error") throw new IsolateExecutionError(payload.message, payload.stack, logs);
+  return { bundleId, payload, logs };
 }
 
 /** Rethrow a content read's own error, which reaches the isolate only as a message. */
@@ -761,7 +776,7 @@ async function renderModule(input: {
 
   // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost stand-in.
   const origin = site ? new URL(site).origin : "http://localhost/";
-  const { bundleId, payload } = await callIsolate({
+  const { bundleId, payload, logs } = await callIsolate({
     project,
     options,
     label: `rendering ${file}`,
@@ -781,7 +796,7 @@ async function renderModule(input: {
   if (payload.status !== "rendered") {
     throw new Error(`[pletivo-workers] the render isolate returned an unexpected payload`);
   }
-  return { ...payload, bundleId };
+  return { ...payload, bundleId, logs };
 }
 
 function pageUrl(pathname: string, search: string, origin: string): string {

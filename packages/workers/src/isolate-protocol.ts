@@ -99,6 +99,23 @@ export type IsolateResponse =
   | IsolatePathsResponse
   | IsolateErrorResponse;
 
+export type IsolateLogLevel = "debug" | "log" | "info" | "warn" | "error";
+
+/** One `console` line a request's code wrote in the isolate. */
+export interface IsolateLog {
+  level: IsolateLogLevel;
+  message: string;
+}
+
+/** Every reply, success or error, carries the request's bounded console output. */
+export interface IsolateLogs {
+  logs: IsolateLog[];
+  /** Lines the isolate left out once its bound was reached. */
+  droppedLogs: number;
+}
+
+export type IsolateReply = IsolateResponse & IsolateLogs;
+
 export class IsolateProtocolError extends Error {
   constructor(
     readonly path: string,
@@ -113,8 +130,12 @@ export class IsolateProtocolError extends Error {
  * The response is checked and the request is not: the host builds the request, but
  * user code runs in the isolate that writes the response.
  */
-export function parseIsolateResponse(value: unknown): IsolateResponse {
+export function parseIsolateReply(value: unknown): IsolateReply {
   if (!isRecord(value)) throw new IsolateProtocolError("$", "expected an object");
+  return { ...parseIsolateResponse(value), ...parseLogs(value) };
+}
+
+function parseIsolateResponse(value: Record<string, unknown>): IsolateResponse {
   const { status } = value;
   if (status === "rendered") {
     const { html, renderedModules, tsxStyles } = value;
@@ -141,6 +162,31 @@ export function parseIsolateResponse(value: unknown): IsolateResponse {
     return { status, message, ...(typeof stack === "string" ? { stack } : {}) };
   }
   throw new IsolateProtocolError("$.status", "unknown response status");
+}
+
+const LOG_LEVELS: ReadonlySet<unknown> = new Set(["debug", "log", "info", "warn", "error"]);
+
+function isLogLevel(value: unknown): value is IsolateLogLevel {
+  return LOG_LEVELS.has(value);
+}
+
+function parseLogs(value: Record<string, unknown>): IsolateLogs {
+  const { logs, droppedLogs } = value;
+  if (!Array.isArray(logs)) throw new IsolateProtocolError("$.logs", "expected an array");
+  if (typeof droppedLogs !== "number" || !Number.isInteger(droppedLogs) || droppedLogs < 0) {
+    throw new IsolateProtocolError("$.droppedLogs", "expected a non-negative integer");
+  }
+  return {
+    logs: logs.map((entry: unknown, index): IsolateLog => {
+      const level = isRecord(entry) ? entry.level : undefined;
+      const message = isRecord(entry) ? entry.message : undefined;
+      if (!isLogLevel(level) || typeof message !== "string") {
+        throw new IsolateProtocolError(`$.logs[${index}]`, "expected { level, message }");
+      }
+      return { level, message };
+    }),
+    droppedLogs,
+  };
 }
 
 function parsePaths(value: unknown): Record<string, IsolateParamPair[][]> {

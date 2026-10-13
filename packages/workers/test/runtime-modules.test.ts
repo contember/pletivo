@@ -236,10 +236,12 @@ describe("generated runtime modules", () => {
   });
 
   test("give the isolate one render-tracking store, not one per half", () => {
-    // Two bundles would mean two AsyncLocalStorage instances, and a .tsx page's
-    // <style> blocks would be pushed into a store the host never reads.
+    // Two bundles would mean two render-tracking AsyncLocalStorage instances, and a .tsx
+    // page's <style> blocks would be pushed into a store the host never reads. The
+    // second instance is the console capture's, which lives here for the same reason.
     const source = RUNTIME_MODULES[RUNTIME_MODULE_NAME];
-    expect(source.match(/new AsyncLocalStorage/g)).toHaveLength(1);
+    expect(source.match(/new AsyncLocalStorage/g)).toHaveLength(2);
+    expect(GENERATED_MODULES["pletivo-isolate-entry.js"]).not.toContain("AsyncLocalStorage");
   });
 
   test("rename the JSX Fragment rather than shipping a second copy of the runtime", () => {

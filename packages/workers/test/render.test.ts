@@ -173,7 +173,7 @@ describe("the isolate response boundary", () => {
       renderPage({
         files: new Map([["src/pages/index.astro", "<p>page</p>\n"]]),
         pathname: "/",
-        loader: responseLoader(Response.json({ status: "error", message: "page failed" })),
+        loader: responseLoader(Response.json({ status: "error", message: "page failed", logs: [], droppedLogs: 0 })),
         compiler,
       }),
     ).rejects.toBeInstanceOf(IsolateExecutionError);
