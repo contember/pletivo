@@ -404,6 +404,49 @@ describe("createProjectHost", () => {
     },
   );
 
+  test.skipIf(tailwindDir() === null)(
+    "prefers host-embedded Tailwind over a copy the artifact vendored",
+    async () => {
+      const vendored = "npm:tailwind-copy/index.css";
+      const host = createProjectHost({
+        store: createMapProjectStore(
+          new Map([
+            [
+              "src/pages/index.astro",
+              `---\nimport "../styles/global.css";\n---\n<html><body><p class="p-4">home</p></body></html>\n`,
+            ],
+            ["src/styles/global.css", '@import "tailwindcss";\n'],
+          ]),
+        ),
+        artifact: {
+          artifact: {
+            version: ARTIFACT_VERSION,
+            config: {},
+            scripts: { headInline: [], page: [] },
+            modules: [{ id: vendored, kind: "css", source: "/* another Tailwind release */\n" }],
+            resolutions: [
+              {
+                importer: "project:src/styles/global.css",
+                specifier: "tailwindcss",
+                target: { kind: "module", id: vendored },
+              },
+            ],
+          },
+        },
+        loader,
+        compiler,
+        tailwind: await tailwindStylesheets(),
+      });
+
+      const response = await host.fetch(new Request("https://example.test/"));
+      const html = await response.text();
+
+      expect(response.status, html).toBe(200);
+      expect(html).toContain(".p-4");
+      expect(html).not.toContain("another Tailwind release");
+    },
+  );
+
   test("an unknown pathname is a 404, not a throw", async () => {
     const host = hostOf(createMapProjectStore(new Map([["src/pages/index.astro", PAGE]])));
 

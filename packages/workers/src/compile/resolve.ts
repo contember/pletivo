@@ -66,6 +66,12 @@ export class ImportResolver {
     const directAlias = HOST_ALIASES.get(rawSpecifier);
     if (directAlias !== undefined) return this.#externalUse(importer, rawSpecifier, rawSpecifier);
 
+    // Before the artifact: Tailwind compiles against the host-embedded stylesheets, and a
+    // vendored copy of another version would leave its import unmatched by any of them.
+    const tailwindImport = importer.kind === "css" && isTailwindStylesheetSpecifier(rawSpecifier);
+    const embedded = tailwindImport ? this.#embeddedTailwind(rawSpecifier) : null;
+    if (embedded !== null) return moduleResolution(embedded);
+
     const frozen = this.#options.artifact.resolve(importer.id, rawSpecifier);
     if (frozen !== null) {
       if (frozen.kind === "external") {
@@ -74,11 +80,7 @@ export class ImportResolver {
       return moduleResolution(this.#walk.artifactModule(frozen.id));
     }
 
-    if (importer.kind === "css" && isTailwindStylesheetSpecifier(rawSpecifier)) {
-      const { tailwind } = this.#options;
-      if (tailwind === undefined) throw new TailwindNotConfiguredError(importer.id);
-      return moduleResolution(this.#walk.hostStylesheet(rawSpecifier, tailwind[rawSpecifier]));
-    }
+    if (tailwindImport) throw new TailwindNotConfiguredError(importer.id);
 
     if (UNSUPPORTED_PACKAGE_ROOTS.has(rawSpecifier)) {
       throw unresolvedImport(importer, rawSpecifier, "unsupported package root export");
@@ -88,6 +90,12 @@ export class ImportResolver {
       rawSpecifier,
       "no project file, Artifact V2 resolution, or supported host alias answers it",
     );
+  }
+
+  #embeddedTailwind(specifier: string): SourceModule | null {
+    const { tailwind } = this.#options;
+    if (tailwind === undefined || !isTailwindStylesheetSpecifier(specifier)) return null;
+    return this.#walk.hostStylesheet(specifier, tailwind[specifier]);
   }
 
   /** What only a project importer can reach: its query imports, files, images and the content path. */
