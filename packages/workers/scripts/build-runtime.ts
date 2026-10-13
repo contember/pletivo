@@ -78,6 +78,7 @@ const ENTRIES: Record<string, Entry> = {
     aliases: {
       [Bun.resolveSync("@pletivo/runtime/astro-shim", PACKAGE_DIR)]: "./pletivo-runtime.js",
       [Bun.resolveSync("@pletivo/core/paginate", PACKAGE_DIR)]: "./pletivo-runtime.js",
+      [Bun.resolveSync("@pletivo/runtime/script-registry", PACKAGE_DIR)]: "./pletivo-runtime.js",
       [path.join(PACKAGE_DIR, "src/isolate-protocol.ts")]: "./pletivo-isolate-protocol.js",
     },
   },

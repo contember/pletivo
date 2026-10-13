@@ -37,12 +37,22 @@ export interface ExecutableRequirements {
   env: ProjectEnvUse | null;
 }
 
+/** One processed `<script>` of a compiled `.astro` module. */
+export interface ProgramScript {
+  moduleId: ModuleId;
+  compilePath: string;
+  index: number;
+  code: string;
+}
+
 /** Loader-ready output; sources and CSS graph stay outside it. */
 export interface ExecutableProgram {
   mainModule: string;
   modules: Record<string, string>;
   entries: ExecutableEntry[];
   requirements: ExecutableRequirements;
+  /** `$$renderScript` id -> the URL the browser loads it from. See `browser-modules.ts`. */
+  scripts: Readonly<Record<string, string>>;
 }
 
 export interface OrderedExecutionEdge {

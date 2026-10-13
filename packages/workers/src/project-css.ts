@@ -27,6 +27,8 @@ export interface PageStylesheetOptions {
   entry: ModuleId;
   html: string;
   scripts?: InjectedScripts;
+  /** Browser code the page loads but its HTML does not hold: processed `<script>` graphs. */
+  browserSources?: readonly string[];
   tailwind?: TailwindStylesheets;
 }
 
@@ -53,6 +55,9 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
   }
   for (const script of options.scripts?.page ?? []) {
     for (const candidate of extractCandidates(script)) candidates.add(candidate);
+  }
+  for (const source of options.browserSources ?? []) {
+    for (const candidate of extractCandidates(source)) candidates.add(candidate);
   }
 
   const compilation = await compileTailwind({

@@ -23,6 +23,7 @@ import {
   type ArtifactInput,
 } from "@pletivo/core/artifact";
 import { loadProjectArtifact, type ProjectArtifact } from "./artifact.ts";
+import { browserModule, BrowserModuleError, isBrowserModulePath } from "./browser-modules.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
 import {
@@ -173,6 +174,27 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     return { ...page, staleArtifactInputs: stale };
   }
 
+  async function serveBrowserModule(pathname: string, snapshot: ProjectSnapshot): Promise<Response> {
+    try {
+      const code = await browserModule(pathname, {
+        files: snapshot.files,
+        artifact: artifactOf(snapshot),
+        compiler: renderOptions.compiler,
+        compileCache,
+      });
+      return new Response(code, {
+        // Unversioned URLs name the file as it is now; a reload must see an edit.
+        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+      });
+    } catch (error) {
+      if (!(error instanceof BrowserModuleError)) throw error;
+      return new Response(error.message, {
+        status: error.status,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+  }
+
   return {
     render: (pathname) => withSnapshot((snapshot) => renderSnapshot(pathname, snapshot)),
 
@@ -192,6 +214,8 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
 
       try {
         return await withSnapshot(async (snapshot) => {
+          if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url.pathname, snapshot);
+
           // `/_astro/<name>.<hash>.<ext>` and the `/cdn-cgi/image/` form a page links to.
           const image = await snapshot.assets.resolveOutput(url.pathname);
           if (image !== null) {

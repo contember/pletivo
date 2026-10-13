@@ -20,6 +20,9 @@ export async function linkModule(
 ): Promise<void> {
   if (entry.importMetaEnv) walk.usesImportMetaEnv = true;
   if (entry.styles !== null) walk.styles.set(module.id, entry.styles);
+  entry.scripts.forEach((code, index) => {
+    if (code !== null) walk.scripts.push({ moduleId: module.id, compilePath: module.compilePath, index, code });
+  });
   const bySpecifier = new Map<string, ResolutionUse>();
   for (const specifier of entry.specifiers) {
     let use = bySpecifier.get(specifier);

@@ -32,7 +32,7 @@ export async function compileCached(
 /** What depends only on the file's path, bytes and the compiler; the file set's part is `linkModule`. */
 async function compileFile(module: SourceModule, compiler: AstroCompiler): Promise<CompiledFile> {
   const { source, compilePath, kind } = module;
-  if (kind === "js") return fileEntry(source, source, null, kind);
+  if (kind === "js") return fileEntry(source, source, null, kind, []);
   if (kind === "json") {
     let value: unknown;
     try {
@@ -43,7 +43,7 @@ async function compileFile(module: SourceModule, compiler: AstroCompiler): Promi
         `invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind);
+    return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind, []);
   }
   if (kind === "ts" || kind === "tsx" || kind === "jsx") {
     return fileEntry(
@@ -51,6 +51,7 @@ async function compileFile(module: SourceModule, compiler: AstroCompiler): Promi
       transpile(source, { file: compilePath, jsx: kind === "tsx" || kind === "jsx" }),
       null,
       kind,
+      [],
     );
   }
 
@@ -81,6 +82,7 @@ async function compileFile(module: SourceModule, compiler: AstroCompiler): Promi
     transpile(stripStyleImports(result.code), { file: compilePath }),
     declared,
     kind,
+    result.scripts.map((script) => (script.type === "inline" ? script.code : null)),
   );
 }
 
@@ -154,6 +156,7 @@ function fileEntry(
   text: string,
   styles: AstroStyles | null,
   kind: ArtifactModuleKind,
+  scripts: readonly (string | null)[],
 ): CompiledFile {
   const substituted = substituteImportMetaEnv(text);
   const { specifiers, importedNames } = collectImports(text);
@@ -166,6 +169,7 @@ function fileEntry(
     // Carried per file so a cache hit keeps them: a dropped `astro:env` export stops the isolate.
     envNames: importedNames.size === 0 ? null : importedNames,
     styles,
+    scripts,
   };
 }
 

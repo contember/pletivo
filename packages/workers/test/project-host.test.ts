@@ -38,6 +38,7 @@ import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
 const compiler = createAstroCompiler(await astroWasmModule());
 const loader = new FileLoader();
 afterAll(() => loader.cleanup());
+const TAILWIND = tailwindDir() === null ? undefined : await tailwindStylesheets();
 
 const PAGE = `---
 const title = "Home";
@@ -446,6 +447,105 @@ describe("createProjectHost", () => {
       expect(html).not.toContain("another Tailwind release");
     },
   );
+
+  describe("processed scripts", () => {
+    const PAGE_WITH_SCRIPT = `---
+import "../styles/global.css";
+---
+<html><body><button class="menu">menu</button></body></html>
+<script>
+  import { greet } from "browser-pkg";
+  import { openMenu } from "../lib/menu";
+  const button: HTMLElement | null = document.querySelector(".menu");
+  button?.classList.add("translate-x-4");
+  greet();
+  openMenu();
+</script>
+`;
+    const artifact = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [
+          { id: "npm:browser-pkg/browser.js", kind: "js", source: 'import { dep } from "./dep.js";\nexport function greet() { dep(); }\n' },
+          { id: "npm:browser-pkg/dep.js", kind: "js", source: "export function dep() {}\n" },
+        ],
+        resolutions: [],
+        browserResolutions: [
+          { importer: "project:*", specifier: "browser-pkg", target: { kind: "module", id: "npm:browser-pkg/browser.js" } },
+          { importer: "npm:browser-pkg/browser.js", specifier: "./dep.js", target: { kind: "module", id: "npm:browser-pkg/dep.js" } },
+        ],
+      },
+    };
+
+    function scriptHost(page = PAGE_WITH_SCRIPT, menu = 'export function openMenu(): void { document.body.classList.add("opacity-50"); }\n') {
+      return createProjectHost({
+        store: createMapProjectStore(
+          new Map([
+            ["src/pages/index.astro", page],
+            ["src/lib/menu.ts", menu],
+            ["src/styles/global.css", '@import "tailwindcss";\n'],
+          ]),
+        ),
+        artifact,
+        loader,
+        compiler,
+        ...(TAILWIND === undefined ? {} : { tailwind: TAILWIND }),
+      });
+    }
+
+    async function scriptSrc(host: ReturnType<typeof scriptHost>): Promise<string> {
+      const html = await (await host.fetch(new Request("https://example.test/"))).text();
+      const match = /<script type="module" src="([^"]+)"><\/script>/.exec(html);
+      if (match === null) throw new Error(`no script tag in ${html}`);
+      return match[1];
+    }
+
+    test("render a script tag the host serves as an unbundled module", async () => {
+      const host = scriptHost();
+      const src = await scriptSrc(host);
+      expect(src).toStartWith("/_pletivo/script/0/project/src/pages/index.astro.js?v=");
+
+      const script = await host.fetch(new Request(`https://example.test${src}`));
+      const code = await script.text();
+      expect(script.status, code).toBe(200);
+      expect(script.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(code).toContain('from "/_pletivo/module/npm/browser-pkg/browser.js"');
+      expect(code).toContain('from "/_pletivo/module/project/src/lib/menu.ts"');
+      expect(code).not.toContain("HTMLElement | null");
+    });
+
+    test("serve project files and carried packages with their imports rewritten", async () => {
+      const host = scriptHost();
+      const menu = await (await host.fetch(new Request("https://example.test/_pletivo/module/project/src/lib/menu.ts"))).text();
+      expect(menu).toContain("export function openMenu()");
+      expect(menu).not.toContain(": void");
+
+      const pkg = await (await host.fetch(new Request("https://example.test/_pletivo/module/npm/browser-pkg/browser.js"))).text();
+      expect(pkg).toContain('from "/_pletivo/module/npm/browser-pkg/dep.js"');
+    });
+
+    test("an import the browser graph does not carry is a 500 that says to prepare again", async () => {
+      const host = scriptHost(PAGE_WITH_SCRIPT, 'import "not-prepared";\nexport function openMenu() {}\n');
+      const response = await host.fetch(new Request("https://example.test/_pletivo/module/project/src/lib/menu.ts"));
+      expect(response.status).toBe(500);
+      expect(await response.text()).toContain("re-run `pletivo prepare`");
+      expect((await host.fetch(new Request("https://example.test/_pletivo/module/project/src/missing.ts"))).status).toBe(404);
+    });
+
+    test("a script-only edit changes the script URL", async () => {
+      const before = await scriptSrc(scriptHost());
+      const after = await scriptSrc(scriptHost(PAGE_WITH_SCRIPT.replace("greet();", "greet(); greet();")));
+      expect(after).not.toBe(before);
+    });
+
+    test.skipIf(tailwindDir() === null)("builds the Tailwind classes only a script names", async () => {
+      const html = await (await scriptHost().fetch(new Request("https://example.test/"))).text();
+      expect(html).toContain(".translate-x-4");
+      expect(html).toContain(".opacity-50");
+    });
+  });
 
   test("an unknown pathname is a 404, not a throw", async () => {
     const host = hostOf(createMapProjectStore(new Map([["src/pages/index.astro", PAGE]])));

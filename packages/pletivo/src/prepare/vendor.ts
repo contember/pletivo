@@ -11,6 +11,7 @@ import {
   type ModuleId,
 } from "@pletivo/core/artifact";
 import { prepareFailure, PrepareError } from "./error";
+import { processedScripts } from "./scripts";
 import { compareStrings, isInsideRoot, isMissingFile, normalizePath } from "./paths";
 import {
   classifySpecifier,
@@ -347,6 +348,12 @@ async function prepareBrowserGraph(
 
   for (const project of projectSources) {
     for (const script of project.scripts ?? []) enqueue(project.id, project.file, script, "ts");
+  }
+  // A carried component's scripts import from its own package, under its own identity.
+  for (const module of [...carried.modules.values()]) {
+    if (module.kind !== "astro" || module.compilePath === undefined) continue;
+    const file = path.resolve(root, module.compilePath);
+    for (const script of await processedScripts(file, module.source)) enqueue(module.id, file, script, "ts");
   }
 
   while (queue.length > 0) {

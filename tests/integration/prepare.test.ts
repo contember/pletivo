@@ -321,6 +321,10 @@ describe("pletivo prepare, browser scripts", () => {
     expect(browser.some((edge) => edge.importer === target.id && edge.specifier === "browser-dep")).toBe(true);
     // is:inline is the browser's business; nothing is carried for it.
     expect(browser.some((edge) => edge.specifier === "inline-only-package")).toBe(false);
+    // A carried component's script resolves from its own package identity.
+    const widget = site.artifact.modules.find((module) => module.compilePath?.endsWith("/Widget.astro"));
+    if (!widget) throw new Error("the component was not carried");
+    expect(browser.some((edge) => edge.importer === widget.id && edge.specifier === "browser-dep")).toBe(true);
     // The script's own imports never reach the server graph.
     expect(site.artifact.resolutions.some((edge) => edge.specifier === "browser-pkg")).toBe(false);
   });

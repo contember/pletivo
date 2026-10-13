@@ -19,6 +19,7 @@ import {
   runWithRenderTracking,
   type PageContext,
 } from "@pletivo/runtime/astro-shim";
+import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
 import type { ContentBinding } from "./content-files.ts";
 import {
   ENV_BINDING,
@@ -103,6 +104,8 @@ export interface IsolateProgram {
   content: ContentModules | null;
   /** Set when the program renders Markdown with the project's own plugins. */
   markdown: IsolateMarkdown | null;
+  /** `$$renderScript` id -> the URL the host serves that script at. */
+  scripts: Readonly<Record<string, string>>;
   envInstallers: readonly EnvInstaller[];
   importMetaEnv: boolean;
 }
@@ -128,6 +131,8 @@ const BASE = "/";
 
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
   let markdownConfigured = false;
+  // Module state is safe: the map is part of the program, so of the isolate's id.
+  setScriptUrlResolver((id) => (Object.hasOwn(program.scripts, id) ? program.scripts[id] : null));
   return {
     async fetch(request, env) {
       // An error payload, not a throw: across the Loader boundary a throw looks the same

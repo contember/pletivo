@@ -21,6 +21,7 @@ import type { ProjectFiles } from "./project-store.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
+import { scriptCandidateSources } from "./browser-modules.ts";
 import { markdownPageHtml } from "./markdown-page.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
@@ -515,6 +516,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     entry: projectModuleId(file),
     html: rendered.html,
     scripts,
+    browserSources: scriptCandidateSources(project.scripts, files),
     tailwind: options.tailwind,
   });
   return {
@@ -833,6 +835,7 @@ function programModule(program: ExecutableProgram): string {
     contentConfig,
     content: contentModules,
     markdown: markdownPipeline,
+    scripts: JSON.stringify(program.scripts),
     envInstallers: `[${installers.join(", ")}]`,
     importMetaEnv: String(importMetaEnv),
   };

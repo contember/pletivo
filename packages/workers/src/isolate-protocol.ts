@@ -13,6 +13,7 @@ export type IsolateProgramExport =
   | "contentConfig"
   | "content"
   | "markdown"
+  | "scripts"
   | "envInstallers"
   | "importMetaEnv";
 

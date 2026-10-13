@@ -1,7 +1,8 @@
 ---
+import Widget from "script-component/Widget.astro";
 const title = "Scripts";
 ---
-<html><body><h1>{title}</h1></body></html>
+<html><body><h1>{title}</h1><Widget /></body></html>
 <script>
   import { greet } from "browser-pkg";
   import { openMenu } from "../lib/menu";

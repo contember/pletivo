@@ -10,6 +10,7 @@ import {
   IMAGE_MODULE_NAME,
   ISOLATE_ENTRY_MODULE_NAME,
 } from "../generated/runtime-modules.ts";
+import { scriptId, scriptUrl } from "../browser-modules.ts";
 import type { CompiledProject } from "./types.ts";
 import type { CompileWalk } from "./walk-state.ts";
 
@@ -33,6 +34,12 @@ export function emitProject(
       mainModule: ISOLATE_ENTRY_MODULE_NAME,
       modules: walk.modules,
       entries,
+      scripts: Object.fromEntries(
+        walk.scripts.map((script) => [
+          scriptId(script.compilePath, script.index),
+          scriptUrl(script.moduleId, script.index, script.code),
+        ]),
+      ),
       requirements: {
         content,
         markdown,
@@ -44,6 +51,7 @@ export function emitProject(
     styleGraph: emitStyleGraph(walk),
     sources: walk.sources,
     urlAssets: walk.urlAssets,
+    scripts: walk.scripts,
   };
 }
 

@@ -1,7 +1,12 @@
 import type { ModuleId } from "@pletivo/core/artifact";
 import { executionNameForModuleId, projectModuleId, type ArtifactResolver } from "../artifact.ts";
 import { ASSETS_SOURCES } from "../astro-assets.ts";
-import type { OrderedExecutionEdge, OrderedStyleEdge, ProgramContentRequirement } from "../compiled-program.ts";
+import type {
+  OrderedExecutionEdge,
+  OrderedStyleEdge,
+  ProgramContentRequirement,
+  ProgramScript,
+} from "../compiled-program.ts";
 import { ENV_MODULES } from "../env.ts";
 import { RUNTIME_MODULES } from "../generated/runtime-modules.ts";
 import type { ProjectFiles } from "../project-store.ts";
@@ -43,6 +48,8 @@ export class CompileWalk {
   readonly executionEdges: OrderedExecutionEdge[] = [];
   readonly styleEdges: OrderedStyleEdge[] = [];
   readonly styles = new Map<ModuleId, AstroStyles>();
+  /** Processed `<script>` blocks of the compiled `.astro` modules, in claim order. */
+  readonly scripts: ProgramScript[] = [];
   /** Names taken from `astro:env/client` and `astro:env/server`, across the whole walk. */
   readonly envNames = new Map<string, Set<string>>(
     [...ENV_MODULES.keys()].map((specifier) => [specifier, new Set<string>()]),
