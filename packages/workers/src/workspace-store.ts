@@ -63,6 +63,9 @@ const SKIP = new Set(["node_modules", ".git", ".wrangler", ".astro", "dist"]);
  */
 const BINARY = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"]);
 
+/** Text that is also an image: listed on both sides, for `?raw` and for image metadata. */
+const TEXT_IMAGE = ".svg";
+
 export function createWorkspaceProjectStore(
   files: WorkspaceFiles,
   options: WorkspaceStoreOptions,
@@ -99,8 +102,10 @@ export function createWorkspaceProjectStore(
         const path = absolute === "/" ? `/${entry.name}` : `${absolute}/${entry.name}`;
         regular.set(key, path);
         if (maxFileBytes !== undefined && sizeOf(files, path) > maxFileBytes) continue;
-        if (BINARY.has(extensionOf(entry.name))) binaryFiles.set(key, path);
+        const extension = extensionOf(entry.name);
+        if (BINARY.has(extension)) binaryFiles.set(key, path);
         else text.set(key, path);
+        if (extension === TEXT_IMAGE) binaryFiles.set(key, path);
       }
     }
     return { text, binary: binaryFiles, regular };

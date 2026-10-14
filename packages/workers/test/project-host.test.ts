@@ -635,6 +635,43 @@ describe("createProjectHost", () => {
     });
   });
 
+  describe("SVG imports", () => {
+    const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16" viewBox="0 0 24 16"><rect width="24" height="16"/></svg>\n';
+    const PAGE_WITH_SVG = `---
+import logo from "../assets/logo.svg";
+import logoMarkup from "../assets/logo.svg?raw";
+---
+<img src={logo.src} width={logo.width} height={logo.height} data-format={logo.format} />
+<div set:html={logoMarkup} />
+`;
+
+    async function check(host: ReturnType<typeof createProjectHost>): Promise<void> {
+      const html = await (await host.fetch(new Request("https://example.test/"))).text();
+      const src = /<img src="([^"]+)"/.exec(html)?.[1];
+      expect(src, html).toMatch(/^\/_astro\/logo\.[0-9a-f]{8}\.svg$/);
+      expect(html).toContain('width="24" height="16" data-format="svg"');
+      expect(html).toContain('<div><svg xmlns="http://www.w3.org/2000/svg"');
+
+      const image = await host.fetch(new Request(`https://example.test${src}`));
+      expect(image.status).toBe(200);
+      expect(image.headers.get("content-type")).toBe("image/svg+xml");
+      expect(await image.text()).toBe(SVG);
+    }
+
+    test("an import without a query is image metadata, ?raw stays the text (map store)", async () => {
+      await check(
+        hostOf(createMapProjectStore(new Map([["src/pages/index.astro", PAGE_WITH_SVG], ["src/assets/logo.svg", SVG]]))),
+      );
+    });
+
+    test("an import without a query is image metadata, ?raw stays the text (workspace store)", async () => {
+      const workspace = new FakeWorkspace();
+      workspace.write("/src/pages/index.astro", PAGE_WITH_SVG);
+      workspace.write("/src/assets/logo.svg", SVG);
+      await check(hostOf(createWorkspaceProjectStore(workspace, { revision: () => workspace.revision })));
+    });
+  });
+
   describe("public files", () => {
     const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x80, 0x0a]);
 

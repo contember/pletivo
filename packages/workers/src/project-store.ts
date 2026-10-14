@@ -5,7 +5,12 @@
  */
 
 import type { ProjectAssetsView } from "./asset-port.ts";
-import { isProjectAssetsView, projectAssetsView, type ProjectAssets } from "./content-files.ts";
+import {
+  isProjectAssetsView,
+  projectAssetsView,
+  type ProjectAsset,
+  type ProjectAssets,
+} from "./content-files.ts";
 
 /** Project sources as one revision sees them. A `ReadonlyMap<string, string>` satisfies it. */
 export interface ProjectFiles {
@@ -63,7 +68,7 @@ export function createMapProjectStore(
   revision = "static",
 ): ProjectStore {
   const snapshotFiles = new Map(files);
-  const ownedAssets = isProjectAssetsView(assets) ? null : new Map(assets);
+  const ownedAssets = isProjectAssetsView(assets) ? null : withTextImages(assets, snapshotFiles);
   const encoder = new TextEncoder();
   const snapshot: ProjectSnapshot = {
     files: snapshotFiles,
@@ -78,4 +83,14 @@ export function createMapProjectStore(
     },
   };
   return { snapshot: () => Promise.resolve(snapshot) };
+}
+
+/** The caller's assets plus each SVG source, which is text and an image at once. */
+function withTextImages(assets: ProjectAssets, files: ReadonlyMap<string, string>): Map<string, ProjectAsset> {
+  const owned = new Map<string, ProjectAsset>(assets);
+  const encoder = new TextEncoder();
+  for (const [path, source] of files) {
+    if (path.toLowerCase().endsWith(".svg") && !owned.has(path)) owned.set(path, new Uint8Array(encoder.encode(source)));
+  }
+  return owned;
 }

@@ -119,15 +119,8 @@ export class ImportResolver {
       );
     }
 
-    const local = this.#walk.resolveProjectFile(resolved);
-    if (local !== null) {
-      const target = this.#walk.projectModule(local);
-      if (target === null) {
-        throw unresolvedImport(importer, rawSpecifier, "the target kind is unsupported");
-      }
-      return moduleResolution(target);
-    }
-
+    // Before project modules: an SVG is also a text file, yet importing one without a
+    // query means its metadata, as with any image.
     if (isImageSource(resolved)) {
       const info = await this.#readAssetInfo(resolved);
       if (info === null) {
@@ -136,6 +129,15 @@ export class ImportResolver {
       const code = imageModule(resolved, info);
       this.#walk.usesImages = true;
       return moduleResolution(this.#walk.generatedModule(`generated:image:${projectModuleId(resolved)}`, code));
+    }
+
+    const local = this.#walk.resolveProjectFile(resolved);
+    if (local !== null) {
+      const target = this.#walk.projectModule(local);
+      if (target === null) {
+        throw unresolvedImport(importer, rawSpecifier, "the target kind is unsupported");
+      }
+      return moduleResolution(target);
     }
 
     if (PLETIVO_CONTENT_PATH.test(resolved)) {
