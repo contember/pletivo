@@ -3,6 +3,7 @@ import { cssImports } from "@pletivo/core/css-imports";
 import type { CompiledFile } from "../compile-cache.ts";
 import { HOST_ALIASES } from "../host-aliases.ts";
 import { rewriteImports } from "../rewrite-imports.ts";
+import { expandImportMetaGlobs } from "./import-meta-glob.ts";
 import type { ImportResolver } from "./resolve.ts";
 import {
   UnsupportedFileError,
@@ -24,8 +25,12 @@ export async function linkModule(
   entry.scripts.forEach((code, index) => {
     if (code !== null) walk.scripts.push({ moduleId: module.id, compilePath: module.compilePath, index, code });
   });
+  const written = entry.code ?? entry.source;
+  const globbed = entry.globs.length === 0
+    ? { code: written, specifiers: [] }
+    : expandImportMetaGlobs(written, entry.globs, module.compilePath, [...walk.projectPaths(), ...resolver.assetSources()]);
   const bySpecifier = new Map<string, ResolutionUse>();
-  for (const specifier of entry.specifiers) {
+  for (const specifier of [...entry.specifiers, ...globbed.specifiers]) {
     let use = bySpecifier.get(specifier);
     if (use === undefined) {
       use = await resolver.resolve(module, specifier);
@@ -37,8 +42,8 @@ export async function linkModule(
     }
   }
   const compiledCode = module.kind === "astro"
-    ? replaceAstroTrackingId(entry.code ?? entry.source, module.compilePath, module.id)
-    : (entry.code ?? entry.source);
+    ? replaceAstroTrackingId(globbed.code, module.compilePath, module.id)
+    : globbed.code;
   walk.modules[module.executionName] = rewriteImports(compiledCode, {
     importer: module.compilePath,
     resolve(_resolved, specifier) {

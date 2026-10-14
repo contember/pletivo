@@ -335,7 +335,7 @@ describe("what a cache entry has to carry", () => {
 
 describe("createCompileCache, the bound", () => {
   function entryOf(source: string, code: string | null = null): CompiledFile {
-    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null, scripts: [], annotated: false };
+    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null, scripts: [], annotated: false, globs: [] };
   }
 
   function retained(entry: CompiledFile, maxBytes: number): boolean {

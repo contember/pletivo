@@ -6,6 +6,7 @@
 
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 import { BoundedLru } from "./bounded-lru.ts";
+import type { ImportMetaGlob } from "./compile/import-meta-glob.ts";
 import type { AstroStyles } from "./compile/types.ts";
 
 /** One file's compile, everything the file set decides left out. */
@@ -37,6 +38,8 @@ export interface CompiledFile {
   scripts: readonly (string | null)[];
   /** Compiled with source annotations; only `.astro` output differs, so only it is `true`. */
   annotated: boolean;
+  /** `import.meta.glob` calls, replaced by placeholders in `code`; linking expands them. */
+  globs: readonly ImportMetaGlob[];
 }
 
 export interface CompileCache {
