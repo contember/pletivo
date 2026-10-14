@@ -48,7 +48,13 @@ These contracts landed after the measurements below. They are the current baseli
   runtime scope. Hosts do not install or mutate a process-global content host.
 - Assets belong to the outer host through `ProjectAssetsView`. `info(source)` and
   `resolveOutput(path)` are demand-driven; an unrelated request does not scan or hash
-  the project asset set.
+  the project asset set. `sources()` lists the asset paths without reading them.
+- `import.meta.glob` (`src/compile/import-meta-glob.ts`) takes literal patterns rooted at
+  `/` or relative to the importer, `!` exclusions, and the `eager`, `import`, `query`
+  and legacy `as` options. Compiling replaces each call with a placeholder; linking
+  expands it against the render's text files and asset paths, so a matching file added
+  or removed needs no recompile. Aliased patterns, `base` and a `query` object are
+  refused by name. The Bun host does not implement it.
 - This is a static host. A page that exports `prerender = false` is rejected explicitly;
   the host does not pretend that an HTML-only return value implements HTTP SSR.
 - Only `pletivo` is published. Release builds a self-contained staged tarball containing

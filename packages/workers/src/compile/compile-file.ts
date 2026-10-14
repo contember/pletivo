@@ -5,6 +5,7 @@ import { compileAstro, parseAstro, type AstroCompiler } from "../astro-compiler.
 import type { CompileCache, CompiledFile } from "../compile-cache.ts";
 import { IMPORT_META_ENV_GLOBAL } from "../env.ts";
 import { collectImports } from "../rewrite-imports.ts";
+import { extractImportMetaGlobs } from "./import-meta-glob.ts";
 import { stripTypes, TranspileError } from "../transpile.ts";
 import { COMPILED } from "./module-kind.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
@@ -49,7 +50,7 @@ async function compileFile(
   annotateSourceFile: boolean,
 ): Promise<CompiledFile> {
   const { source, compilePath, kind } = module;
-  if (kind === "js") return fileEntry(source, source, null, kind, []);
+  if (kind === "js") return fileEntry(source, source, null, kind, [], compilePath);
   if (kind === "json") {
     let value: unknown;
     try {
@@ -60,7 +61,7 @@ async function compileFile(
         `invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind, []);
+    return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind, [], compilePath);
   }
   if (kind === "ts" || kind === "tsx" || kind === "jsx") {
     return fileEntry(
@@ -69,6 +70,7 @@ async function compileFile(
       null,
       kind,
       [],
+      compilePath,
     );
   }
 
@@ -103,6 +105,7 @@ async function compileFile(
       declared,
       kind,
       result.scripts.map((script) => (script.type === "inline" ? script.code : null)),
+      compilePath,
     ),
     annotated: annotateSourceFile,
   };
@@ -171,15 +174,18 @@ function substituteImportMetaEnv(code: string): { code: string; used: boolean } 
 
 /**
  * One cache entry. Specifiers and `astro:env` names are read off `text`, the JavaScript
- * before `import.meta.env` substitution, which must not see the rewrite.
+ * before `import.meta.env` substitution, which must not see the rewrite. `import.meta.glob`
+ * calls go first: their imports depend on the file set, so linking adds them.
  */
 function fileEntry(
   source: string,
-  text: string,
+  compiled: string,
   styles: AstroStyles | null,
   kind: ArtifactModuleKind,
   scripts: readonly (string | null)[],
+  file: string,
 ): CompiledFile {
+  const { code: text, globs } = extractImportMetaGlobs(compiled, file);
   const substituted = substituteImportMetaEnv(text);
   const { specifiers, importedNames } = collectImports(text);
   return {
@@ -193,6 +199,7 @@ function fileEntry(
     styles,
     scripts,
     annotated: false,
+    globs,
   };
 }
 

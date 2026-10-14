@@ -17,6 +17,8 @@ export interface ServedProjectAsset {
 
 /** Demand-driven project asset access owned by the outer host. */
 export interface ProjectAssetsView {
+  /** Every asset source path. Listing only: nothing is read. */
+  sources(): Iterable<string>;
   info(source: string): ProjectAssetInfo | null;
   resolveOutput(pathname: string): ServedProjectAsset | null;
 }

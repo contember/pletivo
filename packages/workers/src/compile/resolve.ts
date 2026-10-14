@@ -173,6 +173,11 @@ export class ImportResolver {
     return externalResolution(external, alias.executionName);
   }
 
+  /** Every binary asset of the project, for `import.meta.glob`; text files are the walk's. */
+  assetSources(): Iterable<string> {
+    return this.#options.assets?.sources() ?? [];
+  }
+
   #readAssetInfo(source: string): Promise<ProjectAssetInfo | null> {
     let pending = this.#assetInfos.get(source);
     if (pending === undefined) {

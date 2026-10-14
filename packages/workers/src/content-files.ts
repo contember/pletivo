@@ -281,6 +281,7 @@ class SnapshotAssetsView implements ProjectAssetsView {
   readonly #outputs = new Map<string, ResolvedOutput | null>();
   readonly #ambiguities = new Map<string, readonly string[]>();
   readonly #candidates = new Map<string, string[]>();
+  readonly #sources: readonly string[];
   readonly #load: (source: string) => ProjectAsset | null;
   readonly #probe: AssetProbe;
 
@@ -291,14 +292,19 @@ class SnapshotAssetsView implements ProjectAssetsView {
   ) {
     this.#load = load;
     this.#probe = probe;
+    this.#sources = [...sources];
     // Keys only: snapshot construction never reads, hashes or probes asset bytes.
-    for (const source of sources) {
+    for (const source of this.#sources) {
       const key = outputCandidateKey(source);
       const candidates = this.#candidates.get(key);
       if (candidates) candidates.push(source);
       else this.#candidates.set(key, [source]);
     }
     for (const candidates of this.#candidates.values()) candidates.sort(compareStrings);
+  }
+
+  sources(): Iterable<string> {
+    return this.#sources;
   }
 
   info(source: string): ProjectAssetInfo | null {

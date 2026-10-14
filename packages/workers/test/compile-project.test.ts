@@ -147,7 +147,7 @@ describe("compileProject, demand-driven assets", () => {
   };
 
   function view(info: ProjectAssetsView["info"]): ProjectAssetsView {
-    return { info, resolveOutput: () => null };
+    return { sources: () => [], info, resolveOutput: () => null };
   }
 
   test("does not probe an image imported only by an unreached module", async () => {
