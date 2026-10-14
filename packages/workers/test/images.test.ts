@@ -81,7 +81,7 @@ describe("what crosses the content binding for an image", () => {
     second.close();
   });
 
-  test("two stores with the same ref keep project assets isolated", async () => {
+  test("two stores keep project assets isolated", async () => {
     const leftStore = new ContentFiles();
     const rightStore = new ContentFiles();
     const left = leftStore.open(
@@ -93,9 +93,10 @@ describe("what crosses the content binding for an image", () => {
       new Map([["logo.png", { width: 2, height: 2, format: "png", hash: "22222222" }]]),
     );
 
-    expect(left.ref).toBe(right.ref);
+    expect(left.ref).not.toBe(right.ref);
     expect((await leftStore.image(left.ref, "logo.png"))?.width).toBe(1);
     expect((await rightStore.image(right.ref, "logo.png"))?.width).toBe(2);
+    expect(() => leftStore.image(right.ref, "logo.png")).toThrow(/no open project/);
     left.close();
     right.close();
   });

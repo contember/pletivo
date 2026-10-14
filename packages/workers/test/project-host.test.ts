@@ -23,7 +23,9 @@ import {
   createProjectHost,
   GeneratedAssetRetentionError,
   ProjectArtifactError,
+  type RenderEvent,
 } from "../src/project-host.ts";
+import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
 import { createMapProjectStore, type ProjectStore } from "../src/project-store.ts";
 import {
   createWorkspaceProjectStore,
@@ -38,6 +40,7 @@ import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
 const compiler = createAstroCompiler(await astroWasmModule());
 const loader = new FileLoader();
 afterAll(() => loader.cleanup());
+const TAILWIND = tailwindDir() === null ? undefined : await tailwindStylesheets();
 
 const PAGE = `---
 const title = "Home";
@@ -352,6 +355,45 @@ describe("createProjectHost", () => {
     expect(await response.text()).toContain("GeneratedAssetRetentionError");
   });
 
+  describe("a durable generated asset store", () => {
+    const files = new Map([
+      [
+        "src/pages/index.astro",
+        `---\nimport script from "../scripts/large.js?url";\n---\n<script src={script}></script>\n`,
+      ],
+      ["src/scripts/large.js", "export const payload = 'larger than the cache';\n"],
+    ]);
+
+    function storeHost(store: MemoryGeneratedAssetStore, cache = { maxEntries: 2, maxBytes: 4 }) {
+      return createProjectHost({
+        store: createMapProjectStore(files),
+        loader,
+        compiler,
+        generatedAssetCache: cache,
+        generatedAssetStore: store,
+      });
+    }
+
+    test("holds what the memory cache cannot, before the page returns", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const page = await storeHost(store).render("/");
+      expect(page.assets).toHaveLength(1);
+      expect(store.size).toBe(1);
+    });
+
+    test("serves a host that never rendered the page", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const [asset] = (await storeHost(store).render("/")).assets;
+      if (asset === undefined) throw new Error("no generated asset");
+
+      const cold = storeHost(store, { maxEntries: 32, maxBytes: 1024 * 1024 });
+      const response = await cold.fetch(new Request(`https://example.test${asset.path}`));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(await response.text()).toBe(asset.body);
+    });
+  });
+
   test("inlines only CSS reached from the page import graph", async () => {
     const host = hostOf(
       createMapProjectStore(
@@ -403,6 +445,414 @@ describe("createProjectHost", () => {
       expect(html).not.toContain('@import "tailwindcss"');
     },
   );
+
+  test.skipIf(tailwindDir() === null)(
+    "reads no @import out of a stylesheet's comments or strings",
+    async () => {
+      const host = createProjectHost({
+        store: createMapProjectStore(
+          new Map([
+            [
+              "src/pages/index.astro",
+              `---\nimport "../styles/global.css";\nimport "../styles/notes.css";\n---\n<html><body><p class="p-4">home</p></body></html>\n`,
+            ],
+            [
+              "src/styles/global.css",
+              '/* Theme entry. Uses @import "tailwindcss" below; see also @import "./missing.css". */\n' +
+                '@import "tailwindcss";\n.quote::before { content: \'@import "./also-missing.css";\'; }\n',
+            ],
+            ["src/styles/notes.css", '/* never @import "tailwindcss" here */\n.note { color: teal; }\n'],
+          ]),
+        ),
+        loader,
+        compiler,
+        tailwind: TAILWIND,
+      });
+
+      const response = await host.fetch(new Request("https://example.test/"));
+      const html = await response.text();
+
+      expect(response.status, html).toBe(200);
+      expect(html).toContain(".p-4");
+      expect(html).toContain(".note { color: teal; }");
+    },
+  );
+
+  test.skipIf(tailwindDir() === null)(
+    "prefers host-embedded Tailwind over a copy the artifact vendored",
+    async () => {
+      const vendored = "npm:tailwind-copy/index.css";
+      const host = createProjectHost({
+        store: createMapProjectStore(
+          new Map([
+            [
+              "src/pages/index.astro",
+              `---\nimport "../styles/global.css";\n---\n<html><body><p class="p-4">home</p></body></html>\n`,
+            ],
+            ["src/styles/global.css", '@import "tailwindcss";\n'],
+          ]),
+        ),
+        artifact: {
+          artifact: {
+            version: ARTIFACT_VERSION,
+            config: {},
+            scripts: { headInline: [], page: [] },
+            modules: [{ id: vendored, kind: "css", source: "/* another Tailwind release */\n" }],
+            resolutions: [
+              {
+                importer: "project:src/styles/global.css",
+                specifier: "tailwindcss",
+                target: { kind: "module", id: vendored },
+              },
+            ],
+          },
+        },
+        loader,
+        compiler,
+        tailwind: await tailwindStylesheets(),
+      });
+
+      const response = await host.fetch(new Request("https://example.test/"));
+      const html = await response.text();
+
+      expect(response.status, html).toBe(200);
+      expect(html).toContain(".p-4");
+      expect(html).not.toContain("another Tailwind release");
+    },
+  );
+
+  test("reports each render's console output to onRender", async () => {
+    const events: RenderEvent[] = [];
+    const host = createProjectHost({
+      store: createMapProjectStore(
+        new Map([
+          ["src/pages/index.astro", `---\nconsole.info("rendering home");\n---\n<p>home</p>\n`],
+          ["src/pages/broken.astro", `---\nconsole.warn("about to throw");\nthrow new Error("broken page");\n---\n`],
+        ]),
+      ),
+      loader,
+      compiler,
+      onRender: (event) => events.push(event),
+    });
+
+    expect((await host.fetch(new Request("https://example.test/"))).status).toBe(200);
+    expect((await host.fetch(new Request("https://example.test/broken"))).status).toBe(500);
+
+    expect(events.map((event) => [event.pathname, event.file, event.logs.logs, event.error !== undefined])).toEqual([
+      ["/", "src/pages/index.astro", [{ level: "info", message: "rendering home" }], false],
+      ["/broken", undefined, [{ level: "warn", message: "about to throw" }], true],
+    ]);
+  });
+
+  describe("routing config", () => {
+    const LOCALE_PAGE = `---\nimport { getRelativeLocaleUrl } from "astro:i18n";\n---\n<p>locale={Astro.currentLocale} link={getRelativeLocaleUrl("es", "about")}</p>\n`;
+
+    function routingHost(config: Record<string, unknown>, files: Record<string, string>) {
+      return createProjectHost({
+        store: createMapProjectStore(new Map(Object.entries(files))),
+        artifact: {
+          artifact: {
+            version: ARTIFACT_VERSION,
+            config,
+            scripts: { headInline: [], page: [] },
+            modules: [],
+            resolutions: [],
+          },
+        },
+        loader,
+        compiler,
+      });
+    }
+
+    async function get(host: ReturnType<typeof routingHost>, path: string) {
+      const response = await host.fetch(new Request(`https://example.test${path}`));
+      return { status: response.status, location: response.headers.get("location"), body: await response.text() };
+    }
+
+    test("passes the query string to Astro.url", async () => {
+      const host = routingHost({}, { "src/pages/index.astro": "<p>search={Astro.url.search}</p>\n" });
+      expect((await get(host, "/?q=1&lang=en")).body).toContain("search=?q=1&amp;lang=en");
+    });
+
+    test("redirects to the trailingSlash form, keeping the query, but not a file-like path", async () => {
+      const always = routingHost({ trailingSlash: "always" }, { "src/pages/about.astro": "<p>about</p>\n" });
+      expect(await get(always, "/about?x=1")).toMatchObject({ status: 301, location: "/about/?x=1" });
+      expect((await get(always, "/about/")).body).toContain("about");
+      expect((await get(always, "/feed.xml")).status).toBe(404);
+
+      const never = routingHost({ trailingSlash: "never" }, { "src/pages/about.astro": "<p>about</p>\n" });
+      expect(await get(never, "/about/")).toMatchObject({ status: 301, location: "/about" });
+      expect((await get(never, "/")).status).toBe(404);
+    });
+
+    test("answers config redirects, filling the destination's params", async () => {
+      const host = routingHost(
+        {
+          redirects: [
+            { source: "/old", destination: "/new", status: 301 },
+            { source: "/blog/[slug]", destination: "/posts/[slug]", status: 302 },
+          ],
+        },
+        { "src/pages/old.astro": "<p>shadowed by the redirect</p>\n" },
+      );
+      expect(await get(host, "/old")).toMatchObject({ status: 301, location: "/new" });
+      expect(await get(host, "/blog/hello")).toMatchObject({ status: 302, location: "/posts/hello" });
+    });
+
+    const I18N = {
+      defaultLocale: "en",
+      locales: ["en", { path: "spanish", codes: ["es", "es-AR"] }],
+      fallback: { es: "en" },
+    };
+    const LOCALIZED = {
+      "src/pages/index.astro": LOCALE_PAGE,
+      "src/pages/about.astro": LOCALE_PAGE,
+      "src/pages/spanish/index.astro": LOCALE_PAGE,
+    };
+
+    test("sets Astro.currentLocale and installs the astro:i18n helpers", async () => {
+      const host = routingHost({ i18n: I18N }, LOCALIZED);
+      expect((await get(host, "/")).body).toContain("locale=en link=/spanish/about");
+      expect((await get(host, "/spanish/")).body).toContain("locale=es link=/spanish/about");
+    });
+
+    test("renders a page a locale lacks from its fallback, or redirects to it", async () => {
+      const rewrite = routingHost({ i18n: I18N }, LOCALIZED);
+      const page = await get(rewrite, "/spanish/about");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain("locale=es");
+
+      const redirect = routingHost({ i18n: { ...I18N, routing: { fallbackType: "redirect" } } }, LOCALIZED);
+      expect(await get(redirect, "/spanish/about")).toMatchObject({ status: 302, location: "/about" });
+    });
+
+    test("redirects an unprefixed path to the default locale when it is prefixed", async () => {
+      const host = routingHost(
+        { i18n: { defaultLocale: "en", locales: ["en", "de"], routing: { prefixDefaultLocale: true } } },
+        { "src/pages/en/about.astro": LOCALE_PAGE.replace('"es"', '"de"') },
+      );
+      expect(await get(host, "/about")).toMatchObject({ status: 302, location: "/en/about" });
+    });
+  });
+
+  describe("SVG imports", () => {
+    const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16" viewBox="0 0 24 16"><rect width="24" height="16"/></svg>\n';
+    const PAGE_WITH_SVG = `---
+import logo from "../assets/logo.svg";
+import logoMarkup from "../assets/logo.svg?raw";
+---
+<img src={logo.src} width={logo.width} height={logo.height} data-format={logo.format} />
+<div set:html={logoMarkup} />
+`;
+
+    async function check(host: ReturnType<typeof createProjectHost>): Promise<void> {
+      const html = await (await host.fetch(new Request("https://example.test/"))).text();
+      const src = /<img src="([^"]+)"/.exec(html)?.[1];
+      expect(src, html).toMatch(/^\/_astro\/logo\.[0-9a-f]{8}\.svg$/);
+      expect(html).toContain('width="24" height="16" data-format="svg"');
+      expect(html).toContain('<div><svg xmlns="http://www.w3.org/2000/svg"');
+
+      const image = await host.fetch(new Request(`https://example.test${src}`));
+      expect(image.status).toBe(200);
+      expect(image.headers.get("content-type")).toBe("image/svg+xml");
+      expect(await image.text()).toBe(SVG);
+    }
+
+    test("an import without a query is image metadata, ?raw stays the text (map store)", async () => {
+      await check(
+        hostOf(createMapProjectStore(new Map([["src/pages/index.astro", PAGE_WITH_SVG], ["src/assets/logo.svg", SVG]]))),
+      );
+    });
+
+    test("an import without a query is image metadata, ?raw stays the text (workspace store)", async () => {
+      const workspace = new FakeWorkspace();
+      workspace.write("/src/pages/index.astro", PAGE_WITH_SVG);
+      workspace.write("/src/assets/logo.svg", SVG);
+      await check(hostOf(createWorkspaceProjectStore(workspace, { revision: () => workspace.revision })));
+    });
+  });
+
+  describe("public files", () => {
+    const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x80, 0x0a]);
+
+    function publicHost() {
+      const workspace = new FakeWorkspace();
+      workspace.write("/site/src/pages/index.astro", PAGE);
+      workspace.write("/site/src/pages/about.astro", PAGE);
+      workspace.write("/site/public/assets/brochure.pdf", PDF);
+      workspace.write("/site/public/favicon.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+      workspace.write("/site/public/about", "a public file named like a page");
+      workspace.write("/site/public/.env", "SECRET=1");
+      workspace.write("/site/public/fonts/large.woff2", new Uint8Array(4096).fill(7));
+      return createProjectHost({
+        store: createWorkspaceProjectStore(workspace, {
+          root: "/site",
+          revision: () => workspace.revision,
+          maxFileBytes: 1024,
+        }),
+        loader,
+        compiler,
+      });
+    }
+
+    test("serves the exact bytes with the file's type", async () => {
+      const response = await publicHost().fetch(new Request("https://example.test/assets/brochure.pdf"));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("application/pdf");
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(PDF);
+
+      const svg = await publicHost().fetch(new Request("https://example.test/favicon.svg"));
+      expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+      expect(await svg.text()).toContain("<svg");
+    });
+
+    test("serves a file over the listing's size limit", async () => {
+      const response = await publicHost().fetch(new Request("https://example.test/fonts/large.woff2"));
+      expect(response.headers.get("content-type")).toBe("font/woff2");
+      expect((await response.arrayBuffer()).byteLength).toBe(4096);
+    });
+
+    test("answers HEAD with the headers and no body", async () => {
+      const response = await publicHost().fetch(new Request("https://example.test/assets/brochure.pdf", { method: "HEAD" }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-length")).toBe(String(PDF.byteLength));
+      expect(await response.text()).toBe("");
+    });
+
+    test("takes precedence over a page at the same path", async () => {
+      const response = await publicHost().fetch(new Request("https://example.test/about"));
+      expect(await response.text()).toBe("a public file named like a page");
+      expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    });
+
+    test("serves nothing outside public/ and no dotfile", async () => {
+      const host = publicHost();
+      for (const path of ["/..%2Fsrc%2Fpages%2Findex.astro", "/.env", "/%2e%2e/src/pages/index.astro", "/assets/"]) {
+        const response = await host.fetch(new Request(`https://example.test${path}`));
+        expect([path, response.status]).toEqual([path, 404]);
+      }
+    });
+  });
+
+  describe("processed scripts", () => {
+    const PAGE_WITH_SCRIPT = `---
+import "../styles/global.css";
+---
+<html><body><button class="menu">menu</button></body></html>
+<script>
+  import { greet } from "browser-pkg";
+  import { openMenu } from "../lib/menu";
+  const button: HTMLElement | null = document.querySelector(".menu");
+  button?.classList.add("translate-x-4");
+  greet();
+  openMenu();
+</script>
+`;
+    const artifact = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [
+          { id: "npm:browser-pkg/browser.js", kind: "js", source: 'import { dep } from "./dep.js";\nexport function greet() { dep(); }\n' },
+          { id: "npm:browser-pkg/dep.js", kind: "js", source: "export function dep() {}\n" },
+        ],
+        resolutions: [],
+        browserResolutions: [
+          { importer: "project:*", specifier: "browser-pkg", target: { kind: "module", id: "npm:browser-pkg/browser.js" } },
+          { importer: "npm:browser-pkg/browser.js", specifier: "./dep.js", target: { kind: "module", id: "npm:browser-pkg/dep.js" } },
+        ],
+      },
+    };
+
+    function scriptHost(page = PAGE_WITH_SCRIPT, menu = 'export function openMenu(): void { document.body.classList.add("opacity-50"); }\n') {
+      return createProjectHost({
+        store: createMapProjectStore(
+          new Map([
+            ["src/pages/index.astro", page],
+            ["src/lib/menu.ts", menu],
+            ["src/styles/global.css", '@import "tailwindcss";\n'],
+          ]),
+        ),
+        artifact,
+        loader,
+        compiler,
+        ...(TAILWIND === undefined ? {} : { tailwind: TAILWIND }),
+      });
+    }
+
+    async function scriptSrc(host: ReturnType<typeof scriptHost>): Promise<string> {
+      const html = await (await host.fetch(new Request("https://example.test/"))).text();
+      const match = /<script type="module" src="([^"]+)"><\/script>/.exec(html);
+      if (match === null) throw new Error(`no script tag in ${html}`);
+      return match[1];
+    }
+
+    test("render a script tag the host serves as an unbundled module", async () => {
+      const host = scriptHost();
+      const src = await scriptSrc(host);
+      expect(src).toStartWith("/_pletivo/script/0/project/src/pages/index.astro.js?v=");
+
+      const script = await host.fetch(new Request(`https://example.test${src}`));
+      const code = await script.text();
+      expect(script.status, code).toBe(200);
+      expect(script.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(code).toContain('from "/_pletivo/module/npm/browser-pkg/browser.js"');
+      expect(code).toContain('from "/_pletivo/module/project/src/lib/menu.ts"');
+      expect(code).not.toContain("HTMLElement | null");
+    });
+
+    test("serve project files and carried packages with their imports rewritten", async () => {
+      const host = scriptHost();
+      const menu = await (await host.fetch(new Request("https://example.test/_pletivo/module/project/src/lib/menu.ts"))).text();
+      expect(menu).toContain("export function openMenu()");
+      expect(menu).not.toContain(": void");
+
+      const pkg = await (await host.fetch(new Request("https://example.test/_pletivo/module/npm/browser-pkg/browser.js"))).text();
+      expect(pkg).toContain('from "/_pletivo/module/npm/browser-pkg/dep.js"');
+    });
+
+    test("an import the browser graph does not carry is a 500 that says to prepare again", async () => {
+      const host = scriptHost(PAGE_WITH_SCRIPT, 'import "not-prepared";\nexport function openMenu() {}\n');
+      const response = await host.fetch(new Request("https://example.test/_pletivo/module/project/src/lib/menu.ts"));
+      expect(response.status).toBe(500);
+      expect(await response.text()).toContain("re-run `pletivo prepare`");
+      expect((await host.fetch(new Request("https://example.test/_pletivo/module/project/src/missing.ts"))).status).toBe(404);
+    });
+
+    test("a script-only edit changes the script URL", async () => {
+      const before = await scriptSrc(scriptHost());
+      const after = await scriptSrc(scriptHost(PAGE_WITH_SCRIPT.replace("greet();", "greet(); greet();")));
+      expect(after).not.toBe(before);
+    });
+
+    test.skipIf(tailwindDir() === null)("builds the Tailwind classes only a script names", async () => {
+      const html = await (await scriptHost().fetch(new Request("https://example.test/"))).text();
+      expect(html).toContain(".translate-x-4");
+      expect(html).toContain(".opacity-50");
+    });
+  });
+
+  test("an unknown pathname renders the project's 404 page with status 404", async () => {
+    const host = hostOf(
+      createMapProjectStore(
+        new Map([
+          ["src/pages/index.astro", PAGE],
+          ["src/pages/404.astro", "<html><body><h1>Lost</h1><p>{Astro.url.pathname}</p></body></html>\n"],
+          ["src/pages/blog/[slug].astro", "---\nexport function getStaticPaths() { return [{ params: { slug: \"one\" } }]; }\n---\n<p>post</p>\n"],
+        ]),
+      ),
+    );
+
+    for (const path of ["/nope", "/blog/two"]) {
+      const response = await host.fetch(new Request(`https://example.test${path}`));
+      expect([path, response.status]).toEqual([path, 404]);
+      expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(response.headers.get("x-pletivo-page")).toBe("src/pages/404.astro");
+      expect(await response.text()).toContain("<h1>Lost</h1>");
+    }
+    expect((await host.fetch(new Request("https://example.test/404"))).status).toBe(404);
+  });
 
   test("an unknown pathname is a 404, not a throw", async () => {
     const host = hostOf(createMapProjectStore(new Map([["src/pages/index.astro", PAGE]])));

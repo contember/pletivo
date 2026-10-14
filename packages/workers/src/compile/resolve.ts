@@ -3,7 +3,7 @@ import { md5Hex } from "@pletivo/core/md5";
 import { projectModuleId, type ArtifactResolver } from "../artifact.ts";
 import type { ProjectAssetInfo, ProjectAssetsView } from "../asset-port.ts";
 import { ASSETS_DIR } from "../astro-assets.ts";
-import { CONTENT_MODULE_NAME, IMAGE_MODULE_NAME } from "../generated/runtime-modules.ts";
+import { CONTENT_MODULE_NAME, I18N_MODULE_NAME, IMAGE_MODULE_NAME } from "../generated/runtime-modules.ts";
 import { HOST_ALIASES } from "../host-aliases.ts";
 import { resolveSpecifier } from "../rewrite-imports.ts";
 import {
@@ -66,6 +66,12 @@ export class ImportResolver {
     const directAlias = HOST_ALIASES.get(rawSpecifier);
     if (directAlias !== undefined) return this.#externalUse(importer, rawSpecifier, rawSpecifier);
 
+    // Before the artifact: Tailwind compiles against the host-embedded stylesheets, and a
+    // vendored copy of another version would leave its import unmatched by any of them.
+    const tailwindImport = importer.kind === "css" && isTailwindStylesheetSpecifier(rawSpecifier);
+    const embedded = tailwindImport ? this.#embeddedTailwind(rawSpecifier) : null;
+    if (embedded !== null) return moduleResolution(embedded);
+
     const frozen = this.#options.artifact.resolve(importer.id, rawSpecifier);
     if (frozen !== null) {
       if (frozen.kind === "external") {
@@ -74,11 +80,7 @@ export class ImportResolver {
       return moduleResolution(this.#walk.artifactModule(frozen.id));
     }
 
-    if (importer.kind === "css" && isTailwindStylesheetSpecifier(rawSpecifier)) {
-      const { tailwind } = this.#options;
-      if (tailwind === undefined) throw new TailwindNotConfiguredError(importer.id);
-      return moduleResolution(this.#walk.hostStylesheet(rawSpecifier, tailwind[rawSpecifier]));
-    }
+    if (tailwindImport) throw new TailwindNotConfiguredError(importer.id);
 
     if (UNSUPPORTED_PACKAGE_ROOTS.has(rawSpecifier)) {
       throw unresolvedImport(importer, rawSpecifier, "unsupported package root export");
@@ -88,6 +90,12 @@ export class ImportResolver {
       rawSpecifier,
       "no project file, Artifact V2 resolution, or supported host alias answers it",
     );
+  }
+
+  #embeddedTailwind(specifier: string): SourceModule | null {
+    const { tailwind } = this.#options;
+    if (tailwind === undefined || !isTailwindStylesheetSpecifier(specifier)) return null;
+    return this.#walk.hostStylesheet(specifier, tailwind[specifier]);
   }
 
   /** What only a project importer can reach: its query imports, files, images and the content path. */
@@ -111,15 +119,8 @@ export class ImportResolver {
       );
     }
 
-    const local = this.#walk.resolveProjectFile(resolved);
-    if (local !== null) {
-      const target = this.#walk.projectModule(local);
-      if (target === null) {
-        throw unresolvedImport(importer, rawSpecifier, "the target kind is unsupported");
-      }
-      return moduleResolution(target);
-    }
-
+    // Before project modules: an SVG is also a text file, yet importing one without a
+    // query means its metadata, as with any image.
     if (isImageSource(resolved)) {
       const info = await this.#readAssetInfo(resolved);
       if (info === null) {
@@ -128,6 +129,15 @@ export class ImportResolver {
       const code = imageModule(resolved, info);
       this.#walk.usesImages = true;
       return moduleResolution(this.#walk.generatedModule(`generated:image:${projectModuleId(resolved)}`, code));
+    }
+
+    const local = this.#walk.resolveProjectFile(resolved);
+    if (local !== null) {
+      const target = this.#walk.projectModule(local);
+      if (target === null) {
+        throw unresolvedImport(importer, rawSpecifier, "the target kind is unsupported");
+      }
+      return moduleResolution(target);
     }
 
     if (PLETIVO_CONTENT_PATH.test(resolved)) {
@@ -155,6 +165,10 @@ export class ImportResolver {
     if (alias.kind === "image") {
       this.#walk.usesImages = true;
       return externalResolution(external, IMAGE_MODULE_NAME);
+    }
+    if (alias.kind === "i18n") {
+      this.#walk.usesI18n = true;
+      return externalResolution(external, I18N_MODULE_NAME);
     }
     return externalResolution(external, alias.executionName);
   }

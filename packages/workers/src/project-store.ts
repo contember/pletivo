@@ -5,7 +5,12 @@
  */
 
 import type { ProjectAssetsView } from "./asset-port.ts";
-import { projectAssetsView, type ProjectAssets } from "./content-files.ts";
+import {
+  isProjectAssetsView,
+  projectAssetsView,
+  type ProjectAsset,
+  type ProjectAssets,
+} from "./content-files.ts";
 
 /** Project sources as one revision sees them. A `ReadonlyMap<string, string>` satisfies it. */
 export interface ProjectFiles {
@@ -27,8 +32,9 @@ export interface ProjectSnapshot {
    */
   revision: string;
   /**
-   * A file's raw bytes, read now and not kept. Checked against `revision`; not bound by
-   * a store's size limit. Absent on stores that hold only text.
+   * A regular file's raw bytes, read now and not kept; `undefined` for a path the store
+   * does not list (a symlink, a directory, nothing). Checked against `revision`; not
+   * bound by a store's size limit. Absent on stores that hold only text.
    */
   readBytes?(path: string): Uint8Array<ArrayBuffer> | undefined;
 }
@@ -62,10 +68,29 @@ export function createMapProjectStore(
   revision = "static",
 ): ProjectStore {
   const snapshotFiles = new Map(files);
+  const ownedAssets = isProjectAssetsView(assets) ? null : withTextImages(assets, snapshotFiles);
+  const encoder = new TextEncoder();
   const snapshot: ProjectSnapshot = {
     files: snapshotFiles,
-    assets: projectAssetsView(assets),
+    assets: projectAssetsView(ownedAssets ?? assets),
     revision,
+    readBytes(path) {
+      const text = snapshotFiles.get(path);
+      // Copied: older TypeScript libs type `encode` over `ArrayBufferLike`.
+      if (text !== undefined) return new Uint8Array(encoder.encode(text));
+      const asset = ownedAssets?.get(path);
+      return asset instanceof Uint8Array ? new Uint8Array(asset) : undefined;
+    },
   };
   return { snapshot: () => Promise.resolve(snapshot) };
+}
+
+/** The caller's assets plus each SVG source, which is text and an image at once. */
+function withTextImages(assets: ProjectAssets, files: ReadonlyMap<string, string>): Map<string, ProjectAsset> {
+  const owned = new Map<string, ProjectAsset>(assets);
+  const encoder = new TextEncoder();
+  for (const [path, source] of files) {
+    if (path.toLowerCase().endsWith(".svg") && !owned.has(path)) owned.set(path, new Uint8Array(encoder.encode(source)));
+  }
+  return owned;
 }

@@ -83,25 +83,34 @@ export interface ContentHandle {
  *
  * `ctx.exports.PletivoContent({})` takes an options object; called bare it throws,
  * and passed uncalled it is not serializable into a dynamic Worker's `env`.
+ *
+ * Refs are random, so one render cannot guess another's. A host that renders for
+ * several owners (sessions, tenants) also binds each ref to its owner: it opens with
+ * `content: { binding, store, owner }`, and its entrypoint answers through
+ * `CONTENT.forOwner(this.ctx.props.owner)`, which refuses a ref opened for anyone else.
  */
 export class ContentFiles implements ContentBinding {
   readonly #open = new Map<string, OpenProject>();
-  #next = 0;
 
   /** How many renders currently hold a handle. A leak shows up here. */
   get openCount(): number {
     return this.#open.size;
   }
 
-  /** A handle on one render's sources: `files` is its text, `assets` its binaries (images). */
+  /**
+   * A handle on one render's sources: `files` is its text, `assets` its binaries (images).
+   * `owner` names who may read through it with `forOwner`; omitted, nobody but `this`.
+   */
   open(
     files: ProjectFiles,
     assets?: ProjectAssets | ProjectAssetsView,
+    owner?: string,
   ): ContentHandle {
-    const ref = `r${++this.#next}`;
+    const ref = crypto.randomUUID();
     const project: OpenProject = {
       files,
       assets: assets ? projectAssetsView(assets) : undefined,
+      owner,
       failure: undefined,
     };
     this.#open.set(ref, project);
@@ -130,8 +139,28 @@ export class ContentFiles implements ContentBinding {
     return recording(project, () => project.assets?.info(path) ?? null);
   }
 
-  #project(ref: string): OpenProject {
-    const project = this.#open.get(ref);
+  /** The binding surface for one owner: a ref opened for another owner reads as unknown. */
+  forOwner(owner: string): ContentBinding {
+    return {
+      scan: (ref, dir, pattern) => {
+        const project = this.#project(ref, owner);
+        return recording(project, () => scanFiles(project.files, dir, pattern));
+      },
+      read: (ref, path) => {
+        const project = this.#project(ref, owner);
+        return recording(project, () => project.files.get(path) ?? null);
+      },
+      image: (ref, path) => {
+        const project = this.#project(ref, owner);
+        return recording(project, () => project.assets?.info(path) ?? null);
+      },
+    };
+  }
+
+  #project(ref: string, owner?: string): OpenProject {
+    const opened = this.#open.get(ref);
+    // The same answer as an unknown ref, so a foreign one cannot be told apart.
+    const project = owner === undefined || opened?.owner === owner ? opened : undefined;
     if (!project) {
       throw new Error(
         `[pletivo-workers] no open project for content ref ${JSON.stringify(ref)} — ` +
@@ -146,6 +175,7 @@ export class ContentFiles implements ContentBinding {
 interface OpenProject {
   files: ProjectFiles;
   assets: ProjectAssetsView | undefined;
+  owner: string | undefined;
   failure: { error: unknown } | undefined;
 }
 
@@ -233,7 +263,7 @@ export function projectAssetsView(
   return isProjectAssetsView(assets) ? assets : createProjectAssetsView(assets);
 }
 
-function isProjectAssetsView(
+export function isProjectAssetsView(
   assets: ProjectAssets | ProjectAssetsView,
 ): assets is ProjectAssetsView {
   return "info" in assets && "resolveOutput" in assets;

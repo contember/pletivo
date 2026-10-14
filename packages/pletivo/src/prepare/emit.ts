@@ -1,4 +1,7 @@
-/** Write the canonical prepared site as a TypeScript module. */
+/**
+ * Write the canonical prepared site twice: as JSON, which a host loads at run time
+ * (`loadProjectArtifact`, `artifactPath`), and as a TypeScript module a host bundles.
+ */
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -6,29 +9,36 @@ import { randomUUID } from "node:crypto";
 import { serializePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
 
 export interface EmitResult {
+  jsonPath: string;
   modulePath: string;
   moduleBytes: number;
 }
 
 export async function emitArtifact(outDir: string, site: PreparedSite): Promise<EmitResult> {
   await fs.mkdir(outDir, { recursive: true });
+  const canonical = serializePreparedSite(site);
+  const jsonPath = path.join(outDir, "pletivo-artifact.json");
   const modulePath = path.join(outDir, "pletivo-artifact.ts");
-  const temporaryPath = `${modulePath}.${process.pid}-${randomUUID()}.tmp`;
-  const source = artifactModuleSource(serializePreparedSite(site));
-  try {
-    await fs.writeFile(temporaryPath, source);
-    await fs.rename(temporaryPath, modulePath);
-  } catch (error) {
-    await fs.rm(temporaryPath, { force: true });
-    throw error;
-  }
+  await writeAtomically(jsonPath, canonical);
+  await writeAtomically(modulePath, artifactModuleSource(canonical));
 
   const encoder = new TextEncoder();
   const moduleBytes = site.artifact.modules.reduce(
     (total, module) => total + encoder.encode(module.source).byteLength,
     0,
   );
-  return { modulePath, moduleBytes };
+  return { jsonPath, modulePath, moduleBytes };
+}
+
+async function writeAtomically(file: string, content: string): Promise<void> {
+  const temporaryPath = `${file}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, content);
+    await fs.rename(temporaryPath, file);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true });
+    throw error;
+  }
 }
 
 function artifactModuleSource(canonical: string): string {

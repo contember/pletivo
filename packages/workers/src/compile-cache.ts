@@ -30,6 +30,13 @@ export interface CompiledFile {
   envNames: ReadonlyMap<string, readonly string[]> | null;
   /** The `<style>` blocks a `.astro` file declares, with its scope hash. Feeds `pageCss`. */
   styles: AstroStyles | null;
+  /**
+   * A `.astro` file's processed `<script>` bodies, by the index `$$renderScript` names;
+   * `null` for one that loads an external `src`. Served to the browser, never executed here.
+   */
+  scripts: readonly (string | null)[];
+  /** Compiled with source annotations; only `.astro` output differs, so only it is `true`. */
+  annotated: boolean;
 }
 
 export interface CompileCache {
@@ -61,6 +68,7 @@ function chargeOf(entry: CompiledFile): number {
     charge += entry.styles.scope.length;
     for (const block of entry.styles.blocks) charge += block.css.length;
   }
+  for (const script of entry.scripts) charge += script?.length ?? 0;
   return charge;
 }
 

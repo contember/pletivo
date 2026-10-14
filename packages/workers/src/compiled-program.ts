@@ -1,4 +1,4 @@
-import type { ModuleId } from "@pletivo/core/artifact";
+import type { ArtifactI18nConfig, ArtifactJson, ModuleId } from "@pletivo/core/artifact";
 import type { ProjectEnvUse } from "./env.ts";
 
 export interface ExecutableEntry {
@@ -11,13 +11,43 @@ export interface ProgramContentRequirement {
   configExecutionName: string | null;
 }
 
+/** One configured Markdown plugin: the Loader module it is exported from, and its options. */
+export interface ProgramMarkdownPlugin {
+  executionName: string;
+  exportName: string;
+  options?: ArtifactJson;
+}
+
+/** The project's Markdown pipeline, installed in the isolate before anything renders. */
+export interface ProgramMarkdownRequirement {
+  remarkPlugins: ProgramMarkdownPlugin[];
+  rehypePlugins: ProgramMarkdownPlugin[];
+  remarkRehype?: { [key: string]: ArtifactJson };
+  gfm?: boolean;
+}
+
 /** Features the generated isolate entry must install. */
 export interface ExecutableRequirements {
   content: ProgramContentRequirement | null;
+  /** Set when Markdown renders in the isolate and the project configured it. */
+  markdown: ProgramMarkdownRequirement | null;
+  /**
+   * Set when the project imports `astro:i18n`: the config its helpers read, `null` for a
+   * project with none (the helpers then throw, as on the Bun host).
+   */
+  i18n: { config: ArtifactI18nConfig | null } | null;
   images: boolean;
   importMetaEnv: boolean;
   /** Set when the project imports `astro:env`; values never enter the module map. See `env.ts`. */
   env: ProjectEnvUse | null;
+}
+
+/** One processed `<script>` of a compiled `.astro` module. */
+export interface ProgramScript {
+  moduleId: ModuleId;
+  compilePath: string;
+  index: number;
+  code: string;
 }
 
 /** Loader-ready output; sources and CSS graph stay outside it. */
@@ -26,6 +56,8 @@ export interface ExecutableProgram {
   modules: Record<string, string>;
   entries: ExecutableEntry[];
   requirements: ExecutableRequirements;
+  /** `$$renderScript` id -> the URL the browser loads it from. See `browser-modules.ts`. */
+  scripts: Readonly<Record<string, string>>;
 }
 
 export interface OrderedExecutionEdge {

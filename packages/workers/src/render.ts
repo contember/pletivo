@@ -16,11 +16,17 @@ import {
   type RouteParams,
 } from "@pletivo/core/router";
 import { parseMarkdown } from "@pletivo/core/content/markdown";
+import type { ResolvedI18nConfig } from "@pletivo/core/i18n/config";
+import { resolveFallbackRoute } from "@pletivo/core/i18n/fallback";
+import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { RouteRedirect } from "./routing.ts";
 import { projectModuleId, type ProjectArtifact } from "./artifact.ts";
 import type { ProjectFiles } from "./project-store.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
+import { scriptCandidateSources } from "./browser-modules.ts";
+import { markdownPageHtml } from "./markdown-page.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
@@ -55,20 +61,22 @@ import {
   decodeParams,
   encodeParams,
   IsolateProtocolError,
-  parseIsolateResponse,
+  parseIsolateReply,
   type IsolateProgramExport,
+  type IsolateLogs,
   type IsolateRequest,
   type IsolateResponse,
 } from "./isolate-protocol.ts";
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  I18N_MODULE_NAME,
   IMAGE_MODULE_NAME,
   ISOLATE_ENTRY_MODULE_NAME,
   ISOLATE_ENTRY_MODULES,
   ISOLATE_PROGRAM_MODULE_NAME,
 } from "./generated/runtime-modules.ts";
-import type { ExecutableProgram } from "./compiled-program.ts";
+import type { ExecutableProgram, ProgramMarkdownPlugin } from "./compiled-program.ts";
 
 // Declared structurally rather than imported from `@cloudflare/workers-types`, so
 // the package keeps working whichever typings the host app has installed.
@@ -109,6 +117,11 @@ export interface ContentAccess {
   binding: ContentBinding;
   /** Where the bytes come from. A handle is opened per render and closed after it. */
   store: ContentFiles;
+  /**
+   * Who this render's ref belongs to, e.g. a session id. The binding's entrypoint must
+   * answer through `store.forOwner(owner)`; see `ContentFiles`.
+   */
+  owner?: string;
 }
 
 /** What every entrypoint here needs: the project, and somewhere to run it. */
@@ -156,11 +169,19 @@ export interface ProjectOptions {
    * map, so they are part of the program hash. See `artifact.ts`.
    */
   artifact?: ProjectArtifact;
+  /**
+   * Compile `.astro` with the Astro compiler's `annotateSourceFile`, as `astro dev` does:
+   * every element carries `data-astro-source-file` (the project path) and
+   * `data-astro-source-loc` (`line:column`), so a visual editor can map it to source.
+   */
+  annotateSourceFile?: boolean;
 }
 
 export interface RenderPageOptions extends ProjectOptions {
   /** URL pathname to render, e.g. `/` or `/blog/hello`. */
   pathname: string;
+  /** The request's query string, `?` included, for `Astro.url.search`. */
+  search?: string;
   /** `site` from the project config. Sets the origin of `Astro.url`. */
   site?: string;
 }
@@ -192,6 +213,8 @@ export interface RenderedPage {
    * Always empty from `renderPage`; `createProjectHost` fills it.
    */
   staleArtifactInputs: string[];
+  /** What the page's code wrote to `console` in the isolate, bounded. */
+  logs: IsolateLogs;
 }
 
 /** No route in the project matches the pathname. */
@@ -310,7 +333,8 @@ const DEFAULT_PAGES_DIR = "src/pages";
 /** Recent enough for `Response.json` and the modern module registry in the isolate. */
 const DEFAULT_COMPATIBILITY_DATE = "2026-01-01";
 const DEFAULT_COMPATIBILITY_FLAGS = ["nodejs_compat"];
-const WORKER_HOST_ABI = "pletivo-workers-v2";
+/** Bumped when the isolate protocol changes, so a stale isolate is never reused. v3: logs. */
+const WORKER_HOST_ABI = "pletivo-workers-v3";
 const SHARED_NAMESPACE: ExecutionNamespace = {
   tenant: "pletivo-workers-stateless",
   capabilityGeneration: "none",
@@ -404,6 +428,7 @@ async function isolatePaths(
     artifact: options.artifact,
     assets: options.assets,
     cache: options.compileCache,
+    annotateSourceFile: options.annotateSourceFile,
     tailwind: options.tailwind,
   });
   const { payload } = await callIsolate({
@@ -433,8 +458,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const srcDir = srcDirOf(options);
   const rootDir = projectRoot(options);
 
-  const match = findRoute(projectRoutes(files, pagesDir), pathname);
-  if (!match) throw new RouteNotFoundError(pathname);
+  const { match, currentLocale } = matchPage(projectRoutes(files, pagesDir), pathname, options.artifact?.i18n ?? null);
   const file = prefix + match.route.file;
 
   if (match.route.isEndpoint) {
@@ -449,7 +473,10 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     if (match.route.isDynamic) {
       throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
     }
-    const html = await renderMarkdownPage(source);
+    const markdown = options.artifact?.prepared.artifact.config.markdown === undefined
+      ? { html: await renderMarkdownPage(source), bundleId: "", logs: NO_LOGS }
+      : await isolateMarkdownPage(file, source, options);
+    const { html } = markdown;
     // A `.md` page has no module graph, so its CSS needs no compile and no merged map.
     const stylesheet = await pageStylesheet({
       files,
@@ -464,9 +491,10 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     return {
       html: finalizeHtml(html, [stylesheet ?? ""], scripts),
       file,
-      bundleId: "",
+      bundleId: markdown.bundleId,
       assets: [],
       staleArtifactInputs: [],
+      logs: markdown.logs,
     };
   }
   if (!isExecutableModule(file)) {
@@ -482,6 +510,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     artifact: options.artifact,
     assets: options.assets,
     cache: options.compileCache,
+    annotateSourceFile: options.annotateSourceFile,
     tailwind: options.tailwind,
   });
   const rendered = await renderModule({
@@ -491,6 +520,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     // The isolate treats a page without a route as static.
     route: match.route.isDynamic ? match.route : null,
     site,
+    currentLocale,
     options,
   });
   const css = pageCss({
@@ -511,6 +541,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     entry: projectModuleId(file),
     html: rendered.html,
     scripts,
+    browserSources: scriptCandidateSources(project.scripts, files),
     tailwind: options.tailwind,
   });
   return {
@@ -519,8 +550,11 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     bundleId: rendered.bundleId,
     assets: assetsOf(project.urlAssets),
     staleArtifactInputs: [],
+    logs: rendered.logs,
   };
 }
+
+const NO_LOGS: IsolateLogs = { logs: [], droppedLogs: 0 };
 
 const EMPTY_STYLE_GRAPH = { modules: [], executionEdges: [], styleEdges: [], styles: [] };
 
@@ -554,11 +588,40 @@ function urlAssetContentType(path: string): string {
 /** A `.md` page, rendered as `build.ts` renders one. No isolate involved. */
 export async function renderMarkdownPage(source: string): Promise<string> {
   const { html, frontmatter } = await parseMarkdown(source);
-  const title = typeof frontmatter.title === "string" ? frontmatter.title : "";
-  return (
-    `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-    `${title ? `<title>${title}</title>` : ""}</head><body>${html}</body></html>`
-  );
+  return markdownPageHtml(html, frontmatter);
+}
+
+/**
+ * A `.md` page of a project with configured Markdown plugins. The plugins are code from
+ * the artifact, so they run where project code runs: in the isolate.
+ */
+async function isolateMarkdownPage(
+  file: string,
+  source: string,
+  options: RenderPageOptions,
+): Promise<{ html: string; bundleId: string; logs: IsolateLogs }> {
+  const project = await compileProject({
+    files: options.files,
+    entries: [],
+    srcDir: srcDirOf(options),
+    compiler: options.compiler,
+    artifact: options.artifact,
+    assets: options.assets,
+    cache: options.compileCache,
+    annotateSourceFile: options.annotateSourceFile,
+    tailwind: options.tailwind,
+    markdown: true,
+  });
+  const { bundleId, payload, logs } = await callIsolate({
+    project,
+    options,
+    label: `rendering ${file}`,
+    body: { op: "markdown", file, source },
+  });
+  if (payload.status !== "rendered") {
+    throw new Error("[pletivo-workers] the render isolate returned an unexpected Markdown payload");
+  }
+  return { html: payload.html, bundleId, logs };
 }
 
 interface IsolateRender {
@@ -567,10 +630,16 @@ interface IsolateRender {
   renderedModules: string[];
   tsxStyles: string[];
   bundleId: string;
+  logs: IsolateLogs;
 }
 
 export class IsolateExecutionError extends Error {
-  constructor(readonly detail: string, readonly isolateStack?: string) {
+  constructor(
+    readonly detail: string,
+    readonly isolateStack?: string,
+    /** What the failed request logged before it failed. */
+    readonly logs: IsolateLogs = { logs: [], droppedLogs: 0 },
+  ) {
     super(`[pletivo-workers] render isolate execution failed: ${detail}`);
     this.name = "IsolateExecutionError";
   }
@@ -586,7 +655,7 @@ async function callIsolate(input: {
   /** Names the operation in an error, e.g. `rendering src/pages/index.astro`. */
   label: string;
   body: IsolateRequest;
-}): Promise<{ bundleId: string; payload: IsolateResponse }> {
+}): Promise<{ bundleId: string; payload: IsolateResponse; logs: IsolateLogs }> {
   const { project, options, label, body } = input;
   const { requirements } = project.program;
   // Only env names are in the map (ESM exports are static); values ride in bindings,
@@ -641,7 +710,7 @@ async function callIsolate(input: {
   const stub = options.loader.get(key, immutableCodeFactory(workerCode));
 
   // Opened per render: the isolate outlives the request, so the ref travels with it.
-  const handle = content ? content.store.open(options.files, options.assets) : null;
+  const handle = content ? content.store.open(options.files, options.assets, content.owner) : null;
   const requestBody: IsolateRequest = handle
     ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options) }
     : body;
@@ -670,9 +739,10 @@ async function callIsolate(input: {
       `expected a JSON response: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const payload = parseIsolateResponse(responseValue);
-  if (payload.status === "error") throw new IsolateExecutionError(payload.message, payload.stack);
-  return { bundleId, payload };
+  const payload = parseIsolateReply(responseValue);
+  const logs: IsolateLogs = { logs: payload.logs, droppedLogs: payload.droppedLogs };
+  if (payload.status === "error") throw new IsolateExecutionError(payload.message, payload.stack, logs);
+  return { bundleId, payload, logs };
 }
 
 /** Rethrow a content read's own error, which reaches the isolate only as a message. */
@@ -708,13 +778,14 @@ async function renderModule(input: {
   /** The matched route when it is dynamic, `null` when it is static. */
   route: Route | null;
   site: string | undefined;
+  currentLocale: string | undefined;
   options: RenderPageOptions;
 }): Promise<IsolateRender> {
-  const { project, file, params, route, site, options } = input;
+  const { project, file, params, route, site, currentLocale, options } = input;
 
   // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost stand-in.
   const origin = site ? new URL(site).origin : "http://localhost/";
-  const { bundleId, payload } = await callIsolate({
+  const { bundleId, payload, logs } = await callIsolate({
     project,
     options,
     label: `rendering ${file}`,
@@ -723,8 +794,9 @@ async function renderModule(input: {
       file,
       params: encodeParams(params),
       route,
-      url: pageUrl(options.pathname, origin),
+      url: pageUrl(options.pathname, options.search ?? "", origin),
       site,
+      ...(currentLocale === undefined ? {} : { currentLocale }),
     },
   });
   if (payload.status === "unresolved") {
@@ -733,11 +805,32 @@ async function renderModule(input: {
   if (payload.status !== "rendered") {
     throw new Error(`[pletivo-workers] the render isolate returned an unexpected payload`);
   }
-  return { ...payload, bundleId };
+  return { ...payload, bundleId, logs };
 }
 
-function pageUrl(pathname: string, origin: string): string {
-  return new URL("/" + pathname.replace(/^\//, ""), origin).href;
+function pageUrl(pathname: string, search: string, origin: string): string {
+  return new URL("/" + pathname.replace(/^\//, "") + search, origin).href;
+}
+
+/**
+ * The route a pathname renders, and `Astro.currentLocale` for it. Under i18n, a page a
+ * locale lacks renders from its fallback locale (rewrite), or redirects to it.
+ */
+function matchPage(
+  routes: Route[],
+  pathname: string,
+  i18n: ResolvedI18nConfig | null,
+): { match: { route: Route; params: RouteParams }; currentLocale: string | undefined } {
+  const match = findRoute(routes, pathname);
+  if (match !== null) {
+    return { match, currentLocale: i18n === null ? undefined : detectRouteLocale(match.route, i18n).locale?.code };
+  }
+  const fallback = i18n === null ? null : resolveFallbackRoute(pathname, routes, i18n, "/");
+  if (fallback === null) throw new RouteNotFoundError(pathname);
+  if (fallback.mode === "redirect" && fallback.redirectTo !== undefined) {
+    throw new RouteRedirect(fallback.redirectTo, 302);
+  }
+  return { match: { route: fallback.route, params: fallback.params }, currentLocale: fallback.targetLocale };
 }
 
 /**
@@ -745,7 +838,7 @@ function pageUrl(pathname: string, origin: string): string {
  * because this text is in the Loader program. Optional modules are imported only when reached.
  */
 function programModule(program: ExecutableProgram): string {
-  const { content, env, importMetaEnv } = program.requirements;
+  const { content, markdown, env, importMetaEnv } = program.requirements;
   const imports: string[] = [];
   const pages = [...program.entries]
     .sort((left, right) => left.moduleId < right.moduleId ? -1 : left.moduleId > right.moduleId ? 1 : 0)
@@ -754,17 +847,42 @@ function programModule(program: ExecutableProgram): string {
       return `  ${JSON.stringify(file)}: () => import(${moduleSpecifier(executionName)}),`;
     });
 
+  if (content !== null || markdown !== null) {
+    imports.push(`import * as $$content from ${moduleSpecifier(CONTENT_MODULE_NAME)};`);
+  }
   let contentModules = "null";
   let contentConfig = "null";
   if (content !== null) {
-    imports.push(
-      `import * as $$collections from ${moduleSpecifier(CONTENT_MODULE_NAME)};`,
-      `import * as $$images from ${moduleSpecifier(IMAGE_MODULE_NAME)};`,
-    );
-    contentModules = "{ collections: $$collections, images: $$images }";
+    imports.push(`import * as $$images from ${moduleSpecifier(IMAGE_MODULE_NAME)};`);
+    contentModules = "{ collections: $$content, images: $$images }";
     if (content.configExecutionName !== null) {
       contentConfig = `() => import(${moduleSpecifier(content.configExecutionName)})`;
     }
+  }
+
+  let markdownPipeline = "null";
+  if (markdown !== null) {
+    const pluginModules = new Map<string, string>();
+    const plugins = (entries: readonly ProgramMarkdownPlugin[]): string =>
+      `[${entries.map((entry) => {
+        let local = pluginModules.get(entry.executionName);
+        if (local === undefined) {
+          local = `$$markdownPlugin${pluginModules.size}`;
+          pluginModules.set(entry.executionName, local);
+          imports.push(`import * as ${local} from ${moduleSpecifier(entry.executionName)};`);
+        }
+        const options = entry.options === undefined ? "" : `, options: ${JSON.stringify(entry.options)}`;
+        return `{ module: ${local}, exportName: ${JSON.stringify(entry.exportName)}${options} }`;
+      }).join(", ")}]`;
+    markdownPipeline = `{ module: $$content, remarkPlugins: ${plugins(markdown.remarkPlugins)}, ` +
+      `rehypePlugins: ${plugins(markdown.rehypePlugins)}, ` +
+      `remarkRehype: ${JSON.stringify(markdown.remarkRehype ?? null)}, gfm: ${JSON.stringify(markdown.gfm ?? null)} }`;
+  }
+
+  let i18nModule = "null";
+  if (program.requirements.i18n !== null) {
+    imports.push(`import * as $$i18n from ${moduleSpecifier(I18N_MODULE_NAME)};`);
+    i18nModule = `{ module: $$i18n, config: ${JSON.stringify(program.requirements.i18n.config)} }`;
   }
 
   const installers: string[] = [];
@@ -781,6 +899,9 @@ function programModule(program: ExecutableProgram): string {
     pages: `{\n${pages.join("\n")}\n}`,
     contentConfig,
     content: contentModules,
+    markdown: markdownPipeline,
+    scripts: JSON.stringify(program.scripts),
+    i18n: i18nModule,
     envInstallers: `[${installers.join(", ")}]`,
     importMetaEnv: String(importMetaEnv),
   };

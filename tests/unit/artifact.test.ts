@@ -6,6 +6,7 @@ import {
   digestArtifactInput,
   parsePreparedSite,
   serializePreparedSite,
+  type ArtifactResolution,
   type PreparedSite,
 } from "@pletivo/core/artifact";
 
@@ -146,6 +147,26 @@ describe("site artifact", () => {
 
     expect(parsed.artifact.scripts.headInline).toEqual(["head-b", "head-a"]);
     expect(parsed.artifact.scripts.page).toEqual(["page-b", "page-a"]);
+  });
+
+  test("carries browser resolutions, which may only target carried modules", () => {
+    const browserResolutions: ArtifactResolution[] = [
+      {
+        importer: "project:*",
+        specifier: "entry",
+        target: { kind: "module", id: "artifact:entry.js" },
+      },
+    ];
+    const parsed = parsePreparedSite(JSON.parse(serializePreparedSite(artifactWith({ browserResolutions }))));
+    expect(parsed.artifact.browserResolutions).toEqual(browserResolutions);
+    expect(parsePreparedSite(artifactWith({})).artifact.browserResolutions).toBeUndefined();
+
+    const external = artifactWith({
+      browserResolutions: [
+        { importer: "project:*", specifier: "astro:content", target: { kind: "external", specifier: "astro:content" } },
+      ],
+    });
+    expect(formatError(external).path).toBe("$.artifact.browserResolutions[0].target.kind");
   });
 
   test("rejects an unknown artifact version", () => {

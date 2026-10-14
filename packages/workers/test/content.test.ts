@@ -1,4 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { ANY_PROJECT_IMPORTER, ARTIFACT_VERSION } from "@pletivo/core/artifact";
+import { loadProjectArtifact } from "../src/artifact.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { compileProject } from "../src/compile-project.ts";
 import { imageOutputPath } from "@pletivo/core/image";
@@ -421,6 +423,49 @@ describe("ContentFiles", () => {
     right.close();
     expect(store.openCount).toBe(0);
   });
+
+  test("hand out refs no render can derive from another's", () => {
+    const store = new ContentFiles();
+    const refs = Array.from({ length: 3 }, () => store.open(files).ref);
+    for (const ref of refs) expect(ref).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(new Set(refs).size).toBe(3);
+  });
+
+  test("answer an owner only for refs opened for that owner", async () => {
+    const store = new ContentFiles();
+    const mine = store.open(new Map([["x.md", "mine"]]), undefined, "session-a");
+    const theirs = store.open(new Map([["x.md", "theirs"]]), undefined, "session-b");
+    const binding = store.forOwner("session-a");
+    expect(await binding.read(mine.ref, "x.md")).toBe("mine");
+    expect(() => binding.read(theirs.ref, "x.md")).toThrow(/no open project/);
+    expect(() => binding.scan(theirs.ref, "", "*.md")).toThrow(/no open project/);
+    expect(() => binding.image(theirs.ref, "x.png")).toThrow(/no open project/);
+  });
+
+  test("an owner-bound render reads its content through its owner's binding", async () => {
+    // The isolate keeps the binding it was created with, so each owner has its own namespace.
+    const namespace = (tenant: string) => ({ tenant, capabilityGeneration: "content-v1" });
+    const store = new ContentFiles();
+    const page = await renderPage({
+      files: project({ "a.md": note("Alpha") }),
+      pathname: "/",
+      loader,
+      compiler,
+      content: { binding: store.forOwner("session-a"), store, owner: "session-a" },
+      executionNamespace: namespace("owner-tests:a"),
+    });
+    expect(page.html).toContain("<li>Alpha</li>");
+    await expect(
+      renderPage({
+        files: project({ "a.md": note("Alpha") }),
+        pathname: "/",
+        loader,
+        compiler,
+        content: { binding: store.forOwner("session-a"), store, owner: "session-b" },
+        executionNamespace: namespace("owner-tests:mismatch"),
+      }),
+    ).rejects.toThrow(/no open project/);
+  });
 });
 
 describe("createLazyProjectAssetsView", () => {
@@ -487,5 +532,89 @@ describe("globMatcher", () => {
     const match = globMatcher("**/*.md");
     expect(match("a+b.md")).toBe(true);
     expect(globMatcher("v1.0/*.md")("v1x0/a.md")).toBe(false);
+  });
+});
+
+describe("portable Markdown plugins", () => {
+  const PLUGINS = `const PORTABLE = Symbol.for("pletivo.portableModule");
+function visit(node, fn) {
+  fn(node);
+  for (const child of node.children ?? []) visit(child, fn);
+}
+export function remarkShout(options = {}) {
+  return (tree) => visit(tree, (node) => { if (node.type === "text") node.value += options.suffix ?? ""; });
+}
+export function rehypeMark() {
+  return (tree) => visit(tree, (node) => {
+    if (node.type === "element" && node.tagName === "p") node.properties = { ...node.properties, className: ["marked"] };
+  });
+}
+export const notAFunction = 1;
+`;
+
+  function artifact(remarkExport = "remarkShout") {
+    return loadProjectArtifact({
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {
+          markdown: {
+            remarkPlugins: [{ module: "portable-markdown", export: remarkExport, options: { suffix: "!" } }],
+            rehypePlugins: [{ module: "portable-markdown", export: "rehypeMark" }],
+          },
+        },
+        scripts: { headInline: [], page: [] },
+        modules: [{ id: "npm:portable-markdown/index.js", kind: "js", source: PLUGINS }],
+        resolutions: [
+          {
+            importer: ANY_PROJECT_IMPORTER,
+            specifier: "portable-markdown",
+            target: { kind: "module", id: "npm:portable-markdown/index.js" },
+          },
+        ],
+      },
+    });
+  }
+
+  test("a collection entry renders through the configured plugins, in order", async () => {
+    const files = project({ "a.md": note("Alpha", "Hello") });
+    files.set(
+      "src/pages/index.astro",
+      `---\nimport { getEntry, render } from "astro:content";\nconst entry = await getEntry("notes", "a");\nconst { Content } = await render(entry);\n---\n<html><body><Content /></body></html>\n`,
+    );
+    const page = await renderPage({
+      files,
+      pathname: "/",
+      loader,
+      compiler,
+      content: contentAccess(),
+      executionNamespace: EXECUTION_NAMESPACE,
+      artifact: artifact(),
+    });
+    expect(page.html).toContain('<p class="marked">Hello!</p>');
+  });
+
+  test("a .md page renders in the isolate with the same plugins", async () => {
+    const page = await renderPage({
+      files: new Map([["src/pages/index.md", "---\ntitle: Plugins\n---\n\nHello\n"]]),
+      pathname: "/",
+      loader,
+      compiler,
+      artifact: artifact(),
+    });
+    expect(page.html).toContain("<title>Plugins</title>");
+    expect(page.html).toContain('<p class="marked">Hello!</p>');
+    expect(page.bundleId).not.toBe("");
+  });
+
+  test("names an export that is not a plugin function", async () => {
+    await expect(
+      renderPage({
+        files: new Map([["src/pages/index.md", "Hello\n"]]),
+        pathname: "/",
+        loader,
+        compiler,
+        artifact: artifact("notAFunction"),
+      }),
+    ).rejects.toThrow('Markdown plugin export "notAFunction" is not a function');
   });
 });

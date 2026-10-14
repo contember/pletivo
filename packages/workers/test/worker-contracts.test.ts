@@ -7,7 +7,8 @@ import {
 } from "../src/execution-identity.ts";
 import {
   IsolateProtocolError,
-  parseIsolateResponse,
+  parseIsolateReply,
+  type IsolateLogs,
   type IsolatePathsResponse,
   type IsolateErrorResponse,
   type IsolateRenderedResponse,
@@ -221,8 +222,10 @@ describe("isolate response boundary", () => {
     };
     const error: IsolateErrorResponse = { status: "error", message: "render failed", stack: "stack" };
 
+    const logs: IsolateLogs = { logs: [{ level: "warn", message: "careful" }], droppedLogs: 2 };
     for (const response of [rendered, unresolved, paths, error]) {
-      expect(parseIsolateResponse(JSON.parse(JSON.stringify(response)))).toEqual(response);
+      const reply = { ...response, ...logs };
+      expect(parseIsolateReply(JSON.parse(JSON.stringify(reply)))).toEqual(reply);
     }
   });
 
@@ -248,14 +251,30 @@ describe("isolate response boundary", () => {
     ];
 
     for (const scenario of malformed) {
-      expect(() => parseIsolateResponse(scenario.value), scenario.name).toThrow(
+      const value = typeof scenario.value === "object" ? { ...scenario.value, logs: [], droppedLogs: 0 } : scenario.value;
+      expect(() => parseIsolateReply(value), scenario.name).toThrow(
         IsolateProtocolError,
       );
     }
   });
 
+  test("rejects malformed logs", () => {
+    const unresolved = { status: "unresolved", reason: "no-static-path" };
+    const malformed: Array<{ name: string; value: unknown }> = [
+      { name: "missing logs", value: { ...unresolved, droppedLogs: 0 } },
+      { name: "unknown level", value: { ...unresolved, logs: [{ level: "trace", message: "" }], droppedLogs: 0 } },
+      { name: "non-string message", value: { ...unresolved, logs: [{ level: "log", message: 1 }], droppedLogs: 0 } },
+      { name: "negative dropped count", value: { ...unresolved, logs: [], droppedLogs: -1 } },
+    ];
+    for (const scenario of malformed) {
+      expect(() => parseIsolateReply(scenario.value), scenario.name).toThrow(IsolateProtocolError);
+    }
+  });
+
   test("keeps a __proto__ path key as data", () => {
-    const response = parseIsolateResponse(JSON.parse('{"status":"paths","paths":{"__proto__":[]}}'));
+    const response = parseIsolateReply(
+      JSON.parse('{"status":"paths","paths":{"__proto__":[]},"logs":[],"droppedLogs":0}'),
+    );
     if (response.status !== "paths") throw new Error("expected paths");
     expect(Object.getPrototypeOf(response.paths)).toBe(Object.prototype);
     expect(Object.keys(response.paths)).toEqual(["__proto__"]);

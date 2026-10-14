@@ -23,20 +23,30 @@ import {
   type ArtifactInput,
 } from "@pletivo/core/artifact";
 import { loadProjectArtifact, type ProjectArtifact } from "./artifact.ts";
+import { browserModule, BrowserModuleError, isBrowserModulePath } from "./browser-modules.ts";
+import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
+import { publicFileResponse } from "./public-files.ts";
+import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
+import type { GeneratedAssetStore } from "./generated-asset-store.ts";
 import {
   WorkspaceSnapshotChangedError,
   type ProjectSnapshot,
   type ProjectStore,
 } from "./project-store.ts";
+import { findRoute, type Route } from "@pletivo/core/router";
+import type { IsolateLogs } from "./isolate-protocol.ts";
 import {
+  IsolateExecutionError,
   RouteNotFoundError,
   UnsupportedRouteError,
   projectPaths,
   projectRoot,
+  projectRoutes,
   renderPage,
   type ProjectOptions,
+  type RenderedAsset,
   type RenderedPage,
   type RoutePath,
 } from "./render.ts";
@@ -60,13 +70,35 @@ export interface ProjectHostOptions
   artifactPath?: string;
   /** `pletivo prepare`'s output as a value, validated once when the host is created. */
   artifact?: unknown;
-  /** How many generated (content-hashed) files to keep for the browser's follow-up GET. */
+  /** How many generated (content-hashed) files to keep in memory for the browser's follow-up GET. */
   generatedAssetCache?: { maxEntries: number; maxBytes: number };
+  /**
+   * Durable storage for generated files, written before a page's HTML is returned and
+   * read when the in-memory cache misses. Without it, a file the cache cannot retain
+   * fails the page (`GeneratedAssetRetentionError`).
+   */
+  generatedAssetStore?: GeneratedAssetStore;
+  /**
+   * Called once per page `fetch` rendered or failed to render, with what the page's code
+   * logged in the isolate. For a host's diagnostics; it must not throw.
+   */
+  onRender?: (event: RenderEvent) => void;
+}
+
+/** One page render `fetch` served, for diagnostics. */
+export interface RenderEvent {
+  pathname: string;
+  /** The page file, when a route matched and rendered. */
+  file?: string;
+  logs: IsolateLogs;
+  /** Why the render failed; absent on success. */
+  error?: unknown;
 }
 
 export interface ProjectHost {
   /**
-   * Serve one request: a generated asset, an image, or a rendered page. Throws nothing:
+   * Serve one request, first match wins: a generated asset, a processed script and what
+   * it imports, a `public/` file, an image output, then a rendered page. Throws nothing:
    * failures become status codes. Call `render()` to handle them yourself.
    */
   fetch(request: Request): Promise<Response>;
@@ -76,9 +108,21 @@ export interface ProjectHost {
   paths(): Promise<RoutePath[]>;
   /** The project as the next render will see it. */
   snapshot(): Promise<ProjectSnapshot>;
+  /** What the project uses that this host does not render; see `project-features.ts`. */
+  features(): Promise<ProjectFeatures>;
 }
 
 const DEFAULT_GENERATED_ASSET_CACHE = { maxEntries: 32, maxBytes: 4 * 1024 * 1024 };
+
+/** The route Astro renders for an unmatched URL: `src/pages/404.*`. */
+const NOT_FOUND_PATHNAME = "/404";
+
+function isNotFoundRoute(route: Route): boolean {
+  return !route.isDynamic && !route.isEndpoint && route.segments.length === 1 && route.segments[0]?.value === "404";
+}
+
+/** Where `?url` imports are emitted; see `urlAssetHref` in compile/resolve.ts. */
+const GENERATED_ASSET_PREFIX = "/_astro/";
 
 /** Content-hashed names, so nothing served under one can go stale. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
@@ -91,6 +135,8 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     artifactPath,
     artifact: artifactValue,
     generatedAssetCache,
+    generatedAssetStore,
+    onRender,
     ...renderOptions
   } = options;
   const directArtifact =
@@ -162,15 +208,71 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     };
   }
 
-  async function renderSnapshot(pathname: string, snapshot: ProjectSnapshot): Promise<RenderedPage> {
+  async function renderSnapshot(
+    pathname: string,
+    snapshot: ProjectSnapshot,
+    search?: string,
+  ): Promise<RenderedPage> {
     const project = projectOptions(snapshot);
     const stale = await staleArtifactInputs(snapshot, project.artifact);
-    const page = await renderPage({ ...project, pathname, site });
+    const page = await renderPage({ ...project, pathname, search, site });
+    if (generatedAssetStore !== undefined && page.assets.length > 0) {
+      await generatedAssetStore.put(page.assets);
+    }
     const rejected = served.putAll(page.assets);
-    if (rejected.length > 0) {
+    if (rejected.length > 0 && generatedAssetStore === undefined) {
       throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
     }
     return { ...page, staleArtifactInputs: stale };
+  }
+
+  /** `renderSnapshot`, reported to `onRender` whether it renders or fails. */
+  async function renderReported(pathname: string, snapshot: ProjectSnapshot, search: string): Promise<RenderedPage> {
+    let page: RenderedPage;
+    try {
+      page = await renderSnapshot(pathname, snapshot, search);
+    } catch (error) {
+      // A moved workspace is retried by `withSnapshot`; the retry reports.
+      if (!(error instanceof WorkspaceSnapshotChangedError)) {
+        const logs = error instanceof IsolateExecutionError ? error.logs : { logs: [], droppedLogs: 0 };
+        onRender?.({ pathname, logs, error });
+      }
+      throw error;
+    }
+    onRender?.({ pathname, file: page.file, logs: page.logs });
+    return page;
+  }
+
+  /** The memory cache, then the durable store for a path only a generated asset can have. */
+  async function generatedAsset(pathname: string): Promise<RenderedAsset | null> {
+    const cached = served.get(pathname);
+    if (cached !== undefined) return cached;
+    if (generatedAssetStore === undefined || !pathname.startsWith(GENERATED_ASSET_PREFIX)) return null;
+    const stored = await generatedAssetStore.get(pathname);
+    if (stored !== null) served.putAll([stored]);
+    return stored;
+  }
+
+  async function serveBrowserModule(pathname: string, snapshot: ProjectSnapshot): Promise<Response> {
+    try {
+      const code = await browserModule(pathname, {
+        files: snapshot.files,
+        artifact: artifactOf(snapshot),
+        compiler: renderOptions.compiler,
+        compileCache,
+        annotateSourceFile: renderOptions.annotateSourceFile,
+      });
+      return new Response(code, {
+        // Unversioned URLs name the file as it is now; a reload must see an edit.
+        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+      });
+    } catch (error) {
+      if (!(error instanceof BrowserModuleError)) throw error;
+      return new Response(error.message, {
+        status: error.status,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
   }
 
   return {
@@ -180,18 +282,32 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
 
     snapshot: () => store.snapshot(),
 
+    features: () =>
+      withSnapshot((snapshot) =>
+        detectProjectFeatures(snapshot.files, {
+          pagesDir: renderOptions.pagesDir,
+          compiler: renderOptions.compiler,
+        }),
+      ),
+
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
 
-      const asset = served.get(url.pathname);
-      if (asset) {
-        return new Response(asset.body, {
-          headers: { "content-type": asset.contentType, "cache-control": IMMUTABLE },
-        });
-      }
-
       try {
+        const asset = await generatedAsset(url.pathname);
+        if (asset !== null) {
+          return new Response(asset.body, {
+            headers: { "content-type": asset.contentType, "cache-control": IMMUTABLE },
+          });
+        }
+
         return await withSnapshot(async (snapshot) => {
+          if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url.pathname, snapshot);
+
+          // Before routing, as Astro's dev server does: a public file shadows a page.
+          const publicFile = publicFileResponse(request, url.pathname, snapshot, projectRoot(renderOptions));
+          if (publicFile !== null) return publicFile;
+
           // `/_astro/<name>.<hash>.<ext>` and the `/cdn-cgi/image/` form a page links to.
           const image = await snapshot.assets.resolveOutput(url.pathname);
           if (image !== null) {
@@ -201,7 +317,23 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
             });
           }
 
-          const page = await renderSnapshot(url.pathname, snapshot);
+          const artifact = artifactOf(snapshot);
+          const routes = projectRoutes(snapshot.files, renderOptions.pagesDir);
+          const redirect = routeRedirect(url, artifact?.prepared.artifact.config, artifact?.i18n ?? null, routes);
+          if (redirect !== null) return redirectResponse(redirect.location, redirect.status);
+
+          let page: RenderedPage;
+          // The 404 page answers 404 also when asked for by its own URL, as on Astro.
+          const matched = findRoute(routes, url.pathname);
+          let status = matched !== null && isNotFoundRoute(matched.route) ? 404 : 200;
+          try {
+            page = await renderReported(url.pathname, snapshot, url.search);
+          } catch (error) {
+            // As Astro's dev server does: an unmatched URL renders the project's 404 page.
+            if (!(error instanceof RouteNotFoundError) || !routes.some(isNotFoundRoute)) throw error;
+            page = await renderReported(NOT_FOUND_PATHNAME, snapshot, url.search);
+            status = 404;
+          }
           const headers = new Headers({
             "content-type": "text/html; charset=utf-8",
             "x-pletivo-page": page.file,
@@ -210,7 +342,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
           if (page.staleArtifactInputs.length > 0) {
             headers.set("x-pletivo-artifact-stale", page.staleArtifactInputs.join(","));
           }
-          return new Response(page.html, { headers });
+          return new Response(page.html, { status, headers });
         });
       } catch (error) {
         return errorResponse(error);
@@ -279,7 +411,12 @@ function parseArtifact(source: string, path: string): ProjectArtifact {
   }
 }
 
+function redirectResponse(location: string, status: number): Response {
+  return new Response(null, { status, headers: { location } });
+}
+
 function errorResponse(error: unknown): Response {
+  if (error instanceof RouteRedirect) return redirectResponse(error.location, error.status);
   if (error instanceof WorkspaceSnapshotChangedError) {
     return new Response(error.message, {
       status: 503,

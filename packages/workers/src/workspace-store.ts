@@ -37,10 +37,16 @@ export interface WorkspaceStoreOptions {
   /** Where the project starts in the workspace. Defaults to the workspace root. */
   root?: string;
   /**
-   * Answers "has anything changed" without walking the tree. On an unchanged workspace
-   * the previous snapshot is reused, and a lazy read can notice a later write (023 §3).
+   * Answers "has anything under `root` changed" without walking the tree. On an
+   * unchanged revision the previous snapshot is reused, and a lazy read can notice a
+   * later write (023 §3).
+   *
+   * Called with the store's absolute root (`"/"` for the workspace root). Pass a
+   * revision scoped to that subtree, so a write elsewhere (another session's checkout)
+   * neither discards this snapshot nor fails a read in flight. A whole-workspace
+   * counter, `() => fs.rev()`, is correct too, only coarser.
    */
-  revision: () => string | number;
+  revision: (root: string) => string | number;
   /**
    * Largest file to read, in bytes; a larger file is left out of the listing. Unset, one
    * enormous file can exhaust the isolate heap. `ProjectSnapshot.readBytes` is not bound by it.
@@ -57,6 +63,9 @@ const SKIP = new Set(["node_modules", ".git", ".wrangler", ".astro", "dist"]);
  */
 const BINARY = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"]);
 
+/** Text that is also an image: listed on both sides, for `?raw` and for image metadata. */
+const TEXT_IMAGE = ".svg";
+
 export function createWorkspaceProjectStore(
   files: WorkspaceFiles,
   options: WorkspaceStoreOptions,
@@ -67,14 +76,16 @@ export function createWorkspaceProjectStore(
   /** The last snapshot, and what the workspace's revision was when it was listed. */
   let cached: { revision: string; snapshot: ProjectSnapshot } | null = null;
 
+  const absoluteRoot = root === "" ? "/" : root;
   function currentRevision(): string {
-    return String(options.revision());
+    return String(options.revision(absoluteRoot));
   }
 
   /** Project key -> workspace path, for text and binary files. Stats, reads no file. */
   function list(): Listing {
     const text = new Map<string, string>();
     const binaryFiles = new Map<string, string>();
+    const regular = new Map<string, string>();
     const directories = [""];
 
     while (directories.length > 0) {
@@ -89,12 +100,15 @@ export function createWorkspaceProjectStore(
         if (!entry.isFile()) continue;
         const key = relative === "" ? entry.name : `${relative.slice(1)}/${entry.name}`;
         const path = absolute === "/" ? `/${entry.name}` : `${absolute}/${entry.name}`;
+        regular.set(key, path);
         if (maxFileBytes !== undefined && sizeOf(files, path) > maxFileBytes) continue;
-        if (BINARY.has(extensionOf(entry.name))) binaryFiles.set(key, path);
+        const extension = extensionOf(entry.name);
+        if (BINARY.has(extension)) binaryFiles.set(key, path);
         else text.set(key, path);
+        if (extension === TEXT_IMAGE) binaryFiles.set(key, path);
       }
     }
-    return { text, binary: binaryFiles };
+    return { text, binary: binaryFiles, regular };
   }
 
   function snapshotOf(listing: Listing, revision: string): ProjectSnapshot {
@@ -116,8 +130,11 @@ export function createWorkspaceProjectStore(
       assets: createLazyProjectAssetsView(listing.binary.keys(), readBytesOf),
       revision,
       readBytes: (key) => {
+        // Listed keys only: the walk skipped symlinks, so a read cannot leave the tree.
+        const path = listing.regular.get(key);
+        if (path === undefined) return undefined;
         assertCurrent();
-        return readBytes(files, root === "" ? `/${key}` : `${root}/${key}`) ?? undefined;
+        return readBytes(files, path) ?? undefined;
       },
     };
   }
@@ -140,6 +157,8 @@ export function createWorkspaceProjectStore(
 interface Listing {
   text: ReadonlyMap<string, string>;
   binary: ReadonlyMap<string, string>;
+  /** Every regular file, whatever its size: what `readBytes` may read. */
+  regular: ReadonlyMap<string, string>;
 }
 
 /** Text files of one snapshot, each read on its first `get` and kept for the snapshot. */

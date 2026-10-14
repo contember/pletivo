@@ -1,7 +1,12 @@
 import type { ModuleId } from "@pletivo/core/artifact";
 import { executionNameForModuleId, projectModuleId, type ArtifactResolver } from "../artifact.ts";
 import { ASSETS_SOURCES } from "../astro-assets.ts";
-import type { OrderedExecutionEdge, OrderedStyleEdge, ProgramContentRequirement } from "../compiled-program.ts";
+import type {
+  OrderedExecutionEdge,
+  OrderedStyleEdge,
+  ProgramContentRequirement,
+  ProgramScript,
+} from "../compiled-program.ts";
 import { ENV_MODULES } from "../env.ts";
 import { RUNTIME_MODULES } from "../generated/runtime-modules.ts";
 import type { ProjectFiles } from "../project-store.ts";
@@ -43,6 +48,8 @@ export class CompileWalk {
   readonly executionEdges: OrderedExecutionEdge[] = [];
   readonly styleEdges: OrderedStyleEdge[] = [];
   readonly styles = new Map<ModuleId, AstroStyles>();
+  /** Processed `<script>` blocks of the compiled `.astro` modules, in claim order. */
+  readonly scripts: ProgramScript[] = [];
   /** Names taken from `astro:env/client` and `astro:env/server`, across the whole walk. */
   readonly envNames = new Map<string, Set<string>>(
     [...ENV_MODULES.keys()].map((specifier) => [specifier, new Set<string>()]),
@@ -50,6 +57,7 @@ export class CompileWalk {
   readonly usedEnv = new Set<string>();
   usesImportMetaEnv = false;
   usesImages = false;
+  usesI18n = false;
 
   readonly #projectFiles: NormalizedProjectFiles;
   readonly #artifact: ArtifactResolver;
@@ -58,6 +66,7 @@ export class CompileWalk {
   readonly #claimed = new Map<ModuleId, SourceModule>();
   /** Named and not yet compiled. Appended to *while* it is walked; see `pending`. */
   readonly #queue: SourceModule[] = [];
+  #cursor = 0;
   /** Set the moment something reaches for the content API, with the config it seeded. */
   #content: ProgramContentRequirement | null = null;
 
@@ -73,11 +82,11 @@ export class CompileWalk {
   }
 
   /**
-   * Every module claimed for compiling, in claim order. Claiming while this is iterated
-   * appends to it, so it is walked with an index cursor rather than `shift()`.
+   * Every module claimed and not yet handed out, in claim order. Claiming while this is
+   * iterated appends to it, and a later call resumes where the last one stopped.
    */
   *pending(): Generator<SourceModule> {
-    for (let index = 0; index < this.#queue.length; index++) yield this.#queue[index];
+    while (this.#cursor < this.#queue.length) yield this.#queue[this.#cursor++];
   }
 
   /** The one place a project file's contents are read. */

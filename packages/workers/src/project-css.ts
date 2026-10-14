@@ -1,6 +1,7 @@
 /** Page-scoped stylesheet assembly over the canonical resolved module graph. */
 
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
+import { cssImports } from "@pletivo/core/css-imports";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 import { adjacency, moduleOrder } from "./page-css.ts";
 import type { ProjectFiles } from "./project-store.ts";
@@ -27,12 +28,13 @@ export interface PageStylesheetOptions {
   entry: ModuleId;
   html: string;
   scripts?: InjectedScripts;
+  /** Browser code the page loads but its HTML does not hold: processed `<script>` graphs. */
+  browserSources?: readonly string[];
   tailwind?: TailwindStylesheets;
 }
 
 const CSS_MODULE = ".module.css";
 const PREFERRED_ENTRIES = ["global.css", "app.css", "main.css", "styles.css"];
-const IMPORTS_TAILWIND = /@import\s+(?:url\(\s*)?["']tailwindcss["']\s*\)?/i;
 
 export async function pageStylesheet(options: PageStylesheetOptions): Promise<string | null> {
   const ordered = orderedStylesheets(options.entry, options.styleGraph);
@@ -53,6 +55,9 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
   }
   for (const script of options.scripts?.page ?? []) {
     for (const candidate of extractCandidates(script)) candidates.add(candidate);
+  }
+  for (const source of options.browserSources ?? []) {
+    for (const candidate of extractCandidates(source)) candidates.add(candidate);
   }
 
   const compilation = await compileTailwind({
@@ -155,7 +160,7 @@ export function findTailwindEntry(sources: readonly StylesheetSource[]): Stylesh
     if (rightRank !== -1) return 1;
     return left.moduleId < right.moduleId ? -1 : left.moduleId > right.moduleId ? 1 : 0;
   });
-  return ranked.find((source) => IMPORTS_TAILWIND.test(source.content)) ?? null;
+  return ranked.find((source) => cssImports(source.content).includes("tailwindcss")) ?? null;
 }
 
 function withSlash(directory: string): string {

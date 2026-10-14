@@ -1,18 +1,34 @@
-import type { ExecutableEntry, ResolvedStyleGraph } from "../compiled-program.ts";
+import type {
+  ExecutableEntry,
+  ProgramMarkdownRequirement,
+  ResolvedStyleGraph,
+} from "../compiled-program.ts";
 import { ENV_CLIENT_SPECIFIER, ENV_SERVER_SPECIFIER, type ProjectEnvUse } from "../env.ts";
+import type { ArtifactI18nConfig } from "@pletivo/core/artifact";
 import {
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
+  I18N_MODULE_NAME,
   IMAGE_MODULE_NAME,
   ISOLATE_ENTRY_MODULE_NAME,
 } from "../generated/runtime-modules.ts";
+import { scriptId, scriptUrl } from "../browser-modules.ts";
 import type { CompiledProject } from "./types.ts";
 import type { CompileWalk } from "./walk-state.ts";
 
 /** The finished walk as a `CompiledProject`: runtime modules added, program and style graph built. */
-export function emitProject(walk: CompileWalk, entries: ExecutableEntry[]): CompiledProject {
+export function emitProject(
+  walk: CompileWalk,
+  entries: ExecutableEntry[],
+  markdown: ProgramMarkdownRequirement | null,
+  i18nConfig: ArtifactI18nConfig | null,
+): CompiledProject {
+  if (walk.usesI18n) walk.modules[I18N_MODULE_NAME] = GENERATED_MODULES[I18N_MODULE_NAME];
   const { content } = walk;
-  if (content !== null) walk.modules[CONTENT_MODULE_NAME] = GENERATED_MODULES[CONTENT_MODULE_NAME];
+  // The Markdown pipeline lives in the content module.
+  if (content !== null || markdown !== null) {
+    walk.modules[CONTENT_MODULE_NAME] = GENERATED_MODULES[CONTENT_MODULE_NAME];
+  }
   // The content runtime needs it too: an `image()` schema names the output file.
   const images = walk.usesImages || content !== null;
   if (images) walk.modules[IMAGE_MODULE_NAME] = GENERATED_MODULES[IMAGE_MODULE_NAME];
@@ -22,8 +38,16 @@ export function emitProject(walk: CompileWalk, entries: ExecutableEntry[]): Comp
       mainModule: ISOLATE_ENTRY_MODULE_NAME,
       modules: walk.modules,
       entries,
+      scripts: Object.fromEntries(
+        walk.scripts.map((script) => [
+          scriptId(script.compilePath, script.index),
+          scriptUrl(script.moduleId, script.index, script.code),
+        ]),
+      ),
       requirements: {
         content,
+        markdown,
+        i18n: walk.usesI18n ? { config: i18nConfig } : null,
         images,
         importMetaEnv: walk.usesImportMetaEnv,
         env: envUse(walk.usedEnv, walk.envNames),
@@ -32,6 +56,7 @@ export function emitProject(walk: CompileWalk, entries: ExecutableEntry[]): Comp
     styleGraph: emitStyleGraph(walk),
     sources: walk.sources,
     urlAssets: walk.urlAssets,
+    scripts: walk.scripts,
   };
 }
 

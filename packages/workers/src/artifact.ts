@@ -1,10 +1,13 @@
 import {
+  ANY_PROJECT_IMPORTER,
   parsePreparedSite,
   type ArtifactModule,
+  type ArtifactResolution,
   type ArtifactResolutionTarget,
   type ModuleId,
   type PreparedSite,
 } from "@pletivo/core/artifact";
+import { resolveI18nConfig, type ResolvedI18nConfig } from "@pletivo/core/i18n/config";
 import { HOST_ALIASES } from "./host-aliases.ts";
 import { normalizeProjectPath } from "./project-path.ts";
 
@@ -48,8 +51,12 @@ export interface ArtifactResolver {
 export interface ProjectArtifact {
   readonly prepared: PreparedSite;
   readonly resolver: ArtifactResolver;
+  /** The browser graph of processed `<script>` blocks; never consulted by a render. */
+  readonly browserResolver: ArtifactResolver;
   /** Artifact Loader names, used only to keep startup diagnostics source-aware. */
   readonly moduleNames: ReadonlySet<string>;
+  /** `config.i18n`, resolved once; `null` for a project without one. */
+  readonly i18n: ResolvedI18nConfig | null;
 }
 
 /** Validate an untrusted artifact and bind it to the host externals it may use. */
@@ -67,11 +74,28 @@ export function loadProjectArtifact(value: unknown): ProjectArtifact {
     modules.set(module.id, module);
   }
 
-  const resolutions = new Map<ModuleId, Map<string, ArtifactResolutionTarget>>();
   for (const resolution of prepared.artifact.resolutions) {
     if (resolution.target.kind === "external" && !HOST_ALIASES.has(resolution.target.specifier)) {
       throw new UnsupportedArtifactExternalError(resolution.target.specifier);
     }
+  }
+
+  return {
+    prepared,
+    resolver: resolverOf(modules, prepared.artifact.resolutions),
+    browserResolver: resolverOf(modules, prepared.artifact.browserResolutions ?? []),
+    moduleNames: new Set(prepared.artifact.modules.map((module) => executionNameForModuleId(module.id))),
+    i18n: resolveI18nConfig(prepared.artifact.config.i18n),
+  };
+}
+
+/** Exact importer first; a project file falls back to what every project file resolves. */
+function resolverOf(
+  modules: ReadonlyMap<ModuleId, ArtifactModule>,
+  entries: readonly ArtifactResolution[],
+): ArtifactResolver {
+  const resolutions = new Map<ModuleId, Map<string, ArtifactResolutionTarget>>();
+  for (const resolution of entries) {
     let bySpecifier = resolutions.get(resolution.importer);
     if (bySpecifier === undefined) {
       bySpecifier = new Map<string, ArtifactResolutionTarget>();
@@ -79,15 +103,15 @@ export function loadProjectArtifact(value: unknown): ProjectArtifact {
     }
     bySpecifier.set(resolution.specifier, resolution.target);
   }
-
+  const anyProject = resolutions.get(ANY_PROJECT_IMPORTER);
   return {
-    prepared,
-    resolver: {
-      module: (id) => modules.get(id) ?? null,
-      resolve: (importer, specifier) => resolutions.get(importer)?.get(specifier) ?? null,
-      modules: () => prepared.artifact.modules,
+    module: (id) => modules.get(id) ?? null,
+    resolve(importer, specifier) {
+      const exact = resolutions.get(importer)?.get(specifier);
+      if (exact !== undefined) return exact;
+      return importer.startsWith("project:") ? (anyProject?.get(specifier) ?? null) : null;
     },
-    moduleNames: new Set(prepared.artifact.modules.map((module) => executionNameForModuleId(module.id))),
+    modules: () => [...modules.values()],
   };
 }
 

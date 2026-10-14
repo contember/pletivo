@@ -29,6 +29,13 @@ export interface ArtifactExternalTarget {
 
 export type ArtifactResolutionTarget = ArtifactModuleTarget | ArtifactExternalTarget;
 
+/**
+ * The importer of a resolution that answers for every project file. A project has one
+ * `node_modules` root, so a file added after `pletivo prepare` resolves a package the
+ * same way the files prepare saw do.
+ */
+export const ANY_PROJECT_IMPORTER = "project:*";
+
 /** One importer-aware answer for a source import. */
 export interface ArtifactResolution {
   importer: ModuleId;
@@ -36,9 +43,74 @@ export interface ArtifactResolution {
   target: ArtifactResolutionTarget;
 }
 
+/** A value that survives `JSON.stringify` and `JSON.parse` unchanged. */
+export type ArtifactJson =
+  | null
+  | boolean
+  | number
+  | string
+  | ArtifactJson[]
+  | { [key: string]: ArtifactJson };
+
+/**
+ * The property a remark/rehype plugin function carries to say where an isolate can
+ * import the same function: `plugin[PORTABLE_MODULE] = { module, export }`. `module`
+ * is a bare specifier importable from the project; `export` is its named export.
+ */
+export const PORTABLE_MODULE: unique symbol = Symbol.for("pletivo.portableModule");
+
+/** A markdown plugin as the artifact carries it: where to import it, and its options. */
+export interface PortablePlugin {
+  module: string;
+  export: string;
+  /** The second element of the `[plugin, options]` tuple, when there was one. */
+  options?: ArtifactJson;
+}
+
+/** `markdown` from the Astro config, with its plugins as portable references. */
+export interface ArtifactMarkdownConfig {
+  remarkPlugins: PortablePlugin[];
+  rehypePlugins: PortablePlugin[];
+  remarkRehype?: { [key: string]: ArtifactJson };
+  gfm?: boolean;
+}
+
+/** A locale as Astro's `i18n.locales` spells it. */
+export type ArtifactLocale = string | { path: string; codes: string[] };
+
+/**
+ * `i18n` from the Astro config, as `resolveI18nConfig` reads it. A type literal, not an
+ * interface, so it is assignable to that function's index-signature parameter.
+ */
+export type ArtifactI18nConfig = {
+  defaultLocale: string;
+  locales: ArtifactLocale[];
+  routing?: {
+    prefixDefaultLocale?: boolean;
+    redirectToDefaultLocale?: boolean;
+    fallbackType?: "rewrite" | "redirect";
+  };
+  /** Target locale -> the locale its missing pages fall back to. */
+  fallback?: { [locale: string]: string };
+};
+
+/** One `redirects` entry: a route pattern (`/blog/[slug]`) and where it points. */
+export interface ArtifactRedirect {
+  source: string;
+  destination: string;
+  status: number;
+}
+
+export type ArtifactTrailingSlash = "always" | "never" | "ignore";
+
 /** Config fields the Workers host currently consumes. */
 export interface ArtifactConfig {
   site?: string;
+  markdown?: ArtifactMarkdownConfig;
+  i18n?: ArtifactI18nConfig;
+  trailingSlash?: ArtifactTrailingSlash;
+  /** In config order; the first whose source matches wins. */
+  redirects?: ArtifactRedirect[];
 }
 
 /** Injected scripts the Workers host currently emits, in semantic order. */
@@ -54,6 +126,12 @@ export interface SiteArtifact {
   scripts: InjectedScripts;
   modules: ArtifactModule[];
   resolutions: ArtifactResolution[];
+  /**
+   * Resolutions of the browser graph: imports of processed `<script>` blocks and of
+   * what they reach, resolved with browser export conditions. Targets are `modules`
+   * entries; a project importer is always `ANY_PROJECT_IMPORTER`.
+   */
+  browserResolutions?: ArtifactResolution[];
 }
 
 /** A file `pletivo prepare` read, and the digest of its bytes at that time. */
@@ -112,7 +190,7 @@ export function parsePreparedSite(value: unknown): PreparedSite {
   assertExactFields(prepared, ["artifact", "inputs"], "$");
   assertExactFields(
     artifact,
-    ["version", "config", "scripts", "modules", "resolutions"],
+    ["version", "config", "scripts", "modules", "resolutions", "browserResolutions"],
     "$.artifact",
   );
 
@@ -122,6 +200,7 @@ export function parsePreparedSite(value: unknown): PreparedSite {
   const resolutions = parseResolutions(
     requiredField(artifact, "resolutions", "$.artifact"),
     modules,
+    "$.artifact.resolutions",
   );
 
   const site: PreparedSite = {
@@ -133,6 +212,21 @@ export function parsePreparedSite(value: unknown): PreparedSite {
       resolutions,
     },
   };
+  if (hasOwn(artifact, "browserResolutions")) {
+    const browserResolutions = parseResolutions(
+      Reflect.get(artifact, "browserResolutions"),
+      modules,
+      "$.artifact.browserResolutions",
+    );
+    const external = browserResolutions.findIndex((resolution) => resolution.target.kind !== "module");
+    if (external !== -1) {
+      throw new ArtifactFormatError(
+        `$.artifact.browserResolutions[${external}].target.kind`,
+        'a browser import must resolve to a "module"',
+      );
+    }
+    site.artifact.browserResolutions = browserResolutions;
+  }
   if (hasOwn(prepared, "inputs")) site.inputs = parseInputs(Reflect.get(prepared, "inputs"));
   return site;
 }
@@ -152,12 +246,6 @@ export function serializePreparedSite(value: unknown): string {
   const modules = [...prepared.artifact.modules].sort((left, right) =>
     compareStrings(left.id, right.id),
   );
-  const resolutions = [...prepared.artifact.resolutions].sort((left, right) => {
-    const importerOrder = compareStrings(left.importer, right.importer);
-    return importerOrder === 0
-      ? compareStrings(left.specifier, right.specifier)
-      : importerOrder;
-  });
 
   const canonical: PreparedSite = {
     artifact: {
@@ -168,9 +256,13 @@ export function serializePreparedSite(value: unknown): string {
         page: [...prepared.artifact.scripts.page],
       },
       modules: modules.map(canonicalModule),
-      resolutions: resolutions.map(canonicalResolution),
+      resolutions: canonicalResolutions(prepared.artifact.resolutions),
     },
   };
+  const { browserResolutions } = prepared.artifact;
+  if (browserResolutions !== undefined) {
+    canonical.artifact.browserResolutions = canonicalResolutions(browserResolutions);
+  }
   if (prepared.inputs !== undefined) {
     canonical.inputs = prepared.inputs.map((input) => ({ path: input.path, digest: input.digest }));
   }
@@ -178,14 +270,171 @@ export function serializePreparedSite(value: unknown): string {
 }
 
 function parseConfig(value: unknown): ArtifactConfig {
-  const config = requireObject(value, "$.artifact.config", "an object");
-  assertExactFields(config, ["site"], "$.artifact.config");
-  if (!hasOwn(config, "site")) return {};
-  const site = Reflect.get(config, "site");
-  if (typeof site !== "string") {
-    throw new ArtifactFormatError("$.artifact.config.site", "expected a string");
+  const at = "$.artifact.config";
+  const config = requireObject(value, at, "an object");
+  assertExactFields(config, ["site", "markdown", "i18n", "trailingSlash", "redirects"], at);
+  const parsed: ArtifactConfig = {};
+  if (hasOwn(config, "site")) {
+    const site = Reflect.get(config, "site");
+    if (typeof site !== "string") throw new ArtifactFormatError(`${at}.site`, "expected a string");
+    parsed.site = site;
   }
-  return { site };
+  if (hasOwn(config, "markdown")) parsed.markdown = parseMarkdownConfig(Reflect.get(config, "markdown"), `${at}.markdown`);
+  if (hasOwn(config, "i18n")) parsed.i18n = parseI18nConfig(Reflect.get(config, "i18n"), `${at}.i18n`);
+  if (hasOwn(config, "trailingSlash")) {
+    const trailingSlash = Reflect.get(config, "trailingSlash");
+    if (trailingSlash !== "always" && trailingSlash !== "never" && trailingSlash !== "ignore") {
+      throw new ArtifactFormatError(`${at}.trailingSlash`, 'expected "always", "never" or "ignore"');
+    }
+    parsed.trailingSlash = trailingSlash;
+  }
+  if (hasOwn(config, "redirects")) parsed.redirects = parseRedirects(Reflect.get(config, "redirects"), `${at}.redirects`);
+  return parsed;
+}
+
+function parseI18nConfig(value: unknown, at: string): ArtifactI18nConfig {
+  const i18n = requireObject(value, at, "an object");
+  assertExactFields(i18n, ["defaultLocale", "locales", "routing", "fallback"], at);
+  const locales = requiredField(i18n, "locales", at);
+  if (!Array.isArray(locales)) throw new ArtifactFormatError(`${at}.locales`, "expected an array");
+  const parsed: ArtifactI18nConfig = {
+    defaultLocale: requireNonEmptyString(requiredField(i18n, "defaultLocale", at), `${at}.defaultLocale`),
+    locales: locales.map((locale: unknown, index): ArtifactLocale => {
+      const path = `${at}.locales[${index}]`;
+      if (typeof locale === "string") return requireNonEmptyString(locale, path);
+      const entry = requireObject(locale, path, "a string or an object");
+      assertExactFields(entry, ["path", "codes"], path);
+      const codes = parseStringArray(requiredField(entry, "codes", path), `${path}.codes`);
+      if (codes.length === 0) throw new ArtifactFormatError(`${path}.codes`, "expected at least one code");
+      return { path: requireNonEmptyString(requiredField(entry, "path", path), `${path}.path`), codes };
+    }),
+  };
+  if (hasOwn(i18n, "routing")) {
+    const routingAt = `${at}.routing`;
+    const routing = requireObject(Reflect.get(i18n, "routing"), routingAt, "an object");
+    assertExactFields(routing, ["prefixDefaultLocale", "redirectToDefaultLocale", "fallbackType"], routingAt);
+    parsed.routing = {};
+    for (const field of ["prefixDefaultLocale", "redirectToDefaultLocale"] as const) {
+      if (!hasOwn(routing, field)) continue;
+      const flag = Reflect.get(routing, field);
+      if (typeof flag !== "boolean") throw new ArtifactFormatError(`${routingAt}.${field}`, "expected a boolean");
+      parsed.routing[field] = flag;
+    }
+    if (hasOwn(routing, "fallbackType")) {
+      const fallbackType = Reflect.get(routing, "fallbackType");
+      if (fallbackType !== "rewrite" && fallbackType !== "redirect") {
+        throw new ArtifactFormatError(`${routingAt}.fallbackType`, 'expected "rewrite" or "redirect"');
+      }
+      parsed.routing.fallbackType = fallbackType;
+    }
+  }
+  if (hasOwn(i18n, "fallback")) {
+    const fallbackAt = `${at}.fallback`;
+    const fallback = requireObject(Reflect.get(i18n, "fallback"), fallbackAt, "an object");
+    const entries = Object.keys(fallback).map((locale): [string, string] => [
+      locale,
+      requireNonEmptyString(Reflect.get(fallback, locale), `${fallbackAt}.${locale}`),
+    ]);
+    parsed.fallback = Object.fromEntries(entries);
+  }
+  return parsed;
+}
+
+function parseRedirects(value: unknown, at: string): ArtifactRedirect[] {
+  if (!Array.isArray(value)) throw new ArtifactFormatError(at, "expected an array");
+  return value.map((entry: unknown, index): ArtifactRedirect => {
+    const path = `${at}[${index}]`;
+    const redirect = requireObject(entry, path, "an object");
+    assertExactFields(redirect, ["source", "destination", "status"], path);
+    const source = requireNonEmptyString(requiredField(redirect, "source", path), `${path}.source`);
+    if (!source.startsWith("/")) throw new ArtifactFormatError(`${path}.source`, 'expected a path starting with "/"');
+    const status = requiredField(redirect, "status", path);
+    if (typeof status !== "number" || !REDIRECT_STATUSES.has(status)) {
+      throw new ArtifactFormatError(`${path}.status`, "expected 301, 302, 303, 307 or 308");
+    }
+    return {
+      source,
+      destination: requireNonEmptyString(requiredField(redirect, "destination", path), `${path}.destination`),
+      status,
+    };
+  });
+}
+
+export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+
+function parseMarkdownConfig(value: unknown, at: string): ArtifactMarkdownConfig {
+  const markdown = requireObject(value, at, "an object");
+  assertExactFields(markdown, ["remarkPlugins", "rehypePlugins", "remarkRehype", "gfm"], at);
+  const parsed: ArtifactMarkdownConfig = {
+    remarkPlugins: parsePlugins(requiredField(markdown, "remarkPlugins", at), `${at}.remarkPlugins`),
+    rehypePlugins: parsePlugins(requiredField(markdown, "rehypePlugins", at), `${at}.rehypePlugins`),
+  };
+  if (hasOwn(markdown, "remarkRehype")) {
+    const options = parseJson(Reflect.get(markdown, "remarkRehype"), `${at}.remarkRehype`);
+    if (!isJsonObject(options)) throw new ArtifactFormatError(`${at}.remarkRehype`, "expected an object");
+    parsed.remarkRehype = options;
+  }
+  if (hasOwn(markdown, "gfm")) {
+    const gfm = Reflect.get(markdown, "gfm");
+    if (typeof gfm !== "boolean") throw new ArtifactFormatError(`${at}.gfm`, "expected a boolean");
+    parsed.gfm = gfm;
+  }
+  return parsed;
+}
+
+function parsePlugins(value: unknown, at: string): PortablePlugin[] {
+  if (!Array.isArray(value)) throw new ArtifactFormatError(at, "expected an array");
+  const plugins: PortablePlugin[] = [];
+  for (let index = 0; index < value.length; index++) {
+    const path = `${at}[${index}]`;
+    if (!hasOwn(value, index)) throw new ArtifactFormatError(path, "sparse array entries are not allowed");
+    const plugin = requireObject(value[index], path, "an object");
+    assertExactFields(plugin, ["module", "export", "options"], path);
+    const parsed: PortablePlugin = {
+      module: requireNonEmptyString(requiredField(plugin, "module", path), `${path}.module`),
+      export: requireNonEmptyString(requiredField(plugin, "export", path), `${path}.export`),
+    };
+    if (hasOwn(plugin, "options")) parsed.options = parseJson(Reflect.get(plugin, "options"), `${path}.options`);
+    plugins.push(parsed);
+  }
+  return plugins;
+}
+
+/** Validate a JSON value, rebuilt so nothing but plain data survives. */
+export function parseJson(value: unknown, at: string): ArtifactJson {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new ArtifactFormatError(at, "expected a finite number");
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const items: ArtifactJson[] = [];
+    for (let index = 0; index < value.length; index++) {
+      if (!hasOwn(value, index)) throw new ArtifactFormatError(`${at}[${index}]`, "sparse array entries are not allowed");
+      items.push(parseJson(value[index], `${at}[${index}]`));
+    }
+    return items;
+  }
+  if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const entries = Object.keys(value).map((key): [string, ArtifactJson] => [
+      key,
+      parseJson(Reflect.get(value, key), `${at}.${key}`),
+    ]);
+    return Object.fromEntries(entries);
+  }
+  throw new ArtifactFormatError(at, "expected JSON data (null, boolean, number, string, array or plain object)");
+}
+
+export function isJsonObject(value: ArtifactJson): value is { [key: string]: ArtifactJson } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Object keys sorted, so equal values serialize to equal text. */
+function canonicalJson(value: ArtifactJson): ArtifactJson {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (!isJsonObject(value)) return value;
+  const keys = Object.keys(value).sort(compareStrings);
+  return Object.fromEntries(keys.map((key): [string, ArtifactJson] => [key, canonicalJson(value[key])]));
 }
 
 function parseScripts(value: unknown): InjectedScripts {
@@ -239,9 +488,13 @@ function parseModules(value: unknown): ArtifactModule[] {
   return parsed;
 }
 
-function parseResolutions(value: unknown, modules: readonly ArtifactModule[]): ArtifactResolution[] {
+function parseResolutions(
+  value: unknown,
+  modules: readonly ArtifactModule[],
+  at: string,
+): ArtifactResolution[] {
   if (!Array.isArray(value)) {
-    throw new ArtifactFormatError("$.artifact.resolutions", "expected an array");
+    throw new ArtifactFormatError(at, "expected an array");
   }
 
   const moduleIds = new Set(modules.map((module) => module.id));
@@ -249,7 +502,7 @@ function parseResolutions(value: unknown, modules: readonly ArtifactModule[]): A
 
   const parsed: ArtifactResolution[] = [];
   for (let index = 0; index < value.length; index++) {
-    const path = `$.artifact.resolutions[${index}]`;
+    const path = `${at}[${index}]`;
     if (!hasOwn(value, index)) {
       throw new ArtifactFormatError(path, "sparse array entries are not allowed");
     }
@@ -384,7 +637,59 @@ function parseStringArray(value: unknown, path: string): string[] {
 }
 
 function canonicalConfig(config: ArtifactConfig): ArtifactConfig {
-  return config.site === undefined ? {} : { site: config.site };
+  const canonical: ArtifactConfig = {};
+  if (config.site !== undefined) canonical.site = config.site;
+  if (config.markdown !== undefined) canonical.markdown = canonicalMarkdown(config.markdown);
+  if (config.i18n !== undefined) canonical.i18n = canonicalI18n(config.i18n);
+  if (config.trailingSlash !== undefined) canonical.trailingSlash = config.trailingSlash;
+  if (config.redirects !== undefined) {
+    canonical.redirects = config.redirects.map((redirect) => ({
+      source: redirect.source,
+      destination: redirect.destination,
+      status: redirect.status,
+    }));
+  }
+  return canonical;
+}
+
+function canonicalI18n(i18n: ArtifactI18nConfig): ArtifactI18nConfig {
+  const canonical: ArtifactI18nConfig = {
+    defaultLocale: i18n.defaultLocale,
+    locales: i18n.locales.map((locale) =>
+      typeof locale === "string" ? locale : { path: locale.path, codes: [...locale.codes] },
+    ),
+  };
+  if (i18n.routing !== undefined) {
+    const { prefixDefaultLocale, redirectToDefaultLocale, fallbackType } = i18n.routing;
+    canonical.routing = {};
+    if (prefixDefaultLocale !== undefined) canonical.routing.prefixDefaultLocale = prefixDefaultLocale;
+    if (redirectToDefaultLocale !== undefined) canonical.routing.redirectToDefaultLocale = redirectToDefaultLocale;
+    if (fallbackType !== undefined) canonical.routing.fallbackType = fallbackType;
+  }
+  if (i18n.fallback !== undefined) {
+    const { fallback } = i18n;
+    const locales = Object.keys(fallback).sort(compareStrings);
+    canonical.fallback = Object.fromEntries(locales.map((locale): [string, string] => [locale, fallback[locale]]));
+  }
+  return canonical;
+}
+
+function canonicalMarkdown(markdown: ArtifactMarkdownConfig): ArtifactMarkdownConfig {
+  // Plugin order is semantic: the pipeline runs them as listed.
+  const plugin = (entry: PortablePlugin): PortablePlugin =>
+    entry.options === undefined
+      ? { module: entry.module, export: entry.export }
+      : { module: entry.module, export: entry.export, options: canonicalJson(entry.options) };
+  const canonical: ArtifactMarkdownConfig = {
+    remarkPlugins: markdown.remarkPlugins.map(plugin),
+    rehypePlugins: markdown.rehypePlugins.map(plugin),
+  };
+  if (markdown.remarkRehype !== undefined) {
+    const options = canonicalJson(markdown.remarkRehype);
+    if (isJsonObject(options)) canonical.remarkRehype = options;
+  }
+  if (markdown.gfm !== undefined) canonical.gfm = markdown.gfm;
+  return canonical;
 }
 
 function canonicalModule(module: ArtifactModule): ArtifactModule {
@@ -396,6 +701,15 @@ function canonicalModule(module: ArtifactModule): ArtifactModule {
         source: module.source,
         compilePath: module.compilePath,
       };
+}
+
+function canonicalResolutions(resolutions: readonly ArtifactResolution[]): ArtifactResolution[] {
+  return [...resolutions]
+    .sort((left, right) => {
+      const importerOrder = compareStrings(left.importer, right.importer);
+      return importerOrder === 0 ? compareStrings(left.specifier, right.specifier) : importerOrder;
+    })
+    .map(canonicalResolution);
 }
 
 function canonicalResolution(resolution: ArtifactResolution): ArtifactResolution {

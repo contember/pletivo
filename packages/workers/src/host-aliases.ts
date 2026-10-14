@@ -17,6 +17,7 @@ export type HostAlias =
   | { kind: "content" }
   | { kind: "assets" }
   | { kind: "image" }
+  | { kind: "i18n" }
   | { kind: "env"; executionName: string };
 
 /**
@@ -34,6 +35,7 @@ export const HOST_ALIASES: ReadonlyMap<string, HostAlias> = new Map([
   ["pletivo/content", { kind: "content" }],
   [ASSETS_SPECIFIER, { kind: "assets" }],
   [IMAGE_RUNTIME_SPECIFIER, { kind: "image" }],
+  ["astro:i18n", { kind: "i18n" }],
   [ENV_CLIENT_SPECIFIER, { kind: "env", executionName: ENV_CLIENT_MODULE_NAME }],
   [ENV_SERVER_SPECIFIER, { kind: "env", executionName: ENV_SERVER_MODULE_NAME }],
 ]);

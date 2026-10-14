@@ -47,17 +47,24 @@ const ENTRIES: Record<string, Entry> = {
     target: "node",
   },
   /**
-   * Content collections run in the isolate, where `content.config.*` and the page
-   * execute. One module, because its AsyncLocalStorage is module state.
-   * Named by specifier, not path: a path through the workspace symlink resolves
-   * dependencies from `packages/workers`, where `js-yaml` and friends are not.
+   * Content collections and the Markdown pipeline run in the isolate, where
+   * `content.config.*` and the page execute. One module, because its AsyncLocalStorage
+   * and the configured Markdown plugins are module state. The entry re-exports by
+   * specifier: a path into `packages/core` would resolve its dependencies from
+   * `packages/workers`, where `js-yaml` and friends are not.
    */
   "pletivo-content.js": {
-    specifier: "@pletivo/core/content/collection",
+    specifier: path.join(PACKAGE_DIR, "scripts/content-entry.ts"),
     target: "browser",
     conditions: ["workerd"],
     // Keep workerd's AsyncLocalStorage; the browser target would stub it.
     external: ["node:async_hooks"],
+  },
+  /** `astro:i18n`, configured per render from the artifact's `i18n`. */
+  "pletivo-i18n.js": {
+    specifier: path.join(PACKAGE_DIR, "scripts/i18n-entry.ts"),
+    target: "browser",
+    forbidNodeBuiltins: true,
   },
   /** The image pipeline; in the isolate because `getImage()` runs in page frontmatter. */
   "pletivo-image.js": {
@@ -77,6 +84,8 @@ const ENTRIES: Record<string, Entry> = {
     aliases: {
       [Bun.resolveSync("@pletivo/runtime/astro-shim", PACKAGE_DIR)]: "./pletivo-runtime.js",
       [Bun.resolveSync("@pletivo/core/paginate", PACKAGE_DIR)]: "./pletivo-runtime.js",
+      [Bun.resolveSync("@pletivo/runtime/script-registry", PACKAGE_DIR)]: "./pletivo-runtime.js",
+      [path.join(PACKAGE_DIR, "src/log-capture.ts")]: "./pletivo-runtime.js",
       [path.join(PACKAGE_DIR, "src/isolate-protocol.ts")]: "./pletivo-isolate-protocol.js",
     },
   },
@@ -304,6 +313,9 @@ export async function generateRuntimeModules(): Promise<string> {
     "",
     "/** The module a project's content API resolves to. Added only when it is reached for. */",
     'export const CONTENT_MODULE_NAME = "pletivo-content.js";',
+    "",
+    "/** The module `astro:i18n` resolves to. Added only when reached for. */",
+    'export const I18N_MODULE_NAME = "pletivo-i18n.js";',
     "",
     "/** The module `astro:assets` and an `image()` schema resolve through. Added only when reached for. */",
     'export const IMAGE_MODULE_NAME = "pletivo-image.js";',

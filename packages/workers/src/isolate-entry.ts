@@ -8,6 +8,9 @@
  */
 
 import type * as ContentCollection from "@pletivo/core/content/collection";
+import type * as Markdown from "@pletivo/core/content/markdown";
+import type { resolveI18nConfig, ResolvedI18nConfig } from "@pletivo/core/i18n/config";
+import type { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import type * as Images from "@pletivo/core/image";
 import type { Route, RouteParams } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
@@ -18,6 +21,8 @@ import {
   runWithRenderTracking,
   type PageContext,
 } from "@pletivo/runtime/astro-shim";
+import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
+import { runWithLogCapture } from "./log-capture.ts";
 import type { ContentBinding } from "./content-files.ts";
 import {
   ENV_BINDING,
@@ -29,6 +34,7 @@ import {
   CONTENT_BINDING,
   decodeParams,
   encodeParams,
+  type IsolateMarkdownRequest,
   type IsolateParamPair,
   type IsolatePathRoute,
   type IsolatePathsResponse,
@@ -38,7 +44,10 @@ import {
   type IsolateUnresolvedResponse,
   type IsolateErrorResponse,
   type IsolateProgramExport,
+  type IsolateReply,
+  type IsolateResponse,
 } from "./isolate-protocol.ts";
+import { markdownPageHtml } from "./markdown-page.ts";
 import { normalizeProjectPath } from "./project-path.ts";
 import type { UnresolvedReason } from "./render.ts";
 
@@ -66,6 +75,36 @@ export interface ContentModules {
   images: ImageModule;
 }
 
+/** The content module's Markdown half; the same module record collections render with. */
+export type MarkdownModule = Pick<typeof Markdown, "configureMarkdown" | "parseMarkdown">;
+
+/** One configured plugin: the Loader module namespace it is exported from. */
+export interface IsolateMarkdownPlugin {
+  module: object;
+  exportName: string;
+  options?: unknown;
+}
+
+/** The project's Markdown pipeline, as the generated program module spells it. */
+export interface IsolateMarkdown {
+  module: MarkdownModule;
+  remarkPlugins: readonly IsolateMarkdownPlugin[];
+  rehypePlugins: readonly IsolateMarkdownPlugin[];
+  remarkRehype: Record<string, unknown> | null;
+  gfm: boolean | null;
+}
+
+/** The `astro:i18n` module, and what the generated program installs in it. */
+export interface I18nModule {
+  resolveI18nConfig: typeof resolveI18nConfig;
+  setI18nRuntimeState: typeof setI18nRuntimeState;
+}
+
+export interface IsolateI18n {
+  module: I18nModule;
+  config: Parameters<typeof resolveI18nConfig>[0] | null;
+}
+
 /** An `astro:env` module's installer; the values arrive in the isolate's `env`. */
 export type EnvInstaller = (values: Partial<EnvPayload>) => void;
 
@@ -79,6 +118,12 @@ export interface IsolateProgram {
   /** `content.config.*`, behind a thunk for the same reason pages are. */
   contentConfig: (() => Promise<ContentConfigModule>) | null;
   content: ContentModules | null;
+  /** Set when the program renders Markdown with the project's own plugins. */
+  markdown: IsolateMarkdown | null;
+  /** `$$renderScript` id -> the URL the host serves that script at. */
+  scripts: Readonly<Record<string, string>>;
+  /** Set when the program imports `astro:i18n`. */
+  i18n: IsolateI18n | null;
   envInstallers: readonly EnvInstaller[];
   importMetaEnv: boolean;
 }
@@ -103,32 +148,96 @@ export interface IsolateEntry {
 const BASE = "/";
 
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
+  let markdownConfigured = false;
+  let i18nConfig: ResolvedI18nConfig | null | undefined;
+  // Module state is safe: the map is part of the program, so of the isolate's id.
+  setScriptUrlResolver((id) => (Object.hasOwn(program.scripts, id) ? program.scripts[id] : null));
+  async function handle(request: Request, env: IsolateEnv): Promise<IsolatePayload> {
+    const body: IsolateRequest = JSON.parse(await request.text());
+    // Module state is safe here: the plugins are part of the program, so of its id.
+    if (program.markdown !== null && !markdownConfigured) {
+      configureMarkdown(program.markdown);
+      markdownConfigured = true;
+    }
+    // Installed before any page is imported, since frontmatter reads it at import time.
+    if (program.importMetaEnv) {
+      Reflect.set(globalThis, IMPORT_META_ENV_GLOBAL, env[IMPORT_META_ENV_BINDING] ?? {});
+    }
+    // Module state is safe for these, unlike content: the isolate's `env` is fixed at
+    // creation and covered by its id.
+    for (const install of program.envInstallers) install(env[ENV_BINDING] ?? {});
+    const { i18n } = program;
+    if (i18n !== null && body.op === "render") {
+      i18nConfig ??= i18n.config === null ? null : i18n.module.resolveI18nConfig(i18n.config);
+      // Per request: `site` is the request's, and the helpers read it.
+      i18n.module.setI18nRuntimeState(i18nConfig, "/", body.site);
+    }
+    return withContent(program, env[CONTENT_BINDING], body, () => {
+      if (body.op === "paths") return listPaths(program, body.routes);
+      if (body.op === "markdown") return renderMarkdownPage(program, body);
+      return render(program, body);
+    });
+  }
+
   return {
     async fetch(request, env) {
+      const { outcome, logs } = await runWithLogCapture(() => handle(request, env));
       // An error payload, not a throw: across the Loader boundary a throw looks the same
       // as a bundle that failed to start.
-      try {
-        const body: IsolateRequest = JSON.parse(await request.text());
-        // Installed before any page is imported, since frontmatter reads it at import time.
-        if (program.importMetaEnv) {
-          Reflect.set(globalThis, IMPORT_META_ENV_GLOBAL, env[IMPORT_META_ENV_BINDING] ?? {});
-        }
-        // Module state is safe for these, unlike content: the isolate's `env` is fixed at
-        // creation and covered by its id.
-        for (const install of program.envInstallers) install(env[ENV_BINDING] ?? {});
-        return await withContent(program, env[CONTENT_BINDING], body, () =>
-          body.op === "paths" ? listPaths(program, body.routes) : render(program, body),
-        );
-      } catch (error) {
-        const response: IsolateErrorResponse = {
-          status: "error",
-          message: error instanceof Error ? error.message : String(error),
-          ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
-        };
-        return Response.json(response);
-      }
+      const payload: IsolateResponse = outcome.ok ? outcome.value : errorPayload(outcome.error);
+      const reply: IsolateReply = { ...payload, logs: logs.entries, droppedLogs: logs.dropped };
+      return Response.json(reply);
     },
   };
+}
+
+/** What the isolate answers with, before its logs are attached. */
+type IsolatePayload = Exclude<IsolateResponse, IsolateErrorResponse>;
+
+function errorPayload(error: unknown): IsolateErrorResponse {
+  return {
+    status: "error",
+    message: error instanceof Error ? error.message : String(error),
+    ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+  };
+}
+
+type Pluggable = NonNullable<Markdown.MarkdownOptions["remarkPlugins"]>[number];
+type Plugin = Extract<Pluggable, (...parameters: never[]) => unknown>;
+
+function isPlugin(value: unknown): value is Plugin {
+  return typeof value === "function";
+}
+
+function pluggable(plugin: IsolateMarkdownPlugin): Pluggable {
+  const value: unknown = Reflect.get(plugin.module, plugin.exportName);
+  if (!isPlugin(value)) {
+    throw new Error(
+      `[pletivo-workers] Markdown plugin export ${JSON.stringify(plugin.exportName)} is not a function`,
+    );
+  }
+  return plugin.options === undefined ? value : [value, plugin.options];
+}
+
+function configureMarkdown(markdown: IsolateMarkdown): void {
+  markdown.module.configureMarkdown({
+    remarkPlugins: markdown.remarkPlugins.map(pluggable),
+    rehypePlugins: markdown.rehypePlugins.map(pluggable),
+    remarkRehype: markdown.remarkRehype ?? {},
+    gfm: markdown.gfm ?? true,
+  });
+}
+
+async function renderMarkdownPage(program: IsolateProgram, request: IsolateMarkdownRequest): Promise<IsolatePayload> {
+  if (program.markdown === null) throw new Error("[pletivo-workers] this program has no Markdown pipeline");
+  const { html, frontmatter } = await program.markdown.module.parseMarkdown(request.source);
+  const response: IsolateRenderedResponse = {
+    status: "rendered",
+    html: markdownPageHtml(html, frontmatter),
+    renderedModules: [],
+    tsxStyles: [],
+  };
+  return response;
 }
 
 function loadPage(program: IsolateProgram, file: string): Promise<PageModule> | null {
@@ -229,7 +338,7 @@ async function renderPageComponent(
 async function listPaths(
   program: IsolateProgram,
   routes: readonly IsolatePathRoute[],
-): Promise<Response> {
+): Promise<IsolatePayload> {
   const paths: Record<string, IsolateParamPair[][]> = {};
   for (const { file, route } of routes) {
     const module = await loadPage(program, file);
@@ -240,16 +349,16 @@ async function listPaths(
     paths[file] = list.map((entry) => encodeParams(entry.params));
   }
   const response: IsolatePathsResponse = { status: "paths", paths };
-  return Response.json(response);
+  return response;
 }
 
-async function render(program: IsolateProgram, request: IsolateRenderRequest): Promise<Response> {
-  const { file, route, url, site } = request;
+async function render(program: IsolateProgram, request: IsolateRenderRequest): Promise<IsolatePayload> {
+  const { file, route, url, site, currentLocale } = request;
   const module = await loadPage(program, file);
-  if (!module) return new Response("no module for " + file, { status: 404 });
+  if (!module) throw new Error("no module for " + file);
   assertStaticOnly(module, file);
   if (typeof module.default !== "function") {
-    return new Response(file + " has no default export", { status: 500 });
+    throw new Error(file + " has no default export");
   }
   let params = decodeParams(request.params);
   let props: Record<string, unknown> = {};
@@ -260,7 +369,7 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
         status: "unresolved",
         reason: resolved,
       };
-      return Response.json(response);
+      return response;
     }
     params = resolved.params;
     props = resolved.props;
@@ -271,6 +380,7 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
       url: new URL(url),
       site: site ? new URL(site) : undefined,
       params,
+      currentLocale,
       preferredLocaleList: [],
     }),
   );
@@ -280,7 +390,7 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
     renderedModules: [...renderedModules],
     tsxStyles,
   };
-  return Response.json(response);
+  return response;
 }
 
 /**
@@ -304,8 +414,8 @@ async function withContent(
   program: IsolateProgram,
   files: ContentBinding | undefined,
   body: IsolateRequest,
-  run: () => Promise<Response>,
-): Promise<Response> {
+  run: () => Promise<IsolatePayload>,
+): Promise<IsolatePayload> {
   const modules = program.content;
   if (modules === null) return run();
   if (!files) throw new Error("[pletivo-workers] the render isolate has no content binding");

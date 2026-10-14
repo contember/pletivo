@@ -1,7 +1,7 @@
 import type { AstroCompiler } from "../astro-compiler.ts";
 import type { ProjectAssetsView } from "../asset-port.ts";
 import type { CompileCache } from "../compile-cache.ts";
-import type { ExecutableProgram, ResolvedStyleGraph } from "../compiled-program.ts";
+import type { ExecutableProgram, ProgramScript, ResolvedStyleGraph } from "../compiled-program.ts";
 import type { ProjectArtifact } from "../artifact.ts";
 import type { ProjectFiles } from "../project-store.ts";
 import type { TailwindStylesheets } from "../tailwind.ts";
@@ -31,6 +31,8 @@ export interface CompiledProject {
   sources: ProjectFiles;
   /** Files a `?url` import named, keyed by the URL path the HTML spells; the host must serve them. */
   urlAssets: ReadonlyMap<string, string>;
+  /** Processed `<script>` blocks of the compiled modules; the host serves them. */
+  scripts: readonly ProgramScript[];
 }
 
 export interface CompileProjectOptions {
@@ -53,4 +55,8 @@ export interface CompileProjectOptions {
   assets?: ProjectAssetsView;
   /** Compiled files kept between calls, keyed by path and checked by `source ===`. */
   cache?: CompileCache;
+  /** The isolate renders Markdown for the caller, so the Markdown pipeline is needed. */
+  markdown?: boolean;
+  /** Compile `.astro` with `annotateSourceFile`; see `ProjectOptions.annotateSourceFile`. */
+  annotateSourceFile?: boolean;
 }

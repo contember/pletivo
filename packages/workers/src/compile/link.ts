@@ -1,4 +1,5 @@
 import type { ModuleId } from "@pletivo/core/artifact";
+import { cssImports } from "@pletivo/core/css-imports";
 import type { CompiledFile } from "../compile-cache.ts";
 import { HOST_ALIASES } from "../host-aliases.ts";
 import { rewriteImports } from "../rewrite-imports.ts";
@@ -20,6 +21,9 @@ export async function linkModule(
 ): Promise<void> {
   if (entry.importMetaEnv) walk.usesImportMetaEnv = true;
   if (entry.styles !== null) walk.styles.set(module.id, entry.styles);
+  entry.scripts.forEach((code, index) => {
+    if (code !== null) walk.scripts.push({ moduleId: module.id, compilePath: module.compilePath, index, code });
+  });
   const bySpecifier = new Map<string, ResolutionUse>();
   for (const specifier of entry.specifiers) {
     let use = bySpecifier.get(specifier);
@@ -53,7 +57,7 @@ export async function linkStylesheet(
   resolver: ImportResolver,
   module: SourceModule,
 ): Promise<void> {
-  for (const specifier of collectCssSpecifiers(module.source)) {
+  for (const specifier of cssImports(module.source)) {
     const use = await resolver.resolve(module, specifier);
     if (use.kind !== "module" || use.module.kind !== "css") {
       throw unresolvedImport(module, specifier, "CSS @import must resolve to a CSS module");
@@ -61,13 +65,6 @@ export async function linkStylesheet(
     walk.addEdge(module, use.module);
   }
   walk.modules[module.executionName] = "export {};\n";
-}
-
-function collectCssSpecifiers(source: string): string[] {
-  const specifiers: string[] = [];
-  const pattern = /@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?/g;
-  for (const match of source.matchAll(pattern)) specifiers.push(match[1]);
-  return specifiers;
 }
 
 /** Keep the compiler filename for scope hashing, but expose logical identity at render time. */

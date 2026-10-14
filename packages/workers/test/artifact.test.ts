@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ANY_PROJECT_IMPORTER,
   ARTIFACT_VERSION,
   ArtifactFormatError,
   ArtifactVersionError,
@@ -404,5 +405,41 @@ describe("injected scripts and strict parsing", () => {
         compiler,
       }),
     ).rejects.toBeInstanceOf(UnsupportedFileError);
+  });
+});
+
+describe("loadProjectArtifact, project-wide resolutions", () => {
+  const prepared = {
+    artifact: {
+      version: ARTIFACT_VERSION,
+      config: {},
+      scripts: { headInline: [], page: [] },
+      modules: [
+        { id: "npm:pkg/index.js", kind: "js", source: "export default 1;\n" },
+        { id: "npm:pkg/browser.js", kind: "js", source: "export default 2;\n" },
+      ],
+      resolutions: [
+        { importer: "project:src/pages/index.astro", specifier: "pkg", target: { kind: "module", id: "npm:pkg/index.js" } },
+        { importer: ANY_PROJECT_IMPORTER, specifier: "pkg", target: { kind: "module", id: "npm:pkg/index.js" } },
+      ],
+      browserResolutions: [
+        { importer: ANY_PROJECT_IMPORTER, specifier: "pkg", target: { kind: "module", id: "npm:pkg/browser.js" } },
+      ],
+    },
+  };
+
+  test("answers a project file prepare never saw from the project-wide entry", () => {
+    const { resolver } = loadProjectArtifact(prepared);
+    expect(resolver.resolve("project:src/pages/added-later.astro", "pkg")).toEqual({ kind: "module", id: "npm:pkg/index.js" });
+    expect(resolver.resolve("npm:pkg/index.js", "pkg")).toBeNull();
+  });
+
+  test("keeps the browser graph apart from the render graph", () => {
+    const { resolver, browserResolver } = loadProjectArtifact(prepared);
+    expect(browserResolver.resolve("project:src/components/Menu.astro", "pkg")).toEqual({
+      kind: "module",
+      id: "npm:pkg/browser.js",
+    });
+    expect(resolver.resolve("project:src/components/Menu.astro", "pkg")).toEqual({ kind: "module", id: "npm:pkg/index.js" });
   });
 });
