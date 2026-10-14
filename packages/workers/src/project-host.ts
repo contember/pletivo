@@ -35,6 +35,7 @@ import {
   type ProjectSnapshot,
   type ProjectStore,
 } from "./project-store.ts";
+import { findRoute, type Route } from "@pletivo/core/router";
 import type { IsolateLogs } from "./isolate-protocol.ts";
 import {
   IsolateExecutionError,
@@ -112,6 +113,13 @@ export interface ProjectHost {
 }
 
 const DEFAULT_GENERATED_ASSET_CACHE = { maxEntries: 32, maxBytes: 4 * 1024 * 1024 };
+
+/** The route Astro renders for an unmatched URL: `src/pages/404.*`. */
+const NOT_FOUND_PATHNAME = "/404";
+
+function isNotFoundRoute(route: Route): boolean {
+  return !route.isDynamic && !route.isEndpoint && route.segments.length === 1 && route.segments[0]?.value === "404";
+}
 
 /** Where `?url` imports are emitted; see `urlAssetHref` in compile/resolve.ts. */
 const GENERATED_ASSET_PREFIX = "/_astro/";
@@ -218,6 +226,23 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     return { ...page, staleArtifactInputs: stale };
   }
 
+  /** `renderSnapshot`, reported to `onRender` whether it renders or fails. */
+  async function renderReported(pathname: string, snapshot: ProjectSnapshot, search: string): Promise<RenderedPage> {
+    let page: RenderedPage;
+    try {
+      page = await renderSnapshot(pathname, snapshot, search);
+    } catch (error) {
+      // A moved workspace is retried by `withSnapshot`; the retry reports.
+      if (!(error instanceof WorkspaceSnapshotChangedError)) {
+        const logs = error instanceof IsolateExecutionError ? error.logs : { logs: [], droppedLogs: 0 };
+        onRender?.({ pathname, logs, error });
+      }
+      throw error;
+    }
+    onRender?.({ pathname, file: page.file, logs: page.logs });
+    return page;
+  }
+
   /** The memory cache, then the durable store for a path only a generated asset can have. */
   async function generatedAsset(pathname: string): Promise<RenderedAsset | null> {
     const cached = served.get(pathname);
@@ -293,26 +318,22 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
           }
 
           const artifact = artifactOf(snapshot);
-          const redirect = routeRedirect(
-            url,
-            artifact?.prepared.artifact.config,
-            artifact?.i18n ?? null,
-            projectRoutes(snapshot.files, renderOptions.pagesDir),
-          );
+          const routes = projectRoutes(snapshot.files, renderOptions.pagesDir);
+          const redirect = routeRedirect(url, artifact?.prepared.artifact.config, artifact?.i18n ?? null, routes);
           if (redirect !== null) return redirectResponse(redirect.location, redirect.status);
 
           let page: RenderedPage;
+          // The 404 page answers 404 also when asked for by its own URL, as on Astro.
+          const matched = findRoute(routes, url.pathname);
+          let status = matched !== null && isNotFoundRoute(matched.route) ? 404 : 200;
           try {
-            page = await renderSnapshot(url.pathname, snapshot, url.search);
+            page = await renderReported(url.pathname, snapshot, url.search);
           } catch (error) {
-            // A moved workspace is retried by `withSnapshot`; the retry reports.
-            if (!(error instanceof WorkspaceSnapshotChangedError)) {
-              const logs = error instanceof IsolateExecutionError ? error.logs : { logs: [], droppedLogs: 0 };
-              onRender?.({ pathname: url.pathname, logs, error });
-            }
-            throw error;
+            // As Astro's dev server does: an unmatched URL renders the project's 404 page.
+            if (!(error instanceof RouteNotFoundError) || !routes.some(isNotFoundRoute)) throw error;
+            page = await renderReported(NOT_FOUND_PATHNAME, snapshot, url.search);
+            status = 404;
           }
-          onRender?.({ pathname: url.pathname, file: page.file, logs: page.logs });
           const headers = new Headers({
             "content-type": "text/html; charset=utf-8",
             "x-pletivo-page": page.file,
@@ -321,7 +342,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
           if (page.staleArtifactInputs.length > 0) {
             headers.set("x-pletivo-artifact-stale", page.staleArtifactInputs.join(","));
           }
-          return new Response(page.html, { headers });
+          return new Response(page.html, { status, headers });
         });
       } catch (error) {
         return errorResponse(error);

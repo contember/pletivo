@@ -833,6 +833,27 @@ import "../styles/global.css";
     });
   });
 
+  test("an unknown pathname renders the project's 404 page with status 404", async () => {
+    const host = hostOf(
+      createMapProjectStore(
+        new Map([
+          ["src/pages/index.astro", PAGE],
+          ["src/pages/404.astro", "<html><body><h1>Lost</h1><p>{Astro.url.pathname}</p></body></html>\n"],
+          ["src/pages/blog/[slug].astro", "---\nexport function getStaticPaths() { return [{ params: { slug: \"one\" } }]; }\n---\n<p>post</p>\n"],
+        ]),
+      ),
+    );
+
+    for (const path of ["/nope", "/blog/two"]) {
+      const response = await host.fetch(new Request(`https://example.test${path}`));
+      expect([path, response.status]).toEqual([path, 404]);
+      expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(response.headers.get("x-pletivo-page")).toBe("src/pages/404.astro");
+      expect(await response.text()).toContain("<h1>Lost</h1>");
+    }
+    expect((await host.fetch(new Request("https://example.test/404"))).status).toBe(404);
+  });
+
   test("an unknown pathname is a 404, not a throw", async () => {
     const host = hostOf(createMapProjectStore(new Map([["src/pages/index.astro", PAGE]])));
 
