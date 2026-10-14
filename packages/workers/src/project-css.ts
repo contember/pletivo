@@ -1,6 +1,7 @@
 /** Page-scoped stylesheet assembly over the canonical resolved module graph. */
 
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
+import { cssImports } from "@pletivo/core/css-imports";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 import { adjacency, moduleOrder } from "./page-css.ts";
 import type { ProjectFiles } from "./project-store.ts";
@@ -34,7 +35,6 @@ export interface PageStylesheetOptions {
 
 const CSS_MODULE = ".module.css";
 const PREFERRED_ENTRIES = ["global.css", "app.css", "main.css", "styles.css"];
-const IMPORTS_TAILWIND = /@import\s+(?:url\(\s*)?["']tailwindcss["']\s*\)?/i;
 
 export async function pageStylesheet(options: PageStylesheetOptions): Promise<string | null> {
   const ordered = orderedStylesheets(options.entry, options.styleGraph);
@@ -160,7 +160,7 @@ export function findTailwindEntry(sources: readonly StylesheetSource[]): Stylesh
     if (rightRank !== -1) return 1;
     return left.moduleId < right.moduleId ? -1 : left.moduleId > right.moduleId ? 1 : 0;
   });
-  return ranked.find((source) => IMPORTS_TAILWIND.test(source.content)) ?? null;
+  return ranked.find((source) => cssImports(source.content).includes("tailwindcss")) ?? null;
 }
 
 function withSlash(directory: string): string {

@@ -447,6 +447,38 @@ describe("createProjectHost", () => {
   );
 
   test.skipIf(tailwindDir() === null)(
+    "reads no @import out of a stylesheet's comments or strings",
+    async () => {
+      const host = createProjectHost({
+        store: createMapProjectStore(
+          new Map([
+            [
+              "src/pages/index.astro",
+              `---\nimport "../styles/global.css";\nimport "../styles/notes.css";\n---\n<html><body><p class="p-4">home</p></body></html>\n`,
+            ],
+            [
+              "src/styles/global.css",
+              '/* Theme entry. Uses @import "tailwindcss" below; see also @import "./missing.css". */\n' +
+                '@import "tailwindcss";\n.quote::before { content: \'@import "./also-missing.css";\'; }\n',
+            ],
+            ["src/styles/notes.css", '/* never @import "tailwindcss" here */\n.note { color: teal; }\n'],
+          ]),
+        ),
+        loader,
+        compiler,
+        tailwind: TAILWIND,
+      });
+
+      const response = await host.fetch(new Request("https://example.test/"));
+      const html = await response.text();
+
+      expect(response.status, html).toBe(200);
+      expect(html).toContain(".p-4");
+      expect(html).toContain(".note { color: teal; }");
+    },
+  );
+
+  test.skipIf(tailwindDir() === null)(
     "prefers host-embedded Tailwind over a copy the artifact vendored",
     async () => {
       const vendored = "npm:tailwind-copy/index.css";
