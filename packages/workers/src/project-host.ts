@@ -85,6 +85,18 @@ export interface ProjectHostOptions
    * logged in the isolate. For a host's diagnostics; it must not throw.
    */
   onRender?: (event: RenderEvent) => void;
+  /**
+   * Called when a browser-module request (`/_pletivo/script/…`, `/_pletivo/module/…`)
+   * fails, before its error response is sent. An `UnresolvedBrowserImportError` names an
+   * import the artifact's browser graph does not carry. A throw here is ignored.
+   */
+  onBrowserModuleError?: (event: BrowserModuleErrorEvent) => void;
+}
+
+/** One browser-module request `fetch` failed to serve, for diagnostics. */
+export interface BrowserModuleErrorEvent {
+  pathname: string;
+  error: BrowserModuleError;
 }
 
 /** One page render `fetch` served, for diagnostics. */
@@ -139,6 +151,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     generatedAssetCache,
     generatedAssetStore,
     onRender,
+    onBrowserModuleError,
     ...renderOptions
   } = options;
   const directArtifact =
@@ -270,6 +283,11 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       });
     } catch (error) {
       if (!(error instanceof BrowserModuleError)) throw error;
+      try {
+        onBrowserModuleError?.({ pathname, error });
+      } catch {
+        // A diagnostics hook does not change what the browser is answered.
+      }
       return new Response(error.message, {
         status: error.status,
         headers: { "content-type": "text/plain; charset=utf-8" },
