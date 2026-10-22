@@ -19,10 +19,13 @@ import type {
 } from "@astrojs/compiler/types";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles, createProjectAssetsView, probeImage } from "../src/content-files.ts";
+import { BrowserModuleError, UnresolvedBrowserImportError } from "../src/browser-modules.ts";
 import {
   createProjectHost,
   GeneratedAssetRetentionError,
   ProjectArtifactError,
+  type BrowserModuleErrorEvent,
+  type ProjectHostOptions,
   type RenderEvent,
 } from "../src/project-host.ts";
 import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
@@ -765,7 +768,11 @@ import "../styles/global.css";
       },
     };
 
-    function scriptHost(page = PAGE_WITH_SCRIPT, menu = 'export function openMenu(): void { document.body.classList.add("opacity-50"); }\n') {
+    function scriptHost(
+      page = PAGE_WITH_SCRIPT,
+      menu = 'export function openMenu(): void { document.body.classList.add("opacity-50"); }\n',
+      onBrowserModuleError?: ProjectHostOptions["onBrowserModuleError"],
+    ) {
       return createProjectHost({
         store: createMapProjectStore(
           new Map([
@@ -778,6 +785,7 @@ import "../styles/global.css";
         loader,
         compiler,
         ...(TAILWIND === undefined ? {} : { tailwind: TAILWIND }),
+        onBrowserModuleError,
       });
     }
 
@@ -818,6 +826,41 @@ import "../styles/global.css";
       expect(response.status).toBe(500);
       expect(await response.text()).toContain("re-run `pletivo prepare`");
       expect((await host.fetch(new Request("https://example.test/_pletivo/module/project/src/missing.ts"))).status).toBe(404);
+    });
+
+    test("reports a failed browser module to onBrowserModuleError, naming an unresolved import", async () => {
+      const events: BrowserModuleErrorEvent[] = [];
+      const host = scriptHost(PAGE_WITH_SCRIPT, 'import "not-prepared";\nexport function openMenu() {}\n', (event) => events.push(event));
+      const response = await host.fetch(new Request("https://example.test/_pletivo/module/project/src/lib/menu.ts"));
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe(
+        '[pletivo-workers] cannot serve "/_pletivo/module/project/src/lib/menu.ts" to the browser: ' +
+          'project:src/lib/menu.ts imports "not-prepared", which the artifact\'s browser graph does not carry; ' +
+          "re-run `pletivo prepare`",
+      );
+      expect((await host.fetch(new Request("https://example.test/_pletivo/module/project/src/missing.ts"))).status).toBe(404);
+
+      expect(events.map((event) => event.pathname)).toEqual([
+        "/_pletivo/module/project/src/lib/menu.ts",
+        "/_pletivo/module/project/src/missing.ts",
+      ]);
+      const [unresolved, missing] = events.map((event) => event.error);
+      if (!(unresolved instanceof UnresolvedBrowserImportError)) throw new Error(`not an unresolved import: ${unresolved}`);
+      expect([unresolved.importer, unresolved.specifier, unresolved.status]).toEqual(["project:src/lib/menu.ts", "not-prepared", 500]);
+      expect(missing).toBeInstanceOf(BrowserModuleError);
+      expect(missing).not.toBeInstanceOf(UnresolvedBrowserImportError);
+      expect(missing?.status).toBe(404);
+    });
+
+    test("a throwing onBrowserModuleError leaves the response as it is", async () => {
+      const menu = 'import "not-prepared";\nexport function openMenu() {}\n';
+      const url = "https://example.test/_pletivo/module/project/src/lib/menu.ts";
+      const quiet = await scriptHost(PAGE_WITH_SCRIPT, menu).fetch(new Request(url));
+      const throwing = await scriptHost(PAGE_WITH_SCRIPT, menu, () => {
+        throw new Error("hook failed");
+      }).fetch(new Request(url));
+      expect(throwing.status).toBe(quiet.status);
+      expect(await throwing.text()).toBe(await quiet.text());
     });
 
     test("a script-only edit changes the script URL", async () => {

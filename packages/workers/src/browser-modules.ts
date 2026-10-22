@@ -62,6 +62,23 @@ export class BrowserModuleError extends Error {
   }
 }
 
+/** An import the artifact's browser graph does not carry, so `pletivo prepare` must run again. */
+export class UnresolvedBrowserImportError extends BrowserModuleError {
+  constructor(
+    pathname: string,
+    readonly importer: ModuleId,
+    readonly specifier: string,
+  ) {
+    super(
+      pathname,
+      `${importer} imports ${JSON.stringify(specifier)}, which the artifact's browser graph does not carry; ` +
+        "re-run `pletivo prepare`",
+      500,
+    );
+    this.name = "UnresolvedBrowserImportError";
+  }
+}
+
 /** Whether this host answers `pathname` with a browser module. */
 export function isBrowserModulePath(pathname: string): boolean {
   return pathname.startsWith(SCRIPT_PREFIX) || pathname.startsWith(MODULE_PREFIX);
@@ -209,14 +226,7 @@ function rewriteForBrowser(
         return moduleUrl(projectModuleId(file));
       }
       const target = project.artifact?.browserResolver.resolve(importer, specifier) ?? null;
-      if (target === null || target.kind !== "module") {
-        throw new BrowserModuleError(
-          pathname,
-          `${importer} imports ${JSON.stringify(specifier)}, which the artifact's browser graph does not carry; ` +
-            "re-run `pletivo prepare`",
-          500,
-        );
-      }
+      if (target === null || target.kind !== "module") throw new UnresolvedBrowserImportError(pathname, importer, specifier);
       return moduleUrl(target.id);
     },
   });

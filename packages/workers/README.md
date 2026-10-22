@@ -133,6 +133,13 @@ Options a multi-session host needs:
 - `annotateSourceFile` — `data-astro-source-file`/`-loc` on every element, for a visual
   editor.
 - `onRender` — each page render's bounded console output (`RenderedPage.logs`).
+- `onBrowserModuleError` — each failed `/_pletivo/script/…` or `/_pletivo/module/…`
+  request, with its `BrowserModuleError`. An `UnresolvedBrowserImportError` names the
+  `importer` and the `specifier` the artifact's browser graph does not carry, so a
+  host that prepares artifacts on demand can tell that `pletivo prepare` must run again.
+  On the server side, an import nothing answers is an `UnresolvedImportError` (an
+  `UnsupportedFileError`, exported from `compile-project.ts`) with the same fields and a
+  `reason`.
 - `host.features()` — the files that use MDX, `client:*` islands, endpoints or
   `prerender = false`, none of which this host renders.
 
