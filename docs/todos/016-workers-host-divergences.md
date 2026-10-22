@@ -25,8 +25,13 @@ These contracts landed after the measurements below. They are the current baseli
   and `compileProject` take the bound `ProjectArtifact`. With `artifactPath` the parse
   is reused while the file's source is unchanged.
 - `PreparedSite.inputs` records the files `prepare` read — `package.json`, the
-  lockfiles, the loaded astro and pletivo config — as `sha256` digests. They are
-  provenance, never program identity. With `artifactPath` the host compares them with
+  lockfiles, the loaded astro and pletivo config, and for a workspace member the
+  workspace root's `package.json`, lockfiles and `pnpm-workspace.yaml` as
+  `workspace:<file>` — as `sha256` digests. A host older than the release that added
+  the `workspace:` prefix rejects such an artifact as malformed at `$.inputs[i].path`;
+  the artifact version did not change, so a flat site's artifact stays readable by both. `@pletivo/core/prepare-inputs` computes them, so a host that reads the project
+  through another filesystem gets the same list. They are provenance, never program
+  identity. With `artifactPath` the host compares them with
   the workspace and names changed ones in `x-pletivo-artifact-stale`: a warning, never a
   failure ([023 §10.4](023-live-workspace-architecture.md)).
 - The isolate's logic is a typed module, `src/isolate-entry.ts`, bundled by

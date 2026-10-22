@@ -5,6 +5,7 @@ import {
   imageServiceConfigFromEnv,
   type ImageServiceConfig,
 } from "@pletivo/core/image-service";
+import { PLETIVO_CONFIG_FILES } from "@pletivo/core/prepare-inputs";
 
 // `unified`'s `PluggableList` isn't re-exported by @mdx-js/mdx and `unified`
 // itself isn't a direct dependency (only resolvable transitively), so derive
@@ -105,11 +106,9 @@ const defaults: PletivoConfig = {
 
 let configVersion = 0;
 
-const PLETIVO_CONFIG_NAMES = ["pletivo.config.ts", "pletivo.config.js"];
-
 /** The pletivo config file `loadConfig` loads, or null if the project has none. */
 export function findPletivoConfig(projectRoot: string): string | null {
-  for (const name of PLETIVO_CONFIG_NAMES) {
+  for (const name of PLETIVO_CONFIG_FILES) {
     const configPath = path.join(projectRoot, name);
     if (statSync(configPath, { throwIfNoEntry: false })?.isFile()) return configPath;
   }

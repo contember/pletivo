@@ -1,3 +1,5 @@
+import { compareStrings } from "@pletivo/core/compare-strings";
+
 export type ProgramHash = string;
 export type IsolateKey = string;
 
@@ -84,10 +86,6 @@ export async function isolateKey(input: IsolateKeyInput): Promise<IsolateKey> {
 
 function sortedEntries(record: Readonly<Record<string, string>>): Array<[string, string]> {
   return Object.entries(record).sort((left, right) => compareStrings(left[0], right[0]));
-}
-
-function compareStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 async function digest(value: string): Promise<string> {

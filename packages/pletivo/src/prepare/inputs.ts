@@ -1,31 +1,41 @@
 /** Record the project files `pletivo prepare` was prepared from. */
 
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { digestArtifactInput, type ArtifactInput } from "@pletivo/core/artifact";
-import { findAstroConfig } from "../astro-host/config-loader";
-import { findPletivoConfig } from "../config";
-import { compareStrings, isMissingFile, normalizePath } from "./paths";
+import type { ArtifactInput } from "@pletivo/core/artifact";
+import { findWorkspaceRoot, readPrepareInputs, type InputFileReader } from "@pletivo/core/prepare-inputs";
+import { isMissingFile, normalizePath } from "./paths";
 
-/** `bun.lockb` is binary and superseded by `bun.lock`; it is deliberately not recorded. */
-const OPTIONAL_INPUTS = ["package.json", "bun.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
+/** `projectRoot` is a real path: a symlinked site is looked up where it really lives. */
+export async function readProjectInputs(projectRoot: string): Promise<ArtifactInput[]> {
+  const site = fileReader(projectRoot);
+  const top = repositoryRoot(projectRoot);
+  const workspaceRoot = await findWorkspaceRoot(normalizePath(path.relative(top, projectRoot)), (directory) =>
+    fileReader(path.join(top, directory)),
+  );
+  return readPrepareInputs(
+    site,
+    workspaceRoot === null ? {} : { workspaceRoot: fileReader(path.join(top, workspaceRoot)) },
+  );
+}
 
-export async function readPrepareInputs(projectRoot: string): Promise<ArtifactInput[]> {
-  const files = OPTIONAL_INPUTS.map((name) => path.join(projectRoot, name));
-  for (const config of [findAstroConfig(projectRoot), findPletivoConfig(projectRoot)]) {
-    if (config !== null) files.push(config);
+/**
+ * The nearest directory at or above `directory` that holds `.git`, else the filesystem
+ * root. The workspace search never leaves the repository the site is checked out in.
+ */
+function repositoryRoot(directory: string): string {
+  let current = directory;
+  while (!existsSync(path.join(current, ".git"))) {
+    const parent = path.dirname(current);
+    if (parent === current) return current;
+    current = parent;
   }
+  return current;
+}
 
-  const inputs: ArtifactInput[] = [];
-  for (const file of files) {
-    const bytes = await readOptionalFile(file);
-    if (bytes === null) continue;
-    inputs.push({
-      path: normalizePath(path.relative(projectRoot, file)),
-      digest: await digestArtifactInput(bytes),
-    });
-  }
-  return inputs.sort((left, right) => compareStrings(left.path, right.path));
+function fileReader(directory: string): InputFileReader {
+  return (file) => readOptionalFile(path.join(directory, file));
 }
 
 async function readOptionalFile(file: string): Promise<Uint8Array | null> {

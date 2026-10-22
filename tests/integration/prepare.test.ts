@@ -97,7 +97,7 @@ describe("pletivo prepare", () => {
   test.each(["raw", "inline", "url", "lang=text&raw", "url&v=1", "raw=true"])(
     "leaves project ?%s imports to the consumer while validating their files",
     async (query) => {
-      const directory = await temporaryDirectory();
+      const directory = await temporaryRepository();
       await fs.mkdir(path.join(directory, "src/pages"), { recursive: true });
       await fs.writeFile(path.join(directory, "src/data.txt"), "query import body\n");
       await fs.writeFile(
@@ -115,7 +115,7 @@ describe("pletivo prepare", () => {
   );
 
   test("does not silently accept unsupported project query imports", async () => {
-    const directory = await temporaryDirectory();
+    const directory = await temporaryRepository();
     await fs.mkdir(path.join(directory, "src/pages"), { recursive: true });
     await fs.writeFile(path.join(directory, "src/data.txt"), "query import body\n");
     await fs.writeFile(
@@ -137,7 +137,7 @@ describe("pletivo prepare", () => {
       { specifier: "../data.js", file: "data.jsx", source: "export default 1;", accepted: false },
       { specifier: "../data.json", file: "data.json", source: "{}", accepted: true },
     ])(`matches consumer resolution for $specifier?${query} with $file`, async ({ specifier, file, source, accepted }) => {
-      const directory = await temporaryDirectory();
+      const directory = await temporaryRepository();
       await fs.mkdir(path.join(directory, "src/pages"), { recursive: true });
       const target = path.join(directory, "src", file);
       await fs.mkdir(path.dirname(target), { recursive: true });
@@ -251,7 +251,7 @@ describe("pletivo prepare", () => {
   });
 
   test("a failed CLI leaves an existing artifact unchanged", async () => {
-    const directory = await temporaryDirectory();
+    const directory = await temporaryRepository();
     await fs.cp(path.join(fixtures, "fatal-routing"), directory, { recursive: true });
     const output = path.join(directory, "out");
     await fs.mkdir(output);
@@ -281,7 +281,7 @@ describe("pletivo prepare", () => {
 
   test("is independent of the checkout root, including absolute Vite ids", async () => {
     const first = await prepare(project);
-    const directory = await temporaryDirectory();
+    const directory = await temporaryRepository();
     const copiedFixtures = path.join(directory, "fixture-prepare");
     await fs.cp(fixtures, copiedFixtures, { recursive: true });
     __resetForTests();
@@ -291,12 +291,11 @@ describe("pletivo prepare", () => {
 
   test("records only the Astro config for the bare fixture", async () => {
     const site = await prepare(project);
-    const digest = createHash("sha256").update(await fs.readFile(path.join(project, "astro.config.mjs"))).digest("hex");
-    expect(site.inputs).toEqual([{ path: "astro.config.mjs", digest: `sha256:${digest}` }]);
+    expect(site.inputs).toEqual([await inputOf(project, "astro.config.mjs")]);
   });
 
   test("records the digests of the config, package manifest, and text lockfiles", async () => {
-    const directory = await temporaryDirectory();
+    const directory = await temporaryRepository();
     const copiedFixtures = path.join(directory, "fixture-prepare");
     await fs.cp(fixtures, copiedFixtures, { recursive: true });
     const copiedProject = path.join(copiedFixtures, "project");
@@ -318,6 +317,90 @@ describe("pletivo prepare", () => {
     const emitted = await emitArtifact(await temporaryDirectory(), site);
     const imported: unknown = await import(`${pathToFileURL(emitted.modulePath).href}?v=${Date.now()}`);
     expect(parsePreparedSite(moduleExport(imported, "PREPARED")).inputs).toEqual(expected);
+  });
+
+  test("records a site that owns its install exactly as before, inside a workspace too", async () => {
+    const workspace = await temporaryRepository();
+    await fs.writeFile(path.join(workspace, "package.json"), '{ "private": true, "workspaces": ["fixture-prepare/*"] }\n');
+    await fs.writeFile(path.join(workspace, "bun.lock"), "{}\n");
+    const copiedProject = await copyFixtures(workspace);
+    await fs.writeFile(path.join(copiedProject, "package.json"), '{ "name": "flat-site", "private": true }\n');
+    await fs.writeFile(path.join(copiedProject, "bun.lock"), '{ "lockfileVersion": 1 }\n');
+
+    const site = await prepare(copiedProject);
+    expect(site.inputs).toEqual(
+      await Promise.all(["astro.config.mjs", "bun.lock", "package.json"].map((file) => inputOf(copiedProject, file))),
+    );
+  });
+
+  test("records a workspace member's root lockfile and manifest, so a root lockfile change is seen", async () => {
+    const workspace = await temporaryRepository();
+    await fs.writeFile(path.join(workspace, "package.json"), '{ "private": true, "workspaces": ["fixture-prepare/*"] }\n');
+    await fs.writeFile(path.join(workspace, "bun.lock"), '{ "lockfileVersion": 1, "packages": {} }\n');
+    const copiedProject = await copyFixtures(workspace);
+    await fs.writeFile(path.join(copiedProject, "package.json"), '{ "name": "member-site", "private": true }\n');
+
+    const before = await prepare(copiedProject);
+    expect(before.inputs).toEqual([
+      await inputOf(copiedProject, "astro.config.mjs"),
+      await inputOf(copiedProject, "package.json"),
+      { ...(await inputOf(workspace, "bun.lock")), path: "workspace:bun.lock" },
+      { ...(await inputOf(workspace, "package.json")), path: "workspace:package.json" },
+    ]);
+    const emitted = await emitArtifact(await temporaryDirectory(), before);
+    expect(parsePreparedSite(JSON.parse(await fs.readFile(emitted.jsonPath, "utf8"))).inputs).toEqual(before.inputs);
+
+    await fs.writeFile(path.join(workspace, "bun.lock"), '{ "lockfileVersion": 1, "packages": { "preact": [] } }\n');
+    __resetForTests();
+    const after = await prepare(copiedProject);
+    expect(JSON.stringify(after.inputs)).not.toBe(JSON.stringify(before.inputs));
+    expect(after.inputs?.find((input) => input.path === "workspace:bun.lock")).toEqual({
+      ...(await inputOf(workspace, "bun.lock")),
+      path: "workspace:bun.lock",
+    });
+  });
+
+  test("records nothing of an enclosing install that does not list the site", async () => {
+    const workspace = await temporaryRepository();
+    await fs.writeFile(path.join(workspace, "package.json"), '{ "private": true, "workspaces": ["packages/*"] }\n');
+    await fs.writeFile(path.join(workspace, "bun.lock"), "{}\n");
+    const copiedProject = await copyFixtures(workspace);
+    await fs.writeFile(path.join(copiedProject, "package.json"), '{ "name": "not-a-member", "private": true }\n');
+
+    const site = await prepare(copiedProject);
+    expect(site.inputs).toEqual(
+      await Promise.all(["astro.config.mjs", "package.json"].map((file) => inputOf(copiedProject, file))),
+    );
+  });
+
+  test("does not look for a workspace above the repository root", async () => {
+    const outside = await temporaryRepository();
+    await fs.writeFile(path.join(outside, "package.json"), '{ "private": true, "workspaces": ["**"] }\n');
+    const repository = path.join(outside, "repository");
+    await fs.mkdir(path.join(repository, ".git"), { recursive: true });
+    const copiedProject = await copyFixtures(repository);
+    await fs.writeFile(path.join(copiedProject, "package.json"), '{ "name": "repository-site", "private": true }\n');
+
+    const site = await prepare(copiedProject);
+    expect(site.inputs).toEqual(
+      await Promise.all(["astro.config.mjs", "package.json"].map((file) => inputOf(copiedProject, file))),
+    );
+  });
+
+  test("looks up a symlinked site's workspace where the site really lives", async () => {
+    const workspace = await temporaryRepository();
+    await fs.writeFile(path.join(workspace, "package.json"), '{ "private": true, "workspaces": ["fixture-prepare/*"] }\n');
+    const copiedProject = await copyFixtures(workspace);
+    await fs.writeFile(path.join(copiedProject, "package.json"), '{ "name": "member-site", "private": true }\n');
+    const link = path.join(await temporaryRepository(), "site");
+    await fs.symlink(copiedProject, link);
+
+    const site = await prepare(link);
+    expect(site.inputs?.map((input) => input.path)).toEqual([
+      "astro.config.mjs",
+      "package.json",
+      "workspace:package.json",
+    ]);
   });
 });
 
@@ -347,7 +430,7 @@ describe("pletivo prepare, browser scripts", () => {
   });
 
   test("refuses a script import that only exists on the server", async () => {
-    const directory = await temporaryDirectory();
+    const directory = await temporaryRepository();
     await fs.cp(browserProject, directory, { recursive: true });
     await fs.writeFile(
       path.join(directory, "src/pages/index.astro"),
@@ -405,9 +488,28 @@ describe("pletivo prepare on the vendor fixture", () => {
   });
 });
 
+/** Copy the prepare fixtures into `directory`; returns the copied project. */
+async function copyFixtures(directory: string): Promise<string> {
+  const copiedFixtures = path.join(directory, "fixture-prepare");
+  await fs.cp(fixtures, copiedFixtures, { recursive: true });
+  return path.join(copiedFixtures, "project");
+}
+
+async function inputOf(directory: string, file: string): Promise<{ path: string; digest: string }> {
+  const digest = createHash("sha256").update(await fs.readFile(path.join(directory, file))).digest("hex");
+  return { path: file, digest: `sha256:${digest}` };
+}
+
 async function temporaryDirectory(): Promise<string> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-prepare-"));
   temporaryDirectories.push(directory);
+  return directory;
+}
+
+/** A temp dir that holds `.git`, so the workspace search never looks above it. */
+async function temporaryRepository(): Promise<string> {
+  const directory = await temporaryDirectory();
+  await fs.mkdir(path.join(directory, ".git"));
   return directory;
 }
 

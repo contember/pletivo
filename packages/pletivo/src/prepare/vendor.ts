@@ -12,7 +12,8 @@ import {
 } from "@pletivo/core/artifact";
 import { prepareFailure, PrepareError } from "./error";
 import { processedScripts } from "./scripts";
-import { compareStrings, isInsideRoot, isMissingFile, normalizePath } from "./paths";
+import { compareStrings } from "@pletivo/core/compare-strings";
+import { isInsideRoot, isMissingFile, normalizePath } from "./paths";
 import {
   classifySpecifier,
   extensionOf,
