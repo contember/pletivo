@@ -328,8 +328,24 @@ the render that needs them.
 `pnpm-lock.yaml`, `yarn.lock` and the loaded astro and pletivo config that exists. The
 inputs sit beside the executable artifact and are never part of program identity.
 
+A site inside a monorepo installs from the workspace root, so its dependencies change
+with the root lockfile. When the site has no lockfile and its `package.json` declares no
+`workspaces`, prepare walks up to the nearest ancestor that has a lockfile (`bun.lockb`
+included) or a `package.json` with `workspaces`, and records that ancestor's
+`package.json` and text lockfiles as `workspace:package.json`, `workspace:bun.lock` and
+so on. The walk stops at the first directory holding `.git`, or at the filesystem root:
+a lockfile outside the repository is never the site's. A site that owns its install
+records exactly what it did before the prefix existed.
+
+`@pletivo/core/prepare-inputs` holds the file lists and the logic — `readPrepareInputs`
+and `findWorkspaceRoot`, both over `read(path)` callbacks — so a host that reads the
+project through another filesystem computes the same inputs as the CLI. Each host bounds
+the walk itself: the CLI by `.git`, the Workers host by the root of its store.
+
 With `artifactPath`, the host compares each recorded digest with the file in the
-snapshot, under the project root, once per artifact and revision. Every input that
+snapshot, under the project root, once per artifact and revision. A `workspace:` input
+is read from the workspace root `findWorkspaceRoot` finds above the project root in the
+store; with none, it counts as gone. Every input that
 changed or is gone is named in `x-pletivo-artifact-stale`, comma-separated and sorted;
 `render()` returns the same list as `staleArtifactInputs`. **It is a warning, never a
 failure:** the page still renders from the artifact as it is. A check that fails for any

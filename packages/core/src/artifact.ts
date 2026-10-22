@@ -134,9 +134,16 @@ export interface SiteArtifact {
   browserResolutions?: ArtifactResolution[];
 }
 
+/** Marks an `ArtifactInput.path` as relative to the workspace root rather than the project root. */
+export const WORKSPACE_INPUT_PREFIX = "workspace:";
+
 /** A file `pletivo prepare` read, and the digest of its bytes at that time. */
 export interface ArtifactInput {
-  /** Project-root-relative, `/`-separated, no leading `/`, no `.` or `..` segments. */
+  /**
+   * Project-root-relative, `/`-separated, no leading `/`, no `.` or `..` segments. A
+   * `workspace:` prefix (`workspace:bun.lock`) makes it relative to the workspace root
+   * the site installs from instead; see `@pletivo/core/prepare-inputs`.
+   */
   path: string;
   /** `sha256:` + 64 lowercase hex characters. */
   digest: string;
@@ -575,10 +582,11 @@ function parseInputs(value: unknown): ArtifactInput[] {
     assertExactFields(input, ["path", "digest"], path);
 
     const inputPath = requiredField(input, "path", path);
-    if (typeof inputPath !== "string" || !isProjectRelativePath(inputPath)) {
+    if (typeof inputPath !== "string" || !isInputPath(inputPath)) {
       throw new ArtifactFormatError(
         `${path}.path`,
-        'expected a "/"-separated project-relative path without empty, ".", or ".." segments, backslashes, or colons',
+        'expected a "/"-separated project-relative path, optionally prefixed with "workspace:", ' +
+          'without empty, ".", or ".." segments, backslashes, or other colons',
       );
     }
     const previous = parsed.at(-1);
@@ -596,6 +604,13 @@ function parseInputs(value: unknown): ArtifactInput[] {
     parsed.push({ path: inputPath, digest });
   }
   return parsed;
+}
+
+function isInputPath(value: string): boolean {
+  if (value.startsWith(WORKSPACE_INPUT_PREFIX)) {
+    return isProjectRelativePath(value.slice(WORKSPACE_INPUT_PREFIX.length));
+  }
+  return isProjectRelativePath(value);
 }
 
 function isProjectRelativePath(value: string): boolean {

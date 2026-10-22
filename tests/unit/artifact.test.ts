@@ -389,6 +389,16 @@ describe("site artifact inputs", () => {
     expect(parsePreparedSite(JSON.parse(serializePreparedSite(parsed))).inputs).toEqual(inputs);
   });
 
+  test("accepts workspace inputs, sorted with the project's own", () => {
+    const inputs = [
+      { path: "package.json", digest: DIGEST_A },
+      { path: "workspace:bun.lock", digest: DIGEST_B },
+      { path: "workspace:package.json", digest: DIGEST_A },
+    ];
+
+    expect(parsePreparedSite(withInputs(inputs)).inputs).toEqual(inputs);
+  });
+
   test("accepts an envelope without inputs", () => {
     const parsed = parsePreparedSite(PREPARED);
 
@@ -464,6 +474,21 @@ describe("site artifact inputs", () => {
     {
       name: "an empty path",
       inputs: [{ path: "", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "a workspace parent segment",
+      inputs: [{ path: "workspace:../bun.lock", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "an empty workspace path",
+      inputs: [{ path: "workspace:", digest: DIGEST_A }],
+      path: "$.inputs[0].path",
+    },
+    {
+      name: "an unknown prefix",
+      inputs: [{ path: "root:bun.lock", digest: DIGEST_A }],
       path: "$.inputs[0].path",
     },
     {

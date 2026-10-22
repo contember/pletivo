@@ -1,31 +1,34 @@
 /** Record the project files `pletivo prepare` was prepared from. */
 
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { digestArtifactInput, type ArtifactInput } from "@pletivo/core/artifact";
-import { findAstroConfig } from "../astro-host/config-loader";
-import { findPletivoConfig } from "../config";
-import { compareStrings, isMissingFile, normalizePath } from "./paths";
+import type { ArtifactInput } from "@pletivo/core/artifact";
+import { findWorkspaceRoot, readPrepareInputs, type InputFileReader } from "@pletivo/core/prepare-inputs";
+import { isMissingFile } from "./paths";
 
-/** `bun.lockb` is binary and superseded by `bun.lock`; it is deliberately not recorded. */
-const OPTIONAL_INPUTS = ["package.json", "bun.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
+export async function readProjectInputs(projectRoot: string): Promise<ArtifactInput[]> {
+  const site = fileReader(projectRoot);
+  const workspaceRoot = await findWorkspaceRoot(site, repositoryAncestors(projectRoot), fileReader);
+  return readPrepareInputs(site, workspaceRoot === null ? {} : { workspaceRoot: fileReader(workspaceRoot) });
+}
 
-export async function readPrepareInputs(projectRoot: string): Promise<ArtifactInput[]> {
-  const files = OPTIONAL_INPUTS.map((name) => path.join(projectRoot, name));
-  for (const config of [findAstroConfig(projectRoot), findPletivoConfig(projectRoot)]) {
-    if (config !== null) files.push(config);
+/**
+ * The parents of `directory`, closest first, up to the first that holds `.git` or the
+ * filesystem root. The search never leaves the repository the site is checked out in.
+ */
+function* repositoryAncestors(directory: string): Generator<string> {
+  let current = directory;
+  while (!existsSync(path.join(current, ".git"))) {
+    const parent = path.dirname(current);
+    if (parent === current) return;
+    current = parent;
+    yield current;
   }
+}
 
-  const inputs: ArtifactInput[] = [];
-  for (const file of files) {
-    const bytes = await readOptionalFile(file);
-    if (bytes === null) continue;
-    inputs.push({
-      path: normalizePath(path.relative(projectRoot, file)),
-      digest: await digestArtifactInput(bytes),
-    });
-  }
-  return inputs.sort((left, right) => compareStrings(left.path, right.path));
+function fileReader(directory: string): InputFileReader {
+  return (file) => readOptionalFile(path.join(directory, file));
 }
 
 async function readOptionalFile(file: string): Promise<Uint8Array | null> {

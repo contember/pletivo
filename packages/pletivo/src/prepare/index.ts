@@ -14,7 +14,7 @@ import { initAstroHost, type AstroHost } from "../astro-host/runner";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
-import { readPrepareInputs } from "./inputs";
+import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings, isInsideRoot, normalizePath } from "./paths";
@@ -33,7 +33,7 @@ const SKIPPED_DIRS = new Set(["node_modules", "dist", ".astro", ".wrangler", ".p
 export async function prepare(root: string, options: PrepareOptions = {}): Promise<PreparedSite> {
   const projectRoot = realpathSync(path.resolve(root));
   // Digest before loading: an edit racing prepare must read as stale, never as current.
-  const inputs = await readPrepareInputs(projectRoot);
+  const inputs = await readProjectInputs(projectRoot);
   const projectConfig = await loadConfig(projectRoot);
   const srcDir = options.srcDir ?? projectConfig.srcDir;
   const host = await initAstroHost(projectRoot, "build");

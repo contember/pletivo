@@ -9,19 +9,13 @@ import path from "path";
 import { pathToFileURL } from "url";
 import { existsSync } from "fs";
 import type { AstroConfig, AstroIntegration } from "@pletivo/core/astro-host/types";
-
-const CONFIG_NAMES = [
-  "astro.config.ts",
-  "astro.config.mts",
-  "astro.config.mjs",
-  "astro.config.js",
-];
+import { ASTRO_CONFIG_FILES } from "@pletivo/core/prepare-inputs";
 
 /**
  * Locate the astro config file in `projectRoot`. Returns null if none.
  */
 export function findAstroConfig(projectRoot: string): string | null {
-  for (const name of CONFIG_NAMES) {
+  for (const name of ASTRO_CONFIG_FILES) {
     const full = path.join(projectRoot, name);
     if (existsSync(full)) return full;
   }
