@@ -5,6 +5,7 @@
  * see docs/todos/016 "Content collections".
  */
 
+import { compareStrings } from "@pletivo/core/compare-strings";
 import {
   baseNameOf,
   extensionOf,
@@ -369,10 +370,6 @@ function ownProjectAssets(assets: ProjectAssets): ProjectAssets {
     owned.set(source, asset instanceof Uint8Array ? new Uint8Array(asset) : { ...asset });
   }
   return owned;
-}
-
-function compareStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function outputCandidateKey(source: string): string {

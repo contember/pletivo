@@ -12,8 +12,3 @@ export function isInsideRoot(relative: string): boolean {
 export function isMissingFile(error: unknown): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === "ENOENT";
 }
-
-/** Code-unit order, independent of locale. */
-export function compareStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}

@@ -1,5 +1,7 @@
 /** Serialized executable input shared by `pletivo prepare` and non-Bun hosts. */
 
+import { compareStrings } from "./compare-strings";
+
 export const ARTIFACT_VERSION = 2;
 
 /** Stable module identity within the prepared graph. */
@@ -771,8 +773,4 @@ function requireNonEmptyString(value: unknown, path: string): string {
 
 function hasOwn(value: object, field: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(value, field);
-}
-
-function compareStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

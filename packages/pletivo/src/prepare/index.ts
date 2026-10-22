@@ -17,7 +17,8 @@ import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
 import { freezeRouting, type FrozenRouting } from "./routing";
-import { compareStrings, isInsideRoot, normalizePath } from "./paths";
+import { compareStrings } from "@pletivo/core/compare-strings";
+import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
 import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
 
