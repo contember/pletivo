@@ -5,26 +5,33 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ArtifactInput } from "@pletivo/core/artifact";
 import { findWorkspaceRoot, readPrepareInputs, type InputFileReader } from "@pletivo/core/prepare-inputs";
-import { isMissingFile } from "./paths";
+import { isMissingFile, normalizePath } from "./paths";
 
+/** `projectRoot` is a real path: a symlinked site is looked up where it really lives. */
 export async function readProjectInputs(projectRoot: string): Promise<ArtifactInput[]> {
   const site = fileReader(projectRoot);
-  const workspaceRoot = await findWorkspaceRoot(site, repositoryAncestors(projectRoot), fileReader);
-  return readPrepareInputs(site, workspaceRoot === null ? {} : { workspaceRoot: fileReader(workspaceRoot) });
+  const top = repositoryRoot(projectRoot);
+  const workspaceRoot = await findWorkspaceRoot(normalizePath(path.relative(top, projectRoot)), (directory) =>
+    fileReader(path.join(top, directory)),
+  );
+  return readPrepareInputs(
+    site,
+    workspaceRoot === null ? {} : { workspaceRoot: fileReader(path.join(top, workspaceRoot)) },
+  );
 }
 
 /**
- * The parents of `directory`, closest first, up to the first that holds `.git` or the
- * filesystem root. The search never leaves the repository the site is checked out in.
+ * The nearest directory at or above `directory` that holds `.git`, else the filesystem
+ * root. The workspace search never leaves the repository the site is checked out in.
  */
-function* repositoryAncestors(directory: string): Generator<string> {
+function repositoryRoot(directory: string): string {
   let current = directory;
   while (!existsSync(path.join(current, ".git"))) {
     const parent = path.dirname(current);
-    if (parent === current) return;
+    if (parent === current) return current;
     current = parent;
-    yield current;
   }
+  return current;
 }
 
 function fileReader(directory: string): InputFileReader {

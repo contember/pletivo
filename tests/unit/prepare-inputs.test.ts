@@ -20,8 +20,8 @@ async function input(path: string, source: string): Promise<{ path: string; dige
   return { path, digest: await digestArtifactInput(new TextEncoder().encode(source)) };
 }
 
-async function workspaceRootOf(tree: Tree, site: string, ancestors: string[]): Promise<string | null> {
-  return findWorkspaceRoot(readerAt(tree, site), ancestors, (directory) => readerAt(tree, directory));
+async function workspaceRootOf(tree: Tree, site: string): Promise<string | null> {
+  return findWorkspaceRoot(site, (directory) => readerAt(tree, directory));
 }
 
 describe("readPrepareInputs", () => {
@@ -49,6 +49,7 @@ describe("readPrepareInputs", () => {
     const tree: Tree = {
       "package.json": '{"workspaces":["sites/*"]}',
       "bun.lock": "root lock",
+      "pnpm-workspace.yaml": "packages: []",
       "astro.config.mjs": "not the site's",
       "sites/blog/package.json": "{}",
     };
@@ -61,42 +62,59 @@ describe("readPrepareInputs", () => {
       await input("package.json", "{}"),
       await input("workspace:bun.lock", "root lock"),
       await input("workspace:package.json", '{"workspaces":["sites/*"]}'),
+      await input("workspace:pnpm-workspace.yaml", "packages: []"),
     ]);
   });
 });
 
 describe("findWorkspaceRoot", () => {
-  test("is null for a site with its own lockfile", async () => {
-    const tree: Tree = { "bun.lock": "root", "site/package-lock.json": "site" };
-    expect(await workspaceRootOf(tree, "site", [""])).toBeNull();
+  const ROOT = '{"workspaces":["packages/*"]}';
+
+  test("is the nearest directory whose workspaces list the site", async () => {
+    const tree: Tree = { "package.json": ROOT, "packages/site/package.json": "{}" };
+    expect(await workspaceRootOf(tree, "packages/site")).toBe("");
   });
 
-  test("is null for a site that declares workspaces itself", async () => {
-    const tree: Tree = { "bun.lock": "root", "site/package.json": '{"workspaces":[]}' };
-    expect(await workspaceRootOf(tree, "site", [""])).toBeNull();
+  test("reads the object form, pnpm-workspace.yaml, globstars, alternations and ./ prefixes", async () => {
+    const cases: Array<[Tree, string]> = [
+      [{ "package.json": '{"workspaces":{"packages":["apps/*"]}}' }, "apps/site"],
+      [{ "pnpm-workspace.yaml": "packages:\n  - 'apps/**'\n" }, "apps/web/site"],
+      [{ "package.json": '{"workspaces":["{apps,sites}/*"]}' }, "sites/blog"],
+      [{ "package.json": '{"workspaces":["./site/"]}' }, "site"],
+    ];
+    for (const [tree, site] of cases) {
+      expect(await workspaceRootOf({ ...tree, [`${site}/package.json`]: "{}" }, site)).toBe("");
+    }
   });
 
-  test("is the nearest ancestor with a lockfile, a binary one included", async () => {
-    const tree: Tree = { "bun.lock": "outer", "apps/bun.lockb": "inner", "apps/site/package.json": "{}" };
-    expect(await workspaceRootOf(tree, "apps/site", ["apps", ""])).toBe("apps");
-  });
-
-  test("is the nearest ancestor whose manifest declares workspaces", async () => {
+  test("skips a directory whose workspaces do not list the site, or exclude it", async () => {
     const tree: Tree = {
-      "package.json": '{"workspaces":{"packages":["packages/*"]}}',
-      "packages/package.json": '{"name":"not-a-workspace"}',
-      "packages/site/package.json": "{}",
+      "package.json": '{"workspaces":["apps/**","!apps/legacy"]}',
+      "apps/package.json": ROOT,
+      "apps/legacy/package.json": "{}",
+      "apps/site/package.json": "{}",
     };
-    expect(await workspaceRootOf(tree, "packages/site", ["packages", ""])).toBe("");
+    expect(await workspaceRootOf(tree, "apps/site")).toBe("");
+    expect(await workspaceRootOf(tree, "apps/legacy")).toBeNull();
   });
 
-  test("skips an ancestor whose manifest is not JSON", async () => {
-    const tree: Tree = { "package.json": '{"workspaces":["*"]}', "apps/package.json": "{", "apps/site/a": "" };
-    expect(await workspaceRootOf(tree, "apps/site", ["apps", ""])).toBe("");
+  test("ignores a lockfile without workspaces, null workspaces and broken manifests", async () => {
+    const site = { "a/b/site/package.json": "{}" };
+    expect(await workspaceRootOf({ ...site, "bun.lock": "lock" }, "a/b/site")).toBeNull();
+    expect(await workspaceRootOf({ ...site, "package.json": '{"workspaces":null}' }, "a/b/site")).toBeNull();
+    expect(
+      await workspaceRootOf({ ...site, "package.json": '{"workspaces":["**"]}', "a/package.json": "{" }, "a/b/site"),
+    ).toBe("");
   });
 
-  test("looks no further than the ancestors it is given", async () => {
-    const tree: Tree = { "bun.lock": "outside", "repository/site/package.json": "{}" };
-    expect(await workspaceRootOf(tree, "repository/site", ["repository"])).toBeNull();
+  test("is null for a site without a manifest, with its own lockfile or with workspaces of its own", async () => {
+    const root = { "package.json": '{"workspaces":["site"]}' };
+    expect(await workspaceRootOf({ ...root, "site/index.html": "" }, "site")).toBeNull();
+    expect(await workspaceRootOf({ ...root, "site/package.json": "{}", "site/bun.lockb": "" }, "site")).toBeNull();
+    expect(await workspaceRootOf({ ...root, "site/package.json": '{"workspaces":[]}' }, "site")).toBeNull();
+  });
+
+  test("is null for the top of the search itself", async () => {
+    expect(await workspaceRootOf({ "package.json": "{}" }, "")).toBeNull();
   });
 });

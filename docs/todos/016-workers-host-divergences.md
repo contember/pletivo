@@ -26,8 +26,10 @@ These contracts landed after the measurements below. They are the current baseli
   is reused while the file's source is unchanged.
 - `PreparedSite.inputs` records the files `prepare` read — `package.json`, the
   lockfiles, the loaded astro and pletivo config, and for a workspace member the
-  workspace root's `package.json` and lockfiles as `workspace:<file>` — as `sha256`
-  digests. `@pletivo/core/prepare-inputs` computes them, so a host that reads the project
+  workspace root's `package.json`, lockfiles and `pnpm-workspace.yaml` as
+  `workspace:<file>` — as `sha256` digests. A host older than the release that added
+  the `workspace:` prefix rejects such an artifact as malformed at `$.inputs[i].path`;
+  the artifact version did not change, so a flat site's artifact stays readable by both. `@pletivo/core/prepare-inputs` computes them, so a host that reads the project
   through another filesystem gets the same list. They are provenance, never program
   identity. With `artifactPath` the host compares them with
   the workspace and names changed ones in `x-pletivo-artifact-stale`: a warning, never a

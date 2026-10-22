@@ -27,7 +27,6 @@ import { findWorkspaceRoot, type InputFileReader } from "@pletivo/core/prepare-i
 import { loadProjectArtifact, type ProjectArtifact } from "./artifact.ts";
 import { browserModule, BrowserModuleError, isBrowserModulePath } from "./browser-modules.ts";
 import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
-import { parentDir } from "./project-css.ts";
 import { publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
@@ -356,7 +355,8 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
 
 /**
  * The inputs whose bytes under `root` no longer have the digest `prepare` recorded, sorted.
- * A `workspace:` input is read from the workspace root found above `root` in the snapshot.
+ * A `workspace:` input is read from the workspace root that lists `root`, searched up to
+ * the store root.
  */
 async function changedInputs(
   inputs: readonly ArtifactInput[],
@@ -382,9 +382,7 @@ async function changedInputs(
   }
 
   const recordsWorkspace = inputs.some((input) => input.path.startsWith(WORKSPACE_INPUT_PREFIX));
-  const workspaceRoot = recordsWorkspace
-    ? await findWorkspaceRoot(readerAt(root), storeAncestors(root), readerAt)
-    : null;
+  const workspaceRoot = recordsWorkspace ? await findWorkspaceRoot(root, readerAt) : null;
   function inputLocation(input: ArtifactInput): string | undefined {
     if (!input.path.startsWith(WORKSPACE_INPUT_PREFIX)) return joinPath(root, input.path);
     if (workspaceRoot === null) return undefined;
@@ -399,15 +397,6 @@ async function changedInputs(
     if (digest !== input.digest) stale.push(input.path);
   }
   return stale.sort();
-}
-
-/** The directories above `root` in the store, closest first, ending with the store root. */
-function* storeAncestors(root: string): Generator<string> {
-  let current = root;
-  while (current !== "") {
-    current = parentDir(current);
-    yield current;
-  }
 }
 
 function joinPath(directory: string, file: string): string {

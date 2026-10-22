@@ -329,23 +329,38 @@ the render that needs them.
 inputs sit beside the executable artifact and are never part of program identity.
 
 A site inside a monorepo installs from the workspace root, so its dependencies change
-with the root lockfile. When the site has no lockfile and its `package.json` declares no
-`workspaces`, prepare walks up to the nearest ancestor that has a lockfile (`bun.lockb`
-included) or a `package.json` with `workspaces`, and records that ancestor's
-`package.json` and text lockfiles as `workspace:package.json`, `workspace:bun.lock` and
-so on. The walk stops at the first directory holding `.git`, or at the filesystem root:
-a lockfile outside the repository is never the site's. A site that owns its install
-records exactly what it did before the prefix existed.
+with the root lockfile. Prepare records the root's `package.json`, text lockfiles and
+`pnpm-workspace.yaml` as `workspace:package.json`, `workspace:bun.lock` and so on, when
+the site is a workspace member:
+
+- the site has a `package.json`, no lockfile (`bun.lockb` included) and no workspaces of
+  its own;
+- the workspace root is the nearest directory above it whose `package.json`
+  `workspaces` (an array, or `{ packages: [...] }`) or `pnpm-workspace.yaml` `packages`
+  list the site's path: `*`, `?`, `**`, `{a,b}` and `!` exclusions, as package managers
+  read them. `"workspaces": null` and an unparsable manifest declare nothing. A lockfile
+  alone does not make a directory a workspace root.
+
+The CLI searches up to the first directory holding `.git`, or the filesystem root, so a
+file outside the repository is never the site's. It searches from the real path, so a
+symlinked site is a member of the workspace it really lives in. A site that owns its
+install records exactly what it did before the prefix existed.
 
 `@pletivo/core/prepare-inputs` holds the file lists and the logic — `readPrepareInputs`
-and `findWorkspaceRoot`, both over `read(path)` callbacks — so a host that reads the
-project through another filesystem computes the same inputs as the CLI. Each host bounds
-the walk itself: the CLI by `.git`, the Workers host by the root of its store.
+over a `read(path)` callback, and `findWorkspaceRoot(sitePath, readerAt)` over paths
+relative to the top of the search — so a host that reads the project through another
+filesystem computes the same inputs as the CLI. The caller picks the top: the CLI the
+repository root, the Workers host the root of its store.
+
+**Compatibility.** The artifact version did not change, so flat-site artifacts stay
+valid everywhere. An artifact with `workspace:` inputs needs a host from the release
+that added the prefix; an older host rejects it as malformed at `$.inputs[i].path`.
 
 With `artifactPath`, the host compares each recorded digest with the file in the
 snapshot, under the project root, once per artifact and revision. A `workspace:` input
-is read from the workspace root `findWorkspaceRoot` finds above the project root in the
-store; with none, it counts as gone. Every input that
+is read from the workspace root `findWorkspaceRoot` finds for the project root in the
+store; with none (no directory lists the project, or it now has its own lockfile), it
+counts as gone. Every input that
 changed or is gone is named in `x-pletivo-artifact-stale`, comma-separated and sorted;
 `render()` returns the same list as `staleArtifactInputs`. **It is a warning, never a
 failure:** the page still renders from the artifact as it is. A check that fails for any

@@ -1267,9 +1267,10 @@ const notes = await getCollection("notes");
       expect((await host.render("/")).staleArtifactInputs).toEqual(["package.json"]);
     });
 
-    test("a workspace input is read from the workspace root above the project", async () => {
-      const ROOT_MANIFEST = `{"private":true,"workspaces":["site"]}`;
-      const ROOT_LOCKFILE = `{"lockfileVersion":1,"packages":{}}`;
+    const ROOT_MANIFEST = `{"private":true,"workspaces":["site"]}`;
+    const ROOT_LOCKFILE = `{"lockfileVersion":1,"packages":{}}`;
+
+    async function memberWorkspace(): Promise<FakeWorkspace> {
       const workspace = new FakeWorkspace();
       workspace.write("/package.json", ROOT_MANIFEST);
       workspace.write("/bun.lock", ROOT_LOCKFILE);
@@ -1293,13 +1294,22 @@ const notes = await getCollection("notes");
           ],
         }),
       );
-      const host = createProjectHost({
+      return workspace;
+    }
+
+    function memberHost(workspace: FakeWorkspace) {
+      return createProjectHost({
         store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
         artifactPath: `site/${artifactPath}`,
         pagesDir: "site/src/pages",
         loader,
         compiler,
       });
+    }
+
+    test("a workspace input is read from the workspace root that lists the project", async () => {
+      const workspace = await memberWorkspace();
+      const host = memberHost(workspace);
 
       expect((await host.render("/")).staleArtifactInputs).toEqual([]);
 
@@ -1308,6 +1318,26 @@ const notes = await getCollection("notes");
 
       expect(response.status).toBe(200);
       expect(response.headers.get("x-pletivo-artifact-stale")).toBe("workspace:bun.lock");
+    });
+
+    test("workspace inputs are gone once no workspace root lists the project", async () => {
+      const workspace = await memberWorkspace();
+      workspace.write("/package.json", `{"private":true,"workspaces":["packages/*"]}`);
+
+      expect((await memberHost(workspace).render("/")).staleArtifactInputs).toEqual([
+        "workspace:bun.lock",
+        "workspace:package.json",
+      ]);
+    });
+
+    test("workspace inputs are gone once the project has its own lockfile", async () => {
+      const workspace = await memberWorkspace();
+      workspace.write("/site/bun.lock", ROOT_LOCKFILE);
+
+      expect((await memberHost(workspace).render("/")).staleArtifactInputs).toEqual([
+        "workspace:bun.lock",
+        "workspace:package.json",
+      ]);
     });
 
     test("an input over maxFileBytes is digested from its bytes and not kept", async () => {
