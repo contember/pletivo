@@ -1267,6 +1267,49 @@ const notes = await getCollection("notes");
       expect((await host.render("/")).staleArtifactInputs).toEqual(["package.json"]);
     });
 
+    test("a workspace input is read from the workspace root above the project", async () => {
+      const ROOT_MANIFEST = `{"private":true,"workspaces":["site"]}`;
+      const ROOT_LOCKFILE = `{"lockfileVersion":1,"packages":{}}`;
+      const workspace = new FakeWorkspace();
+      workspace.write("/package.json", ROOT_MANIFEST);
+      workspace.write("/bun.lock", ROOT_LOCKFILE);
+      workspace.write("/site/package.json", PACKAGE);
+      workspace.write("/site/src/pages/index.md", "---\ntitle: Member\n---\n\nbody\n");
+      const encode = (source: string) => new TextEncoder().encode(source);
+      workspace.write(
+        `/site/${artifactPath}`,
+        JSON.stringify({
+          artifact: {
+            version: ARTIFACT_VERSION,
+            config: {},
+            scripts: { headInline: [], page: [] },
+            modules: [],
+            resolutions: [],
+          },
+          inputs: [
+            { path: "package.json", digest: await digestArtifactInput(encode(PACKAGE)) },
+            { path: "workspace:bun.lock", digest: await digestArtifactInput(encode(ROOT_LOCKFILE)) },
+            { path: "workspace:package.json", digest: await digestArtifactInput(encode(ROOT_MANIFEST)) },
+          ],
+        }),
+      );
+      const host = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        artifactPath: `site/${artifactPath}`,
+        pagesDir: "site/src/pages",
+        loader,
+        compiler,
+      });
+
+      expect((await host.render("/")).staleArtifactInputs).toEqual([]);
+
+      workspace.write("/bun.lock", `{"lockfileVersion":1,"packages":{"preact":[]}}`);
+      const response = await host.fetch(new Request("https://example.test/"));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-pletivo-artifact-stale")).toBe("workspace:bun.lock");
+    });
+
     test("an input over maxFileBytes is digested from its bytes and not kept", async () => {
       const LOCKFILE = `{"lockfileVersion":1,"packages":{${'"p":{},'.repeat(512)}"q":{}}}`;
       const workspace = new FakeWorkspace();

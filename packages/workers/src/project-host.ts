@@ -19,12 +19,15 @@
 import {
   ArtifactFormatError,
   ArtifactVersionError,
+  WORKSPACE_INPUT_PREFIX,
   digestArtifactInput,
   type ArtifactInput,
 } from "@pletivo/core/artifact";
+import { findWorkspaceRoot, type InputFileReader } from "@pletivo/core/prepare-inputs";
 import { loadProjectArtifact, type ProjectArtifact } from "./artifact.ts";
 import { browserModule, BrowserModuleError, isBrowserModulePath } from "./browser-modules.ts";
 import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
+import { parentDir } from "./project-css.ts";
 import { publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
@@ -351,16 +354,19 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   };
 }
 
-/** The inputs whose bytes under `root` no longer have the digest `prepare` recorded, sorted. */
+/**
+ * The inputs whose bytes under `root` no longer have the digest `prepare` recorded, sorted.
+ * A `workspace:` input is read from the workspace root found above `root` in the snapshot.
+ */
 async function changedInputs(
   inputs: readonly ArtifactInput[],
   snapshot: ProjectSnapshot,
   root: string,
 ): Promise<string[]> {
   const encoder = new TextEncoder();
-  const stale: string[] = [];
-  for (const input of inputs) {
-    const path = root === "" ? input.path : `${root}/${input.path}`;
+  const bytesRead = new Map<string, Uint8Array | undefined>();
+  function bytesAt(path: string): Uint8Array | undefined {
+    if (bytesRead.has(path)) return bytesRead.get(path);
     let bytes: Uint8Array | undefined;
     if (snapshot.readBytes) {
       bytes = snapshot.readBytes(path);
@@ -368,10 +374,44 @@ async function changedInputs(
       const source = snapshot.files.get(path);
       bytes = source === undefined ? undefined : encoder.encode(source);
     }
+    bytesRead.set(path, bytes);
+    return bytes;
+  }
+  function readerAt(directory: string): InputFileReader {
+    return async (file) => bytesAt(joinPath(directory, file)) ?? null;
+  }
+
+  const recordsWorkspace = inputs.some((input) => input.path.startsWith(WORKSPACE_INPUT_PREFIX));
+  const workspaceRoot = recordsWorkspace
+    ? await findWorkspaceRoot(readerAt(root), storeAncestors(root), readerAt)
+    : null;
+  function inputLocation(input: ArtifactInput): string | undefined {
+    if (!input.path.startsWith(WORKSPACE_INPUT_PREFIX)) return joinPath(root, input.path);
+    if (workspaceRoot === null) return undefined;
+    return joinPath(workspaceRoot, input.path.slice(WORKSPACE_INPUT_PREFIX.length));
+  }
+
+  const stale: string[] = [];
+  for (const input of inputs) {
+    const location = inputLocation(input);
+    const bytes = location === undefined ? undefined : bytesAt(location);
     const digest = bytes === undefined ? undefined : await digestArtifactInput(bytes);
     if (digest !== input.digest) stale.push(input.path);
   }
   return stale.sort();
+}
+
+/** The directories above `root` in the store, closest first, ending with the store root. */
+function* storeAncestors(root: string): Generator<string> {
+  let current = root;
+  while (current !== "") {
+    current = parentDir(current);
+    yield current;
+  }
+}
+
+function joinPath(directory: string, file: string): string {
+  return directory === "" ? file : `${directory}/${file}`;
 }
 
 /** A rendered page references generated assets this host cannot retain for follow-up GETs. */
