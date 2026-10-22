@@ -23,13 +23,23 @@ export class UnsupportedFileError extends Error {
   }
 }
 
+/** An import of a project or artifact module that nothing answers. */
+export class UnresolvedImportError extends UnsupportedFileError {
+  constructor(
+    file: string,
+    readonly importer: ModuleId,
+    readonly specifier: string,
+    readonly reason: string,
+  ) {
+    super(file, `import ${JSON.stringify(specifier)} from ${JSON.stringify(importer)} is unresolved: ${reason}`);
+    this.name = "UnresolvedImportError";
+  }
+}
+
 export function unresolvedImport(
   importer: SourceModule,
   specifier: string,
   reason: string,
-): UnsupportedFileError {
-  return new UnsupportedFileError(
-    importer.compilePath,
-    `import ${JSON.stringify(specifier)} from ${JSON.stringify(importer.id)} is unresolved: ${reason}`,
-  );
+): UnresolvedImportError {
+  return new UnresolvedImportError(importer.compilePath, importer.id, specifier, reason);
 }

@@ -10,7 +10,7 @@ import {
 } from "@pletivo/core/artifact";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { createCompileCache } from "../src/compile-cache.ts";
-import { compileProject, UnsupportedFileError } from "../src/compile-project.ts";
+import { compileProject, UnresolvedImportError, UnsupportedFileError } from "../src/compile-project.ts";
 import {
   loadProjectArtifact,
   ModuleIdentityCollisionError,
@@ -397,14 +397,27 @@ describe("injected scripts and strict parsing", () => {
     expect(loadProjectArtifact(JSON.parse(JSON.stringify(PREPARED))).prepared).toEqual(PREPARED);
   });
 
-  test("exposes unresolved imports as UnsupportedFileError", async () => {
-    await expect(
-      compileProject({
-        files: new Map([["src/pages/a.ts", `import "missing";`]]),
-        entries: ["src/pages/a.ts"],
-        compiler,
-      }),
-    ).rejects.toBeInstanceOf(UnsupportedFileError);
+  test("exposes unresolved imports as UnresolvedImportError, an UnsupportedFileError", async () => {
+    const error = await compileProject({
+      files: new Map([["src/pages/a.ts", `import "missing";`]]),
+      entries: ["src/pages/a.ts"],
+      compiler,
+    }).then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+    expect(error).toBeInstanceOf(UnsupportedFileError);
+    if (!(error instanceof UnresolvedImportError)) throw new Error(`not an unresolved import: ${error}`);
+    expect([error.file, error.importer, error.specifier, error.reason]).toEqual([
+      "src/pages/a.ts",
+      "project:src/pages/a.ts",
+      "missing",
+      "no project file, Artifact V2 resolution, or supported host alias answers it",
+    ]);
+    expect(error.message).toBe(
+      '[pletivo-workers] cannot compile "src/pages/a.ts": import "missing" from "project:src/pages/a.ts" is unresolved: ' +
+        "no project file, Artifact V2 resolution, or supported host alias answers it",
+    );
   });
 });
 
