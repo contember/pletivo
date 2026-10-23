@@ -27,6 +27,7 @@ import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
 import { scriptCandidateSources } from "./browser-modules.ts";
 import { markdownPageHtml } from "./markdown-page.ts";
+import { attributeValue, htmlTags } from "./html-tags.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
@@ -170,6 +171,11 @@ export interface ProjectOptions {
    */
   artifact?: ProjectArtifact;
   /**
+   * Origin of `Astro.url` and of the `astro:i18n` helpers' absolute URLs. Outranks the
+   * artifact's `site`: it names the origin actually reached.
+   */
+  site?: string;
+  /**
    * Compile `.astro` with the Astro compiler's `annotateSourceFile`, as `astro dev` does:
    * every element carries `data-astro-source-file` (the project path) and
    * `data-astro-source-loc` (`line:column`), so a visual editor can map it to source.
@@ -182,8 +188,6 @@ export interface RenderPageOptions extends ProjectOptions {
   pathname: string;
   /** The request's query string, `?` included, for `Astro.url.search`. */
   search?: string;
-  /** `site` from the project config. Sets the origin of `Astro.url`. */
-  site?: string;
 }
 
 /** A file the rendered HTML references, which the host has to serve for the page to work. */
@@ -440,6 +444,7 @@ async function isolatePaths(
     body: {
       op: "paths",
       routes: routes.map((route) => ({ file: prefix + route.file, route })),
+      site: siteOf(options),
     },
   });
   if (payload.status !== "paths") {
@@ -451,12 +456,10 @@ async function isolatePaths(
 }
 
 export async function renderPage(options: RenderPageOptions): Promise<RenderedPage> {
-  const artifact = options.artifact?.prepared.artifact;
-  const { files, pathname, loader, pagesDir = DEFAULT_PAGES_DIR } = options;
+  const { files, pathname, pagesDir = DEFAULT_PAGES_DIR } = options;
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
-  // The caller's `site` outranks the artifact's: it names the origin actually reached.
-  const site = options.site ?? artifact?.config.site;
-  const scripts = artifact?.scripts;
+  const site = siteOf(options);
+  const scripts = options.artifact?.prepared.artifact.scripts;
   const srcDir = srcDirOf(options);
   const rootDir = projectRoot(options);
 
@@ -570,33 +573,39 @@ export interface WarmPageOptions extends ProjectOptions {
 /**
  * The cold half of `renderPage`: compile the page's module graph and import the page in
  * the isolate its render will use, rendering nothing. A `.md` page has no module to warm.
+ * Returns the URLs of every processed script the page's program can load.
  */
-export async function warmPage(options: WarmPageOptions): Promise<void> {
+export async function warmPage(options: WarmPageOptions): Promise<string[]> {
   const { files, pathname, pagesDir = DEFAULT_PAGES_DIR } = options;
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
   const { match } = matchPage(projectRoutes(files, pagesDir), pathname, options.artifact?.i18n ?? null);
   const file = prefix + match.route.file;
-  if (match.route.isEndpoint || !isExecutableModule(file)) return;
+  if (match.route.isEndpoint || !isExecutableModule(file)) return [];
+  const project = await compilePage(file, options);
   const { payload } = await callIsolate({
-    project: await compilePage(file, options),
+    project,
     options,
     label: `warming ${file}`,
-    body: { op: "warm", file },
+    body: { op: "warm", file, site: siteOf(options) },
   });
   if (payload.status !== "warmed") {
     throw new Error("[pletivo-workers] the render isolate returned an unexpected warm-up payload");
   }
+  return [...new Set(Object.values(project.program.scripts))];
 }
 
 const NO_LOGS: IsolateLogs = { logs: [], droppedLogs: 0 };
 
-/** The program's script URLs `html` loads, as `renderScript` spells the tag, in document order. */
+/** The program's script URLs a `<script src>` in `html` loads, in document order. */
 function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>>): string[] {
-  return [...new Set(Object.values(scripts))]
-    .map((url) => ({ url, at: html.indexOf(`src="${url}"`) }))
-    .filter(({ at }) => at !== -1)
-    .sort((left, right) => left.at - right.at)
-    .map(({ url }) => url);
+  const known = new Set(Object.values(scripts));
+  const loaded = new Set<string>();
+  for (const tag of htmlTags(html)) {
+    if (tag.name !== "script" || tag.closing) continue;
+    const src = attributeValue(tag, "src");
+    if (src !== null && known.has(src)) loaded.add(src);
+  }
+  return [...loaded];
 }
 
 const EMPTY_STYLE_GRAPH = { modules: [], executionEdges: [], styleEdges: [], styles: [] };
@@ -659,7 +668,7 @@ async function isolateMarkdownPage(
     project,
     options,
     label: `rendering ${file}`,
-    body: { op: "markdown", file, source },
+    body: { op: "markdown", file, source, site: siteOf(options) },
   });
   if (payload.status !== "rendered") {
     throw new Error("[pletivo-workers] the render isolate returned an unexpected Markdown payload");
@@ -797,6 +806,10 @@ function throwContentFailure(handle: ContentHandle | null): void {
 /** Create the Loader callback outside request-owned call frames. */
 function immutableCodeFactory(code: DynamicWorkerCode): () => DynamicWorkerCode {
   return () => code;
+}
+
+function siteOf(options: Pick<ProjectOptions, "site" | "artifact">): string | undefined {
+  return options.site ?? options.artifact?.prepared.artifact.config.site;
 }
 
 type ProjectLayout = Pick<ProjectOptions, "pagesDir" | "srcDir" | "rootDir">;

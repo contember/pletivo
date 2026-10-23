@@ -32,6 +32,7 @@ import {
   staticModuleGraph,
   type BrowserModuleSource,
 } from "./browser-modules.ts";
+import { htmlTags } from "./html-tags.ts";
 import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
 import { publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
@@ -65,8 +66,6 @@ export interface ProjectHostOptions
   extends Omit<ProjectOptions, "files" | "assets" | "compileCache" | "artifact"> {
   /** Where the project is read from. See `project-store.ts`. */
   store: ProjectStore;
-  /** Origin of `Astro.url`. Outranks the artifact's `site`. */
-  site?: string;
   /**
    * Compiled files kept between renders. Absent, a default cache; `false` for a host
    * handed a different project per request, where every lookup would miss.
@@ -104,6 +103,11 @@ export interface ProjectHostOptions
    * rather than one import level per round trip. Default `true`.
    */
   modulePreload?: boolean;
+  /**
+   * How long a render of a pathname being warmed waits for that warm-up before it goes
+   * ahead on its own, in milliseconds. Default 5000.
+   */
+  warmUpWaitMs?: number;
 }
 
 export interface WarmUpOptions {
@@ -145,11 +149,14 @@ export interface ProjectHost {
   /**
    * Do a page's cold work ahead of its first request: load the artifact, compile the
    * page's module graph and import it in the isolate its render uses, rendering nothing.
-   * A warm-up of the same pathname in flight is shared, and a request arriving meanwhile
-   * waits for it and reuses the work. Rejects with what `render()` would throw.
+   * A warm-up of the same pathname in flight is shared. A render of that pathname arriving
+   * meanwhile waits for it, up to `warmUpWaitMs`, and reuses the work; every other request
+   * goes ahead. Rejects with what `render()` would throw.
    */
   warmUp(options?: WarmUpOptions): Promise<void>;
 }
+
+const DEFAULT_WARM_UP_WAIT_MS = 5000;
 
 const DEFAULT_GENERATED_ASSET_CACHE = { maxEntries: 32, maxBytes: 4 * 1024 * 1024 };
 
@@ -169,7 +176,6 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const {
     store,
-    site,
     compileCache: compileCacheOption,
     artifactPath,
     artifact: artifactValue,
@@ -178,6 +184,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     onRender,
     onBrowserModuleError,
     modulePreload = true,
+    warmUpWaitMs = DEFAULT_WARM_UP_WAIT_MS,
     ...renderOptions
   } = options;
   const directArtifact =
@@ -189,6 +196,11 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   let artifactFrom: { source: string; artifact: ProjectArtifact } | null = null;
   let staleFrom: { artifact: ProjectArtifact; revision: string; stale: string[] } | null = null;
   const warmUps = new Map<string, Promise<void>>();
+  let importsFrom: {
+    revision: string;
+    artifact: ProjectArtifact | undefined;
+    imports: Map<string, readonly string[]>;
+  } | null = null;
 
   /** The artifact for this snapshot: the caller's, or the project's own file. */
   function artifactOf(snapshot: ProjectSnapshot): ProjectArtifact | undefined {
@@ -260,15 +272,33 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     };
   }
 
-  /** Before a request does its own work, so it finds what a warm-up in flight compiles. */
-  async function afterWarmUps(): Promise<void> {
-    if (warmUps.size > 0) await Promise.allSettled(warmUps.values());
+  /** What the preload walk reads, with what it learned about this revision's modules. */
+  function preloadSource(snapshot: ProjectSnapshot): BrowserModuleSource {
+    const source = browserSource(snapshot);
+    if (importsFrom?.revision !== snapshot.revision || importsFrom.artifact !== source.artifact) {
+      importsFrom = { revision: snapshot.revision, artifact: source.artifact, imports: new Map() };
+    }
+    return { ...source, staticImports: importsFrom.imports };
+  }
+
+  /** Before a render of `pathname`, so it reuses what a warm-up of it in flight compiles. */
+  async function afterWarmUpOf(pathname: string): Promise<void> {
+    const warming = warmUps.get(pathname);
+    if (warming === undefined) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, warmUpWaitMs);
+    });
+    // Its failure is the render's to meet and report again.
+    await Promise.race([warming.catch(() => {}), bound]);
+    clearTimeout(timer);
   }
 
   async function warmSnapshot(pathname: string, snapshot: ProjectSnapshot): Promise<void> {
     const project = projectOptions(snapshot);
     await staleArtifactInputs(snapshot, project.artifact);
-    await warmPage({ ...project, pathname });
+    const scripts = await warmPage({ ...project, pathname });
+    if (modulePreload) await staticModuleGraph(scripts, preloadSource(snapshot));
   }
 
   async function renderSnapshot(
@@ -278,9 +308,9 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   ): Promise<RenderedPage> {
     const project = projectOptions(snapshot);
     const stale = await staleArtifactInputs(snapshot, project.artifact);
-    let page = await renderPage({ ...project, pathname, search, site });
+    let page = await renderPage({ ...project, pathname, search });
     if (modulePreload) {
-      const preloads = await staticModuleGraph(page.scriptUrls, browserSource(snapshot));
+      const preloads = await staticModuleGraph(page.scriptUrls, preloadSource(snapshot));
       page = { ...page, html: withModulePreloads(page.html, preloads) };
     }
     if (generatedAssetStore !== undefined && page.assets.length > 0) {
@@ -343,14 +373,11 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
 
   return {
     async render(pathname) {
-      await afterWarmUps();
+      await afterWarmUpOf(pathname);
       return withSnapshot((snapshot) => renderSnapshot(pathname, snapshot));
     },
 
-    async paths() {
-      await afterWarmUps();
-      return withSnapshot((snapshot) => projectPaths(projectOptions(snapshot)));
-    },
+    paths: () => withSnapshot((snapshot) => projectPaths(projectOptions(snapshot))),
 
     warmUp(warmUpOptions = {}) {
       const pathname = warmUpOptions.pathname ?? "/";
@@ -377,7 +404,6 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       const url = new URL(request.url);
 
       try {
-        await afterWarmUps();
         const asset = await generatedAsset(url.pathname);
         if (asset !== null) {
           return new Response(asset.body, {
@@ -411,6 +437,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
           const matched = findRoute(routes, url.pathname);
           let status = matched !== null && isNotFoundRoute(matched.route) ? 404 : 200;
           try {
+            await afterWarmUpOf(url.pathname);
             page = await renderReported(url.pathname, snapshot, url.search);
           } catch (error) {
             // As Astro's dev server does: an unmatched URL renders the project's 404 page.
@@ -528,11 +555,18 @@ function parseArtifact(source: string, path: string): ProjectArtifact {
  */
 function withModulePreloads(html: string, urls: readonly string[]): string {
   if (urls.length === 0) return html;
-  const headEnd = html.search(/<\/head>/i);
-  const at = headEnd === -1 ? html.search(/<body[\s>]/i) : headEnd;
-  if (at === -1) return html;
+  const at = headEndOf(html);
+  if (at === null) return html;
   const links = urls.map((url) => `<link rel="modulepreload" href="${escapeAttribute(url)}">\n`).join("");
   return html.slice(0, at) + links + html.slice(at);
+}
+
+/** Where the head ends: at `</head>`, or at a `<body>` that comes first. */
+function headEndOf(html: string): number | null {
+  for (const tag of htmlTags(html)) {
+    if ((tag.name === "head" && tag.closing) || (tag.name === "body" && !tag.closing)) return tag.start;
+  }
+  return null;
 }
 
 function escapeAttribute(value: string): string {

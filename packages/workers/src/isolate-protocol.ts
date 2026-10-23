@@ -43,6 +43,8 @@ export interface IsolatePathRoute {
 interface IsolateRequestBase {
   contentRef?: string;
   rootDir?: string;
+  /** The origin `astro:i18n` helpers build absolute URLs with, as the page's render would. */
+  site?: string;
 }
 
 export interface IsolateRenderRequest extends IsolateRequestBase {
@@ -51,7 +53,6 @@ export interface IsolateRenderRequest extends IsolateRequestBase {
   params: IsolateParamPair[];
   route: Route | null;
   url: string;
-  site?: string;
   /** `Astro.currentLocale`: the route's locale, or the target of an i18n fallback. */
   currentLocale?: string;
 }

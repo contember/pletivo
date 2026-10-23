@@ -48,6 +48,11 @@ export interface BrowserModuleSource {
   compileCache?: CompileCache;
   /** As the page was compiled, so a shared cache entry is reused rather than replaced. */
   annotateSourceFile?: boolean;
+  /**
+   * What each project module and script URL statically imports, kept by the caller for one
+   * file set and artifact. `staticModuleGraph` reads it and fills it in.
+   */
+  staticImports?: Map<string, readonly string[]>;
 }
 
 /** A request outside the browser-module namespace, or a malformed one. */
@@ -95,17 +100,29 @@ export async function browserModule(pathname: string, project: BrowserModuleSour
  * A module that cannot be served is left out; the browser's own request reports why.
  */
 export async function staticModuleGraph(entries: readonly string[], project: BrowserModuleSource): Promise<string[]> {
+  // Every module is read at once; only the order below is depth-first.
+  const loading = new Map<string, Promise<readonly string[] | null>>();
+  function load(url: string): Promise<unknown> {
+    if (loading.has(url)) return Promise.resolve();
+    const imports = staticImportsOf(url, project);
+    loading.set(url, imports);
+    return imports.then((targets) => Promise.all((targets ?? []).map(load)));
+  }
+  await Promise.all(entries.map(load));
+  const importsOf = new Map<string, readonly string[] | null>();
+  for (const [url, imports] of loading) importsOf.set(url, await imports);
+
   const order: string[] = [];
   const seen = new Set<string>();
-  async function visit(url: string): Promise<void> {
+  function visit(url: string): void {
     if (seen.has(url)) return;
     seen.add(url);
-    const imports = await staticImportsOf(url, project);
-    if (imports === null) return;
-    for (const target of imports) await visit(target);
+    const imports = importsOf.get(url);
+    if (imports === null || imports === undefined) return;
+    for (const target of imports) visit(target);
     order.push(url);
   }
-  for (const entry of entries) await visit(entry);
+  for (const entry of entries) visit(entry);
   return order;
 }
 
@@ -115,7 +132,7 @@ const artifactModuleImports = new WeakMap<ProjectArtifact, Map<string, readonly 
 async function staticImportsOf(url: string, project: BrowserModuleSource): Promise<readonly string[] | null> {
   const query = url.indexOf("?");
   const pathname = query === -1 ? url : url.slice(0, query);
-  const memo = artifactMemo(pathname, project.artifact);
+  const memo = artifactMemo(pathname, project.artifact) ?? project.staticImports;
   const held = memo?.get(pathname);
   if (held !== undefined) return held;
   let served: ServedModule;
@@ -131,7 +148,7 @@ async function staticImportsOf(url: string, project: BrowserModuleSource): Promi
 
 const PROJECT_MODULE_PREFIX = `${MODULE_PREFIX}project/`;
 
-/** Where an artifact module's static imports are kept; `null` for a project file or a script. */
+/** Where an artifact module's static imports are kept, across file sets; `null` for a project file or a script. */
 function artifactMemo(pathname: string, artifact: ProjectArtifact | undefined): Map<string, readonly string[]> | null {
   if (artifact === undefined || !pathname.startsWith(MODULE_PREFIX) || pathname.startsWith(PROJECT_MODULE_PREFIX)) return null;
   let memo = artifactModuleImports.get(artifact);

@@ -168,7 +168,9 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
     // creation and covered by its id.
     for (const install of program.envInstallers) install(env[ENV_BINDING] ?? {});
     const { i18n } = program;
-    if (i18n !== null && body.op === "render") {
+    // Every op, before any page is imported: a module may call a helper at its top level,
+    // and a module that threw stays failed for the life of the isolate.
+    if (i18n !== null) {
       i18nConfig ??= i18n.config === null ? null : i18n.module.resolveI18nConfig(i18n.config);
       // Per request: `site` is the request's, and the helpers read it.
       i18n.module.setI18nRuntimeState(i18nConfig, "/", body.site);

@@ -29,7 +29,12 @@ import {
   type RenderEvent,
 } from "../src/project-host.ts";
 import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
-import { RouteNotFoundError } from "../src/render.ts";
+import {
+  RouteNotFoundError,
+  type DynamicWorkerCode,
+  type DynamicWorkerStub,
+  type WorkerLoaderBinding,
+} from "../src/render.ts";
 import { createMapProjectStore, type ProjectStore } from "../src/project-store.ts";
 import {
   createWorkspaceProjectStore,
@@ -630,6 +635,19 @@ describe("createProjectHost", () => {
       expect(await get(redirect, "/spanish/about")).toMatchObject({ status: 302, location: "/about" });
     });
 
+    test("a warm-up imports a module that calls an i18n helper at top level, and the page still renders", async () => {
+      const files = {
+        "src/lib/links.ts": 'import { getAbsoluteLocaleUrl } from "astro:i18n";\nexport const aboutUrl = getAbsoluteLocaleUrl("es", "about");\n',
+        "src/pages/index.astro": '---\nimport { aboutUrl } from "../lib/links";\n---\n<p>about={aboutUrl}</p>\n',
+      };
+      const host = routingHost({ i18n: I18N, site: "https://site.test" }, files);
+      await host.warmUp();
+      const page = await get(host, "/");
+      expect(page.status, page.body).toBe(200);
+      expect(page.body).toContain("about=https://site.test/spanish/about");
+      expect(await host.paths()).toEqual([{ file: "src/pages/index.astro", pathname: "/", params: {} }]);
+    });
+
     test("redirects an unprefixed path to the default locale when it is prefixed", async () => {
       const host = routingHost(
         { i18n: { defaultLocale: "en", locales: ["en", "de"], routing: { prefixDefaultLocale: true } } },
@@ -903,6 +921,14 @@ import "../styles/global.css";
         expect(html.indexOf(hints[0] ?? "")).toBeLessThan(html.indexOf("<body"));
       });
 
+      test("go in the document's head, not at a `</head>` a comment holds", async () => {
+        const page = PAGE_WITH_SCRIPT.replace("<html><body>", "<html><head><!-- </head> --><title>t</title></head><body>");
+        const html = await (await scriptHost(page).fetch(new Request("https://example.test/"))).text();
+        const firstLink = html.indexOf('<link rel="modulepreload"');
+        expect(firstLink).toBeGreaterThan(html.indexOf("<title>"));
+        expect(firstLink).toBeLessThan(html.lastIndexOf("</head>"));
+      });
+
       test("leave out what only a dynamic import reaches", async () => {
         const menu = 'export function openMenu(): Promise<unknown> { return import("browser-pkg"); }\n';
         const page = PAGE_WITH_SCRIPT.replace('import { greet } from "browser-pkg";\n', "").replace("greet();\n", "");
@@ -911,6 +937,55 @@ import "../styles/global.css";
         expect(hints).toHaveLength(2);
         expect(hints[0]).toBe("/_pletivo/module/project/src/lib/menu.ts");
         expect(hints[1]).toStartWith("/_pletivo/script/0/project/src/pages/index.astro.js?v=");
+      });
+
+      describe("kept per snapshot revision", () => {
+        const MENU = 'export function openMenu(): void {}\n';
+        const MENU_WITH_EXTRA = 'import "./extra";\nexport function openMenu(): void {}\n';
+        const EXTRA = "/_pletivo/module/project/src/lib/extra.ts";
+
+        /** A store whose files can change with or without a new revision. */
+        function swappableHost() {
+          const filesOf = (menu: string) =>
+            new Map([
+              ["src/pages/index.astro", PAGE_WITH_SCRIPT],
+              ["src/lib/menu.ts", menu],
+              ["src/lib/extra.ts", "export {};\n"],
+              ["src/styles/global.css", '@import "tailwindcss";\n'],
+            ]);
+          let current = createMapProjectStore(filesOf(MENU), new Map(), "1");
+          const host = createProjectHost({
+            store: { snapshot: () => current.snapshot() },
+            artifact,
+            loader,
+            compiler,
+            ...(TAILWIND === undefined ? {} : { tailwind: TAILWIND }),
+          });
+          const swapMenu = (menu: string, revision: string) => {
+            current = createMapProjectStore(filesOf(menu), new Map(), revision);
+          };
+          const hints = async () => preloadHints(await (await host.fetch(new Request("https://example.test/"))).text());
+          return { host, swapMenu, hints };
+        }
+
+        test("a render of an unchanged revision reads no module again", async () => {
+          const { swapMenu, hints } = swappableHost();
+          expect(await hints()).not.toContain(EXTRA);
+
+          // The store's contract says a revision names its content, so the walk trusts it.
+          swapMenu(MENU_WITH_EXTRA, "1");
+          expect(await hints()).not.toContain(EXTRA);
+
+          swapMenu(MENU_WITH_EXTRA, "2");
+          expect(await hints()).toContain(EXTRA);
+        });
+
+        test("warmUp fills it in", async () => {
+          const { host, swapMenu, hints } = swappableHost();
+          await host.warmUp();
+          swapMenu(MENU_WITH_EXTRA, "1");
+          expect(await hints()).not.toContain(EXTRA);
+        });
       });
 
       test("are off with modulePreload: false", async () => {
@@ -1150,10 +1225,35 @@ import "../styles/global.css";
       for (const each of loaders) await each.cleanup();
     });
 
-    function warmHost() {
+    /** A Loader that holds every `warm` request until `release()`, passing the rest through. */
+    class HeldWarmUpLoader implements WorkerLoaderBinding {
+      release: () => void = () => {};
+      readonly #held = new Promise<void>((resolve) => {
+        this.release = resolve;
+      });
+
+      constructor(readonly inner: FileLoader) {}
+
+      get(id: string, code: () => DynamicWorkerCode | Promise<DynamicWorkerCode>): DynamicWorkerStub {
+        const stub = this.inner.get(id, code);
+        const held = this.#held;
+        return {
+          getEntrypoint: () => ({
+            async fetch(request: Request): Promise<Response> {
+              if ((await request.clone().text()).includes('"op":"warm"')) await held;
+              return stub.getEntrypoint().fetch(request);
+            },
+          }),
+        };
+      }
+    }
+
+    function warmHost({ hold = false, warmUpWaitMs }: { hold?: boolean; warmUpWaitMs?: number } = {}) {
       // Its own Loader, so no other test has created this program's isolate already.
       const isolates = new FileLoader();
       loaders.push(isolates);
+      const held = new HeldWarmUpLoader(isolates);
+      if (!hold) held.release();
       // Module scope runs once per isolate, and `FileLoader` runs the isolate in this process.
       const probe = `pletivoWarmUpProbe${loaders.length}`;
       const label = `globalThis.${probe} = (globalThis.${probe} ?? 0) + 1;\nexport const label = "home";\n`;
@@ -1164,18 +1264,61 @@ import "../styles/global.css";
             ["src/pages/index.astro", HOME],
             ["src/components/Layout.astro", LAYOUT],
             ["src/lib/label.ts", label],
+            ["src/pages/about.astro", "<p>about</p>\n"],
+            ["public/robots.txt", "User-agent: *\n"],
           ]),
         ),
-        loader: isolates,
+        loader: held,
         compiler: counting.compiler,
+        warmUpWaitMs,
       });
       const isolatesCreated = () => [...isolates.factoryCounts.values()].reduce((sum, count) => sum + count, 0);
       const evaluations = () => {
         const count: unknown = Reflect.get(globalThis, probe);
         return typeof count === "number" ? count : 0;
       };
-      return { host, transformed: counting.transformed, isolatesCreated, evaluations };
+      return { host, transformed: counting.transformed, isolatesCreated, evaluations, release: () => held.release() };
     }
+
+    /** Whether `promise` settles within `ms`. */
+    async function settled(promise: Promise<unknown>, ms: number): Promise<boolean> {
+      let done = false;
+      promise.then(() => (done = true), () => (done = true));
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return done;
+    }
+
+    test("only a render of the pathname being warmed waits for it", async () => {
+      const { host, release } = warmHost({ hold: true, warmUpWaitMs: 60_000 });
+      const warming = host.warmUp();
+
+      const about = await host.fetch(new Request("https://example.test/about"));
+      expect(about.status).toBe(200);
+      expect(await about.text()).toContain("about");
+      const robots = await host.fetch(new Request("https://example.test/robots.txt"));
+      expect(robots.status).toBe(200);
+      expect(await host.paths()).toHaveLength(2);
+
+      const home = host.fetch(new Request("https://example.test/"));
+      // Long enough for a render of this warm, cached page that did not wait to finish.
+      expect(await settled(home, 300)).toBe(false);
+      release();
+      await warming;
+      expect((await home).status).toBe(200);
+    });
+
+    test("a render of the pathname goes ahead once warmUpWaitMs has passed", async () => {
+      const { host, release } = warmHost({ hold: true, warmUpWaitMs: 20 });
+      const warming = host.warmUp();
+
+      const home = await host.fetch(new Request("https://example.test/"));
+      expect(home.status).toBe(200);
+      expect(await home.text()).toContain("home");
+      expect(await settled(warming, 0)).toBe(false);
+
+      release();
+      await warming;
+    });
 
     test("a render after it compiles nothing, creates no isolate and imports nothing", async () => {
       const { host, transformed, isolatesCreated, evaluations } = warmHost();
