@@ -146,6 +146,20 @@ Options a multi-session host needs:
   artifact.
 - `host.features()` — the files that use MDX, `client:*` islands, endpoints or
   `prerender = false`, none of which this host renders.
+- `modulePreload` (default `true`) — a rendered page gets a `<link rel="modulepreload">`
+  for every `/_pletivo/…` module its scripts reach through static imports, dependencies
+  first, so the browser fetches the graph in parallel instead of one import level per
+  round trip. Modules reached only through `import()` get none. What each module imports
+  is kept per snapshot revision, so a render of an unchanged page reads no module again.
+  `false` turns it off.
+- `host.warmUp({ pathname })` — the cold half of a render ahead of the first request:
+  load the artifact, compile the page's module graph, create its render isolate and
+  import the page there, rendering nothing; with `modulePreload` it also walks the
+  preload graph. `pathname` defaults to `/`. A warm-up of the same pathname in flight is
+  shared. A render of that pathname arriving meanwhile waits for it, at most
+  `warmUpWaitMs` (default 5000), and reuses its work; every other request goes ahead. It
+  rejects with what `render()` would throw, so catch it, e.g.
+  `ctx.waitUntil(host.warmUp().catch(() => {}))` in a Durable Object constructor.
 
 ## Versioning
 

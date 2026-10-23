@@ -43,6 +43,8 @@ export interface IsolatePathRoute {
 interface IsolateRequestBase {
   contentRef?: string;
   rootDir?: string;
+  /** The origin `astro:i18n` helpers build absolute URLs with, as the page's render would. */
+  site?: string;
 }
 
 export interface IsolateRenderRequest extends IsolateRequestBase {
@@ -51,7 +53,6 @@ export interface IsolateRenderRequest extends IsolateRequestBase {
   params: IsolateParamPair[];
   route: Route | null;
   url: string;
-  site?: string;
   /** `Astro.currentLocale`: the route's locale, or the target of an i18n fallback. */
   currentLocale?: string;
 }
@@ -68,7 +69,17 @@ export interface IsolateMarkdownRequest extends IsolateRequestBase {
   source: string;
 }
 
-export type IsolateRequest = IsolateRenderRequest | IsolatePathsRequest | IsolateMarkdownRequest;
+/** Import a page module, so its graph is compiled and linked, and render nothing. */
+export interface IsolateWarmRequest extends IsolateRequestBase {
+  op: "warm";
+  file: string;
+}
+
+export type IsolateRequest =
+  | IsolateRenderRequest
+  | IsolatePathsRequest
+  | IsolateMarkdownRequest
+  | IsolateWarmRequest;
 
 export interface IsolateRenderedResponse {
   status: "rendered";
@@ -87,6 +98,10 @@ export interface IsolatePathsResponse {
   paths: Record<string, IsolateParamPair[][]>;
 }
 
+export interface IsolateWarmedResponse {
+  status: "warmed";
+}
+
 export interface IsolateErrorResponse {
   status: "error";
   message: string;
@@ -97,6 +112,7 @@ export type IsolateResponse =
   | IsolateRenderedResponse
   | IsolateUnresolvedResponse
   | IsolatePathsResponse
+  | IsolateWarmedResponse
   | IsolateErrorResponse;
 
 export type IsolateLogLevel = "debug" | "log" | "info" | "warn" | "error";
@@ -156,6 +172,7 @@ function parseIsolateResponse(value: Record<string, unknown>): IsolateResponse {
     return { status, reason };
   }
   if (status === "paths") return { status, paths: parsePaths(value.paths) };
+  if (status === "warmed") return { status };
   if (status === "error") {
     const { message, stack } = value;
     if (typeof message !== "string") throw new IsolateProtocolError("$.message", "expected a string");

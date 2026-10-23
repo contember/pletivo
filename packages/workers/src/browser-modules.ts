@@ -20,7 +20,7 @@ import { bundled, compileCached } from "./compile/compile-file.ts";
 import { extensionOf, projectModuleKind } from "./compile/module-kind.ts";
 import { resolveInFiles } from "./compile/resolve-in-files.ts";
 import { collectImports, resolveSpecifier, rewriteImports } from "./rewrite-imports.ts";
-import type { ProjectFiles } from "./project-store.ts";
+import { WorkspaceSnapshotChangedError, type ProjectFiles } from "./project-store.ts";
 import { stripTypes } from "./transpile.ts";
 
 export const SCRIPT_PREFIX = "/_pletivo/script/";
@@ -48,6 +48,11 @@ export interface BrowserModuleSource {
   compileCache?: CompileCache;
   /** As the page was compiled, so a shared cache entry is reused rather than replaced. */
   annotateSourceFile?: boolean;
+  /**
+   * What each project module and script URL statically imports, kept by the caller for one
+   * file set and artifact. `staticModuleGraph` reads it and fills it in.
+   */
+  staticImports?: Map<string, readonly string[]>;
 }
 
 /** A request outside the browser-module namespace, or a malformed one. */
@@ -86,6 +91,81 @@ export function isBrowserModulePath(pathname: string): boolean {
 
 /** The JavaScript `pathname` names. Throws `BrowserModuleError` with the status to answer. */
 export async function browserModule(pathname: string, project: BrowserModuleSource): Promise<string> {
+  return (await servedModule(pathname, project)).code;
+}
+
+/**
+ * The browser modules `entries` reach through static imports, entries included: each URL
+ * once, after the modules it imports. What a page's `<link rel="modulepreload">` hints name.
+ * A module that cannot be served is left out; the browser's own request reports why.
+ */
+export async function staticModuleGraph(entries: readonly string[], project: BrowserModuleSource): Promise<string[]> {
+  // Every module is read at once; only the order below is depth-first.
+  const loading = new Map<string, Promise<readonly string[] | null>>();
+  function load(url: string): Promise<unknown> {
+    if (loading.has(url)) return Promise.resolve();
+    const imports = staticImportsOf(url, project);
+    loading.set(url, imports);
+    return imports.then((targets) => Promise.all((targets ?? []).map(load)));
+  }
+  await Promise.all(entries.map(load));
+  const importsOf = new Map<string, readonly string[] | null>();
+  for (const [url, imports] of loading) importsOf.set(url, await imports);
+
+  const order: string[] = [];
+  const seen = new Set<string>();
+  function visit(url: string): void {
+    if (seen.has(url)) return;
+    seen.add(url);
+    const imports = importsOf.get(url);
+    if (imports === null || imports === undefined) return;
+    for (const target of imports) visit(target);
+    order.push(url);
+  }
+  for (const entry of entries) visit(entry);
+  return order;
+}
+
+/** Per artifact, what each of its modules statically imports: a function of the artifact alone. */
+const artifactModuleImports = new WeakMap<ProjectArtifact, Map<string, readonly string[]>>();
+
+async function staticImportsOf(url: string, project: BrowserModuleSource): Promise<readonly string[] | null> {
+  const query = url.indexOf("?");
+  const pathname = query === -1 ? url : url.slice(0, query);
+  const memo = artifactMemo(pathname, project.artifact) ?? project.staticImports;
+  const held = memo?.get(pathname);
+  if (held !== undefined) return held;
+  let served: ServedModule;
+  try {
+    served = await servedModule(pathname, project);
+  } catch (error) {
+    if (error instanceof WorkspaceSnapshotChangedError) throw error;
+    return null;
+  }
+  memo?.set(pathname, served.staticImports);
+  return served.staticImports;
+}
+
+const PROJECT_MODULE_PREFIX = `${MODULE_PREFIX}project/`;
+
+/** Where an artifact module's static imports are kept, across file sets; `null` for a project file or a script. */
+function artifactMemo(pathname: string, artifact: ProjectArtifact | undefined): Map<string, readonly string[]> | null {
+  if (artifact === undefined || !pathname.startsWith(MODULE_PREFIX) || pathname.startsWith(PROJECT_MODULE_PREFIX)) return null;
+  let memo = artifactModuleImports.get(artifact);
+  if (memo === undefined) {
+    memo = new Map();
+    artifactModuleImports.set(artifact, memo);
+  }
+  return memo;
+}
+
+/** What one browser-module URL serves, and the URLs its static imports load. */
+interface ServedModule {
+  code: string;
+  staticImports: readonly string[];
+}
+
+async function servedModule(pathname: string, project: BrowserModuleSource): Promise<ServedModule> {
   if (pathname.startsWith(SCRIPT_PREFIX)) {
     const rest = pathname.slice(SCRIPT_PREFIX.length);
     const slash = rest.indexOf("/");
@@ -168,18 +248,18 @@ async function scriptCode(
   return code;
 }
 
-async function moduleCode(moduleId: ModuleId, project: BrowserModuleSource, pathname: string): Promise<string> {
+async function moduleCode(moduleId: ModuleId, project: BrowserModuleSource, pathname: string): Promise<ServedModule> {
   const located = locate(moduleId, project, pathname);
   if (located.kind === "css") {
     // A stylesheet a script imports is applied when the import runs, as Vite dev does.
-    return (
+    const code =
       `const style = document.createElement("style");\n` +
       `style.dataset.pletivoModule = ${JSON.stringify(moduleId)};\n` +
       `style.textContent = ${JSON.stringify(located.source)};\n` +
-      `document.head.append(style);\n`
-    );
+      `document.head.append(style);\n`;
+    return { code, staticImports: [] };
   }
-  if (located.kind === "json") return `export default ${located.source.trim() || "null"};\n`;
+  if (located.kind === "json") return { code: `export default ${located.source.trim() || "null"};\n`, staticImports: [] };
   if (located.kind === "js" || located.kind === "ts") {
     const code = located.kind === "ts" ? stripTypes(located.source, { file: located.compilePath }) : located.source;
     return rewriteForBrowser(code, moduleId, project, pathname);
@@ -213,23 +293,31 @@ function rewriteForBrowser(
   importer: ModuleId,
   project: BrowserModuleSource,
   pathname: string,
-): string {
+): ServedModule {
   const importerFile = importer.startsWith("project:") ? importer.slice("project:".length) : null;
-  return rewriteImports(code, {
-    importer: importerFile ?? importer,
-    resolve(resolved, specifier) {
-      if (importerFile !== null && (specifier.startsWith(".") || specifier.startsWith("/"))) {
-        const file = resolveInFiles(specifier.startsWith("/") ? specifier.slice(1) : resolved, project.files);
-        if (file === null) {
-          throw new BrowserModuleError(pathname, `${importer} imports ${JSON.stringify(specifier)}, which is no project file`, 500);
-        }
-        return moduleUrl(projectModuleId(file));
+  const staticImports: string[] = [];
+  function urlOf(resolved: string, specifier: string): string {
+    if (importerFile !== null && (specifier.startsWith(".") || specifier.startsWith("/"))) {
+      const file = resolveInFiles(specifier.startsWith("/") ? specifier.slice(1) : resolved, project.files);
+      if (file === null) {
+        throw new BrowserModuleError(pathname, `${importer} imports ${JSON.stringify(specifier)}, which is no project file`, 500);
       }
-      const target = project.artifact?.browserResolver.resolve(importer, specifier) ?? null;
-      if (target === null || target.kind !== "module") throw new UnresolvedBrowserImportError(pathname, importer, specifier);
-      return moduleUrl(target.id);
+      return moduleUrl(projectModuleId(file));
+    }
+    const target = project.artifact?.browserResolver.resolve(importer, specifier) ?? null;
+    if (target === null || target.kind !== "module") throw new UnresolvedBrowserImportError(pathname, importer, specifier);
+    return moduleUrl(target.id);
+  }
+  const rewritten = rewriteImports(code, {
+    importer: importerFile ?? importer,
+    resolve(resolved, specifier, kind) {
+      const url = urlOf(resolved, specifier);
+      if (kind === "static") staticImports.push(url);
+      return url;
     },
   });
+  // `rewriteImports` resolves the last import first.
+  return { code: rewritten, staticImports: [...new Set(staticImports.reverse())] };
 }
 
 function modulePath(moduleId: ModuleId): string {

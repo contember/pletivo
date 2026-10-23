@@ -2,7 +2,10 @@
 
 import { parse } from "acorn";
 
-export type ResolveImport = (resolved: string, specifier: string) => string | null;
+/** `import()` with a literal specifier is `dynamic`; declarations and re-exports are `static`. */
+export type ImportKind = "static" | "dynamic";
+
+export type ResolveImport = (resolved: string, specifier: string, kind: ImportKind) => string | null;
 
 export interface RewriteImportsOptions {
   importer: string;
@@ -15,6 +18,7 @@ interface ImportOccurrence {
   end: number;
   quote: "\"" | "'";
   importedNames: readonly string[];
+  kind: ImportKind;
 }
 
 export class ImportOccurrenceError extends Error {
@@ -53,16 +57,16 @@ function visit(value: unknown, code: string, occurrences: ImportOccurrence[]): v
 
   const type = stringProperty(value, "type");
   if (type === "ImportDeclaration") {
-    occurrences.push(literalOccurrence(property(value, "source"), code, importedNames(value)));
+    occurrences.push(literalOccurrence(property(value, "source"), code, importedNames(value), "static"));
   } else if (type === "ExportNamedDeclaration" || type === "ExportAllDeclaration") {
     const source = property(value, "source");
     if (source !== null && source !== undefined) {
-      occurrences.push(literalOccurrence(source, code, []));
+      occurrences.push(literalOccurrence(source, code, [], "static"));
     }
   } else if (type === "ImportExpression") {
     const source = property(value, "source");
     if (nodeType(source) === "Literal") {
-      occurrences.push(literalOccurrence(source, code, []));
+      occurrences.push(literalOccurrence(source, code, [], "dynamic"));
     }
   }
 
@@ -76,6 +80,7 @@ function literalOccurrence(
   literal: unknown,
   code: string,
   importedNames: readonly string[],
+  kind: ImportKind,
 ): ImportOccurrence {
   if (nodeType(literal) !== "Literal") {
     throw new ImportOccurrenceError("module specifier is not a string literal");
@@ -100,6 +105,7 @@ function literalOccurrence(
     end: literalEnd - 1,
     quote,
     importedNames,
+    kind,
   };
 }
 
@@ -178,6 +184,7 @@ export function rewriteImports(code: string, options: RewriteImportsOptions): st
     const target = options.resolve(
       resolveSpecifier(options.importer, occurrence.specifier),
       occurrence.specifier,
+      occurrence.kind,
     );
     if (target === null) continue;
     const escaped = escapeSpecifier(target, occurrence.quote);
