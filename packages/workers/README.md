@@ -140,6 +140,10 @@ Options a multi-session host needs:
   On the server side, an import nothing answers is an `UnresolvedImportError` (an
   `UnsupportedFileError`, exported from `compile-project.ts`) with the same fields and a
   `reason`.
+- `UnresolvedImportError.kind` — an `UnresolvedImportKind`. Only `missing` means the
+  artifact carries no resolution for the importer and specifier, so only that kind is
+  worth preparing again; the others, such as `unsupported-package-root`, fail against any
+  artifact.
 - `host.features()` — the files that use MDX, `client:*` islands, endpoints or
   `prerender = false`, none of which this host renders.
 

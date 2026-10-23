@@ -83,11 +83,12 @@ export class ImportResolver {
     if (tailwindImport) throw new TailwindNotConfiguredError(importer.id);
 
     if (UNSUPPORTED_PACKAGE_ROOTS.has(rawSpecifier)) {
-      throw unresolvedImport(importer, rawSpecifier, "unsupported package root export");
+      throw unresolvedImport(importer, rawSpecifier, "unsupported-package-root", "unsupported package root export");
     }
     throw unresolvedImport(
       importer,
       rawSpecifier,
+      "missing",
       "no project file, Artifact V2 resolution, or supported host alias answers it",
     );
   }
@@ -110,7 +111,7 @@ export class ImportResolver {
       const target = this.#walk.resolveProjectFile(query.file);
       const source = target === null ? undefined : this.#walk.readProjectFile(target);
       if (target === null || source === undefined) {
-        throw unresolvedImport(importer, rawSpecifier, "query target does not exist");
+        throw unresolvedImport(importer, rawSpecifier, "query-target-not-found", "query target does not exist");
       }
       const value = query.kind === "text" ? source : urlAssetHref(target, source, this.#walk.urlAssets);
       const code = `export default ${JSON.stringify(value)};\n`;
@@ -124,7 +125,12 @@ export class ImportResolver {
     if (isImageSource(resolved)) {
       const info = await this.#readAssetInfo(resolved);
       if (info === null) {
-        throw unresolvedImport(importer, rawSpecifier, "the image metadata is missing or unreadable");
+        throw unresolvedImport(
+          importer,
+          rawSpecifier,
+          "image-metadata-unavailable",
+          "the image metadata is missing or unreadable",
+        );
       }
       const code = imageModule(resolved, info);
       this.#walk.usesImages = true;
@@ -135,7 +141,7 @@ export class ImportResolver {
     if (local !== null) {
       const target = this.#walk.projectModule(local);
       if (target === null) {
-        throw unresolvedImport(importer, rawSpecifier, "the target kind is unsupported");
+        throw unresolvedImport(importer, rawSpecifier, "unsupported-target-kind", "the target kind is unsupported");
       }
       return moduleResolution(target);
     }
@@ -149,7 +155,12 @@ export class ImportResolver {
   #externalUse(importer: SourceModule, rawSpecifier: string, external: string): ResolutionUse {
     const alias = HOST_ALIASES.get(external);
     if (alias === undefined) {
-      throw unresolvedImport(importer, rawSpecifier, `unsupported host external ${JSON.stringify(external)}`);
+      throw unresolvedImport(
+        importer,
+        rawSpecifier,
+        "unsupported-host-external",
+        `unsupported host external ${JSON.stringify(external)}`,
+      );
     }
     if (alias.kind === "content") {
       this.#walk.useContent();
@@ -159,7 +170,9 @@ export class ImportResolver {
       this.#walk.usesImages = true;
       this.#walk.addAssetSources();
       const target = this.#walk.projectModule(`${ASSETS_DIR}/index.ts`);
-      if (target === null) throw unresolvedImport(importer, rawSpecifier, "generated asset entry is missing");
+      if (target === null) {
+        throw unresolvedImport(importer, rawSpecifier, "asset-entry-not-generated", "generated asset entry is missing");
+      }
       return moduleResolution(target);
     }
     if (alias.kind === "image") {
