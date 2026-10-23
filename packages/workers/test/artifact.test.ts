@@ -397,20 +397,26 @@ describe("injected scripts and strict parsing", () => {
     expect(loadProjectArtifact(JSON.parse(JSON.stringify(PREPARED))).prepared).toEqual(PREPARED);
   });
 
-  test("exposes unresolved imports as UnresolvedImportError, an UnsupportedFileError", async () => {
+  async function unresolvedImportOf(source: string): Promise<UnresolvedImportError> {
     const error = await compileProject({
-      files: new Map([["src/pages/a.ts", `import "missing";`]]),
+      files: new Map([["src/pages/a.ts", source]]),
       entries: ["src/pages/a.ts"],
       compiler,
     }).then(
       () => null,
       (rejection: unknown) => rejection,
     );
-    expect(error).toBeInstanceOf(UnsupportedFileError);
     if (!(error instanceof UnresolvedImportError)) throw new Error(`not an unresolved import: ${error}`);
-    expect([error.file, error.importer, error.specifier, error.reason]).toEqual([
+    return error;
+  }
+
+  test("exposes unresolved imports as UnresolvedImportError, an UnsupportedFileError", async () => {
+    const error = await unresolvedImportOf(`import "missing";`);
+    expect(error).toBeInstanceOf(UnsupportedFileError);
+    expect([error.file, error.importer, error.specifier, error.kind, error.reason]).toEqual([
       "src/pages/a.ts",
       "project:src/pages/a.ts",
+      "missing",
       "missing",
       "no project file, Artifact V2 resolution, or supported host alias answers it",
     ]);
@@ -418,6 +424,22 @@ describe("injected scripts and strict parsing", () => {
       '[pletivo-workers] cannot compile "src/pages/a.ts": import "missing" from "project:src/pages/a.ts" is unresolved: ' +
         "no project file, Artifact V2 resolution, or supported host alias answers it",
     );
+  });
+
+  test("gives an import that no artifact can answer a kind other than missing", async () => {
+    const root = await unresolvedImportOf(`import "@pletivo/core";`);
+    expect([root.specifier, root.kind, root.reason]).toEqual([
+      "@pletivo/core",
+      "unsupported-package-root",
+      "unsupported package root export",
+    ]);
+
+    const query = await unresolvedImportOf(`import text from "./absent.txt?raw";`);
+    expect([query.specifier, query.kind, query.reason]).toEqual([
+      "./absent.txt?raw",
+      "query-target-not-found",
+      "query target does not exist",
+    ]);
   });
 });
 

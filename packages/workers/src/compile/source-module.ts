@@ -23,12 +23,37 @@ export class UnsupportedFileError extends Error {
   }
 }
 
+/**
+ * Why an import is unresolved. Only `missing` can be fixed by preparing the artifact
+ * again; every other kind fails the same way against any artifact.
+ */
+export type UnresolvedImportKind =
+  /** No project file, artifact resolution or host alias answers the specifier. */
+  | "missing"
+  /** The root of `pletivo`, `@pletivo/runtime` or `@pletivo/core`, which the host does not provide. */
+  | "unsupported-package-root"
+  /** The specifier names a host external that has no host alias. */
+  | "unsupported-host-external"
+  /** A `?raw`, `?inline` or `?url` import of a file the project does not have. */
+  | "query-target-not-found"
+  /** An image import whose metadata the project assets cannot give. */
+  | "image-metadata-unavailable"
+  /** A project file of a kind the walk does not compile. */
+  | "unsupported-target-kind"
+  /** The `astro:assets` entry the host generates is not in the walk. */
+  | "asset-entry-not-generated"
+  /** The rewrite met a specifier the link step did not resolve. */
+  | "rewrite-mismatch"
+  /** A CSS `@import` that resolves to something other than a CSS module. */
+  | "css-import-not-css";
+
 /** An import of a project or artifact module that nothing answers. */
 export class UnresolvedImportError extends UnsupportedFileError {
   constructor(
     file: string,
     readonly importer: ModuleId,
     readonly specifier: string,
+    readonly kind: UnresolvedImportKind,
     readonly reason: string,
   ) {
     super(file, `import ${JSON.stringify(specifier)} from ${JSON.stringify(importer)} is unresolved: ${reason}`);
@@ -39,7 +64,8 @@ export class UnresolvedImportError extends UnsupportedFileError {
 export function unresolvedImport(
   importer: SourceModule,
   specifier: string,
+  kind: UnresolvedImportKind,
   reason: string,
 ): UnresolvedImportError {
-  return new UnresolvedImportError(importer.compilePath, importer.id, specifier, reason);
+  return new UnresolvedImportError(importer.compilePath, importer.id, specifier, kind, reason);
 }

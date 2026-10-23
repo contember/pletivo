@@ -25,6 +25,7 @@ import { UnsupportedFileError } from "./compile/source-module.ts";
 
 export { isExecutableModule } from "./compile/module-kind.ts";
 export { UnresolvedImportError, UnsupportedFileError } from "./compile/source-module.ts";
+export type { UnresolvedImportKind } from "./compile/source-module.ts";
 export type { CompiledProject, CompileProjectOptions } from "./compile/types.ts";
 
 /**

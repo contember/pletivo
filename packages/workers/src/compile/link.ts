@@ -49,7 +49,7 @@ export async function linkModule(
     resolve(_resolved, specifier) {
       const use = bySpecifier.get(specifier);
       if (use === undefined) {
-        throw unresolvedImport(module, specifier, "rewrite did not see the canonical resolution");
+        throw unresolvedImport(module, specifier, "rewrite-mismatch", "rewrite did not see the canonical resolution");
       }
       return use.rewritten;
     },
@@ -65,7 +65,7 @@ export async function linkStylesheet(
   for (const specifier of cssImports(module.source)) {
     const use = await resolver.resolve(module, specifier);
     if (use.kind !== "module" || use.module.kind !== "css") {
-      throw unresolvedImport(module, specifier, "CSS @import must resolve to a CSS module");
+      throw unresolvedImport(module, specifier, "css-import-not-css", "CSS @import must resolve to a CSS module");
     }
     walk.addEdge(module, use.module);
   }
