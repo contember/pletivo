@@ -208,6 +208,8 @@ export interface RenderedPage {
    * cache them forever. The page's CSS is inlined, not listed here.
    */
   assets: RenderedAsset[];
+  /** The processed-script URLs (`/_pletivo/script/…`) the HTML loads, in document order. */
+  scriptUrls: string[];
   /**
    * Prepare inputs of a workspace artifact that changed since `pletivo prepare`, sorted.
    * Always empty from `renderPage`; `createProjectHost` fills it.
@@ -333,8 +335,8 @@ const DEFAULT_PAGES_DIR = "src/pages";
 /** Recent enough for `Response.json` and the modern module registry in the isolate. */
 const DEFAULT_COMPATIBILITY_DATE = "2026-01-01";
 const DEFAULT_COMPATIBILITY_FLAGS = ["nodejs_compat"];
-/** Bumped when the isolate protocol changes, so a stale isolate is never reused. v3: logs. */
-const WORKER_HOST_ABI = "pletivo-workers-v3";
+/** Bumped when the isolate protocol changes, so a stale isolate is never reused. v4: warm. */
+const WORKER_HOST_ABI = "pletivo-workers-v4";
 const SHARED_NAMESPACE: ExecutionNamespace = {
   tenant: "pletivo-workers-stateless",
   capabilityGeneration: "none",
@@ -493,6 +495,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
       file,
       bundleId: markdown.bundleId,
       assets: [],
+      scriptUrls: [],
       staleArtifactInputs: [],
       logs: markdown.logs,
     };
@@ -501,18 +504,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     throw new UnsupportedRouteError(file, "only .astro, .tsx and .md pages render here");
   }
 
-  const project = await compileProject({
-    files,
-    // Just this page: `getStaticPaths` is in its import graph too. See docs/todos/023 §4.
-    entries: [file],
-    srcDir,
-    compiler: options.compiler,
-    artifact: options.artifact,
-    assets: options.assets,
-    cache: options.compileCache,
-    annotateSourceFile: options.annotateSourceFile,
-    tailwind: options.tailwind,
-  });
+  const project = await compilePage(file, options);
   const rendered = await renderModule({
     project,
     file,
@@ -549,12 +541,63 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     file,
     bundleId: rendered.bundleId,
     assets: assetsOf(project.urlAssets),
+    scriptUrls: loadedScriptUrls(rendered.html, project.program.scripts),
     staleArtifactInputs: [],
     logs: rendered.logs,
   };
 }
 
+/** Just this page: `getStaticPaths` is in its import graph too. See docs/todos/023 §4. */
+function compilePage(file: string, options: ProjectOptions): Promise<CompiledProject> {
+  return compileProject({
+    files: options.files,
+    entries: [file],
+    srcDir: srcDirOf(options),
+    compiler: options.compiler,
+    artifact: options.artifact,
+    assets: options.assets,
+    cache: options.compileCache,
+    annotateSourceFile: options.annotateSourceFile,
+    tailwind: options.tailwind,
+  });
+}
+
+export interface WarmPageOptions extends ProjectOptions {
+  /** The URL pathname whose page to warm, as `renderPage` would be asked for it. */
+  pathname: string;
+}
+
+/**
+ * The cold half of `renderPage`: compile the page's module graph and import the page in
+ * the isolate its render will use, rendering nothing. A `.md` page has no module to warm.
+ */
+export async function warmPage(options: WarmPageOptions): Promise<void> {
+  const { files, pathname, pagesDir = DEFAULT_PAGES_DIR } = options;
+  const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
+  const { match } = matchPage(projectRoutes(files, pagesDir), pathname, options.artifact?.i18n ?? null);
+  const file = prefix + match.route.file;
+  if (match.route.isEndpoint || !isExecutableModule(file)) return;
+  const { payload } = await callIsolate({
+    project: await compilePage(file, options),
+    options,
+    label: `warming ${file}`,
+    body: { op: "warm", file },
+  });
+  if (payload.status !== "warmed") {
+    throw new Error("[pletivo-workers] the render isolate returned an unexpected warm-up payload");
+  }
+}
+
 const NO_LOGS: IsolateLogs = { logs: [], droppedLogs: 0 };
+
+/** The program's script URLs `html` loads, as `renderScript` spells the tag, in document order. */
+function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>>): string[] {
+  return [...new Set(Object.values(scripts))]
+    .map((url) => ({ url, at: html.indexOf(`src="${url}"`) }))
+    .filter(({ at }) => at !== -1)
+    .sort((left, right) => left.at - right.at)
+    .map(({ url }) => url);
+}
 
 const EMPTY_STYLE_GRAPH = { modules: [], executionEdges: [], styleEdges: [], styles: [] };
 

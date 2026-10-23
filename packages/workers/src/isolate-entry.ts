@@ -42,6 +42,7 @@ import {
   type IsolateRenderRequest,
   type IsolateRequest,
   type IsolateUnresolvedResponse,
+  type IsolateWarmedResponse,
   type IsolateErrorResponse,
   type IsolateProgramExport,
   type IsolateReply,
@@ -175,6 +176,7 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
     return withContent(program, env[CONTENT_BINDING], body, () => {
       if (body.op === "paths") return listPaths(program, body.routes);
       if (body.op === "markdown") return renderMarkdownPage(program, body);
+      if (body.op === "warm") return warmPage(program, body.file);
       return render(program, body);
     });
   }
@@ -349,6 +351,12 @@ async function listPaths(
     paths[file] = list.map((entry) => encodeParams(entry.params));
   }
   const response: IsolatePathsResponse = { status: "paths", paths };
+  return response;
+}
+
+async function warmPage(program: IsolateProgram, file: string): Promise<IsolatePayload> {
+  if (!(await loadPage(program, file))) throw new Error("no module for " + file);
+  const response: IsolateWarmedResponse = { status: "warmed" };
   return response;
 }
 

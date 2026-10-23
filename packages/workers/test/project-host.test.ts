@@ -29,6 +29,7 @@ import {
   type RenderEvent,
 } from "../src/project-host.ts";
 import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
+import { RouteNotFoundError } from "../src/render.ts";
 import { createMapProjectStore, type ProjectStore } from "../src/project-store.ts";
 import {
   createWorkspaceProjectStore,
@@ -772,6 +773,7 @@ import "../styles/global.css";
       page = PAGE_WITH_SCRIPT,
       menu = 'export function openMenu(): void { document.body.classList.add("opacity-50"); }\n',
       onBrowserModuleError?: ProjectHostOptions["onBrowserModuleError"],
+      modulePreload?: boolean,
     ) {
       return createProjectHost({
         store: createMapProjectStore(
@@ -786,6 +788,7 @@ import "../styles/global.css";
         compiler,
         ...(TAILWIND === undefined ? {} : { tailwind: TAILWIND }),
         onBrowserModuleError,
+        modulePreload,
       });
     }
 
@@ -861,6 +864,61 @@ import "../styles/global.css";
       }).fetch(new Request(url));
       expect(throwing.status).toBe(quiet.status);
       expect(await throwing.text()).toBe(await quiet.text());
+    });
+
+    describe("module preload hints", () => {
+      function preloadHints(html: string): string[] {
+        return [...html.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map((match) => match[1]);
+      }
+
+      /** The served graph, crawled the way a browser loads it: static imports only. */
+      async function servedStaticGraph(host: ReturnType<typeof scriptHost>, entry: string): Promise<Set<string>> {
+        const reached = new Set<string>();
+        const queue = [entry];
+        for (let url = queue.pop(); url !== undefined; url = queue.pop()) {
+          if (reached.has(url)) continue;
+          reached.add(url);
+          const response = await host.fetch(new Request(`https://example.test${url}`));
+          const code = await response.text();
+          expect(response.status, code).toBe(200);
+          for (const match of code.matchAll(/(?:from|import)\s*"(\/_pletivo\/[^"]+)"/g)) queue.push(match[1]);
+        }
+        return reached;
+      }
+
+      test("name the page's static browser graph, dependencies first, as the host serves it", async () => {
+        const host = scriptHost();
+        const html = await (await host.fetch(new Request("https://example.test/"))).text();
+        const src = /<script type="module" src="([^"]+)"><\/script>/.exec(html)?.[1];
+        if (src === undefined) throw new Error(`no script tag in ${html}`);
+
+        const hints = preloadHints(html);
+        expect(hints).toEqual([
+          "/_pletivo/module/npm/browser-pkg/dep.js",
+          "/_pletivo/module/npm/browser-pkg/browser.js",
+          "/_pletivo/module/project/src/lib/menu.ts",
+          src,
+        ]);
+        expect(new Set(hints)).toEqual(await servedStaticGraph(host, src));
+        expect(html.indexOf(hints[0] ?? "")).toBeLessThan(html.indexOf("<body"));
+      });
+
+      test("leave out what only a dynamic import reaches", async () => {
+        const menu = 'export function openMenu(): Promise<unknown> { return import("browser-pkg"); }\n';
+        const page = PAGE_WITH_SCRIPT.replace('import { greet } from "browser-pkg";\n', "").replace("greet();\n", "");
+        const html = await (await scriptHost(page, menu).fetch(new Request("https://example.test/"))).text();
+        const hints = preloadHints(html);
+        expect(hints).toHaveLength(2);
+        expect(hints[0]).toBe("/_pletivo/module/project/src/lib/menu.ts");
+        expect(hints[1]).toStartWith("/_pletivo/script/0/project/src/pages/index.astro.js?v=");
+      });
+
+      test("are off with modulePreload: false", async () => {
+        const host = scriptHost(PAGE_WITH_SCRIPT, undefined, undefined, false);
+        const html = await (await host.fetch(new Request("https://example.test/"))).text();
+        expect(html).toContain('<script type="module" src="/_pletivo/script/');
+        expect(preloadHints(html)).toEqual([]);
+      });
     });
 
     test("a script-only edit changes the script URL", async () => {
@@ -1081,6 +1139,82 @@ import "../styles/global.css";
 
       expect(transformed).toEqual(["src/components/Layout.astro"]);
       expect(await response.text()).toContain("margin:1px");
+    });
+  });
+
+  describe("warmUp", () => {
+    const LAYOUT = `---\nconst year = 2026;\n---\n<html><head><title>warm</title></head><body><slot />{year}</body></html>\n`;
+    const HOME = `---\nimport Layout from "../components/Layout.astro";\nimport { label } from "../lib/label";\n---\n<Layout><h1>{label}</h1></Layout>\n`;
+    const loaders: FileLoader[] = [];
+    afterAll(async () => {
+      for (const each of loaders) await each.cleanup();
+    });
+
+    function warmHost() {
+      // Its own Loader, so no other test has created this program's isolate already.
+      const isolates = new FileLoader();
+      loaders.push(isolates);
+      // Module scope runs once per isolate, and `FileLoader` runs the isolate in this process.
+      const probe = `pletivoWarmUpProbe${loaders.length}`;
+      const label = `globalThis.${probe} = (globalThis.${probe} ?? 0) + 1;\nexport const label = "home";\n`;
+      const counting = countingCompiler();
+      const host = createProjectHost({
+        store: createMapProjectStore(
+          new Map([
+            ["src/pages/index.astro", HOME],
+            ["src/components/Layout.astro", LAYOUT],
+            ["src/lib/label.ts", label],
+          ]),
+        ),
+        loader: isolates,
+        compiler: counting.compiler,
+      });
+      const isolatesCreated = () => [...isolates.factoryCounts.values()].reduce((sum, count) => sum + count, 0);
+      const evaluations = () => {
+        const count: unknown = Reflect.get(globalThis, probe);
+        return typeof count === "number" ? count : 0;
+      };
+      return { host, transformed: counting.transformed, isolatesCreated, evaluations };
+    }
+
+    test("a render after it compiles nothing, creates no isolate and imports nothing", async () => {
+      const { host, transformed, isolatesCreated, evaluations } = warmHost();
+
+      await host.warmUp();
+      expect(transformed).toEqual(["src/pages/index.astro", "src/components/Layout.astro"]);
+      expect(isolatesCreated()).toBe(1);
+      expect(evaluations()).toBe(1);
+
+      transformed.length = 0;
+      const response = await host.fetch(new Request("https://example.test/"));
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("home");
+      expect(transformed).toEqual([]);
+      expect(isolatesCreated()).toBe(1);
+      expect(evaluations()).toBe(1);
+
+      await host.warmUp();
+      expect(transformed).toEqual([]);
+      expect(isolatesCreated()).toBe(1);
+    });
+
+    test("a request during it waits and reuses its work, and a second call shares it", async () => {
+      const { host, transformed, isolatesCreated, evaluations } = warmHost();
+
+      const warming = host.warmUp({ pathname: "/" });
+      expect(host.warmUp()).toBe(warming);
+      const response = await host.fetch(new Request("https://example.test/"));
+      await warming;
+
+      expect(response.status).toBe(200);
+      expect(transformed).toEqual(["src/pages/index.astro", "src/components/Layout.astro"]);
+      expect(isolatesCreated()).toBe(1);
+      expect(evaluations()).toBe(1);
+    });
+
+    test("rejects for a pathname no route matches", async () => {
+      const { host } = warmHost();
+      await expect(host.warmUp({ pathname: "/missing" })).rejects.toBeInstanceOf(RouteNotFoundError);
     });
   });
 
