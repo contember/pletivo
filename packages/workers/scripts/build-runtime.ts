@@ -92,14 +92,10 @@ const ENTRIES: Record<string, Entry> = {
     },
   },
   /**
-   * Tailwind for the isolate that compiles a stylesheet with `@plugin` or `@config`: a
-   * plugin runs inside Tailwind's compile, and workerd cannot evaluate it in the host.
+   * The isolate that compiles a stylesheet with `@plugin` or `@config`: a plugin runs inside
+   * Tailwind's compile, and workerd cannot evaluate it in the host. Its Tailwind comes from
+   * the artifact, so a host carries that copy only for a project that needs it.
    */
-  [TAILWIND_MODULE_NAME]: {
-    specifier: "tailwindcss",
-    target: "browser",
-    forbidNodeBuiltins: true,
-  },
   [TAILWIND_ENTRY_MODULE_NAME]: {
     specifier: path.join(PACKAGE_DIR, "src/tailwind-isolate-entry.ts"),
     target: "browser",
@@ -358,9 +354,12 @@ export async function generateRuntimeModules(): Promise<string> {
     "/** The Tailwind isolate's request handling; exports `createTailwindEntry`. */",
     `export const TAILWIND_ENTRY_MODULE_NAME = ${JSON.stringify(TAILWIND_ENTRY_MODULE_NAME)};`,
     "",
-    "/** Tailwind and its entry, which every Tailwind isolate program carries next to its plugins. */",
+    "/** The module the Tailwind entry imports `tailwindcss` from. The artifact holds its source. */",
+    `export const TAILWIND_MODULE_NAME = ${JSON.stringify(TAILWIND_MODULE_NAME)};`,
+    "",
+    "/** The entry, which every Tailwind isolate program carries next to Tailwind and its plugins. */",
     "export const TAILWIND_ISOLATE_MODULES: Readonly<Record<string, string>> = {",
-    ...[TAILWIND_MODULE_NAME, TAILWIND_ENTRY_MODULE_NAME].map(
+    ...[TAILWIND_ENTRY_MODULE_NAME].map(
       (name) => `  ${JSON.stringify(name)}: GENERATED_MODULES[${JSON.stringify(name)}],`,
     ),
     "};",

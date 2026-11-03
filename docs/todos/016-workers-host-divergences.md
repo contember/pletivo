@@ -109,9 +109,10 @@ superset: a class named only in an `@source` file would be missing.
 
 Tailwind calls a `@plugin` or `@config` module synchronously during `compile()`, and the
 host worker cannot evaluate one. `pletivo prepare` bundles each target into one ES module
-(`tailwind-module:<digest>`, resolved from the stylesheet that names it); a page whose
-Tailwind closure has such a rule compiles in a Loader isolate holding Tailwind, the
-compile entry and those modules. The divergences that remain:
+(`tailwind-module:<digest>`, resolved from the stylesheet that names it), and Tailwind
+itself into `tailwind-runtime:v1`; a page whose Tailwind closure has such a rule compiles
+in a Loader isolate holding that Tailwind, the compile entry and those modules. The
+divergences that remain:
 
 - Only installed packages: a project-local plugin file is refused by `prepare`, because
   the artifact records no input that would mark it stale when that file changes. That
@@ -132,10 +133,12 @@ compile entry and those modules. The divergences that remain:
   bundled for the browser target, so a dependency with a distinct `browser` entry gets
   that one. A CommonJS module compiled from ESM (`__esModule`) gives its `default`, as
   Bun's import does; Node's would give the `exports` object.
-- Bundle size: the host carries Tailwind twice, as its own code for pages without such a
-  rule and as text for the isolate program, about 410 KB raw (87 KB gzipped) more per host
-  bundle whether a project uses plugins or not. Splitting the text into its own generated
-  module would not help: `pageStylesheet` reaches the isolate statically.
+- Two Tailwinds: a page without such a rule compiles with the host's `tailwindcss` (a peer
+  dependency), a page with one with pletivo's own, which `prepare` bundles into the
+  artifact (about 300 KB) only for a project with such a rule, so the host bundle carries
+  no copy of it. Both compile against the stylesheets the host passes as `tailwind`. The
+  `v1` in the module id is its contract with the host's isolate entry; a host finds no
+  module of another contract, and the rule fails as `missing` until `prepare` runs again.
 
 ## 4. `wasm_exec` is vendored, and it used to clobber `process`
 

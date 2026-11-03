@@ -1,4 +1,9 @@
-import { TAILWIND_MODULE_PREFIX, tailwindModuleSpecifier, type ModuleId } from "@pletivo/core/artifact";
+import {
+  TAILWIND_MODULE_PREFIX,
+  TAILWIND_RUNTIME_MODULE_ID,
+  tailwindModuleSpecifier,
+  type ModuleId,
+} from "@pletivo/core/artifact";
 import type { TailwindModuleRef } from "@pletivo/core/css-imports";
 import { imageOutputPath } from "@pletivo/core/image";
 import { md5Hex } from "@pletivo/core/md5";
@@ -120,7 +125,7 @@ export class ImportResolver {
    * writes one, so a rule it did not see (a stylesheet added since) is missing; the error
    * names the rule's resolution specifier, `@plugin x`, which the next artifact answers.
    * A project stylesheet's rule naming a project file outside any `node_modules` is one no
-   * prepare answers.
+   * prepare answers. The rule also needs the artifact's Tailwind, which the isolate runs it in.
    */
   resolveTailwindModule(importer: SourceModule, ref: TailwindModuleRef): ModuleId {
     const specifier = tailwindModuleSpecifier(ref.hint, ref.specifier);
@@ -143,6 +148,15 @@ export class ImportResolver {
     }
     if (this.#options.artifact.module(frozen.id) === null) {
       throw unresolvedImport(importer, specifier, "missing", "the bundled Tailwind module is not in the artifact");
+    }
+    if (this.#options.artifact.module(TAILWIND_RUNTIME_MODULE_ID) === null) {
+      throw unresolvedImport(
+        importer,
+        specifier,
+        "missing",
+        `the artifact has no ${JSON.stringify(TAILWIND_RUNTIME_MODULE_ID)} module, the Tailwind this rule compiles with: ` +
+          "it was prepared by a pletivo that does not write one, or writes it for another host",
+      );
     }
     return frozen.id;
   }

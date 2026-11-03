@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { ARTIFACT_VERSION, TAILWIND_MODULE_PREFIX, tailwindModuleSpecifier } from "@pletivo/core/artifact";
+import { ARTIFACT_VERSION, TAILWIND_MODULE_PREFIX, TAILWIND_RUNTIME_MODULE_ID, tailwindModuleSpecifier } from "@pletivo/core/artifact";
 import tailwindIndex from "tailwindcss/index.css";
 import tailwindPreflight from "tailwindcss/preflight.css";
 import tailwindTheme from "tailwindcss/theme.css";
@@ -239,7 +239,7 @@ export class QualificationDO extends DurableObject<Env> {
     return fetch(request);
   }
 
-  async qualify(sidecar: string, nonce: string, tailwindPlugin: string): Promise<QualificationReport> {
+  async qualify(sidecar: string, nonce: string, tailwindPlugin: string, tailwindRuntime: string): Promise<QualificationReport> {
     const probeId = `pletivo-workerd-loader-probe-v1:${nonce}`;
     const factoryCallsBefore = loaderProbeFactoryCalls;
     const firstProbe = this.env.LOADER.get(probeId, loaderProbeFactory);
@@ -258,7 +258,7 @@ export class QualificationDO extends DurableObject<Env> {
     const content = await this.#contentQualification(nonce, binding);
     const runtime = await this.#runtime(nonce, binding);
     const outbound = await this.#outbound(nonce, sidecar, binding);
-    const tailwind = await this.#tailwind(nonce, tailwindPlugin);
+    const tailwind = await this.#tailwind(nonce, tailwindPlugin, tailwindRuntime);
     return { identity, content, runtime, outbound, tailwind };
   }
 
@@ -465,10 +465,11 @@ try { new Function("return 1")(); } catch { marker = "refused"; }
   }
 
   /**
-   * A `@plugin` and a `@config` from the artifact, run in their own isolate next to Tailwind.
-   * The plugin is a real `pletivo prepare` bundle of a CommonJS package compiled from ESM.
+   * A `@plugin` and a `@config` from the artifact, run in their own isolate next to the
+   * artifact's Tailwind. The plugin and Tailwind are real `pletivo prepare` bundles, the
+   * plugin of a CommonJS package compiled from ESM.
    */
-  async #tailwind(nonce: string, pluginSource: string): Promise<TailwindReport> {
+  async #tailwind(nonce: string, pluginSource: string, tailwindSource: string): Promise<TailwindReport> {
     const stylesheet = "project:src/styles/global.css";
     const plugin = `${TAILWIND_MODULE_PREFIX}qualification-plugin`;
     const config = `${TAILWIND_MODULE_PREFIX}qualification-config`;
@@ -478,6 +479,7 @@ try { new Function("return 1")(); } catch { marker = "refused"; }
         config: {},
         scripts: { headInline: [], page: [] },
         modules: [
+          { id: TAILWIND_RUNTIME_MODULE_ID, kind: "js", source: tailwindSource },
           { id: plugin, kind: "js", source: pluginSource },
           { id: config, kind: "js", source: 'export default { theme: { extend: { colors: { brand: "#123456" } } } };\n' },
         ],
@@ -666,8 +668,9 @@ export default {
       const nonce = requestString(value, "nonce");
       const sidecar = requestString(value, "sidecar");
       const tailwindPlugin = requestString(value, "tailwindPlugin");
+      const tailwindRuntime = requestString(value, "tailwindRuntime");
       const target = env.QUALIFIER.getByName(nonce);
-      const report = await target.qualify(sidecar, nonce, tailwindPlugin);
+      const report = await target.qualify(sidecar, nonce, tailwindPlugin, tailwindRuntime);
       return Response.json(report);
     } catch (error) {
       return new Response(error instanceof Error ? (error.stack ?? error.message) : String(error), {

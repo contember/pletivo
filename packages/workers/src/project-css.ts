@@ -1,6 +1,6 @@
 /** Page-scoped stylesheet assembly over the canonical resolved module graph. */
 
-import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
+import { TAILWIND_RUNTIME_MODULE_ID, type InjectedScripts, type ModuleId } from "@pletivo/core/artifact";
 import { cssImports } from "@pletivo/core/css-imports";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 import { adjacency, moduleOrder } from "./page-css.ts";
@@ -121,7 +121,12 @@ async function compileEntry(
     }
     return { ...use, source };
   });
-  return compileTailwindInIsolate(compile, isolateStylesheets(closure, compile), modules, options.tailwindIsolate);
+  // The compile walk refuses a rule as `missing` when the artifact has no Tailwind module.
+  const tailwind = sourceFor(TAILWIND_RUNTIME_MODULE_ID, options.files);
+  if (tailwind === undefined) {
+    throw new Error(`[pletivo-workers] the artifact's Tailwind module ${JSON.stringify(TAILWIND_RUNTIME_MODULE_ID)} has no source`);
+  }
+  return compileTailwindInIsolate(compile, isolateStylesheets(closure, compile), tailwind, modules, options.tailwindIsolate);
 }
 
 /** The host's own `tailwindcss`. */

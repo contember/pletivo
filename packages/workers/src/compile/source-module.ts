@@ -28,7 +28,10 @@ export class UnsupportedFileError extends Error {
  * again; every other kind fails the same way against any artifact.
  */
 export type UnresolvedImportKind =
-  /** No project file, artifact resolution or host alias answers the specifier. */
+  /**
+   * No project file, artifact resolution or host alias answers the specifier, or the artifact
+   * answers a Tailwind rule but has no Tailwind module to compile it with.
+   */
   | "missing"
   /** The root of `pletivo`, `@pletivo/runtime` or `@pletivo/core`, which the host does not provide. */
   | "unsupported-package-root"

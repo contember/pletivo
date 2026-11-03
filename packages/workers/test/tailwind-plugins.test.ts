@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { ARTIFACT_VERSION, TAILWIND_MODULE_PREFIX, tailwindModuleSpecifier, type PreparedSite } from "@pletivo/core/artifact";
+import {
+  ARTIFACT_VERSION,
+  TAILWIND_MODULE_PREFIX,
+  TAILWIND_RUNTIME_MODULE_ID,
+  tailwindModuleSpecifier,
+  type ArtifactModule,
+  type PreparedSite,
+} from "@pletivo/core/artifact";
+import { bundleTailwindRuntime } from "../../pletivo/src/prepare/tailwind-modules.ts";
 import { loadProjectArtifact } from "../src/artifact.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { UnresolvedImportError } from "../src/compile-project.ts";
@@ -33,6 +41,8 @@ export default function fixturePlugin({ addBase, addUtilities, matchUtilities })
 }
 `;
 const CONFIG_MODULE = `export default { theme: { extend: { colors: { brand: "#123456" } } } };\n`;
+/** The Tailwind `pletivo prepare` writes next to them. */
+const TAILWIND_MODULE: ArtifactModule = { id: TAILWIND_RUNTIME_MODULE_ID, kind: "js", source: await bundleTailwindRuntime() };
 
 function project(stylesheet: string): Map<string, string> {
   return new Map([
@@ -51,6 +61,7 @@ const PREPARED: PreparedSite = {
     config: {},
     scripts: { headInline: [], page: [] },
     modules: [
+      TAILWIND_MODULE,
       { id: PLUGIN_ID, kind: "js", source: PLUGIN_MODULE },
       { id: CONFIG_ID, kind: "js", source: CONFIG_MODULE },
     ],
@@ -99,7 +110,7 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
     const prepared: PreparedSite = {
       artifact: {
         ...PREPARED.artifact,
-        modules: [{ id: PLUGIN_ID, kind: "js", source: 'export default function () { throw new Error("plugin broke"); }\n' }],
+        modules: [TAILWIND_MODULE, { id: PLUGIN_ID, kind: "js", source: 'export default function () { throw new Error("plugin broke"); }\n' }],
         resolutions: [PREPARED.artifact.resolutions[0]],
       },
     };
@@ -174,7 +185,7 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
       loadProjectArtifact({
         artifact: {
           ...PREPARED.artifact,
-          modules: [{ id: PLUGIN_ID, kind: "js", source }],
+          modules: [TAILWIND_MODULE, { id: PLUGIN_ID, kind: "js", source }],
           resolutions: [PREPARED.artifact.resolutions[0]],
         },
       });
@@ -186,6 +197,53 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
     expect(first.html).toMatch(/\.fixture-box\s*\{\s*display: grid;/);
     expect(second.html).toMatch(/\.fixture-box\s*\{\s*display: flex;/);
     expect(tailwindIsolates(loader)).toBe(2);
+  });
+
+  test("the artifact's Tailwind is part of the isolate program", async () => {
+    const loader = newLoader();
+    const files = project('@import "tailwindcss";\n@plugin "fixture-plugin";\n');
+    const withTailwind = (source: string) =>
+      loadProjectArtifact({
+        artifact: {
+          ...PREPARED.artifact,
+          modules: [{ ...TAILWIND_MODULE, source }, PREPARED.artifact.modules[1]],
+          resolutions: [PREPARED.artifact.resolutions[0]],
+        },
+      });
+    const stylesheets = await tailwindStylesheets();
+    const render = (source: string) => renderPage({ files, loader, compiler, artifact: withTailwind(source), tailwind: stylesheets, pathname: "/" });
+    const first = await render(TAILWIND_MODULE.source);
+    const again = await render(TAILWIND_MODULE.source);
+    const other = await render(`${TAILWIND_MODULE.source}\n// another build\n`);
+    for (const { html } of [first, again, other]) expect(html).toMatch(/\.fixture-box\s*\{\s*display: grid;/);
+    expect(tailwindIsolates(loader)).toBe(2);
+  });
+
+  test("an artifact with a rule's module but no Tailwind is missing, so preparing again answers it", async () => {
+    const loader = newLoader();
+    const error = await renderPage({
+      files: project('@import "tailwindcss";\n@plugin "fixture-plugin";\n'),
+      loader,
+      compiler,
+      artifact: loadProjectArtifact({
+        artifact: {
+          ...PREPARED.artifact,
+          modules: PREPARED.artifact.modules.filter((module) => module.id !== TAILWIND_RUNTIME_MODULE_ID),
+        },
+      }),
+      tailwind: await tailwindStylesheets(),
+      pathname: "/",
+    }).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(UnresolvedImportError);
+    if (!(error instanceof UnresolvedImportError)) return;
+    expect(error.kind).toBe("missing");
+    expect(error.importer).toBe(STYLESHEET);
+    expect(error.specifier).toBe("@plugin fixture-plugin");
+    expect(error.message).toContain(TAILWIND_RUNTIME_MODULE_ID);
+    expect(tailwindIsolates(loader)).toBe(0);
   });
 
   test("an @import and a @plugin of the same package resolve apart", async () => {

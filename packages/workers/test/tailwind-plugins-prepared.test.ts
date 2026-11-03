@@ -1,15 +1,17 @@
 /**
  * `pletivo prepare` and the Workers host together on Tailwind `@plugin` rules written as
- * paths: the host must ask the artifact before it judges the path.
+ * paths: the host must ask the artifact before it judges the path. The artifact carries
+ * the isolate's Tailwind only for a project with such a rule.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { TAILWIND_RUNTIME_MODULE_ID } from "@pletivo/core/artifact";
 import { loadProjectArtifact, type ProjectArtifact } from "../src/artifact.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
-import { renderPage } from "../src/render.ts";
+import { renderPage, type DynamicWorkerCode } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
 import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
@@ -57,12 +59,34 @@ async function prepared(
   return { artifact: loadProjectArtifact(artifact), sources };
 }
 
-async function render(files: Readonly<Record<string, string>>, site = ""): Promise<string> {
+const TAILWIND_MAIN = "pletivo-tailwind-main.js";
+
+interface Rendered {
+  html: string;
+  /** Whether the artifact carries the isolate's Tailwind. */
+  carriesTailwind: boolean;
+  /** The Tailwind isolate programs the render created. */
+  isolates: DynamicWorkerCode[];
+}
+
+async function rendered(files: Readonly<Record<string, string>>, site = ""): Promise<Rendered> {
   const { artifact, sources } = await prepared(files, site);
   const loader = new FileLoader();
   cleanups.push(() => loader.cleanup());
   const { html } = await renderPage({ files: sources, loader, compiler, artifact, tailwind: await tailwindStylesheets(), pathname: "/" });
-  return html;
+  return {
+    html,
+    carriesTailwind: artifact.resolver.module(TAILWIND_RUNTIME_MODULE_ID) !== null,
+    isolates: [...loader.bundles.values()].filter((bundle) => bundle.mainModule === TAILWIND_MAIN),
+  };
+}
+
+/** A page whose Tailwind compiles in one isolate, on the Tailwind its artifact carries. */
+async function render(files: Readonly<Record<string, string>>, site = ""): Promise<string> {
+  const page = await rendered(files, site);
+  expect(page.carriesTailwind).toBe(true);
+  expect(page.isolates).toHaveLength(1);
+  return page.html;
 }
 
 describe.skipIf(tailwindDir() === null)("Tailwind @plugin paths, prepared and rendered", () => {
@@ -95,5 +119,17 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin paths, prepared and re
       "apps/site",
     );
     expect(html).toMatch(/\.kit-box\s*\{\s*display: grid;/);
+  });
+
+  test("a project without a @plugin or @config rule carries no Tailwind and compiles it in the host", async () => {
+    const files = {
+      ...KIT,
+      "src/pages/index.astro": PAGE.replace("kit-box", "grid"),
+      "src/styles/global.css": '@import "tailwindcss";\n',
+    };
+    const page = await rendered(files);
+    expect(page.carriesTailwind).toBe(false);
+    expect(page.isolates).toHaveLength(0);
+    expect(page.html).toMatch(/\.grid\s*\{\s*display: grid;/);
   });
 });
