@@ -356,8 +356,16 @@ async function prepareTailwindModules(
       target: { kind: "module", id },
     });
   }
-  if (resolutions.length > 0) {
-    modules.set(TAILWIND_RUNTIME_MODULE_ID, { id: TAILWIND_RUNTIME_MODULE_ID, kind: "js", source: await bundleTailwindRuntime() });
+  const [first] = requests;
+  if (first !== undefined) {
+    let source: string;
+    try {
+      source = await bundleTailwindRuntime();
+    } catch (error) {
+      if (!(error instanceof TailwindModuleBundleError)) throw error;
+      throw prepareFailure(first.importerFile, "tailwind", `pletivo's tailwindcss cannot be bundled for the Workers host: ${error.message}`);
+    }
+    modules.set(TAILWIND_RUNTIME_MODULE_ID, { id: TAILWIND_RUNTIME_MODULE_ID, kind: "js", source });
   }
   return resolutions;
 }

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,9 @@ import {
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import { emitArtifact } from "../../packages/pletivo/src/prepare/emit";
 import { PrepareError, prepare } from "../../packages/pletivo/src/prepare/index";
+import * as tailwindModules from "../../packages/pletivo/src/prepare/tailwind-modules";
+
+const TAILWIND_MODULES = path.resolve(import.meta.dir, "../../packages/pletivo/src/prepare/tailwind-modules.ts");
 
 const fixtures = path.join(import.meta.dir, "../fixture-prepare");
 const project = path.join(fixtures, "project");
@@ -259,6 +262,27 @@ describe("pletivo prepare", () => {
         await projectWithFiles({ ...CJS_PLUGIN, "src/styles/global.css": '/* @plugin "cjs-plugin"; */\n.plain { color: red; }\n' }),
       );
       expect(withoutRule.artifact.modules.map((module) => module.id)).not.toContain(TAILWIND_RUNTIME_MODULE_ID);
+    });
+
+    test("refuses a project, naming its first rule's stylesheet, when pletivo's own Tailwind cannot be bundled", async () => {
+      const directory = await projectWithFiles({ ...CJS_PLUGIN, "src/styles/global.css": '@plugin "cjs-plugin";\n' });
+      const real = { ...tailwindModules };
+      mock.module(TAILWIND_MODULES, () => ({
+        ...real,
+        bundleTailwindRuntime: () => Promise.reject(new real.TailwindModuleBundleError("bundling failed: tailwindcss is not installed")),
+      }));
+      let error: PrepareError;
+      try {
+        error = await capturedPrepareError(directory);
+      } finally {
+        mock.module(TAILWIND_MODULES, () => real);
+      }
+      expect(error.diagnostics).toHaveLength(1);
+      expect(error.diagnostics[0]?.source).toEndWith("src/styles/global.css");
+      expect(error.diagnostics[0]?.hook).toBe("tailwind");
+      expect(error.message).toContain("pletivo's tailwindcss cannot be bundled for the Workers host");
+      expect(error.message).toContain("tailwindcss is not installed");
+      __resetForTests();
     });
 
     test("bundles the same bytes whatever the checkout root and the working directory", async () => {
