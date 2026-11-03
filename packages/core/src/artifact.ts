@@ -44,6 +44,14 @@ export const ANY_PROJECT_IMPORTER = "project:*";
  */
 export const TAILWIND_MODULE_PREFIX = "tailwind-module:";
 
+/**
+ * The resolution specifier of a stylesheet's `@plugin` or `@config` rule: the rule as written,
+ * so it never shares a key with an `@import` of the same target, which resolves differently.
+ */
+export function tailwindModuleSpecifier(hint: "plugin" | "config", specifier: string): string {
+  return `@${hint} ${specifier}`;
+}
+
 /** One importer-aware answer for a source import. */
 export interface ArtifactResolution {
   importer: ModuleId;

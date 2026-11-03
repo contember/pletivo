@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { ARTIFACT_VERSION, TAILWIND_MODULE_PREFIX } from "@pletivo/core/artifact";
+import { ARTIFACT_VERSION, TAILWIND_MODULE_PREFIX, tailwindModuleSpecifier } from "@pletivo/core/artifact";
 import tailwindIndex from "tailwindcss/index.css";
 import tailwindPreflight from "tailwindcss/preflight.css";
 import tailwindTheme from "tailwindcss/theme.css";
@@ -239,7 +239,7 @@ export class QualificationDO extends DurableObject<Env> {
     return fetch(request);
   }
 
-  async qualify(sidecar: string, nonce: string): Promise<QualificationReport> {
+  async qualify(sidecar: string, nonce: string, tailwindPlugin: string): Promise<QualificationReport> {
     const probeId = `pletivo-workerd-loader-probe-v1:${nonce}`;
     const factoryCallsBefore = loaderProbeFactoryCalls;
     const firstProbe = this.env.LOADER.get(probeId, loaderProbeFactory);
@@ -258,7 +258,7 @@ export class QualificationDO extends DurableObject<Env> {
     const content = await this.#contentQualification(nonce, binding);
     const runtime = await this.#runtime(nonce, binding);
     const outbound = await this.#outbound(nonce, sidecar, binding);
-    const tailwind = await this.#tailwind(nonce);
+    const tailwind = await this.#tailwind(nonce, tailwindPlugin);
     return { identity, content, runtime, outbound, tailwind };
   }
 
@@ -464,8 +464,11 @@ try { new Function("return 1")(); } catch { marker = "refused"; }
     };
   }
 
-  /** A `@plugin` and a `@config` from the artifact, run in their own isolate next to Tailwind. */
-  async #tailwind(nonce: string): Promise<TailwindReport> {
+  /**
+   * A `@plugin` and a `@config` from the artifact, run in their own isolate next to Tailwind.
+   * The plugin is a real `pletivo prepare` bundle of a CommonJS package compiled from ESM.
+   */
+  async #tailwind(nonce: string, pluginSource: string): Promise<TailwindReport> {
     const stylesheet = "project:src/styles/global.css";
     const plugin = `${TAILWIND_MODULE_PREFIX}qualification-plugin`;
     const config = `${TAILWIND_MODULE_PREFIX}qualification-config`;
@@ -475,20 +478,20 @@ try { new Function("return 1")(); } catch { marker = "refused"; }
         config: {},
         scripts: { headInline: [], page: [] },
         modules: [
-          {
-            id: plugin,
-            kind: "js",
-            source:
-              "export default function ({ addUtilities, matchUtilities }) {\n" +
-              '  addUtilities({ ".qualified-box": { display: "grid" } });\n' +
-              '  matchUtilities({ "qualified-pad": (value) => ({ padding: value }) }, { values: { lg: "9px" } });\n' +
-              "}\n",
-          },
+          { id: plugin, kind: "js", source: pluginSource },
           { id: config, kind: "js", source: 'export default { theme: { extend: { colors: { brand: "#123456" } } } };\n' },
         ],
         resolutions: [
-          { importer: stylesheet, specifier: "qualification-plugin", target: { kind: "module", id: plugin } },
-          { importer: stylesheet, specifier: "qualification-config", target: { kind: "module", id: config } },
+          {
+            importer: stylesheet,
+            specifier: tailwindModuleSpecifier("plugin", "qualification-plugin"),
+            target: { kind: "module", id: plugin },
+          },
+          {
+            importer: stylesheet,
+            specifier: tailwindModuleSpecifier("config", "qualification-config"),
+            target: { kind: "module", id: config },
+          },
         ],
       },
     });
@@ -662,8 +665,9 @@ export default {
       }
       const nonce = requestString(value, "nonce");
       const sidecar = requestString(value, "sidecar");
+      const tailwindPlugin = requestString(value, "tailwindPlugin");
       const target = env.QUALIFIER.getByName(nonce);
-      const report = await target.qualify(sidecar, nonce);
+      const report = await target.qualify(sidecar, nonce, tailwindPlugin);
       return Response.json(report);
     } catch (error) {
       return new Response(error instanceof Error ? (error.stack ?? error.message) : String(error), {

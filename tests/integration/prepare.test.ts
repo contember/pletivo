@@ -201,13 +201,14 @@ describe("pletivo prepare", () => {
           "@config 'esm-config';\n",
       });
       const site = await prepare(directory);
-      const plugin = targetFor(site, "project:src/styles/global.css", "cjs-plugin");
+      const plugin = targetFor(site, "project:src/styles/global.css", "@plugin cjs-plugin");
       expect(plugin).toStartWith(TAILWIND_MODULE_PREFIX);
       const bundled = moduleById(site, plugin);
       expect(bundled.kind).toBe("js");
       expect(bundled.source).toContain('"helper"');
       expect(bundled.source).not.toContain("require(");
       expect(bundled.source).not.toMatch(/^\s*import\s/m);
+      expect(bundled.source).not.toContain("node_modules");
 
       const value: unknown = Reflect.get(await importSource(bundled.source), "default");
       expect(typeof value).toBe("function");
@@ -215,7 +216,7 @@ describe("pletivo prepare", () => {
       if (typeof value === "function") value({ addUtilities: (utilities: unknown) => added.push(utilities) });
       expect(added).toEqual([{ ".helper-box": { display: "block" } }]);
 
-      const config = moduleById(site, targetFor(site, "project:src/styles/global.css", "esm-config"));
+      const config = moduleById(site, targetFor(site, "project:src/styles/global.css", "@config esm-config"));
       expect(Reflect.get(await importSource(config.source), "default")).toEqual({
         theme: { extend: { colors: { brand: "#123456" } } },
       });
@@ -225,12 +226,70 @@ describe("pletivo prepare", () => {
         .map((resolution) => `${resolution.importer} ${resolution.specifier}`)
         .sort();
       expect(tailwindSpecifiers).toEqual([
-        "project:src/styles/global.css cjs-plugin",
-        "project:src/styles/global.css esm-config",
+        "project:src/styles/global.css @config esm-config",
+        "project:src/styles/global.css @plugin cjs-plugin",
       ]);
       expect(parsePreparedSite(JSON.parse(serializePreparedSite(site)))).toEqual(
         parsePreparedSite(JSON.parse(serializePreparedSite(site))),
       );
+    });
+
+    test("bundles the same bytes whatever the checkout root and the working directory", async () => {
+      const files = { ...CJS_PLUGIN, "src/styles/global.css": '@plugin "cjs-plugin";\n@config "esm-config";\n' };
+      const first = await projectWithFiles(files);
+      const second = await projectWithFiles(files);
+      const cwd = process.cwd();
+      let fromFirst: PreparedSite;
+      let fromRoot: PreparedSite;
+      try {
+        process.chdir(first);
+        fromFirst = await prepare(first);
+        __resetForTests();
+        process.chdir(path.parse(second).root);
+        fromRoot = await prepare(second);
+      } finally {
+        process.chdir(cwd);
+      }
+      expect(serializePreparedSite(fromRoot)).toBe(serializePreparedSite(fromFirst));
+      for (const module of fromRoot.artifact.modules) {
+        expect(module.source).not.toContain(second);
+        expect(module.source).not.toContain(path.basename(second));
+      }
+    });
+
+    test("answers an @import and a @plugin of the same package each with its own target", async () => {
+      const directory = await projectWithFiles({
+        "node_modules/dual/package.json": JSON.stringify({
+          name: "dual",
+          exports: { ".": { style: "./style.css", import: "./index.js", require: "./index.js" } },
+        }),
+        "node_modules/dual/style.css": ".dual { color: red; }\n",
+        "node_modules/dual/index.js": "module.exports = function () {};\n",
+        "src/styles/global.css": '@import "dual";\n@plugin "dual";\n',
+      });
+      const site = await prepare(directory);
+      expect(moduleById(site, targetFor(site, "project:src/styles/global.css", "dual")).kind).toBe("css");
+      expect(targetFor(site, "project:src/styles/global.css", "@plugin dual")).toStartWith(TAILWIND_MODULE_PREFIX);
+    });
+
+    test("gives a CommonJS plugin compiled from ESM by its default export", async () => {
+      const directory = await projectWithFiles({
+        ...CJS_PLUGIN,
+        "node_modules/compiled-plugin/package.json": JSON.stringify({ name: "compiled-plugin", main: "index.js" }),
+        "node_modules/compiled-plugin/index.js":
+          '"use strict";\n' +
+          'Object.defineProperty(exports, "__esModule", { value: true });\n' +
+          'const { prefix } = require("cjs-helper");\n' +
+          "exports.default = function ({ addUtilities }) { addUtilities({ [`.${prefix}-grid`]: { display: \"grid\" } }); };\n",
+        "src/styles/global.css": '@plugin "compiled-plugin";\n',
+      });
+      const site = await prepare(directory);
+      const bundled = moduleById(site, targetFor(site, "project:src/styles/global.css", "@plugin compiled-plugin"));
+      const value: unknown = Reflect.get(await importSource(bundled.source), "default");
+      expect(typeof value).toBe("function");
+      const added: unknown[] = [];
+      if (typeof value === "function") value({ addUtilities: (utilities: unknown) => added.push(utilities) });
+      expect(added).toEqual([{ ".helper-grid": { display: "grid" } }]);
     });
 
     test("refuses a plugin that needs a Node built-in, naming the stylesheet and the rule", async () => {

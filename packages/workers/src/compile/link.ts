@@ -69,8 +69,8 @@ export async function linkStylesheet(
     }
     walk.addEdge(module, use.module);
   }
-  for (const { specifier } of tailwindModuleRefs(module.source)) {
-    walk.tailwindModules.push({ stylesheet: module.id, specifier, module: resolver.resolveTailwindModule(module, specifier) });
+  for (const ref of tailwindModuleRefs(module.source)) {
+    walk.tailwindModules.push({ stylesheet: module.id, specifier: ref.specifier, module: resolver.resolveTailwindModule(module, ref) });
   }
   walk.modules[module.executionName] = "export {};\n";
 }

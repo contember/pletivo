@@ -20,6 +20,7 @@ import {
   type TailwindStylesheets,
 } from "./tailwind.ts";
 import { compileTailwindInIsolate, type TailwindIsolateHost, type TailwindModuleSource } from "./tailwind-isolate.ts";
+import { unreachableTailwindModule } from "./tailwind-isolate-protocol.ts";
 
 export { TailwindNotConfiguredError };
 
@@ -128,12 +129,9 @@ async function loadTailwind(): Promise<TailwindModule> {
   return tailwindModule(await import("tailwindcss"));
 }
 
-/** The compile walk records every rule it links, so Tailwind reached one through something else. */
+/** The compile walk records every rule of the closure, so Tailwind reached this one through `@reference`. */
 async function unrecordedTailwindModule(specifier: string, stylesheet: ModuleId, hint: "plugin" | "config"): Promise<never> {
-  throw new Error(
-    `[pletivo-workers] @${hint} ${JSON.stringify(specifier)} in ${JSON.stringify(stylesheet)} was not ` +
-      "linked by the compile walk, so no isolate holds its module",
-  );
+  throw new Error(unreachableTailwindModule(hint, specifier, stylesheet));
 }
 
 /** The entry and every stylesheet its `@import`s reach. */

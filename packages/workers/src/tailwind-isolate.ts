@@ -5,8 +5,9 @@
  */
 
 import type { ModuleId } from "@pletivo/core/artifact";
+import { compareStrings } from "@pletivo/core/compare-strings";
 import { executionNameForModuleId } from "./artifact.ts";
-import { isolateKey, programHash, type ExecutionNamespace } from "./execution-identity.ts";
+import { isolateKey, programHash, type ExecutionNamespace, type ProgramHash } from "./execution-identity.ts";
 import {
   TAILWIND_ENTRY_MODULE_NAME,
   TAILWIND_ISOLATE_MODULES,
@@ -14,11 +15,14 @@ import {
 import { IsolateProtocolError } from "./isolate-protocol.ts";
 import type { DynamicWorkerCode, WorkerLoaderBinding } from "./render.ts";
 import type { TailwindIsolateReply, TailwindIsolateRequest } from "./tailwind-isolate-protocol.ts";
-import type { CompileTailwindOptions, TailwindCompilation } from "./tailwind.ts";
+import type { CompileTailwindOptions, TailwindCompilation, TailwindStylesheets } from "./tailwind.ts";
 
 /** Bumped when the request or reply changes, so a stale isolate is never reused. */
 const TAILWIND_ISOLATE_ABI = "pletivo-tailwind-v1";
 const TAILWIND_MAIN_MODULE_NAME = "pletivo-tailwind-main.js";
+const TAILWIND_STYLESHEETS_MODULE_NAME = "pletivo-tailwind-stylesheets.js";
+/** Distinct module sets kept per Tailwind build; a host serves a handful. */
+const PROGRAM_CACHE_LIMIT = 32;
 
 /** Where the Tailwind isolate runs; the render isolate's settings. */
 export interface TailwindIsolateHost {
@@ -54,20 +58,9 @@ export async function compileTailwindInIsolate(
   modules: readonly TailwindModuleSource[],
   host: TailwindIsolateHost,
 ): Promise<TailwindCompilation> {
-  const programModules: Record<string, string> = { ...TAILWIND_ISOLATE_MODULES };
-  for (const use of modules) programModules[executionNameForModuleId(use.module)] = use.source;
-  const imported = [...new Set(modules.map((use) => executionNameForModuleId(use.module)))].sort();
-  programModules[TAILWIND_MAIN_MODULE_NAME] = [
-    `import { createTailwindEntry } from ${JSON.stringify(`./${TAILWIND_ENTRY_MODULE_NAME}`)};`,
-    "export default createTailwindEntry({",
-    ...imported.map((name) => `  ${JSON.stringify(name)}: () => import(${JSON.stringify(`./${name}`)}),`),
-    "});",
-    "",
-  ].join("\n");
-
-  const hash = await programHash({ mainModule: TAILWIND_MAIN_MODULE_NAME, modules: programModules });
+  const program = await tailwindProgram(options.stylesheets, modules);
   const key = await isolateKey({
-    programHash: hash,
+    programHash: program.hash,
     namespace: host.namespace,
     platform: {
       hostAbi: TAILWIND_ISOLATE_ABI,
@@ -80,7 +73,7 @@ export async function compileTailwindInIsolate(
     compatibilityDate: host.compatibilityDate,
     compatibilityFlags: [...host.compatibilityFlags],
     mainModule: TAILWIND_MAIN_MODULE_NAME,
-    modules: programModules,
+    modules: program.modules,
     // A plugin has no reason to reach the network.
     globalOutbound: null,
   };
@@ -89,7 +82,6 @@ export async function compileTailwindInIsolate(
   const body: TailwindIsolateRequest = {
     entry: options.entry,
     files: [...files],
-    stylesheets: options.stylesheets,
     candidates: [...options.candidates],
     styleTargets: [...options.styleTargets].map(([importer, targets]): [ModuleId, ModuleId[]] => [importer, [...targets]]),
     embeddedTargets: [...options.embeddedTargets],
@@ -112,6 +104,53 @@ export async function compileTailwindInIsolate(
   const reply = parseTailwindReply(value);
   if (reply.status === "error") throw new TailwindIsolateError(reply.message, reply.stack);
   return { css: reply.css, consumedStylesheets: reply.consumedStylesheets };
+}
+
+interface TailwindProgram {
+  modules: Record<string, string>;
+  hash: ProgramHash;
+}
+
+const programs = new WeakMap<TailwindStylesheets, Map<string, Promise<TailwindProgram>>>();
+
+/**
+ * Tailwind, its stylesheets, the entry and the bundled modules. Hashing it reads every byte,
+ * so it is built once per module set; the key is their content, not only their ids.
+ */
+function tailwindProgram(stylesheets: TailwindStylesheets, modules: readonly TailwindModuleSource[]): Promise<TailwindProgram> {
+  const sources = new Map<string, string>();
+  for (const use of modules) sources.set(executionNameForModuleId(use.module), use.source);
+  const bundled = [...sources].sort(([left], [right]) => compareStrings(left, right));
+  const cacheKey = bundled.map(([name, source]) => `${name}\0${source}`).join("\0\0");
+  let cache = programs.get(stylesheets);
+  if (cache === undefined) {
+    cache = new Map();
+    programs.set(stylesheets, cache);
+  }
+  const cached = cache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const programModules: Record<string, string> = { ...TAILWIND_ISOLATE_MODULES };
+  for (const [name, source] of bundled) programModules[name] = source;
+  programModules[TAILWIND_STYLESHEETS_MODULE_NAME] = `export default ${JSON.stringify(stylesheets)};\n`;
+  programModules[TAILWIND_MAIN_MODULE_NAME] = [
+    `import { createTailwindEntry } from ${JSON.stringify(`./${TAILWIND_ENTRY_MODULE_NAME}`)};`,
+    `import stylesheets from ${JSON.stringify(`./${TAILWIND_STYLESHEETS_MODULE_NAME}`)};`,
+    "export default createTailwindEntry(stylesheets, {",
+    ...bundled.map(([name]) => `  ${JSON.stringify(name)}: () => import(${JSON.stringify(`./${name}`)}),`),
+    "});",
+    "",
+  ].join("\n");
+  const program = programHash({ mainModule: TAILWIND_MAIN_MODULE_NAME, modules: programModules }).then((hash) => ({
+    modules: programModules,
+    hash,
+  }));
+  if (cache.size >= PROGRAM_CACHE_LIMIT) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) cache.delete(oldest.value);
+  }
+  cache.set(cacheKey, program);
+  return program;
 }
 
 /** Create the Loader callback outside request-owned call frames. */

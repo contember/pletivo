@@ -1,4 +1,5 @@
-import { TAILWIND_MODULE_PREFIX, type ModuleId } from "@pletivo/core/artifact";
+import { TAILWIND_MODULE_PREFIX, tailwindModuleSpecifier, type ModuleId } from "@pletivo/core/artifact";
+import type { TailwindModuleRef } from "@pletivo/core/css-imports";
 import { imageOutputPath } from "@pletivo/core/image";
 import { md5Hex } from "@pletivo/core/md5";
 import { projectModuleId, type ArtifactResolver } from "../artifact.ts";
@@ -96,16 +97,26 @@ export class ImportResolver {
 
   /**
    * The bundled module a stylesheet's `@plugin` or `@config` rule names. Only prepare
-   * writes one, so a rule it did not see (a stylesheet added since) is missing.
+   * writes one, so a rule it did not see (a stylesheet added since) is missing; the error
+   * names the rule's resolution specifier, `@plugin x`, which the next artifact answers.
    */
-  resolveTailwindModule(importer: SourceModule, specifier: string): ModuleId {
+  resolveTailwindModule(importer: SourceModule, ref: TailwindModuleRef): ModuleId {
+    const specifier = tailwindModuleSpecifier(ref.hint, ref.specifier);
+    if (ref.specifier.startsWith(".") || ref.specifier.startsWith("/")) {
+      throw unresolvedImport(
+        importer,
+        specifier,
+        "tailwind-module-not-a-package",
+        "the Workers host loads Tailwind plugins and configs only from installed packages",
+      );
+    }
     const frozen = this.#options.artifact.resolve(importer.id, specifier);
     if (frozen === null || frozen.kind !== "module" || !frozen.id.startsWith(TAILWIND_MODULE_PREFIX)) {
       throw unresolvedImport(
         importer,
         specifier,
         "missing",
-        "no bundled Tailwind module answers this @plugin or @config rule; re-run `pletivo prepare`",
+        "the artifact has no bundled module for this rule, which is newer than its `pletivo prepare`",
       );
     }
     if (this.#options.artifact.module(frozen.id) === null) {

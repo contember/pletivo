@@ -6,6 +6,15 @@
 import type { ModuleId } from "@pletivo/core/artifact";
 import type { TailwindStylesheets } from "./tailwind.ts";
 
+/** Message for a rule no module answers: only a stylesheet outside the `@import` closure has one. */
+export function unreachableTailwindModule(hint: "plugin" | "config", specifier: string, stylesheet: string): string {
+  return (
+    `[pletivo-workers] @${hint} ${JSON.stringify(specifier)} in ${JSON.stringify(stylesheet)} is not in the ` +
+    "page's @import closure: the Workers host loads @plugin and @config only from stylesheets a page " +
+    "@imports, not through @reference"
+  );
+}
+
 /** One `@plugin` or `@config` rule and the Loader module holding its bundled target. */
 export interface TailwindModuleBinding {
   stylesheet: ModuleId;
@@ -17,7 +26,6 @@ export interface TailwindIsolateRequest {
   entry: ModuleId;
   /** `[fileKeyFor(moduleId), text]` for every stylesheet Tailwind may load. */
   files: [string, string][];
-  stylesheets: TailwindStylesheets;
   candidates: string[];
   styleTargets: [ModuleId, ModuleId[]][];
   embeddedTargets: [ModuleId, keyof TailwindStylesheets][];

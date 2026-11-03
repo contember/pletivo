@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { bundleTailwindModule } from "../../../pletivo/src/prepare/tailwind-modules.ts";
 
 interface ChildLogs {
   stdout: string[];
@@ -168,6 +169,32 @@ function validateReport(value: unknown): void {
   }
 }
 
+/**
+ * What `pletivo prepare` makes of a CommonJS plugin compiled from ESM (`exports.__esModule`,
+ * `exports.default`) with a CommonJS dependency: the bundle the isolate must import, not a stand-in.
+ */
+async function bundledCommonJsPlugin(root: string): Promise<string> {
+  const files: Record<string, string> = {
+    "node_modules/qualification-plugin/package.json": JSON.stringify({ name: "qualification-plugin", main: "index.js" }),
+    "node_modules/qualification-plugin/index.js":
+      '"use strict";\n' +
+      'Object.defineProperty(exports, "__esModule", { value: true });\n' +
+      'const { prefix } = require("qualification-helper");\n' +
+      "function plugin({ addUtilities, matchUtilities }) {\n" +
+      '  addUtilities({ [`.${prefix}-box`]: { display: "grid" } });\n' +
+      '  matchUtilities({ [`${prefix}-pad`]: (value) => ({ padding: value }) }, { values: { lg: "9px" } });\n' +
+      "}\n" +
+      "exports.default = plugin;\n",
+    "node_modules/qualification-helper/package.json": JSON.stringify({ name: "qualification-helper", main: "index.js" }),
+    "node_modules/qualification-helper/index.js": 'exports.prefix = "qualified";\n',
+  };
+  for (const [file, source] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await fs.writeFile(path.join(root, file), source);
+  }
+  return bundleTailwindModule(path.join(root, "node_modules/qualification-plugin/index.js"));
+}
+
 const nonce = crypto.randomUUID();
 const sidecarPort = await allocatePort();
 const wranglerPort = await allocatePort();
@@ -177,6 +204,7 @@ const wranglerHome = path.join(tempRoot, "wrangler-home");
 const wranglerConfig = path.join(tempRoot, "wrangler.jsonc");
 await fs.mkdir(persistence);
 await fs.mkdir(wranglerHome);
+const tailwindPlugin = await bundledCommonJsPlugin(path.join(tempRoot, "plugin-project"));
 const sourceConfig = await fs.readFile(path.join(import.meta.dir, "wrangler.jsonc"), "utf8");
 const stagedConfig = sourceConfig.replace(
   '"main": "entry.ts"',
@@ -236,6 +264,7 @@ try {
       body: JSON.stringify({
         nonce,
         sidecar: `http://127.0.0.1:${sidecarPort}/probe?nonce=${encodeURIComponent(nonce)}`,
+        tailwindPlugin,
       }),
       signal: AbortSignal.timeout(120_000),
     }),

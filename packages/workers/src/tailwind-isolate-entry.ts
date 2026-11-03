@@ -5,12 +5,13 @@
  */
 
 import * as tailwindcss from "tailwindcss";
-import type {
-  TailwindIsolateCompiled,
-  TailwindIsolateReply,
-  TailwindIsolateRequest,
+import {
+  unreachableTailwindModule,
+  type TailwindIsolateCompiled,
+  type TailwindIsolateReply,
+  type TailwindIsolateRequest,
 } from "./tailwind-isolate-protocol.ts";
-import { compileTailwind, tailwindModule } from "./tailwind.ts";
+import { compileTailwind, tailwindModule, type TailwindStylesheets } from "./tailwind.ts";
 
 /** Loader module name -> its import. The host writes these as literal `import()`s per program. */
 export type TailwindModuleImports = Readonly<Record<string, () => Promise<unknown>>>;
@@ -19,7 +20,7 @@ export interface TailwindEntry {
   fetch(request: Request): Promise<Response>;
 }
 
-export function createTailwindEntry(imports: TailwindModuleImports): TailwindEntry {
+export function createTailwindEntry(stylesheets: TailwindStylesheets, imports: TailwindModuleImports): TailwindEntry {
   const tailwind = tailwindModule(tailwindcss);
 
   async function compile(body: TailwindIsolateRequest): Promise<TailwindIsolateCompiled> {
@@ -28,7 +29,7 @@ export function createTailwindEntry(imports: TailwindModuleImports): TailwindEnt
       {
         entry: body.entry,
         files: new Map(body.files),
-        stylesheets: body.stylesheets,
+        stylesheets,
         candidates: body.candidates,
         styleTargets: new Map(body.styleTargets),
         embeddedTargets: new Map(body.embeddedTargets),
@@ -38,12 +39,7 @@ export function createTailwindEntry(imports: TailwindModuleImports): TailwindEnt
         async loadModule(specifier, stylesheet, hint) {
           const name = rules.get(ruleKey(stylesheet, specifier));
           const load = name !== undefined && Object.hasOwn(imports, name) ? imports[name] : undefined;
-          if (load === undefined) {
-            throw new Error(
-              `[pletivo-workers] @${hint} ${JSON.stringify(specifier)} in ${JSON.stringify(stylesheet)} ` +
-                "has no bundled module. Re-run `pletivo prepare`.",
-            );
-          }
+          if (load === undefined) throw new Error(unreachableTailwindModule(hint, specifier, stylesheet));
           const loaded = await load();
           return typeof loaded === "object" && loaded !== null ? Reflect.get(loaded, "default") : undefined;
         },

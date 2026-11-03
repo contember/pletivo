@@ -34,7 +34,9 @@ export async function bundleTailwindModule(file: string): Promise<string> {
       // What Tailwind's own Node loader resolves a plugin's dependencies with.
       conditions: ["node", "require"],
       format: "esm",
-      minify: false,
+      // Whitespace only, which also drops the `// <path>` comments Bun writes relative to the
+      // working directory: the module id is the digest of these bytes.
+      minify: { whitespace: true, syntax: false, identifiers: false },
       plugins: [entryWrapper(file), rejectNodeBuiltins(builtins)],
     });
   } catch (error) {
@@ -58,7 +60,10 @@ function bundleError(builtins: ReadonlySet<string>, detail: string): TailwindMod
   return new TailwindModuleBundleError(`bundling failed: ${detail}`);
 }
 
-/** `module.exports` of a CommonJS module, or the default export of an ES one. */
+/**
+ * `module.exports` of a CommonJS module, or the default export of an ES one. A CommonJS module
+ * compiled from ESM (`__esModule`) gives its `default`, as Bun's and a bundler's import would.
+ */
 function entryWrapper(file: string): BunPlugin {
   return {
     name: "pletivo-tailwind-module-entry",
@@ -67,7 +72,10 @@ function entryWrapper(file: string): BunPlugin {
       build.onLoad({ filter: /.*/, namespace: ENTRY_NAMESPACE }, () => ({
         contents:
           `import * as loaded from ${JSON.stringify(file)};\n` +
-          `export default ("default" in loaded ? loaded.default : loaded);\n`,
+          `const value = "default" in loaded ? loaded.default : loaded;\n` +
+          `export default (value !== null && typeof value === "object" && value.__esModule === true && "default" in value\n` +
+          `  ? value.default\n` +
+          `  : value);\n`,
         loader: "js",
       }));
     },

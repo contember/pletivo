@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { ARTIFACT_VERSION, TAILWIND_MODULE_PREFIX, type PreparedSite } from "@pletivo/core/artifact";
+import { ARTIFACT_VERSION, TAILWIND_MODULE_PREFIX, tailwindModuleSpecifier, type PreparedSite } from "@pletivo/core/artifact";
 import { loadProjectArtifact } from "../src/artifact.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { UnresolvedImportError } from "../src/compile-project.ts";
@@ -55,8 +55,8 @@ const PREPARED: PreparedSite = {
       { id: CONFIG_ID, kind: "js", source: CONFIG_MODULE },
     ],
     resolutions: [
-      { importer: STYLESHEET, specifier: "fixture-plugin", target: { kind: "module", id: PLUGIN_ID } },
-      { importer: STYLESHEET, specifier: "fixture-config", target: { kind: "module", id: CONFIG_ID } },
+      { importer: STYLESHEET, specifier: tailwindModuleSpecifier("plugin", "fixture-plugin"), target: { kind: "module", id: PLUGIN_ID } },
+      { importer: STYLESHEET, specifier: tailwindModuleSpecifier("config", "fixture-config"), target: { kind: "module", id: CONFIG_ID } },
     ],
   },
 };
@@ -133,7 +133,78 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
     if (!(error instanceof UnresolvedImportError)) return;
     expect(error.kind).toBe("missing");
     expect(error.importer).toBe(STYLESHEET);
-    expect(error.specifier).toBe("not-prepared");
+    // The rule's resolution specifier: what an artifact prepared since answers it under.
+    expect(error.specifier).toBe("@plugin not-prepared");
+    expect(loadProjectArtifact(PREPARED).resolver.resolve(STYLESHEET, "@plugin fixture-plugin")).toEqual({ kind: "module", id: PLUGIN_ID });
+  });
+
+  test("a rule naming a project file fails against any artifact, not as missing", async () => {
+    const error = await renderPage({
+      files: project('@import "tailwindcss";\n@config "../../tailwind.config.js";\n'),
+      loader: newLoader(),
+      compiler,
+      artifact: loadProjectArtifact(PREPARED),
+      tailwind: await tailwindStylesheets(),
+      pathname: "/",
+    }).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(UnresolvedImportError);
+    if (!(error instanceof UnresolvedImportError)) return;
+    expect(error.kind).toBe("tailwind-module-not-a-package");
+    expect(error.specifier).toBe("@config ../../tailwind.config.js");
+  });
+
+  test("an @import and a @plugin of the same package resolve apart", async () => {
+    const loader = newLoader();
+    const files = project('@import "tailwindcss";\n@import "fixture-plugin";\n@plugin "fixture-plugin";\n');
+    files.set("node_modules/fixture-plugin/style.css", ".from-import { color: red; }\n");
+    const prepared: PreparedSite = {
+      artifact: {
+        ...PREPARED.artifact,
+        modules: [...PREPARED.artifact.modules, { id: "npm:fixture-plugin/style.css", kind: "css", source: ".from-import { color: red; }\n" }],
+        resolutions: [
+          ...PREPARED.artifact.resolutions,
+          { importer: STYLESHEET, specifier: "fixture-plugin", target: { kind: "module", id: "npm:fixture-plugin/style.css" } },
+        ],
+      },
+    };
+    const { html } = await renderPage({
+      files,
+      loader,
+      compiler,
+      artifact: loadProjectArtifact(prepared),
+      tailwind: await tailwindStylesheets(),
+      pathname: "/",
+    });
+    expect(html).toContain(".from-import");
+    expect(html).toMatch(/\.fixture-box\s*\{\s*display: grid;/);
+  });
+
+  test("a @plugin reached only through @reference names the limit", async () => {
+    const loader = newLoader();
+    // Tailwind follows a `@reference` from a stylesheet with no `@import` edges of its own.
+    const files = project("");
+    files.set("src/styles/part.css", '@reference "./ref.css";\n');
+    files.set("src/styles/ref.css", '@plugin "fixture-plugin";\n');
+    const stylesheets = await tailwindStylesheets();
+    const render = (stylesheet: string) => {
+      files.set("src/styles/global.css", stylesheet);
+      return renderPage({
+        files,
+        loader,
+        compiler,
+        artifact: loadProjectArtifact(PREPARED),
+        tailwind: stylesheets,
+        pathname: "/",
+      });
+    };
+    // In the host, and in the isolate a closure with its own rule compiles in.
+    await expect(render('@import "tailwindcss";\n@import "./part.css";\n')).rejects.toThrow("not through @reference");
+    await expect(render('@import "tailwindcss";\n@import "./part.css";\n@config "fixture-config";\n')).rejects.toThrow(
+      "not through @reference",
+    );
   });
 
   test("a commented-out rule and a project without plugins compile in the host", async () => {

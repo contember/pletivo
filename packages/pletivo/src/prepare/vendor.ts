@@ -10,6 +10,7 @@ import {
   type ArtifactResolutionTarget,
   type ModuleId,
   TAILWIND_MODULE_PREFIX,
+  tailwindModuleSpecifier,
 } from "@pletivo/core/artifact";
 import { tailwindModuleRefs, type TailwindModuleRef } from "@pletivo/core/css-imports";
 import { prepareFailure, PrepareError } from "./error";
@@ -308,7 +309,7 @@ async function prepareTailwindModules(
   const resolutions: ArtifactResolution[] = [];
   const seen = new Set<string>();
   for (const request of requests) {
-    const key = `${request.importer}\0${request.specifier}`;
+    const key = `${request.importer}\0${request.hint}\0${request.specifier}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const rule = `@${request.hint} ${JSON.stringify(request.specifier)}`;
@@ -347,7 +348,11 @@ async function prepareTailwindModules(
       }
       bundled.set(resolved, id);
     }
-    resolutions.push({ importer: request.importer, specifier: request.specifier, target: { kind: "module", id } });
+    resolutions.push({
+      importer: request.importer,
+      specifier: tailwindModuleSpecifier(request.hint, request.specifier),
+      target: { kind: "module", id },
+    });
   }
   return resolutions;
 }
