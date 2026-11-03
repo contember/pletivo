@@ -314,6 +314,15 @@ describe("pletivo prepare", () => {
       expect(error.message).toContain('"node:fs"');
     });
 
+    test("refuses a plugin reading CommonJS module.id, which would embed a path", async () => {
+      const directory = await projectWithFiles({
+        "node_modules/id-plugin/package.json": JSON.stringify({ name: "id-plugin", main: "index.js" }),
+        "node_modules/id-plugin/index.js": "const id = module.id;\nmodule.exports = function () { return id; };\n",
+        "src/styles/global.css": '@plugin "id-plugin";\n',
+      });
+      await expectPrepareError(directory, "module.id");
+    });
+
     test("refuses an unresolvable target and a project-local plugin file", async () => {
       const missing = await projectWithFiles({ "src/styles/global.css": '@plugin "not-installed";\n' });
       await expectPrepareError(missing, 'could not resolve @plugin "not-installed"');

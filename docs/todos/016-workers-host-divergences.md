@@ -121,6 +121,11 @@ compile entry and those modules. The divergences that remain:
 - Only through `@import`: a rule in a stylesheet a page reaches only by `@reference` fails
   the render naming that limit; `prepare` does not scan `@reference` targets.
 - No Node built-ins: a plugin that needs one is refused by `prepare`. On Bun it would run.
+- No file paths: the module id is the digest of the bundle, so it must not depend on the
+  machine. `__dirname` is `"/"` and `__filename` `"/index.js"` in every bundled module,
+  ES modules included, where a `typeof __dirname === "undefined"` guard now reads a
+  string. A CommonJS module reading `module.id` or `module.path`, which Bun inlines as a
+  working-directory-relative path, is refused by `prepare`.
 - The target resolves with `node`, `import`, `require` conditions; dependencies are
   bundled for the browser target, so a dependency with a distinct `browser` entry gets
   that one. A CommonJS module compiled from ESM (`__esModule`) gives its `default`, as

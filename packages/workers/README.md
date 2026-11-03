@@ -121,11 +121,13 @@ Tailwind compiles in the host as before.
 
 The target must be an installed package; a project-local plugin or config file (the usual
 `@config "./tailwind.config.js"` included), a workspace package linked into `node_modules`,
-a plugin that needs a Node built-in, and one that fails to bundle fail `prepare` naming the
-stylesheet and the rule. A rule the artifact does not answer (a stylesheet added since
-`prepare`) fails the render with `UnresolvedImportError`, kind `missing`, whose specifier is
-the rule's resolution key, `@plugin x`. A rule in a stylesheet a page reaches only through
-`@reference` is not supported and fails the render naming that.
+a plugin that needs a Node built-in or reads CommonJS `module.id`, and one that fails to
+bundle fail `prepare` naming the stylesheet and the rule. A rule the artifact does not
+answer fails the render with `UnresolvedImportError` whose specifier is the rule's
+resolution key, `@plugin x`: kind `missing` (a stylesheet added since `prepare`), or
+`tailwind-module-not-a-package` for a project stylesheet's path outside any `node_modules`
+(see `UnresolvedImportError.kind` below). A rule in a stylesheet a page reaches only
+through `@reference` is not supported and fails the render naming that.
 
 The isolate's copy of Tailwind adds about 410 KB (87 KB gzipped) to the host bundle, whether
 or not a project uses plugins.
@@ -166,9 +168,10 @@ Options a multi-session host needs:
   worth preparing again; the others, such as `unsupported-package-root`, fail against any
   artifact. For a Tailwind `@plugin` or `@config` rule the specifier is the rule's
   resolution key, `@plugin x`. A project stylesheet's rule the artifact does not answer
-  and whose path names a file outside `node_modules` is `tailwind-module-not-a-package`:
+  and whose path names a file outside any `node_modules` is `tailwind-module-not-a-package`:
   `pletivo prepare` bundles only installed packages, so no artifact will answer it. A
-  path into `node_modules`, or one in a package's own stylesheet, is `missing`.
+  path into a `node_modules` (a monorepo's hoisted one above the project included), or one
+  in a package's own stylesheet, is `missing`.
 - `host.features()` — the files that use MDX, `client:*` islands, endpoints or
   `prerender = false`, none of which this host renders.
 - `modulePreload` (default `true`) — a rendered page gets a `<link rel="modulepreload">`

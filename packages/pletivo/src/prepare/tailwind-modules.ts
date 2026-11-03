@@ -40,6 +40,7 @@ export async function bundleTailwindModule(file: string): Promise<string> {
       // The browser target inlines CommonJS `__dirname` and `__filename` as absolute paths.
       define: { __dirname: JSON.stringify("/"), __filename: JSON.stringify("/index.js") },
       plugins: [entryWrapper(file), rejectNodeBuiltins(builtins)],
+      metafile: true,
     });
   } catch (error) {
     throw bundleError(builtins, error instanceof Error ? error.message : String(error));
@@ -49,7 +50,31 @@ export async function bundleTailwindModule(file: string): Promise<string> {
   if (output === undefined || result.outputs.length !== 1) {
     throw new TailwindModuleBundleError(`bundling produced ${result.outputs.length} files instead of one`);
   }
-  return output.text();
+  const code = await output.text();
+  const embedded = embeddedInputPath(code, Object.keys(result.metafile?.inputs ?? {}));
+  if (embedded !== null) {
+    throw new TailwindModuleBundleError(
+      `it reads CommonJS \`module.id\` or \`module.path\`, which bundling fixes to the path ${JSON.stringify(embedded)} ` +
+        "relative to the working directory, so the module would differ per machine",
+    );
+  }
+  return code;
+}
+
+/**
+ * The input path (or its directory) the bundle holds as a string: Bun inlines CommonJS
+ * `module.id` and `module.path` as the file's path relative to the working directory,
+ * the same spelling the metafile lists the input under. `define` cannot replace them.
+ */
+function embeddedInputPath(code: string, inputs: readonly string[]): string | null {
+  for (const input of inputs) {
+    if (input.includes(":")) continue;
+    const directory = input.includes("/") ? input.slice(0, input.lastIndexOf("/")) : null;
+    for (const candidate of directory === null ? [input] : [input, directory]) {
+      if (code.includes(JSON.stringify(candidate))) return candidate;
+    }
+  }
+  return null;
 }
 
 function bundleError(builtins: ReadonlySet<string>, detail: string): TailwindModuleBundleError {

@@ -161,6 +161,10 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
     const packaged = await failure('@plugin "../../node_modules/kit/plugin.js";');
     expect(packaged.kind).toBe("missing");
     expect(packaged.specifier).toBe("@plugin ../../node_modules/kit/plugin.js");
+    // A monorepo's node_modules, hoisted above the project root.
+    expect((await failure('@plugin "../../../../node_modules/kit/plugin.js";')).kind).toBe("missing");
+    expect((await failure('@plugin "/repo/node_modules/kit/plugin.js";')).kind).toBe("missing");
+    expect((await failure('@plugin "/repo/node_modules/../plugin.js";')).kind).toBe("tailwind-module-not-a-package");
   });
 
   test("a module of the same id with other source builds another isolate program", async () => {

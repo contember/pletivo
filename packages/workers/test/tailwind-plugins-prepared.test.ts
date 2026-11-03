@@ -29,29 +29,36 @@ const KIT = {
 };
 const PAGE = '---\nimport "../styles/global.css";\n---\n<html><body><h1 class="kit-box">hi</h1></body></html>\n';
 
-/** Prepare a project of `files` with the CLI, in its own process as a host's preparer runs it. */
-async function prepared(files: Readonly<Record<string, string>>): Promise<{ artifact: ProjectArtifact; sources: Map<string, string> }> {
+/**
+ * Prepare the project at `site` of a repository of `files` with the CLI, in its own
+ * process as a host's preparer runs it. Tailwind is installed at the repository root.
+ */
+async function prepared(
+  files: Readonly<Record<string, string>>,
+  site: string,
+): Promise<{ artifact: ProjectArtifact; sources: Map<string, string> }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-tailwind-prepared-"));
   cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, ".git"));
+  const sourcePrefix = site === "" ? "src/" : `${site}/src/`;
   const sources = new Map<string, string>();
   for (const [file, source] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
     await fs.writeFile(path.join(root, file), source);
-    if (file.startsWith("src/")) sources.set(file, source);
+    if (file.startsWith(sourcePrefix)) sources.set(file.slice(sourcePrefix.length - "src/".length), source);
   }
   const tailwind = tailwindDir();
   if (tailwind === null) throw new Error("tailwindcss is not installed");
   await fs.symlink(tailwind, path.join(root, "node_modules/tailwindcss"));
-  const child = Bun.spawn(["bun", CLI, "prepare", "--out", "out"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(["bun", CLI, "prepare", "--out", "out"], { cwd: path.join(root, site), stdout: "pipe", stderr: "pipe" });
   const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
   if (exitCode !== 0) throw new Error(`pletivo prepare failed:\n${stderr}`);
-  const artifact: unknown = JSON.parse(await fs.readFile(path.join(root, "out/pletivo-artifact.json"), "utf8"));
+  const artifact: unknown = JSON.parse(await fs.readFile(path.join(root, site, "out/pletivo-artifact.json"), "utf8"));
   return { artifact: loadProjectArtifact(artifact), sources };
 }
 
-async function render(files: Readonly<Record<string, string>>): Promise<string> {
-  const { artifact, sources } = await prepared(files);
+async function render(files: Readonly<Record<string, string>>, site = ""): Promise<string> {
+  const { artifact, sources } = await prepared(files, site);
   const loader = new FileLoader();
   cleanups.push(() => loader.cleanup());
   const { html } = await renderPage({ files: sources, loader, compiler, artifact, tailwind: await tailwindStylesheets(), pathname: "/" });
@@ -74,6 +81,19 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin paths, prepared and re
       "src/pages/index.astro": PAGE,
       "src/styles/global.css": '@import "tailwindcss";\n@plugin "../../node_modules/kit/plugin.js";\n',
     });
+    expect(html).toMatch(/\.kit-box\s*\{\s*display: grid;/);
+  });
+
+  test("a @plugin path into a monorepo's hoisted node_modules renders", async () => {
+    const html = await render(
+      {
+        ...KIT,
+        "apps/site/package.json": JSON.stringify({ name: "site" }),
+        "apps/site/src/pages/index.astro": PAGE,
+        "apps/site/src/styles/global.css": '@import "tailwindcss";\n@plugin "../../../../node_modules/kit/plugin.js";\n',
+      },
+      "apps/site",
+    );
     expect(html).toMatch(/\.kit-box\s*\{\s*display: grid;/);
   });
 });

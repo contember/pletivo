@@ -20,18 +20,19 @@ import type { CompileWalk } from "./walk-state.ts";
 const UNSUPPORTED_PACKAGE_ROOTS = new Set(["pletivo", "@pletivo/runtime", "@pletivo/core"]);
 
 /**
- * Whether a path rule of the project stylesheet at `importerPath` names a file outside
- * `node_modules` (or outside the project), as `pletivo prepare` refuses it. A bare
- * specifier names a package.
+ * Whether a path rule of the project stylesheet at `importerPath` names a file outside any
+ * `node_modules`, as `pletivo prepare` refuses it. A path may climb above the project root
+ * (a monorepo's hoisted `node_modules`). A bare specifier names a package.
  */
 function namesProjectFile(importerPath: string, specifier: string): boolean {
-  if (specifier.startsWith("/")) return !specifier.split("/").includes("node_modules");
-  if (!specifier.startsWith(".")) return false;
-  const segments = importerPath.split("/").slice(0, -1);
+  const absolute = specifier.startsWith("/");
+  if (!absolute && !specifier.startsWith(".")) return false;
+  const segments = absolute ? [] : importerPath.split("/").slice(0, -1);
   for (const segment of specifier.split("/")) {
     if (segment === "" || segment === ".") continue;
     if (segment !== "..") segments.push(segment);
-    else if (segments.pop() === undefined) return true;
+    else if (segments.length > 0 && segments[segments.length - 1] !== "..") segments.pop();
+    else if (!absolute) segments.push("..");
   }
   return !segments.includes("node_modules");
 }
