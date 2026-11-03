@@ -114,11 +114,21 @@ Tailwind closure has such a rule compiles in a Loader isolate holding Tailwind, 
 compile entry and those modules. The divergences that remain:
 
 - Only installed packages: a project-local plugin file is refused by `prepare`, because
-  the artifact records no input that would mark it stale when that file changes.
+  the artifact records no input that would mark it stale when that file changes. That
+  includes the usual `@config "./tailwind.config.js"`, so `@config` works only for a
+  config shipped in a package, and a workspace package linked into `node_modules` (its
+  real path is outside it).
+- Only through `@import`: a rule in a stylesheet a page reaches only by `@reference` fails
+  the render naming that limit; `prepare` does not scan `@reference` targets.
 - No Node built-ins: a plugin that needs one is refused by `prepare`. On Bun it would run.
 - The target resolves with `node`, `import`, `require` conditions; dependencies are
   bundled for the browser target, so a dependency with a distinct `browser` entry gets
-  that one.
+  that one. A CommonJS module compiled from ESM (`__esModule`) gives its `default`, as
+  Bun's import does; Node's would give the `exports` object.
+- Bundle size: the host carries Tailwind twice, as its own code for pages without such a
+  rule and as text for the isolate program, about 410 KB raw (87 KB gzipped) more per host
+  bundle whether a project uses plugins or not. Splitting the text into its own generated
+  module would not help: `pageStylesheet` reaches the isolate statically.
 
 ## 4. `wasm_exec` is vendored, and it used to clobber `process`
 

@@ -119,10 +119,16 @@ Tailwind compiles in a separate Loader isolate that holds Tailwind and those mod
 no network access; pages with the same modules share that isolate. Without such a rule,
 Tailwind compiles in the host as before.
 
-The target must be an installed package; a project-local plugin file, a plugin that needs a
-Node built-in, and one that fails to bundle fail `prepare` naming the stylesheet and the
-rule. A rule the artifact does not answer (a stylesheet added since `prepare`) fails the
-render with `UnresolvedImportError`, kind `missing`.
+The target must be an installed package; a project-local plugin or config file (the usual
+`@config "./tailwind.config.js"` included), a workspace package linked into `node_modules`,
+a plugin that needs a Node built-in, and one that fails to bundle fail `prepare` naming the
+stylesheet and the rule. A rule the artifact does not answer (a stylesheet added since
+`prepare`) fails the render with `UnresolvedImportError`, kind `missing`, whose specifier is
+the rule's resolution key, `@plugin x`. A rule in a stylesheet a page reaches only through
+`@reference` is not supported and fails the render naming that.
+
+The isolate's copy of Tailwind adds about 410 KB (87 KB gzipped) to the host bundle, whether
+or not a project uses plugins.
 
 ## Hosting a live workspace
 
@@ -158,7 +164,9 @@ Options a multi-session host needs:
 - `UnresolvedImportError.kind` — an `UnresolvedImportKind`. Only `missing` means the
   artifact carries no resolution for the importer and specifier, so only that kind is
   worth preparing again; the others, such as `unsupported-package-root`, fail against any
-  artifact.
+  artifact. For a Tailwind `@plugin` or `@config` rule the specifier is the rule's
+  resolution key, `@plugin x`, and a rule naming a project file is
+  `tailwind-module-not-a-package`.
 - `host.features()` — the files that use MDX, `client:*` islands, endpoints or
   `prerender = false`, none of which this host renders.
 - `modulePreload` (default `true`) — a rendered page gets a `<link rel="modulepreload">`
