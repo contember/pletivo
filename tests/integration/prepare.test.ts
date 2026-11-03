@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import {
   ANY_PROJECT_IMPORTER,
   parsePreparedSite,
+  TAILWIND_MODULE_PREFIX,
   serializePreparedSite,
   type PreparedSite,
 } from "@pletivo/core/artifact";
@@ -170,6 +171,92 @@ describe("pletivo prepare", () => {
     await expectPrepareError(path.join(fixtures, "fatal-commonjs-js"), "CommonJS module.exports");
     await expectPrepareError(path.join(fixtures, "fatal-commonjs-cjs"), "CommonJS .cjs");
     await expectPrepareError(path.join(fixtures, "fatal-commonjs-cts"), "CommonJS .cts");
+  });
+
+  describe("Tailwind @plugin and @config", () => {
+    const CJS_PLUGIN = {
+      "node_modules/cjs-plugin/package.json": JSON.stringify({ name: "cjs-plugin", main: "index.js" }),
+      "node_modules/cjs-plugin/index.js":
+        'const { prefix } = require("cjs-helper");\n' +
+        "module.exports = function ({ addUtilities }) {\n" +
+        "  addUtilities({ [`.${prefix}-box`]: { display: \"block\" } });\n" +
+        "};\n",
+      "node_modules/cjs-helper/package.json": JSON.stringify({ name: "cjs-helper", main: "index.js" }),
+      "node_modules/cjs-helper/index.js": 'exports.prefix = "helper";\n',
+      "node_modules/esm-config/package.json": JSON.stringify({
+        name: "esm-config",
+        type: "module",
+        exports: { ".": { import: "./config.js", require: "./config.cjs" } },
+      }),
+      "node_modules/esm-config/config.js": 'export default { theme: { extend: { colors: { brand: "#123456" } } } };\n',
+    };
+
+    test("bundles a CommonJS plugin and its dependency into one ES module per stylesheet rule", async () => {
+      const directory = await projectWithFiles({
+        ...CJS_PLUGIN,
+        "src/styles/global.css":
+          '/* @plugin "commented-out"; */\n' +
+          '@plugin "cjs-plugin";\n' +
+          '@plugin "cjs-plugin" { mode: strict; }\n' +
+          "@config 'esm-config';\n",
+      });
+      const site = await prepare(directory);
+      const plugin = targetFor(site, "project:src/styles/global.css", "cjs-plugin");
+      expect(plugin).toStartWith(TAILWIND_MODULE_PREFIX);
+      const bundled = moduleById(site, plugin);
+      expect(bundled.kind).toBe("js");
+      expect(bundled.source).toContain('"helper"');
+      expect(bundled.source).not.toContain("require(");
+      expect(bundled.source).not.toMatch(/^\s*import\s/m);
+
+      const value: unknown = Reflect.get(await importSource(bundled.source), "default");
+      expect(typeof value).toBe("function");
+      const added: unknown[] = [];
+      if (typeof value === "function") value({ addUtilities: (utilities: unknown) => added.push(utilities) });
+      expect(added).toEqual([{ ".helper-box": { display: "block" } }]);
+
+      const config = moduleById(site, targetFor(site, "project:src/styles/global.css", "esm-config"));
+      expect(Reflect.get(await importSource(config.source), "default")).toEqual({
+        theme: { extend: { colors: { brand: "#123456" } } },
+      });
+
+      const tailwindSpecifiers = site.artifact.resolutions
+        .filter((resolution) => resolution.target.kind === "module" && resolution.target.id.startsWith(TAILWIND_MODULE_PREFIX))
+        .map((resolution) => `${resolution.importer} ${resolution.specifier}`)
+        .sort();
+      expect(tailwindSpecifiers).toEqual([
+        "project:src/styles/global.css cjs-plugin",
+        "project:src/styles/global.css esm-config",
+      ]);
+      expect(parsePreparedSite(JSON.parse(serializePreparedSite(site)))).toEqual(
+        parsePreparedSite(JSON.parse(serializePreparedSite(site))),
+      );
+    });
+
+    test("refuses a plugin that needs a Node built-in, naming the stylesheet and the rule", async () => {
+      const directory = await projectWithFiles({
+        "node_modules/fs-plugin/package.json": JSON.stringify({ name: "fs-plugin", main: "index.js" }),
+        "node_modules/fs-plugin/index.js":
+          'const fs = require("node:fs");\nmodule.exports = function () { fs.readFileSync("x"); };\n',
+        "src/styles/global.css": '@plugin "fs-plugin";\n',
+      });
+      const error = await capturedPrepareError(directory);
+      expect(error.diagnostics).toHaveLength(1);
+      expect(error.diagnostics[0]?.source).toEndWith("src/styles/global.css");
+      expect(error.message).toContain('@plugin "fs-plugin" cannot run in the Workers host');
+      expect(error.message).toContain('"node:fs"');
+    });
+
+    test("refuses an unresolvable target and a project-local plugin file", async () => {
+      const missing = await projectWithFiles({ "src/styles/global.css": '@plugin "not-installed";\n' });
+      await expectPrepareError(missing, 'could not resolve @plugin "not-installed"');
+
+      const local = await projectWithFiles({
+        "tailwind.plugin.js": "export default function () {}\n",
+        "src/styles/global.css": '@plugin "../../tailwind.plugin.js";\n',
+      });
+      await expectPrepareError(local, "only from installed packages");
+    });
   });
 
   test("rejects routing configuration the Workers host ignores", async () => {
@@ -511,6 +598,25 @@ async function temporaryRepository(): Promise<string> {
   const directory = await temporaryDirectory();
   await fs.mkdir(path.join(directory, ".git"));
   return directory;
+}
+
+/** A temporary repository holding `files`, keyed by path relative to its root. */
+async function projectWithFiles(files: Readonly<Record<string, string>>): Promise<string> {
+  const directory = await temporaryRepository();
+  for (const [file, source] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
+    await fs.writeFile(path.join(directory, file), source);
+  }
+  return directory;
+}
+
+/** Import an ES module from its source text. */
+async function importSource(source: string): Promise<object> {
+  const file = path.join(await temporaryDirectory(), "module.mjs");
+  await fs.writeFile(file, source);
+  const imported: unknown = await import(pathToFileURL(file).href);
+  if (typeof imported !== "object" || imported === null) throw new Error("import did not produce a namespace");
+  return imported;
 }
 
 function targetFor(site: unknown, importer: string, specifier: string): string {

@@ -38,6 +38,12 @@ export type ArtifactResolutionTarget = ArtifactModuleTarget | ArtifactExternalTa
  */
 export const ANY_PROJECT_IMPORTER = "project:*";
 
+/**
+ * Id prefix of a bundled Tailwind `@plugin` or `@config` module. Its resolution's importer is
+ * the stylesheet that names it; a host loads it only for that rule, never for an `import`.
+ */
+export const TAILWIND_MODULE_PREFIX = "tailwind-module:";
+
 /** One importer-aware answer for a source import. */
 export interface ArtifactResolution {
   importer: ModuleId;

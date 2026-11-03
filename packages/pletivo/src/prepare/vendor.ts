@@ -9,9 +9,12 @@ import {
   type ArtifactResolution,
   type ArtifactResolutionTarget,
   type ModuleId,
+  TAILWIND_MODULE_PREFIX,
 } from "@pletivo/core/artifact";
+import { tailwindModuleRefs, type TailwindModuleRef } from "@pletivo/core/css-imports";
 import { prepareFailure, PrepareError } from "./error";
 import { processedScripts } from "./scripts";
+import { bundleTailwindModule, TailwindModuleBundleError } from "./tailwind-modules";
 import { compareStrings } from "@pletivo/core/compare-strings";
 import { isInsideRoot, isMissingFile, normalizePath } from "./paths";
 import {
@@ -54,6 +57,13 @@ interface ImportRequest {
   specifier: string;
 }
 
+/** A Tailwind `@plugin` or `@config` rule of a stylesheet in the graph. */
+interface TailwindModuleRequest extends TailwindModuleRef {
+  importer: ModuleId;
+  importerFile: string;
+  resolveFrom: string;
+}
+
 interface PackageIdentity {
   digest: string;
   root: string;
@@ -67,6 +77,8 @@ interface PackageRecord {
 const WORKER_EXPORT_CONDITIONS = ["workerd", "worker", "browser", "import", "default"];
 const STYLESHEET_EXPORT_CONDITIONS = ["style", ...WORKER_EXPORT_CONDITIONS];
 const BROWSER_EXPORT_CONDITIONS = ["browser", "import", "default"];
+// Tailwind's Node loader resolves `@plugin` and `@config` for Node, ES module first.
+const TAILWIND_MODULE_CONDITIONS = ["node", "import", "require", "default"];
 
 /** Build the artifact-owned part of the project graph. */
 export async function prepareModuleGraph(
@@ -81,6 +93,7 @@ export async function prepareModuleGraph(
   const resolutions: ArtifactResolution[] = [];
   const queue: ImportRequest[] = [];
   const seenRequests = new Map<ModuleId, Set<string>>();
+  const tailwindRequests: TailwindModuleRequest[] = [];
 
   const enqueueImports = (
     importer: ModuleId,
@@ -94,6 +107,11 @@ export async function prepareModuleGraph(
     try {
       for (const specifier of specifiersOf(importerFile, source, moduleKind)) {
         queue.push({ importer, importerFile, resolveFrom, relativeViaVite, stylesheet, specifier });
+      }
+      if (stylesheet) {
+        for (const ref of tailwindModuleRefs(source)) {
+          tailwindRequests.push({ ...ref, importer, importerFile, resolveFrom });
+        }
       }
     } catch (error) {
       if (!(error instanceof ImportScanError)) throw error;
@@ -262,12 +280,76 @@ export async function prepareModuleGraph(
   }
 
   const browserResolutions = await prepareBrowserGraph(root, projectSources, carried);
+  // Not shared through ANY_PROJECT_IMPORTER: a host loads one only for the stylesheet naming it.
+  const tailwindResolutions = await prepareTailwindModules(root, tailwindRequests, modules);
   // Discovery order; serializePreparedSite owns the canonical order.
   return {
     modules: [...modules.values()],
-    resolutions: withoutDuplicates([...resolutions, ...anyProjectResolutions(resolutions)]),
+    resolutions: withoutDuplicates([
+      ...resolutions,
+      ...anyProjectResolutions(resolutions),
+      ...tailwindResolutions,
+    ]),
     browserResolutions,
   };
+}
+
+/**
+ * Bundle every `@plugin` and `@config` target into one `TAILWIND_MODULE_PREFIX` module and
+ * answer the rule from its stylesheet. A target must be a package: prepare records no input
+ * that would mark the artifact stale when a project-local plugin file changes.
+ */
+async function prepareTailwindModules(
+  root: string,
+  requests: readonly TailwindModuleRequest[],
+  modules: Map<ModuleId, ArtifactModule>,
+): Promise<ArtifactResolution[]> {
+  const bundled = new Map<string, ModuleId>();
+  const resolutions: ArtifactResolution[] = [];
+  const seen = new Set<string>();
+  for (const request of requests) {
+    const key = `${request.importer}\0${request.specifier}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const rule = `@${request.hint} ${JSON.stringify(request.specifier)}`;
+    let resolved: string;
+    try {
+      resolved = await canonicalFile(
+        await resolveWorkerSpecifier(request.specifier, request.resolveFrom, false, TAILWIND_MODULE_CONDITIONS),
+      );
+    } catch (error) {
+      throw prepareFailure(
+        request.importerFile,
+        "resolve",
+        `could not resolve ${rule}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (!normalizePath(resolved).includes("/node_modules/")) {
+      throw prepareFailure(
+        request.importerFile,
+        "tailwind",
+        `${rule} resolves to the project file ${JSON.stringify(displayPath(root, resolved))}; ` +
+          "the Workers host loads Tailwind plugins and configs only from installed packages",
+      );
+    }
+    let id = bundled.get(resolved);
+    if (id === undefined) {
+      let code: string;
+      try {
+        code = await bundleTailwindModule(resolved);
+      } catch (error) {
+        if (!(error instanceof TailwindModuleBundleError)) throw error;
+        throw prepareFailure(request.importerFile, "tailwind", `${rule} cannot run in the Workers host: ${error.message}`);
+      }
+      id = `${TAILWIND_MODULE_PREFIX}${digestText(code).slice(0, 32)}`;
+      if (!modules.has(id)) {
+        modules.set(id, { id, kind: "js", source: code });
+      }
+      bundled.set(resolved, id);
+    }
+    resolutions.push({ importer: request.importer, specifier: request.specifier, target: { kind: "module", id } });
+  }
+  return resolutions;
 }
 
 /**
