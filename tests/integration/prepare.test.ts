@@ -235,7 +235,15 @@ describe("pletivo prepare", () => {
     });
 
     test("bundles the same bytes whatever the checkout root and the working directory", async () => {
-      const files = { ...CJS_PLUGIN, "src/styles/global.css": '@plugin "cjs-plugin";\n@config "esm-config";\n' };
+      const files = {
+        ...CJS_PLUGIN,
+        // Bun's browser target would inline both as absolute paths.
+        "node_modules/dirname-plugin/package.json": JSON.stringify({ name: "dirname-plugin", main: "index.js" }),
+        "node_modules/dirname-plugin/index.js":
+          "const where = typeof __dirname === \"string\" ? __dirname + \" \" + __filename : \"\";\n" +
+          "module.exports = function ({ addBase }) { addBase({ \":root\": { \"--where\": JSON.stringify(where) } }); };\n",
+        "src/styles/global.css": '@plugin "cjs-plugin";\n@plugin "dirname-plugin";\n@config "esm-config";\n',
+      };
       const first = await projectWithFiles(files);
       const second = await projectWithFiles(files);
       const cwd = process.cwd();

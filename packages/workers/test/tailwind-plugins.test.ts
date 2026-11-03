@@ -138,22 +138,50 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
     expect(loadProjectArtifact(PREPARED).resolver.resolve(STYLESHEET, "@plugin fixture-plugin")).toEqual({ kind: "module", id: PLUGIN_ID });
   });
 
-  test("a rule naming a project file fails against any artifact, not as missing", async () => {
-    const error = await renderPage({
-      files: project('@import "tailwindcss";\n@config "../../tailwind.config.js";\n'),
-      loader: newLoader(),
-      compiler,
-      artifact: loadProjectArtifact(PREPARED),
-      tailwind: await tailwindStylesheets(),
-      pathname: "/",
-    }).then(
-      () => null,
-      (reason: unknown) => reason,
-    );
-    expect(error).toBeInstanceOf(UnresolvedImportError);
-    if (!(error instanceof UnresolvedImportError)) return;
-    expect(error.kind).toBe("tailwind-module-not-a-package");
-    expect(error.specifier).toBe("@config ../../tailwind.config.js");
+  test("an unanswered rule naming a project file fails against any artifact; a path into node_modules is missing", async () => {
+    const failure = async (rule: string): Promise<UnresolvedImportError> => {
+      const error = await renderPage({
+        files: project(`@import "tailwindcss";\n${rule}\n`),
+        loader: newLoader(),
+        compiler,
+        artifact: loadProjectArtifact(PREPARED),
+        tailwind: await tailwindStylesheets(),
+        pathname: "/",
+      }).then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+      if (!(error instanceof UnresolvedImportError)) throw new Error(`${rule} did not fail as unresolved: ${String(error)}`);
+      return error;
+    };
+    const config = await failure('@config "../../tailwind.config.js";');
+    expect(config.kind).toBe("tailwind-module-not-a-package");
+    expect(config.specifier).toBe("@config ../../tailwind.config.js");
+    expect((await failure('@plugin "../../../outside.js";')).kind).toBe("tailwind-module-not-a-package");
+    const packaged = await failure('@plugin "../../node_modules/kit/plugin.js";');
+    expect(packaged.kind).toBe("missing");
+    expect(packaged.specifier).toBe("@plugin ../../node_modules/kit/plugin.js");
+  });
+
+  test("a module of the same id with other source builds another isolate program", async () => {
+    const loader = newLoader();
+    const files = project('@import "tailwindcss";\n@plugin "fixture-plugin";\n');
+    const withPlugin = (source: string) =>
+      loadProjectArtifact({
+        artifact: {
+          ...PREPARED.artifact,
+          modules: [{ id: PLUGIN_ID, kind: "js", source }],
+          resolutions: [PREPARED.artifact.resolutions[0]],
+        },
+      });
+    const plugin = (display: string) =>
+      `export default function ({ addUtilities }) { addUtilities({ ".fixture-box": { display: "${display}" } }); }\n`;
+    const stylesheets = await tailwindStylesheets();
+    const first = await renderPage({ files, loader, compiler, artifact: withPlugin(plugin("grid")), tailwind: stylesheets, pathname: "/" });
+    const second = await renderPage({ files, loader, compiler, artifact: withPlugin(plugin("flex")), tailwind: stylesheets, pathname: "/" });
+    expect(first.html).toMatch(/\.fixture-box\s*\{\s*display: grid;/);
+    expect(second.html).toMatch(/\.fixture-box\s*\{\s*display: flex;/);
+    expect(tailwindIsolates(loader)).toBe(2);
   });
 
   test("an @import and a @plugin of the same package resolve apart", async () => {

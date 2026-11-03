@@ -165,8 +165,10 @@ Options a multi-session host needs:
   artifact carries no resolution for the importer and specifier, so only that kind is
   worth preparing again; the others, such as `unsupported-package-root`, fail against any
   artifact. For a Tailwind `@plugin` or `@config` rule the specifier is the rule's
-  resolution key, `@plugin x`, and a rule naming a project file is
-  `tailwind-module-not-a-package`.
+  resolution key, `@plugin x`. A project stylesheet's rule the artifact does not answer
+  and whose path names a file outside `node_modules` is `tailwind-module-not-a-package`:
+  `pletivo prepare` bundles only installed packages, so no artifact will answer it. A
+  path into `node_modules`, or one in a package's own stylesheet, is `missing`.
 - `host.features()` — the files that use MDX, `client:*` islands, endpoints or
   `prerender = false`, none of which this host renders.
 - `modulePreload` (default `true`) — a rendered page gets a `<link rel="modulepreload">`

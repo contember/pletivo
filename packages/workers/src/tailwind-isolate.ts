@@ -150,6 +150,10 @@ function tailwindProgram(stylesheets: TailwindStylesheets, modules: readonly Tai
     if (!oldest.done) cache.delete(oldest.value);
   }
   cache.set(cacheKey, program);
+  // A failed hash is not kept: the next render with these modules builds the program again.
+  program.catch(() => {
+    if (cache.get(cacheKey) === program) cache.delete(cacheKey);
+  });
   return program;
 }
 

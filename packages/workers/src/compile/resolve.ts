@@ -20,6 +20,23 @@ import type { CompileWalk } from "./walk-state.ts";
 const UNSUPPORTED_PACKAGE_ROOTS = new Set(["pletivo", "@pletivo/runtime", "@pletivo/core"]);
 
 /**
+ * Whether a path rule of the project stylesheet at `importerPath` names a file outside
+ * `node_modules` (or outside the project), as `pletivo prepare` refuses it. A bare
+ * specifier names a package.
+ */
+function namesProjectFile(importerPath: string, specifier: string): boolean {
+  if (specifier.startsWith("/")) return !specifier.split("/").includes("node_modules");
+  if (!specifier.startsWith(".")) return false;
+  const segments = importerPath.split("/").slice(0, -1);
+  for (const segment of specifier.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") segments.push(segment);
+    else if (segments.pop() === undefined) return true;
+  }
+  return !segments.includes("node_modules");
+}
+
+/**
  * The content API reached by relative path into pletivo's own source, as this repo's
  * fixtures import it; such a path is never in a virtual file map.
  */
@@ -99,19 +116,21 @@ export class ImportResolver {
    * The bundled module a stylesheet's `@plugin` or `@config` rule names. Only prepare
    * writes one, so a rule it did not see (a stylesheet added since) is missing; the error
    * names the rule's resolution specifier, `@plugin x`, which the next artifact answers.
+   * A project stylesheet's rule naming a project file outside `node_modules` is one no
+   * prepare answers.
    */
   resolveTailwindModule(importer: SourceModule, ref: TailwindModuleRef): ModuleId {
     const specifier = tailwindModuleSpecifier(ref.hint, ref.specifier);
-    if (ref.specifier.startsWith(".") || ref.specifier.startsWith("/")) {
-      throw unresolvedImport(
-        importer,
-        specifier,
-        "tailwind-module-not-a-package",
-        "the Workers host loads Tailwind plugins and configs only from installed packages",
-      );
-    }
     const frozen = this.#options.artifact.resolve(importer.id, specifier);
     if (frozen === null || frozen.kind !== "module" || !frozen.id.startsWith(TAILWIND_MODULE_PREFIX)) {
+      if (importer.id.startsWith("project:") && namesProjectFile(importer.id.slice("project:".length), ref.specifier)) {
+        throw unresolvedImport(
+          importer,
+          specifier,
+          "tailwind-module-not-a-package",
+          "the Workers host loads Tailwind plugins and configs only from installed packages",
+        );
+      }
       throw unresolvedImport(
         importer,
         specifier,

@@ -37,6 +37,8 @@ export async function bundleTailwindModule(file: string): Promise<string> {
       // Whitespace only, which also drops the `// <path>` comments Bun writes relative to the
       // working directory: the module id is the digest of these bytes.
       minify: { whitespace: true, syntax: false, identifiers: false },
+      // The browser target inlines CommonJS `__dirname` and `__filename` as absolute paths.
+      define: { __dirname: JSON.stringify("/"), __filename: JSON.stringify("/index.js") },
       plugins: [entryWrapper(file), rejectNodeBuiltins(builtins)],
     });
   } catch (error) {
