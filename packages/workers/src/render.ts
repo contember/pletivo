@@ -31,6 +31,7 @@ import { attributeValue, htmlTags } from "./html-tags.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
+import type { TailwindIsolateHost } from "./tailwind-isolate.ts";
 import type { ProjectAssetsView } from "./asset-port.ts";
 import type { ContentBinding, ContentFiles, ContentHandle } from "./content-files.ts";
 import {
@@ -492,6 +493,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
       html,
       scripts,
       tailwind: options.tailwind,
+      tailwindIsolate: tailwindIsolateHost(options),
     });
     return {
       html: finalizeHtml(html, [stylesheet ?? ""], scripts),
@@ -538,6 +540,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     scripts,
     browserSources: scriptCandidateSources(project.scripts, files),
     tailwind: options.tailwind,
+    tailwindIsolate: tailwindIsolateHost(options),
   });
   return {
     html: finalizeHtml(rendered.html, [stylesheet ?? "", styles], scripts),
@@ -608,7 +611,7 @@ function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>
   return [...loaded];
 }
 
-const EMPTY_STYLE_GRAPH = { modules: [], executionEdges: [], styleEdges: [], styles: [] };
+const EMPTY_STYLE_GRAPH = { modules: [], executionEdges: [], styleEdges: [], styles: [], tailwindModules: [] };
 
 function assetsOf(urlAssets: ReadonlyMap<string, string>): RenderedAsset[] {
   const assets: RenderedAsset[] = [];
@@ -801,6 +804,16 @@ async function callIsolate(input: {
 function throwContentFailure(handle: ContentHandle | null): void {
   const failure = handle?.failure();
   if (failure !== undefined) throw failure;
+}
+
+/** The Tailwind isolate runs where the render isolate does, cut off from the network. */
+function tailwindIsolateHost(options: ProjectOptions): TailwindIsolateHost {
+  return {
+    loader: options.loader,
+    namespace: options.executionNamespace ?? SHARED_NAMESPACE,
+    compatibilityDate: options.compatibilityDate ?? DEFAULT_COMPATIBILITY_DATE,
+    compatibilityFlags: options.compatibilityFlags ?? DEFAULT_COMPATIBILITY_FLAGS,
+  };
 }
 
 /** Create the Loader callback outside request-owned call frames. */

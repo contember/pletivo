@@ -9,9 +9,19 @@
 import type { ModuleId } from "@pletivo/core/artifact";
 import type { ProjectFiles } from "./project-store.ts";
 
-/** The slice of `tailwindcss` this host uses. Validated at run time by `loadTailwind`. */
-interface TailwindModule {
+/** The slice of `tailwindcss` this host uses. Validated at run time by `tailwindModule`. */
+export interface TailwindModule {
   compile(css: string, options: TailwindCompileOptions): Promise<TailwindCompiler>;
+}
+
+/**
+ * What `compileTailwind` runs on. The host compiles with its own `tailwindcss`; a closure
+ * with `@plugin` or `@config` compiles in the isolate that holds those modules.
+ */
+export interface TailwindRuntime {
+  tailwind: TailwindModule;
+  /** The default export of the module `stylesheet`'s `@plugin` or `@config` rule names. */
+  loadModule(specifier: string, stylesheet: ModuleId, hint: "plugin" | "config"): Promise<unknown>;
 }
 
 interface TailwindCompileOptions {
@@ -73,8 +83,8 @@ export interface TailwindCompilation {
   consumedStylesheets: readonly ModuleId[];
 }
 
-async function loadTailwind(): Promise<TailwindModule> {
-  const module: unknown = await import("tailwindcss");
+/** Check a loaded `tailwindcss` namespace for the slice this host uses. */
+export function tailwindModule(module: unknown): TailwindModule {
   if (typeof module !== "object" || module === null) {
     throw new Error("[pletivo-workers] `tailwindcss` did not load");
   }
@@ -114,7 +124,10 @@ function join(base: string, id: string): string {
  * Compile the entry stylesheet against the virtual project. `root === "none"` disables
  * scanning. `@source` globs are not applied, so a narrowing `@source` yields a superset.
  */
-export async function compileTailwind(options: CompileTailwindOptions): Promise<TailwindCompilation> {
+export async function compileTailwind(
+  options: CompileTailwindOptions,
+  runtime: TailwindRuntime,
+): Promise<TailwindCompilation> {
   const { entry, files, stylesheets } = options;
   const source = sourceFor(entry, files);
   if (source === undefined) {
@@ -126,8 +139,7 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
   const consumed = new Set<ModuleId>([entry]);
   const targetCursors = new Map<ModuleId, number>();
 
-  const { compile } = await loadTailwind();
-  const compiler = await compile(source, {
+  const compiler = await runtime.tailwind.compile(source, {
     // The value is opaque to Tailwind and comes back to loadStylesheet as importer identity.
     base: entry,
     from: entry,
@@ -182,11 +194,8 @@ export async function compileTailwind(options: CompileTailwindOptions): Promise<
       consumed.add(resolved);
       return { path: resolved, base: resolved, content };
     },
-    async loadModule(id) {
-      throw new Error(
-        `[pletivo-workers] cannot load ${JSON.stringify(id)}: the worker host has no ` +
-          `module loader, so Tailwind JS plugins and configs are not supported`,
-      );
+    async loadModule(id, base, hint) {
+      return { path: id, base, module: await runtime.loadModule(id, base, hint) };
     },
   });
 
@@ -216,8 +225,12 @@ function isProjectCssModule(moduleId: ModuleId): boolean {
 
 /** A ModuleId's text: a project module by its path, anything else by its id. */
 export function sourceFor(moduleId: ModuleId, files: ProjectFiles): string | undefined {
-  if (moduleId.startsWith("project:")) return files.get(moduleId.slice("project:".length));
-  return files.get(moduleId);
+  return files.get(fileKeyFor(moduleId));
+}
+
+/** The `ProjectFiles` key a ModuleId's text is under. */
+export function fileKeyFor(moduleId: ModuleId): string {
+  return moduleId.startsWith("project:") ? moduleId.slice("project:".length) : moduleId;
 }
 
 // Modelled on oxide's boundary rules (crates/oxide/src/extractor/boundary.rs); parity in

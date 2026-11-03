@@ -65,6 +65,7 @@ function emitStyleGraph(walk: CompileWalk): ResolvedStyleGraph {
     modules: walk.moduleIds,
     executionEdges: walk.executionEdges,
     styleEdges: walk.styleEdges,
+    tailwindModules: walk.tailwindModules,
     styles: walk.moduleIds.flatMap((moduleId) => {
       const declared = walk.styles.get(moduleId);
       return declared === undefined ? [] : [{ moduleId, scope: declared.scope, blocks: declared.blocks }];

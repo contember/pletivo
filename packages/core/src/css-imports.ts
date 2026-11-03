@@ -6,30 +6,67 @@
  * elsewhere in the sheet are assets, not imports, and are not returned.
  */
 export function cssImports(source: string): string[] {
-  const imports: string[] = [];
+  return atRules(source, { import: readCssImportTarget }).map((rule) => rule.target);
+}
+
+/** A Tailwind `@plugin` or `@config` rule: a JavaScript module the stylesheet loads. */
+export interface TailwindModuleRef {
+  hint: "plugin" | "config";
+  specifier: string;
+}
+
+/**
+ * The JavaScript modules a stylesheet loads through Tailwind's `@plugin` and `@config`,
+ * in source order. Tailwind accepts only a quoted target, so `url()` is no target here.
+ * A rule inside a comment or a string is skipped, as for `@import`.
+ */
+export function tailwindModuleRefs(source: string): TailwindModuleRef[] {
+  return atRules(source, { plugin: readQuotedTarget, config: readQuotedTarget }).map((rule) => ({
+    hint: rule.name === "plugin" ? "plugin" : "config",
+    specifier: rule.target,
+  }));
+}
+
+type TargetReader = (source: string, cursor: number) => CssValue | null;
+
+/** The at-rules named in `readers` whose prelude starts with a target, in source order. */
+function atRules(
+  source: string,
+  readers: Readonly<Record<string, TargetReader>>,
+): { name: string; target: string }[] {
+  const rules: { name: string; target: string }[] = [];
   let cursor = 0;
   while (cursor < source.length) {
     cursor = skipCssTrivia(source, cursor);
     if (cursor >= source.length) break;
-    if (source[cursor] !== "@" || source.slice(cursor + 1, cursor + 7).toLowerCase() !== "import") {
-      cursor = skipCssToken(source, cursor);
+    const name = source[cursor] === "@" ? atRuleName(source, cursor + 1) : "";
+    const read = Object.hasOwn(readers, name) ? readers[name] : undefined;
+    if (read === undefined) {
+      cursor = name === "" ? skipCssToken(source, cursor) : cursor + 1 + name.length;
       continue;
     }
-    const boundary = source[cursor + 7];
-    if (boundary !== undefined && /[A-Za-z0-9_-]/.test(boundary)) {
-      cursor += 7;
-      continue;
-    }
-    cursor = skipCssTrivia(source, cursor + 7);
-    const parsed = readCssImportTarget(source, cursor);
+    cursor = skipCssTrivia(source, cursor + 1 + name.length);
+    const parsed = read(source, cursor);
     if (parsed) {
-      imports.push(parsed.value);
+      rules.push({ name, target: parsed.value });
       cursor = parsed.end;
     } else {
       cursor = skipCssToken(source, cursor);
     }
   }
-  return imports;
+  return rules;
+}
+
+/** The lowercased identifier after an `@`. */
+function atRuleName(source: string, cursor: number): string {
+  let at = cursor;
+  while (at < source.length && /[A-Za-z0-9_-]/.test(source[at])) at++;
+  return source.slice(cursor, at).toLowerCase();
+}
+
+function readQuotedTarget(source: string, cursor: number): CssValue | null {
+  const quote = source[cursor];
+  return quote === "\"" || quote === "'" ? readCssString(source, cursor, quote) : null;
 }
 
 interface CssValue {

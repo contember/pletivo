@@ -24,7 +24,7 @@ import { builtPathname } from "./built-pathname.ts";
 import { FileLoader } from "./file-loader.ts";
 import { imageUrls, readSources, sameBytes } from "./sources.ts";
 import { tailwindStylesheets } from "./tailwind-sources.ts";
-import { scanCandidates, STANDALONE_TARGETS, tailwindEntry } from "./tailwind-standalone.ts";
+import { hostTailwindRuntime, scanCandidates, STANDALONE_TARGETS, tailwindEntry } from "./tailwind-standalone.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 
@@ -128,7 +128,7 @@ const projectWide =
         stylesheets: await tailwindStylesheets(),
         candidates: scanCandidates(files),
         ...STANDALONE_TARGETS,
-      });
+      }, await hostTailwindRuntime());
 if (projectWide !== null) {
   // The Bun host minifies the finished stylesheet before writing it. Run the same
   // final transform here so this remains a Tailwind parity check, not a whitespace

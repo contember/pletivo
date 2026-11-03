@@ -16,6 +16,8 @@ import {
   JSX_RUNTIME_MODULE_NAME,
   RUNTIME_MODULES,
   RUNTIME_MODULE_NAME,
+  TAILWIND_ENTRY_MODULE_NAME,
+  TAILWIND_ISOLATE_MODULES,
 } from "../src/generated/runtime-modules.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
@@ -84,6 +86,14 @@ describe("generated runtime modules", () => {
     ]);
   });
 
+  test("give the Tailwind isolate Tailwind once, imported by its entry", () => {
+    expect(Object.keys(TAILWIND_ISOLATE_MODULES)).toEqual(["pletivo-tailwind.js", TAILWIND_ENTRY_MODULE_NAME]);
+    const entry = GENERATED_MODULES[TAILWIND_ENTRY_MODULE_NAME];
+    expect(entry).toContain("function createTailwindEntry");
+    // The entry imports Tailwind rather than carrying a second copy of it.
+    expect(entry.length).toBeLessThan(GENERATED_MODULES["pletivo-tailwind.js"].length / 10);
+  });
+
   test("import nothing but the Loader modules each one is paired with", () => {
     const loaderImports: Record<string, { allowed: string[]; nodeBuiltins: boolean }> = {
       [RUNTIME_MODULE_NAME]: { allowed: [], nodeBuiltins: true },
@@ -100,6 +110,8 @@ describe("generated runtime modules", () => {
         allowed: [`./${ISOLATE_PROGRAM_MODULE_NAME}`, "./pletivo-isolate-entry.js"],
         nodeBuiltins: false,
       },
+      "pletivo-tailwind.js": { allowed: [], nodeBuiltins: false },
+      [TAILWIND_ENTRY_MODULE_NAME]: { allowed: ["./pletivo-tailwind.js"], nodeBuiltins: false },
     };
     expect(Object.keys(loaderImports).sort()).toEqual(Object.keys(GENERATED_MODULES).sort());
     for (const [name, { allowed, nodeBuiltins }] of Object.entries(loaderImports)) {

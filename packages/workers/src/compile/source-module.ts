@@ -45,7 +45,9 @@ export type UnresolvedImportKind =
   /** The rewrite met a specifier the link step did not resolve. */
   | "rewrite-mismatch"
   /** A CSS `@import` that resolves to something other than a CSS module. */
-  | "css-import-not-css";
+  | "css-import-not-css"
+  /** A `@plugin` or `@config` naming a project file: `pletivo prepare` bundles only installed packages. */
+  | "tailwind-module-not-a-package";
 
 /** An import of a project or artifact module that nothing answers. */
 export class UnresolvedImportError extends UnsupportedFileError {

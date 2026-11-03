@@ -1,3 +1,5 @@
+import { TAILWIND_MODULE_PREFIX, tailwindModuleSpecifier, type ModuleId } from "@pletivo/core/artifact";
+import type { TailwindModuleRef } from "@pletivo/core/css-imports";
 import { imageOutputPath } from "@pletivo/core/image";
 import { md5Hex } from "@pletivo/core/md5";
 import { projectModuleId, type ArtifactResolver } from "../artifact.ts";
@@ -16,6 +18,26 @@ import { unresolvedImport, type ResolutionUse, type SourceModule } from "./sourc
 import type { CompileWalk } from "./walk-state.ts";
 
 const UNSUPPORTED_PACKAGE_ROOTS = new Set(["pletivo", "@pletivo/runtime", "@pletivo/core"]);
+
+/**
+ * Whether a path rule of the project stylesheet at `importerPath` names a file outside any
+ * `node_modules`, as `pletivo prepare` refuses it. A path may climb above the project root
+ * (a monorepo's hoisted `node_modules`). A bare specifier names a package.
+ */
+// The path as written: `prepare` resolves symlinks, so a project file linked into
+// `node_modules` is a package there and not-a-package here.
+function namesProjectFile(importerPath: string, specifier: string): boolean {
+  const absolute = specifier.startsWith("/");
+  if (!absolute && !specifier.startsWith(".")) return false;
+  const segments = absolute ? [] : importerPath.split("/").slice(0, -1);
+  for (const segment of specifier.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") segments.push(segment);
+    else if (segments.length > 0 && segments[segments.length - 1] !== "..") segments.pop();
+    else if (!absolute) segments.push("..");
+  }
+  return !segments.includes("node_modules");
+}
 
 /**
  * The content API reached by relative path into pletivo's own source, as this repo's
@@ -91,6 +113,38 @@ export class ImportResolver {
       "missing",
       "no project file, Artifact V2 resolution, or supported host alias answers it",
     );
+  }
+
+  /**
+   * The bundled module a stylesheet's `@plugin` or `@config` rule names. Only prepare
+   * writes one, so a rule it did not see (a stylesheet added since) is missing; the error
+   * names the rule's resolution specifier, `@plugin x`, which the next artifact answers.
+   * A project stylesheet's rule naming a project file outside any `node_modules` is one no
+   * prepare answers.
+   */
+  resolveTailwindModule(importer: SourceModule, ref: TailwindModuleRef): ModuleId {
+    const specifier = tailwindModuleSpecifier(ref.hint, ref.specifier);
+    const frozen = this.#options.artifact.resolve(importer.id, specifier);
+    if (frozen === null || frozen.kind !== "module" || !frozen.id.startsWith(TAILWIND_MODULE_PREFIX)) {
+      if (importer.id.startsWith("project:") && namesProjectFile(importer.id.slice("project:".length), ref.specifier)) {
+        throw unresolvedImport(
+          importer,
+          specifier,
+          "tailwind-module-not-a-package",
+          "the Workers host loads Tailwind plugins and configs only from installed packages",
+        );
+      }
+      throw unresolvedImport(
+        importer,
+        specifier,
+        "missing",
+        "the artifact has no bundled module for this rule, which is newer than its `pletivo prepare`",
+      );
+    }
+    if (this.#options.artifact.module(frozen.id) === null) {
+      throw unresolvedImport(importer, specifier, "missing", "the bundled Tailwind module is not in the artifact");
+    }
+    return frozen.id;
   }
 
   #embeddedTailwind(specifier: string): SourceModule | null {

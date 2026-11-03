@@ -40,6 +40,8 @@ export interface Entry {
 }
 
 const ISOLATE_HANDLER_MODULE_NAME = "pletivo-isolate-entry.js";
+const TAILWIND_MODULE_NAME = "pletivo-tailwind.js";
+const TAILWIND_ENTRY_MODULE_NAME = "pletivo-tailwind-entry.js";
 
 const ENTRIES: Record<string, Entry> = {
   "pletivo-runtime.js": {
@@ -87,6 +89,23 @@ const ENTRIES: Record<string, Entry> = {
       [Bun.resolveSync("@pletivo/runtime/script-registry", PACKAGE_DIR)]: "./pletivo-runtime.js",
       [path.join(PACKAGE_DIR, "src/log-capture.ts")]: "./pletivo-runtime.js",
       [path.join(PACKAGE_DIR, "src/isolate-protocol.ts")]: "./pletivo-isolate-protocol.js",
+    },
+  },
+  /**
+   * Tailwind for the isolate that compiles a stylesheet with `@plugin` or `@config`: a
+   * plugin runs inside Tailwind's compile, and workerd cannot evaluate it in the host.
+   */
+  [TAILWIND_MODULE_NAME]: {
+    specifier: "tailwindcss",
+    target: "browser",
+    forbidNodeBuiltins: true,
+  },
+  [TAILWIND_ENTRY_MODULE_NAME]: {
+    specifier: path.join(PACKAGE_DIR, "src/tailwind-isolate-entry.ts"),
+    target: "browser",
+    forbidNodeBuiltins: true,
+    aliases: {
+      [Bun.resolveSync("tailwindcss", PACKAGE_DIR)]: `./${TAILWIND_MODULE_NAME}`,
     },
   },
 };
@@ -332,6 +351,16 @@ export async function generateRuntimeModules(): Promise<string> {
     "/** The entry modules every Loader program carries next to its data module. */",
     "export const ISOLATE_ENTRY_MODULES: Readonly<Record<string, string>> = {",
     ...[ISOLATE_ENTRY_MODULE_NAME, ISOLATE_HANDLER_MODULE_NAME].map(
+      (name) => `  ${JSON.stringify(name)}: GENERATED_MODULES[${JSON.stringify(name)}],`,
+    ),
+    "};",
+    "",
+    "/** The Tailwind isolate's request handling; exports `createTailwindEntry`. */",
+    `export const TAILWIND_ENTRY_MODULE_NAME = ${JSON.stringify(TAILWIND_ENTRY_MODULE_NAME)};`,
+    "",
+    "/** Tailwind and its entry, which every Tailwind isolate program carries next to its plugins. */",
+    "export const TAILWIND_ISOLATE_MODULES: Readonly<Record<string, string>> = {",
+    ...[TAILWIND_MODULE_NAME, TAILWIND_ENTRY_MODULE_NAME].map(
       (name) => `  ${JSON.stringify(name)}: GENERATED_MODULES[${JSON.stringify(name)}],`,
     ),
     "};",

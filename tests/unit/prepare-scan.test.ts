@@ -4,6 +4,7 @@ import {
   importableSource,
   specifiersOf,
 } from "../../packages/pletivo/src/prepare/scan";
+import { tailwindModuleRefs } from "@pletivo/core/css-imports";
 
 /**
  * What `pletivo prepare` decides to go looking for. Everything downstream — resolving,
@@ -70,6 +71,27 @@ a { background: url('./dot.png') }
       "theme-package",
       "theme-wide.css",
     ]);
+  });
+
+  test("reads Tailwind @plugin and @config targets, not commented-out ones, and keeps them out of imports", () => {
+    const source = `
+/* @plugin "commented-out"; */
+body::before { content: '@plugin "in-a-string"'; }
+@import "tailwindcss";
+@plugin "flowbite/plugin";
+@PLUGIN './local-plugin.js' {
+  mode: strict;
+}
+@plugin-like "not-a-rule";
+@plugin url(not-a-target);
+@config "../tailwind.config.js";
+`;
+    expect(tailwindModuleRefs(source)).toEqual([
+      { hint: "plugin", specifier: "flowbite/plugin" },
+      { hint: "plugin", specifier: "./local-plugin.js" },
+      { hint: "config", specifier: "../tailwind.config.js" },
+    ]);
+    expect(specifiersOf("src/styles/app.css", source)).toEqual(["tailwindcss"]);
   });
 
   test("propagates malformed modules and rejects CommonJS syntax", () => {

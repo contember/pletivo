@@ -6,6 +6,7 @@ import type {
   OrderedStyleEdge,
   ProgramContentRequirement,
   ProgramScript,
+  TailwindModuleUse,
 } from "../compiled-program.ts";
 import { ENV_MODULES } from "../env.ts";
 import { RUNTIME_MODULES } from "../generated/runtime-modules.ts";
@@ -47,6 +48,8 @@ export class CompileWalk {
   /** Module-to-module edges, one per distinct specifier of an importer, in source order. */
   readonly executionEdges: OrderedExecutionEdge[] = [];
   readonly styleEdges: OrderedStyleEdge[] = [];
+  /** Tailwind `@plugin` and `@config` rules; their modules never join the program. */
+  readonly tailwindModules: TailwindModuleUse[] = [];
   readonly styles = new Map<ModuleId, AstroStyles>();
   /** Processed `<script>` blocks of the compiled `.astro` modules, in claim order. */
   readonly scripts: ProgramScript[] = [];

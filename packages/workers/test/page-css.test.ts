@@ -12,7 +12,7 @@ function graph(
   executionEdges: ResolvedStyleGraph["executionEdges"] = [],
   styles: ResolvedStyleGraph["styles"] = [],
 ): ResolvedStyleGraph {
-  return { modules, executionEdges, styleEdges: [], styles };
+  return { modules, executionEdges, styleEdges: [], styles, tailwindModules: [] };
 }
 
 describe("moduleOrder", () => {

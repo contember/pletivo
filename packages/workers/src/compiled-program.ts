@@ -81,10 +81,18 @@ export interface ResolvedModuleStyles {
   blocks: ResolvedStyleBlock[];
 }
 
+/** A stylesheet's Tailwind `@plugin` or `@config` rule, and the artifact module that answers it. */
+export interface TailwindModuleUse {
+  stylesheet: ModuleId;
+  specifier: string;
+  module: ModuleId;
+}
+
 /** CSS inputs retain the same source-order graph as executable compilation. */
 export interface ResolvedStyleGraph {
   modules: ModuleId[];
   executionEdges: OrderedExecutionEdge[];
   styleEdges: OrderedStyleEdge[];
   styles: ResolvedModuleStyles[];
+  tailwindModules: TailwindModuleUse[];
 }
