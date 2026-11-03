@@ -22,7 +22,7 @@ import type { CompileTailwindOptions, TailwindCompilation, TailwindStylesheets }
 const TAILWIND_ISOLATE_ABI = "pletivo-tailwind-v1";
 const TAILWIND_MAIN_MODULE_NAME = "pletivo-tailwind-main.js";
 const TAILWIND_STYLESHEETS_MODULE_NAME = "pletivo-tailwind-stylesheets.js";
-/** Distinct Tailwind modules kept per host stylesheets: one per pletivo release that prepared a project. */
+/** Distinct Tailwind modules kept per host stylesheets; one per pletivo release in use. */
 const TAILWIND_CACHE_LIMIT = 4;
 /** Distinct module sets kept per Tailwind module; a host serves a handful. */
 const PROGRAM_CACHE_LIMIT = 32;
@@ -137,13 +137,13 @@ function tailwindProgram(
     builds = new Map();
     programs.set(stylesheets, builds);
   }
-  const known = builds.get(tailwind);
+  const known = used(builds, tailwind);
   const cache = known ?? new Map<string, Promise<TailwindProgram>>();
   if (known === undefined) {
     dropOldest(builds, TAILWIND_CACHE_LIMIT);
     builds.set(tailwind, cache);
   }
-  const cached = cache.get(cacheKey);
+  const cached = used(cache, cacheKey);
   if (cached !== undefined) return cached;
 
   const programModules: Record<string, string> = { ...TAILWIND_ISOLATE_MODULES, [TAILWIND_MODULE_NAME]: tailwind };
@@ -170,7 +170,16 @@ function tailwindProgram(
   return program;
 }
 
-/** Make room for one more entry in an insertion-ordered cache of at most `limit`. */
+/** The entry under `key`, moved to the most recently used end of an insertion-ordered cache. */
+function used<V>(cache: Map<string, V>, key: string): V | undefined {
+  const value = cache.get(key);
+  if (value === undefined) return undefined;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+/** Make room for one more entry in a cache of at most `limit`, dropping the least recently used. */
 function dropOldest<V>(cache: Map<string, V>, limit: number): void {
   if (cache.size < limit) return;
   const oldest = cache.keys().next();
