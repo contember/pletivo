@@ -8,6 +8,7 @@ import {
   ANY_PROJECT_IMPORTER,
   parsePreparedSite,
   TAILWIND_MODULE_PREFIX,
+  TAILWIND_RUNTIME_MODULE_ID,
   serializePreparedSite,
   type PreparedSite,
 } from "@pletivo/core/artifact";
@@ -232,6 +233,32 @@ describe("pletivo prepare", () => {
       expect(parsePreparedSite(JSON.parse(serializePreparedSite(site)))).toEqual(
         parsePreparedSite(JSON.parse(serializePreparedSite(site))),
       );
+    });
+
+    test("writes pletivo's Tailwind for the isolate only when a stylesheet has a rule", async () => {
+      const withRule = await prepare(await projectWithFiles({ ...CJS_PLUGIN, "src/styles/global.css": '@plugin "cjs-plugin";\n' }));
+      const tailwind = moduleById(withRule, TAILWIND_RUNTIME_MODULE_ID);
+      expect(tailwind.kind).toBe("js");
+      expect(tailwind.source).not.toMatch(/^\s*import\s/m);
+      expect(tailwind.source).not.toContain("node_modules");
+      expect(typeof Reflect.get(await importSource(tailwind.source), "compile")).toBe("function");
+      __resetForTests();
+      // Not the project's: a `tailwindcss` installed there is never bundled.
+      const shadowed = await prepare(
+        await projectWithFiles({
+          ...CJS_PLUGIN,
+          "node_modules/tailwindcss/package.json": JSON.stringify({ name: "tailwindcss", exports: { ".": { import: "./lib.mjs" } } }),
+          "node_modules/tailwindcss/lib.mjs": "export const compile = 'project copy';\n",
+          "src/styles/global.css": '@plugin "cjs-plugin";\n',
+        }),
+      );
+      expect(moduleById(shadowed, TAILWIND_RUNTIME_MODULE_ID).source).toBe(tailwind.source);
+      __resetForTests();
+
+      const withoutRule = await prepare(
+        await projectWithFiles({ ...CJS_PLUGIN, "src/styles/global.css": '/* @plugin "cjs-plugin"; */\n.plain { color: red; }\n' }),
+      );
+      expect(withoutRule.artifact.modules.map((module) => module.id)).not.toContain(TAILWIND_RUNTIME_MODULE_ID);
     });
 
     test("bundles the same bytes whatever the checkout root and the working directory", async () => {

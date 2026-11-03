@@ -10,12 +10,13 @@ import {
   type ArtifactResolutionTarget,
   type ModuleId,
   TAILWIND_MODULE_PREFIX,
+  TAILWIND_RUNTIME_MODULE_ID,
   tailwindModuleSpecifier,
 } from "@pletivo/core/artifact";
 import { tailwindModuleRefs, type TailwindModuleRef } from "@pletivo/core/css-imports";
 import { prepareFailure, PrepareError } from "./error";
 import { processedScripts } from "./scripts";
-import { bundleTailwindModule, TailwindModuleBundleError } from "./tailwind-modules";
+import { bundleTailwindModule, bundleTailwindRuntime, TailwindModuleBundleError } from "./tailwind-modules";
 import { compareStrings } from "@pletivo/core/compare-strings";
 import { isInsideRoot, isMissingFile, normalizePath } from "./paths";
 import {
@@ -297,8 +298,9 @@ export async function prepareModuleGraph(
 
 /**
  * Bundle every `@plugin` and `@config` target into one `TAILWIND_MODULE_PREFIX` module and
- * answer the rule from its stylesheet. A target must be a package: prepare records no input
- * that would mark the artifact stale when a project-local plugin file changes.
+ * answer the rule from its stylesheet, plus Tailwind for the isolate when there is any rule.
+ * A target must be a package: prepare records no input that would mark the artifact stale
+ * when a project-local plugin file changes.
  */
 async function prepareTailwindModules(
   root: string,
@@ -353,6 +355,9 @@ async function prepareTailwindModules(
       specifier: tailwindModuleSpecifier(request.hint, request.specifier),
       target: { kind: "module", id },
     });
+  }
+  if (resolutions.length > 0) {
+    modules.set(TAILWIND_RUNTIME_MODULE_ID, { id: TAILWIND_RUNTIME_MODULE_ID, kind: "js", source: await bundleTailwindRuntime() });
   }
   return resolutions;
 }
