@@ -1,5 +1,5 @@
 import type { ModuleId } from "@pletivo/core/artifact";
-import { cssImports } from "@pletivo/core/css-imports";
+import { cssImports, tailwindModuleRefs } from "@pletivo/core/css-imports";
 import type { CompiledFile } from "../compile-cache.ts";
 import { HOST_ALIASES } from "../host-aliases.ts";
 import { rewriteImports } from "../rewrite-imports.ts";
@@ -68,6 +68,9 @@ export async function linkStylesheet(
       throw unresolvedImport(module, specifier, "css-import-not-css", "CSS @import must resolve to a CSS module");
     }
     walk.addEdge(module, use.module);
+  }
+  for (const { specifier } of tailwindModuleRefs(module.source)) {
+    walk.tailwindModules.push({ stylesheet: module.id, specifier, module: resolver.resolveTailwindModule(module, specifier) });
   }
   walk.modules[module.executionName] = "export {};\n";
 }

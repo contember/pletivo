@@ -15,7 +15,7 @@ function graph(
   executionEdges: ResolvedStyleGraph["executionEdges"] = [],
   styleEdges: ResolvedStyleGraph["styleEdges"] = [],
 ): ResolvedStyleGraph {
-  return { modules, executionEdges, styleEdges, styles: [] };
+  return { modules, executionEdges, styleEdges, styles: [], tailwindModules: [] };
 }
 
 function options(

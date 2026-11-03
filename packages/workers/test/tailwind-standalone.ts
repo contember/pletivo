@@ -5,7 +5,12 @@
 
 import type { ModuleId } from "@pletivo/core/artifact";
 import { findTailwindEntry, type StylesheetSource } from "../src/project-css.ts";
-import { extractCandidates, type CompileTailwindOptions } from "../src/tailwind.ts";
+import {
+  extractCandidates,
+  tailwindModule,
+  type CompileTailwindOptions,
+  type TailwindRuntime,
+} from "../src/tailwind.ts";
 
 const CSS = ".css";
 const CSS_MODULE = ".module.css";
@@ -44,3 +49,12 @@ export const STANDALONE_TARGETS: Pick<CompileTailwindOptions, "styleTargets" | "
     ["tailwindcss/utilities", "tailwindcss/utilities"],
   ]),
 };
+
+/** The host's `tailwindcss`, with no `@plugin` or `@config` module to load. */
+export async function hostTailwindRuntime(
+  loadModule: TailwindRuntime["loadModule"] = async (specifier) => {
+    throw new Error(`no module for ${JSON.stringify(specifier)}`);
+  },
+): Promise<TailwindRuntime> {
+  return { tailwind: tailwindModule(await import("tailwindcss")), loadModule };
+}

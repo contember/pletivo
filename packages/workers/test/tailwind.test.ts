@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { compileTailwind, extractCandidates, extractHtmlClassCandidates } from "../src/tailwind.ts";
 import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
-import { scanCandidates, STANDALONE_TARGETS } from "./tailwind-standalone.ts";
+import { hostTailwindRuntime, scanCandidates, STANDALONE_TARGETS } from "./tailwind-standalone.ts";
 
 /** `tailwindcss` is an optional peer: skip the engine tests where it is not installed. */
 const TAILWIND_DIR = tailwindDir();
@@ -108,7 +108,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       stylesheets: await tailwindStylesheets(),
       candidates: scanCandidates(files),
       ...STANDALONE_TARGETS,
-    });
+    }, await hostTailwindRuntime());
 
     expect(css.css).toContain(".mt-4");
     expect(css.css).toContain(".text-red-500");
@@ -137,7 +137,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
       stylesheets: await tailwindStylesheets(),
       candidates: ["p-2"],
       ...STANDALONE_TARGETS,
-    });
+    }, await hostTailwindRuntime());
 
     expect(css.css).toContain(".p-2");
     expect(css.css).not.toContain(".mt-4");
@@ -152,11 +152,43 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
         stylesheets: await tailwindStylesheets(),
         candidates: [],
         ...STANDALONE_TARGETS,
-      }),
+      }, await hostTailwindRuntime()),
     ).rejects.toThrow(/cannot resolve stylesheet "\.\/gone\.css"/);
   });
 
-  test("says JS plugins are unsupported rather than failing obscurely", async () => {
+  test("asks the injected loader for @plugin and @config, naming the stylesheet", async () => {
+    const files = new Map([
+      [
+        "src/styles/global.css",
+        '@import "tailwindcss";\n@plugin "fixture-plugin";\n@config "fixture-config";',
+      ],
+    ]);
+    const asked: string[] = [];
+    const css = await compileTailwind(
+      {
+        entry: "src/styles/global.css",
+        files,
+        stylesheets: await tailwindStylesheets(),
+        candidates: ["fixture-box", "text-brand"],
+        ...STANDALONE_TARGETS,
+      },
+      await hostTailwindRuntime(async (specifier, stylesheet, hint) => {
+        asked.push(`${hint} ${specifier} ${stylesheet}`);
+        if (hint === "config") return { theme: { extend: { colors: { brand: "#123456" } } } };
+        return ({ addUtilities }: { addUtilities(utilities: object): void }) => {
+          addUtilities({ ".fixture-box": { display: "grid" } });
+        };
+      }),
+    );
+    expect(asked.sort()).toEqual([
+      "config fixture-config src/styles/global.css",
+      "plugin fixture-plugin src/styles/global.css",
+    ]);
+    expect(css.css).toContain(".fixture-box");
+    expect(css.css).toContain("#123456");
+  });
+
+  test("reports a @plugin the loader cannot answer", async () => {
     const files = new Map([
       ["src/styles/global.css", '@import "tailwindcss";\n@plugin "./typography.js";'],
     ]);
@@ -167,8 +199,8 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
         stylesheets: await tailwindStylesheets(),
         candidates: [],
         ...STANDALONE_TARGETS,
-      }),
-    ).rejects.toThrow(/no module loader/);
+      }, await hostTailwindRuntime()),
+    ).rejects.toThrow(/no module for "\.\/typography\.js"/);
   });
 
   test("rejects an entry that is not in the file map", async () => {
@@ -179,7 +211,7 @@ describe.skipIf(TAILWIND_DIR === null)("compileTailwind", () => {
         stylesheets: await tailwindStylesheets(),
         candidates: [],
         ...STANDALONE_TARGETS,
-      }),
+      }, await hostTailwindRuntime()),
     ).rejects.toThrow(/is not in the file map/);
   });
 });

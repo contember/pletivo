@@ -1,4 +1,10 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { ARTIFACT_VERSION, TAILWIND_MODULE_PREFIX } from "@pletivo/core/artifact";
+import tailwindIndex from "tailwindcss/index.css";
+import tailwindPreflight from "tailwindcss/preflight.css";
+import tailwindTheme from "tailwindcss/theme.css";
+import tailwindUtilities from "tailwindcss/utilities.css";
+import { loadProjectArtifact } from "../../src/artifact.ts";
 import {
   ContentFiles,
   type ContentBinding,
@@ -78,11 +84,18 @@ interface OutboundReport {
   inheritUnmarked: boolean;
 }
 
+interface TailwindReport {
+  pluginRendered: boolean;
+  ownIsolate: boolean;
+  isolateReused: boolean;
+}
+
 interface QualificationReport {
   identity: IdentityReport;
   content: ContentReport;
   runtime: RuntimeReport;
   outbound: OutboundReport;
+  tailwind: TailwindReport;
 }
 
 class ExecutionRecords {
@@ -245,7 +258,8 @@ export class QualificationDO extends DurableObject<Env> {
     const content = await this.#contentQualification(nonce, binding);
     const runtime = await this.#runtime(nonce, binding);
     const outbound = await this.#outbound(nonce, sidecar, binding);
-    return { identity, content, runtime, outbound };
+    const tailwind = await this.#tailwind(nonce);
+    return { identity, content, runtime, outbound, tailwind };
   }
 
   /** The Loader, recording every isolate id a render asks it for. */
@@ -447,6 +461,72 @@ try { new Function("return 1")(); } catch { marker = "refused"; }
       contentStarted: htmlValue(content.html, "titles") === "Runtime",
       dynamicCodeRefused: htmlValue(dynamicCode.html, "dynamic-code") === "refused",
       withoutNodeCompatFailedStart,
+    };
+  }
+
+  /** A `@plugin` and a `@config` from the artifact, run in their own isolate next to Tailwind. */
+  async #tailwind(nonce: string): Promise<TailwindReport> {
+    const stylesheet = "project:src/styles/global.css";
+    const plugin = `${TAILWIND_MODULE_PREFIX}qualification-plugin`;
+    const config = `${TAILWIND_MODULE_PREFIX}qualification-config`;
+    const artifact = loadProjectArtifact({
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [
+          {
+            id: plugin,
+            kind: "js",
+            source:
+              "export default function ({ addUtilities, matchUtilities }) {\n" +
+              '  addUtilities({ ".qualified-box": { display: "grid" } });\n' +
+              '  matchUtilities({ "qualified-pad": (value) => ({ padding: value }) }, { values: { lg: "9px" } });\n' +
+              "}\n",
+          },
+          { id: config, kind: "js", source: 'export default { theme: { extend: { colors: { brand: "#123456" } } } };\n' },
+        ],
+        resolutions: [
+          { importer: stylesheet, specifier: "qualification-plugin", target: { kind: "module", id: plugin } },
+          { importer: stylesheet, specifier: "qualification-config", target: { kind: "module", id: config } },
+        ],
+      },
+    });
+    const render = async (): Promise<{ html: string; ids: string[] }> => {
+      const before = this.#execution.ids.length;
+      const page = await renderPage({
+        files: new Map([
+          [
+            "src/pages/index.astro",
+            `---\nimport "../styles/global.css";\n---\n<p class="qualified-box qualified-pad-lg text-brand">tw</p>\n`,
+          ],
+          [
+            "src/styles/global.css",
+            '@import "tailwindcss";\n@plugin "qualification-plugin";\n@config "qualification-config";\n',
+          ],
+        ]),
+        pathname: "/",
+        loader: this.#recordingLoader(),
+        executionNamespace: namespace(`${nonce}:tailwind`, "cap-v1"),
+        artifact,
+        tailwind: {
+          tailwindcss: tailwindIndex,
+          "tailwindcss/preflight": tailwindPreflight,
+          "tailwindcss/theme": tailwindTheme,
+          "tailwindcss/utilities": tailwindUtilities,
+        },
+      });
+      return { html: page.html, ids: this.#execution.ids.slice(before) };
+    };
+    const first = await render();
+    const second = await render();
+    return {
+      pluginRendered:
+        first.html.includes(".qualified-box") &&
+        first.html.includes("padding: 9px") &&
+        first.html.includes("#123456"),
+      ownIsolate: first.ids.length === 2 && first.ids[0] !== first.ids[1],
+      isolateReused: second.ids.length === 2 && second.ids[1] === first.ids[1],
     };
   }
 

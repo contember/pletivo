@@ -109,6 +109,21 @@ remarkExample[Symbol.for("pletivo.portableModule")] = {
 isolate imports the plugins and installs them in config order, for collection entries and
 `.md` pages alike. An untagged plugin still fails `prepare` with a diagnostic naming it.
 
+### Tailwind plugins and configs
+
+A stylesheet's `@plugin "x"` and `@config "x"` load a JavaScript module that Tailwind calls
+while it compiles, and the host worker cannot evaluate one. `pletivo prepare` resolves each
+target as Tailwind's Node loader would and bundles it, CommonJS dependencies included, into
+one ES module in the artifact. When a page's stylesheet closure has such a rule, its
+Tailwind compiles in a separate Loader isolate that holds Tailwind and those modules, with
+no network access; pages with the same modules share that isolate. Without such a rule,
+Tailwind compiles in the host as before.
+
+The target must be an installed package; a project-local plugin file, a plugin that needs a
+Node built-in, and one that fails to bundle fail `prepare` naming the stylesheet and the
+rule. A rule the artifact does not answer (a stylesheet added since `prepare`) fails the
+render with `UnresolvedImportError`, kind `missing`.
+
 ## Hosting a live workspace
 
 `createProjectHost(...).fetch` answers, first match wins:

@@ -105,11 +105,20 @@ injected scripts; it does not evaluate filesystem globs. `@source` therefore can
 or remove candidate files. This is an explicit unsupported difference, not a guaranteed
 superset: a class named only in an `@source` file would be missing.
 
-## 3. Tailwind JS plugins and configs are refused
+## 3. Tailwind JS plugins and configs compile in their own isolate
 
-`loadModule` cannot run: there is no module resolution in the isolate. A project
-using a JS plugin or a `tailwind.config.js` gets an explicit error rather than
-silently-missing utilities.
+Tailwind calls a `@plugin` or `@config` module synchronously during `compile()`, and the
+host worker cannot evaluate one. `pletivo prepare` bundles each target into one ES module
+(`tailwind-module:<digest>`, resolved from the stylesheet that names it); a page whose
+Tailwind closure has such a rule compiles in a Loader isolate holding Tailwind, the
+compile entry and those modules. The divergences that remain:
+
+- Only installed packages: a project-local plugin file is refused by `prepare`, because
+  the artifact records no input that would mark it stale when that file changes.
+- No Node built-ins: a plugin that needs one is refused by `prepare`. On Bun it would run.
+- The target resolves with `node`, `import`, `require` conditions; dependencies are
+  bundled for the browser target, so a dependency with a distinct `browser` entry gets
+  that one.
 
 ## 4. `wasm_exec` is vendored, and it used to clobber `process`
 

@@ -1,3 +1,4 @@
+import { TAILWIND_MODULE_PREFIX, type ModuleId } from "@pletivo/core/artifact";
 import { imageOutputPath } from "@pletivo/core/image";
 import { md5Hex } from "@pletivo/core/md5";
 import { projectModuleId, type ArtifactResolver } from "../artifact.ts";
@@ -91,6 +92,26 @@ export class ImportResolver {
       "missing",
       "no project file, Artifact V2 resolution, or supported host alias answers it",
     );
+  }
+
+  /**
+   * The bundled module a stylesheet's `@plugin` or `@config` rule names. Only prepare
+   * writes one, so a rule it did not see (a stylesheet added since) is missing.
+   */
+  resolveTailwindModule(importer: SourceModule, specifier: string): ModuleId {
+    const frozen = this.#options.artifact.resolve(importer.id, specifier);
+    if (frozen === null || frozen.kind !== "module" || !frozen.id.startsWith(TAILWIND_MODULE_PREFIX)) {
+      throw unresolvedImport(
+        importer,
+        specifier,
+        "missing",
+        "no bundled Tailwind module answers this @plugin or @config rule; re-run `pletivo prepare`",
+      );
+    }
+    if (this.#options.artifact.module(frozen.id) === null) {
+      throw unresolvedImport(importer, specifier, "missing", "the bundled Tailwind module is not in the artifact");
+    }
+    return frozen.id;
   }
 
   #embeddedTailwind(specifier: string): SourceModule | null {

@@ -9,6 +9,7 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QualificationDO"] }],
   "rules": [
-    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true },
+    { "type": "Text", "globs": ["**/*.css"], "fallthrough": true }
   ]
 }

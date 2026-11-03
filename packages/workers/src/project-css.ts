@@ -9,11 +9,17 @@ import {
   compileTailwind,
   extractHtmlClassCandidates,
   extractCandidates,
+  fileKeyFor,
   isTailwindStylesheetSpecifier,
   sourceFor,
+  tailwindModule,
   TailwindNotConfiguredError,
+  type CompileTailwindOptions,
+  type TailwindCompilation,
+  type TailwindModule,
   type TailwindStylesheets,
 } from "./tailwind.ts";
+import { compileTailwindInIsolate, type TailwindIsolateHost, type TailwindModuleSource } from "./tailwind-isolate.ts";
 
 export { TailwindNotConfiguredError };
 
@@ -31,6 +37,8 @@ export interface PageStylesheetOptions {
   /** Browser code the page loads but its HTML does not hold: processed `<script>` graphs. */
   browserSources?: readonly string[];
   tailwind?: TailwindStylesheets;
+  /** Where a closure with `@plugin` or `@config` compiles; the host cannot run those modules. */
+  tailwindIsolate?: TailwindIsolateHost;
 }
 
 const CSS_MODULE = ".module.css";
@@ -60,7 +68,7 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
     for (const candidate of extractCandidates(source)) candidates.add(candidate);
   }
 
-  const compilation = await compileTailwind({
+  const compilation = await compileEntry(options, {
     entry: entry.moduleId,
     files: options.files,
     stylesheets: options.tailwind,
@@ -84,6 +92,82 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
     }
   }
   return parts.filter(Boolean).join("\n\n");
+}
+
+/**
+ * In the host, unless the entry's `@import` closure has a `@plugin` or `@config` rule:
+ * then in the Tailwind isolate, which is the only place those modules can run.
+ */
+async function compileEntry(
+  options: PageStylesheetOptions,
+  compile: CompileTailwindOptions,
+): Promise<TailwindCompilation> {
+  const closure = stylesheetClosure(compile.entry, compile.styleTargets);
+  const uses = options.styleGraph.tailwindModules.filter((use) => closure.has(use.stylesheet));
+  if (uses.length === 0) {
+    return compileTailwind(compile, { tailwind: await loadTailwind(), loadModule: unrecordedTailwindModule });
+  }
+  if (options.tailwindIsolate === undefined) {
+    throw new Error(
+      `[pletivo-workers] ${JSON.stringify(compile.entry)} loads Tailwind @plugin or @config modules, ` +
+        "which compile only in a Worker Loader isolate, and pageStylesheet() was given none",
+    );
+  }
+  const modules = uses.map((use): TailwindModuleSource => {
+    const source = sourceFor(use.module, options.files);
+    if (source === undefined) {
+      throw new Error(`[pletivo-workers] the bundled Tailwind module ${JSON.stringify(use.module)} has no source`);
+    }
+    return { ...use, source };
+  });
+  return compileTailwindInIsolate(compile, isolateStylesheets(closure, compile), modules, options.tailwindIsolate);
+}
+
+/** The host's own `tailwindcss`. */
+async function loadTailwind(): Promise<TailwindModule> {
+  return tailwindModule(await import("tailwindcss"));
+}
+
+/** The compile walk records every rule it links, so Tailwind reached one through something else. */
+async function unrecordedTailwindModule(specifier: string, stylesheet: ModuleId, hint: "plugin" | "config"): Promise<never> {
+  throw new Error(
+    `[pletivo-workers] @${hint} ${JSON.stringify(specifier)} in ${JSON.stringify(stylesheet)} was not ` +
+      "linked by the compile walk, so no isolate holds its module",
+  );
+}
+
+/** The entry and every stylesheet its `@import`s reach. */
+function stylesheetClosure(entry: ModuleId, styleTargets: ReadonlyMap<ModuleId, readonly ModuleId[]>): Set<ModuleId> {
+  const closure = new Set<ModuleId>([entry]);
+  const queue = [entry];
+  for (let next = queue.pop(); next !== undefined; next = queue.pop()) {
+    for (const target of styleTargets.get(next) ?? []) {
+      if (closure.has(target)) continue;
+      closure.add(target);
+      queue.push(target);
+    }
+  }
+  return closure;
+}
+
+/**
+ * What the isolate can load, by `ProjectFiles` key: the closure, plus every other
+ * stylesheet in the map for a `@reference` with no recorded edge. Tailwind's own
+ * stylesheets travel separately.
+ */
+function isolateStylesheets(closure: ReadonlySet<ModuleId>, compile: CompileTailwindOptions): Map<string, string> {
+  const files = new Map<string, string>();
+  for (const moduleId of closure) {
+    if (compile.embeddedTargets.has(moduleId)) continue;
+    const source = sourceFor(moduleId, compile.files);
+    if (source !== undefined) files.set(fileKeyFor(moduleId), source);
+  }
+  for (const key of compile.files.keys()) {
+    if (!key.endsWith(".css") || files.has(key)) continue;
+    const source = compile.files.get(key);
+    if (source !== undefined) files.set(key, source);
+  }
+  return files;
 }
 
 export interface StylesheetSource {

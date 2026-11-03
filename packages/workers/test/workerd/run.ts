@@ -161,6 +161,11 @@ function validateReport(value: unknown): void {
   ]) {
     requireTrue(outbound, name, "$report.outbound");
   }
+
+  const tailwind = requireObject(field(report, "tailwind", "$report"), "$report.tailwind");
+  for (const name of ["pluginRendered", "ownIsolate", "isolateReused"]) {
+    requireTrue(tailwind, name, "$report.tailwind");
+  }
 }
 
 const nonce = crypto.randomUUID();
