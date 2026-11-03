@@ -137,8 +137,10 @@ divergences that remain:
   dependency), a page with one with pletivo's own, which `prepare` bundles into the
   artifact (about 300 KB) only for a project with such a rule, so the host bundle carries
   no copy of it. Both compile against the stylesheets the host passes as `tailwind`. The
-  `v1` in the module id is its contract with the host's isolate entry; a host finds no
-  module of another contract, and the rule fails as `missing` until `prepare` runs again.
+  `v1` in the module id is its contract with the host's isolate entry. An artifact with no
+  such module fails the rule as `missing`, which `prepare` fixes; one whose module has
+  another contract fails as `tailwind-runtime-unsupported`, which only a `prepare` by a
+  pletivo released with the host fixes.
 
 ## 4. `wasm_exec` is vendored, and it used to clobber `process`
 

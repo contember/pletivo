@@ -50,7 +50,12 @@ export type UnresolvedImportKind =
   /** A CSS `@import` that resolves to something other than a CSS module. */
   | "css-import-not-css"
   /** A `@plugin` or `@config` naming a project file: `pletivo prepare` bundles only installed packages. */
-  | "tailwind-module-not-a-package";
+  | "tailwind-module-not-a-package"
+  /**
+   * The artifact's Tailwind for `@plugin` and `@config` was made for another contract than this
+   * host's: the pletivo that prepared it differs, and preparing again with that one changes nothing.
+   */
+  | "tailwind-runtime-unsupported";
 
 /** An import of a project or artifact module that nothing answers. */
 export class UnresolvedImportError extends UnsupportedFileError {

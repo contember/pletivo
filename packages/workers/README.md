@@ -134,9 +134,12 @@ The host bundle carries no second copy of Tailwind for the isolate. `pletivo pre
 writes it into the artifact, as module `tailwind-runtime:v1` (about 300 KB), only when a
 stylesheet has a `@plugin` or `@config` rule. It is pletivo's own `tailwindcss`, not the
 project's, and the isolate compiles with it against the four stylesheets passed as
-`tailwind`. A rule in an artifact without that module, one prepared by an earlier pletivo
-or for another version of the module, fails the render with `UnresolvedImportError` of
-kind `missing`: preparing again answers it.
+`tailwind`. A rule in an artifact without any such module, one prepared by a pletivo that
+did not write it, fails the render with `UnresolvedImportError` of kind `missing`:
+preparing again answers it. An artifact whose module was made for another contract (a
+`tailwind-runtime:` id other than this host's, from a pletivo of another release) fails
+with kind `tailwind-runtime-unsupported` instead, naming both ids: preparing again with the
+same pletivo writes the same module, so only a pletivo released with this host fixes it.
 
 ## Hosting a live workspace
 
@@ -174,7 +177,9 @@ Options a multi-session host needs:
   worth preparing again; the others, such as `unsupported-package-root`, fail against any
   artifact. For a Tailwind `@plugin` or `@config` rule the specifier is the rule's
   resolution key, `@plugin x`; the rule is `missing` too when the artifact answers it but
-  carries no Tailwind for the isolate. A project stylesheet's rule the artifact does not
+  carries no Tailwind for the isolate, and `tailwind-runtime-unsupported` when its Tailwind
+  was made for another contract than this host's, which only a `prepare` by a pletivo
+  released with this host fixes. A project stylesheet's rule the artifact does not
   answer and whose path names a file outside any `node_modules` is `tailwind-module-not-a-package`:
   `pletivo prepare` bundles only installed packages, so no artifact will answer it. A
   path into a `node_modules` (a monorepo's hoisted one above the project included), or one

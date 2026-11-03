@@ -3,6 +3,7 @@ import {
   ARTIFACT_VERSION,
   TAILWIND_MODULE_PREFIX,
   TAILWIND_RUNTIME_MODULE_ID,
+  TAILWIND_RUNTIME_MODULE_PREFIX,
   tailwindModuleSpecifier,
   type ArtifactModule,
   type PreparedSite,
@@ -219,8 +220,8 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
     expect(tailwindIsolates(loader)).toBe(2);
   });
 
-  test("an artifact with a rule's module but no Tailwind is missing, so preparing again answers it", async () => {
-    const loader = newLoader();
+  /** The render's failure, with the artifact's Tailwind module replaced by `tailwind`. */
+  async function failureWithTailwind(loader: FileLoader, tailwind: ArtifactModule[]): Promise<UnresolvedImportError> {
     const error = await renderPage({
       files: project('@import "tailwindcss";\n@plugin "fixture-plugin";\n'),
       loader,
@@ -228,7 +229,7 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
       artifact: loadProjectArtifact({
         artifact: {
           ...PREPARED.artifact,
-          modules: PREPARED.artifact.modules.filter((module) => module.id !== TAILWIND_RUNTIME_MODULE_ID),
+          modules: [...tailwind, ...PREPARED.artifact.modules.filter((module) => module.id !== TAILWIND_RUNTIME_MODULE_ID)],
         },
       }),
       tailwind: await tailwindStylesheets(),
@@ -237,12 +238,29 @@ describe.skipIf(tailwindDir() === null)("Tailwind @plugin and @config", () => {
       () => null,
       (reason: unknown) => reason,
     );
-    expect(error).toBeInstanceOf(UnresolvedImportError);
-    if (!(error instanceof UnresolvedImportError)) return;
+    if (!(error instanceof UnresolvedImportError)) throw new Error(`the render did not fail as unresolved: ${String(error)}`);
+    return error;
+  }
+
+  test("an artifact with a rule's module but no Tailwind is missing, so preparing again answers it", async () => {
+    const loader = newLoader();
+    const error = await failureWithTailwind(loader, []);
     expect(error.kind).toBe("missing");
     expect(error.importer).toBe(STYLESHEET);
     expect(error.specifier).toBe("@plugin fixture-plugin");
     expect(error.message).toContain(TAILWIND_RUNTIME_MODULE_ID);
+    expect(tailwindIsolates(loader)).toBe(0);
+  });
+
+  test("an artifact whose Tailwind has another contract is unsupported, not missing", async () => {
+    const loader = newLoader();
+    const other = `${TAILWIND_RUNTIME_MODULE_PREFIX}v0`;
+    const error = await failureWithTailwind(loader, [{ ...TAILWIND_MODULE, id: other }]);
+    expect(error.kind).toBe("tailwind-runtime-unsupported");
+    expect(error.importer).toBe(STYLESHEET);
+    expect(error.specifier).toBe("@plugin fixture-plugin");
+    expect(error.message).toContain(JSON.stringify(other));
+    expect(error.message).toContain(JSON.stringify(TAILWIND_RUNTIME_MODULE_ID));
     expect(tailwindIsolates(loader)).toBe(0);
   });
 
