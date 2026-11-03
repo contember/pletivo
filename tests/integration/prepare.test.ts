@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,12 +8,16 @@ import {
   ANY_PROJECT_IMPORTER,
   parsePreparedSite,
   TAILWIND_MODULE_PREFIX,
+  TAILWIND_RUNTIME_MODULE_ID,
   serializePreparedSite,
   type PreparedSite,
 } from "@pletivo/core/artifact";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import { emitArtifact } from "../../packages/pletivo/src/prepare/emit";
 import { PrepareError, prepare } from "../../packages/pletivo/src/prepare/index";
+import * as tailwindModules from "../../packages/pletivo/src/prepare/tailwind-modules";
+
+const TAILWIND_MODULES = path.resolve(import.meta.dir, "../../packages/pletivo/src/prepare/tailwind-modules.ts");
 
 const fixtures = path.join(import.meta.dir, "../fixture-prepare");
 const project = path.join(fixtures, "project");
@@ -232,6 +236,53 @@ describe("pletivo prepare", () => {
       expect(parsePreparedSite(JSON.parse(serializePreparedSite(site)))).toEqual(
         parsePreparedSite(JSON.parse(serializePreparedSite(site))),
       );
+    });
+
+    test("writes pletivo's Tailwind for the isolate only when a stylesheet has a rule", async () => {
+      const withRule = await prepare(await projectWithFiles({ ...CJS_PLUGIN, "src/styles/global.css": '@plugin "cjs-plugin";\n' }));
+      const tailwind = moduleById(withRule, TAILWIND_RUNTIME_MODULE_ID);
+      expect(tailwind.kind).toBe("js");
+      expect(tailwind.source).not.toMatch(/^\s*import\s/m);
+      expect(tailwind.source).not.toContain("node_modules");
+      expect(typeof Reflect.get(await importSource(tailwind.source), "compile")).toBe("function");
+      __resetForTests();
+      // Not the project's: a `tailwindcss` installed there is never bundled.
+      const shadowed = await prepare(
+        await projectWithFiles({
+          ...CJS_PLUGIN,
+          "node_modules/tailwindcss/package.json": JSON.stringify({ name: "tailwindcss", exports: { ".": { import: "./lib.mjs" } } }),
+          "node_modules/tailwindcss/lib.mjs": "export const compile = 'project copy';\n",
+          "src/styles/global.css": '@plugin "cjs-plugin";\n',
+        }),
+      );
+      expect(moduleById(shadowed, TAILWIND_RUNTIME_MODULE_ID).source).toBe(tailwind.source);
+      __resetForTests();
+
+      const withoutRule = await prepare(
+        await projectWithFiles({ ...CJS_PLUGIN, "src/styles/global.css": '/* @plugin "cjs-plugin"; */\n.plain { color: red; }\n' }),
+      );
+      expect(withoutRule.artifact.modules.map((module) => module.id)).not.toContain(TAILWIND_RUNTIME_MODULE_ID);
+    });
+
+    test("refuses a project, naming its first rule's stylesheet, when pletivo's own Tailwind cannot be bundled", async () => {
+      const directory = await projectWithFiles({ ...CJS_PLUGIN, "src/styles/global.css": '@plugin "cjs-plugin";\n' });
+      const real = { ...tailwindModules };
+      mock.module(TAILWIND_MODULES, () => ({
+        ...real,
+        bundleTailwindRuntime: () => Promise.reject(new real.TailwindModuleBundleError("bundling failed: tailwindcss is not installed")),
+      }));
+      let error: PrepareError;
+      try {
+        error = await capturedPrepareError(directory);
+      } finally {
+        mock.module(TAILWIND_MODULES, () => real);
+      }
+      expect(error.diagnostics).toHaveLength(1);
+      expect(error.diagnostics[0]?.source).toEndWith("src/styles/global.css");
+      expect(error.diagnostics[0]?.hook).toBe("tailwind");
+      expect(error.message).toContain("pletivo's tailwindcss cannot be bundled for the Workers host");
+      expect(error.message).toContain("tailwindcss is not installed");
+      __resetForTests();
     });
 
     test("bundles the same bytes whatever the checkout root and the working directory", async () => {

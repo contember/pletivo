@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { bundleTailwindModule } from "../../../pletivo/src/prepare/tailwind-modules.ts";
+import { bundleTailwindModule, bundleTailwindRuntime } from "../../../pletivo/src/prepare/tailwind-modules.ts";
 
 interface ChildLogs {
   stdout: string[];
@@ -205,6 +205,7 @@ const wranglerConfig = path.join(tempRoot, "wrangler.jsonc");
 await fs.mkdir(persistence);
 await fs.mkdir(wranglerHome);
 const tailwindPlugin = await bundledCommonJsPlugin(path.join(tempRoot, "plugin-project"));
+const tailwindRuntime = await bundleTailwindRuntime();
 const sourceConfig = await fs.readFile(path.join(import.meta.dir, "wrangler.jsonc"), "utf8");
 const stagedConfig = sourceConfig.replace(
   '"main": "entry.ts"',
@@ -265,6 +266,7 @@ try {
         nonce,
         sidecar: `http://127.0.0.1:${sidecarPort}/probe?nonce=${encodeURIComponent(nonce)}`,
         tailwindPlugin,
+        tailwindRuntime,
       }),
       signal: AbortSignal.timeout(120_000),
     }),

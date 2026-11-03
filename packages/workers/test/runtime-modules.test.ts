@@ -18,6 +18,7 @@ import {
   RUNTIME_MODULE_NAME,
   TAILWIND_ENTRY_MODULE_NAME,
   TAILWIND_ISOLATE_MODULES,
+  TAILWIND_MODULE_NAME,
 } from "../src/generated/runtime-modules.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
@@ -86,12 +87,16 @@ describe("generated runtime modules", () => {
     ]);
   });
 
-  test("give the Tailwind isolate Tailwind once, imported by its entry", () => {
-    expect(Object.keys(TAILWIND_ISOLATE_MODULES)).toEqual(["pletivo-tailwind.js", TAILWIND_ENTRY_MODULE_NAME]);
+  test("give the Tailwind isolate its entry, which imports Tailwind from the artifact's module", () => {
+    expect(Object.keys(TAILWIND_ISOLATE_MODULES)).toEqual([TAILWIND_ENTRY_MODULE_NAME]);
     const entry = GENERATED_MODULES[TAILWIND_ENTRY_MODULE_NAME];
     expect(entry).toContain("function createTailwindEntry");
-    // The entry imports Tailwind rather than carrying a second copy of it.
-    expect(entry.length).toBeLessThan(GENERATED_MODULES["pletivo-tailwind.js"].length / 10);
+    expect(entry).toContain(`from "./${TAILWIND_MODULE_NAME}"`);
+    // The host bundle carries no copy of Tailwind as text: `prepare` writes one into the artifact.
+    expect(GENERATED_MODULES[TAILWIND_MODULE_NAME]).toBeUndefined();
+    for (const [name, source] of Object.entries(GENERATED_MODULES)) {
+      expect([name, source.includes("__unstable__loadDesignSystem")]).toEqual([name, false]);
+    }
   });
 
   test("import nothing but the Loader modules each one is paired with", () => {
@@ -110,8 +115,7 @@ describe("generated runtime modules", () => {
         allowed: [`./${ISOLATE_PROGRAM_MODULE_NAME}`, "./pletivo-isolate-entry.js"],
         nodeBuiltins: false,
       },
-      "pletivo-tailwind.js": { allowed: [], nodeBuiltins: false },
-      [TAILWIND_ENTRY_MODULE_NAME]: { allowed: ["./pletivo-tailwind.js"], nodeBuiltins: false },
+      [TAILWIND_ENTRY_MODULE_NAME]: { allowed: [`./${TAILWIND_MODULE_NAME}`], nodeBuiltins: false },
     };
     expect(Object.keys(loaderImports).sort()).toEqual(Object.keys(GENERATED_MODULES).sort());
     for (const [name, { allowed, nodeBuiltins }] of Object.entries(loaderImports)) {

@@ -4,6 +4,7 @@
  * next to Tailwind itself. A plugin is usually CommonJS (`module.exports`, `require()`),
  * which the artifact's module graph cannot carry, so each one is bundled here into a
  * single ES module whose default export is the value Tailwind's Node loader would get.
+ * Tailwind itself rides along, so a host carries it only for a project that needs it.
  */
 
 import { builtinModules } from "node:module";
@@ -57,6 +58,39 @@ export async function bundleTailwindModule(file: string): Promise<string> {
       `the bundle holds its input path ${JSON.stringify(embedded)}, relative to the working directory, ` +
         "as CommonJS `module.id` or `module.path` would inline it, so the module would differ per machine",
     );
+  }
+  return code;
+}
+
+/**
+ * pletivo's own `tailwindcss`, never the project's, as one ES module for the isolate those
+ * modules run in; the host's isolate entry imports it as Tailwind.
+ */
+export async function bundleTailwindRuntime(): Promise<string> {
+  const builtins = new Set<string>();
+  let result: Awaited<ReturnType<typeof Bun.build>>;
+  try {
+    result = await Bun.build({
+      entrypoints: [Bun.resolveSync("tailwindcss", import.meta.dir)],
+      target: "browser",
+      format: "esm",
+      // Whitespace only, which drops the `// <path>` comments Bun writes relative to the working directory.
+      minify: { whitespace: true, syntax: false, identifiers: false },
+      plugins: [rejectNodeBuiltins(builtins)],
+      metafile: true,
+    });
+  } catch (error) {
+    throw bundleError(builtins, error instanceof Error ? error.message : String(error));
+  }
+  if (!result.success) throw bundleError(builtins, result.logs.map(String).join("\n"));
+  const [output] = result.outputs;
+  if (output === undefined || result.outputs.length !== 1) {
+    throw new TailwindModuleBundleError(`bundling tailwindcss produced ${result.outputs.length} files instead of one`);
+  }
+  const code = await output.text();
+  const embedded = embeddedInputPath(code, Object.keys(result.metafile?.inputs ?? {}));
+  if (embedded !== null) {
+    throw new TailwindModuleBundleError(`the tailwindcss bundle holds its input path ${JSON.stringify(embedded)}`);
   }
   return code;
 }

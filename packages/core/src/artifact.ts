@@ -44,6 +44,16 @@ export const ANY_PROJECT_IMPORTER = "project:*";
  */
 export const TAILWIND_MODULE_PREFIX = "tailwind-module:";
 
+/** Id prefix of the `tailwindcss` bundle a host's Tailwind isolate runs those modules in. */
+export const TAILWIND_RUNTIME_MODULE_PREFIX = "tailwind-runtime:";
+
+/**
+ * Id of that bundle, carried only when a stylesheet has a `@plugin` or `@config` rule. The suffix
+ * is its contract with the host's isolate entry (an ES module with Tailwind v4's exports): bump it
+ * when that changes, so a host never runs a bundle made for another contract.
+ */
+export const TAILWIND_RUNTIME_MODULE_ID = `${TAILWIND_RUNTIME_MODULE_PREFIX}v1`;
+
 /**
  * The resolution specifier of a stylesheet's `@plugin` or `@config` rule: the rule as written,
  * so it never shares a key with an `@import` of the same target, which resolves differently.

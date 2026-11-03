@@ -28,7 +28,10 @@ export class UnsupportedFileError extends Error {
  * again; every other kind fails the same way against any artifact.
  */
 export type UnresolvedImportKind =
-  /** No project file, artifact resolution or host alias answers the specifier. */
+  /**
+   * No project file, artifact resolution or host alias answers the specifier, or the artifact
+   * answers a Tailwind rule but has no Tailwind module to compile it with.
+   */
   | "missing"
   /** The root of `pletivo`, `@pletivo/runtime` or `@pletivo/core`, which the host does not provide. */
   | "unsupported-package-root"
@@ -47,7 +50,12 @@ export type UnresolvedImportKind =
   /** A CSS `@import` that resolves to something other than a CSS module. */
   | "css-import-not-css"
   /** A `@plugin` or `@config` naming a project file: `pletivo prepare` bundles only installed packages. */
-  | "tailwind-module-not-a-package";
+  | "tailwind-module-not-a-package"
+  /**
+   * The artifact's Tailwind for `@plugin` and `@config` was made for another contract than this
+   * host's: the pletivo that prepared it differs, and preparing again with that one changes nothing.
+   */
+  | "tailwind-runtime-unsupported";
 
 /** An import of a project or artifact module that nothing answers. */
 export class UnresolvedImportError extends UnsupportedFileError {
