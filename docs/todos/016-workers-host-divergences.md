@@ -117,7 +117,9 @@ compile entry and those modules. The divergences that remain:
   the artifact records no input that would mark it stale when that file changes. That
   includes the usual `@config "./tailwind.config.js"`, so `@config` works only for a
   config shipped in a package, and a workspace package linked into `node_modules` (its
-  real path is outside it).
+  real path is outside it). An unanswered rule's path is classified by the host as
+  written but by `prepare` after symlinks: a project file linked into `node_modules`
+  reads as `tailwind-module-not-a-package` though `prepare` would bundle it.
 - Only through `@import`: a rule in a stylesheet a page reaches only by `@reference` fails
   the render naming that limit; `prepare` does not scan `@reference` targets.
 - No Node built-ins: a plugin that needs one is refused by `prepare`. On Bun it would run.

@@ -54,25 +54,21 @@ export async function bundleTailwindModule(file: string): Promise<string> {
   const embedded = embeddedInputPath(code, Object.keys(result.metafile?.inputs ?? {}));
   if (embedded !== null) {
     throw new TailwindModuleBundleError(
-      `it reads CommonJS \`module.id\` or \`module.path\`, which bundling fixes to the path ${JSON.stringify(embedded)} ` +
-        "relative to the working directory, so the module would differ per machine",
+      `the bundle holds its input path ${JSON.stringify(embedded)}, relative to the working directory, ` +
+        "as CommonJS `module.id` or `module.path` would inline it, so the module would differ per machine",
     );
   }
   return code;
 }
 
 /**
- * The input path (or its directory) the bundle holds as a string: Bun inlines CommonJS
- * `module.id` and `module.path` as the file's path relative to the working directory,
- * the same spelling the metafile lists the input under. `define` cannot replace them.
+ * The input path the bundle holds as a string: Bun inlines CommonJS `module.id` and
+ * `module.path` as the file's path relative to the working directory, the same spelling
+ * the metafile lists the input under. `define` cannot replace them.
  */
 function embeddedInputPath(code: string, inputs: readonly string[]): string | null {
   for (const input of inputs) {
-    if (input.includes(":")) continue;
-    const directory = input.includes("/") ? input.slice(0, input.lastIndexOf("/")) : null;
-    for (const candidate of directory === null ? [input] : [input, directory]) {
-      if (code.includes(JSON.stringify(candidate))) return candidate;
-    }
+    if (!input.includes(":") && code.includes(JSON.stringify(input))) return input;
   }
   return null;
 }

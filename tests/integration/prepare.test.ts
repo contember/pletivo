@@ -320,7 +320,12 @@ describe("pletivo prepare", () => {
         "node_modules/id-plugin/index.js": "const id = module.id;\nmodule.exports = function () { return id; };\n",
         "src/styles/global.css": '@plugin "id-plugin";\n',
       });
-      await expectPrepareError(directory, "module.id");
+      const error = await capturedPrepareError(directory);
+      expect(error.diagnostics).toHaveLength(1);
+      expect(error.diagnostics[0]?.source).toEndWith("src/styles/global.css");
+      expect(error.message).toContain('@plugin "id-plugin" cannot run in the Workers host');
+      expect(error.message).toContain("module.id");
+      __resetForTests();
     });
 
     test("refuses an unresolvable target and a project-local plugin file", async () => {

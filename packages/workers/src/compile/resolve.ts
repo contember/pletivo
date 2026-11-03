@@ -24,6 +24,8 @@ const UNSUPPORTED_PACKAGE_ROOTS = new Set(["pletivo", "@pletivo/runtime", "@plet
  * `node_modules`, as `pletivo prepare` refuses it. A path may climb above the project root
  * (a monorepo's hoisted `node_modules`). A bare specifier names a package.
  */
+// The path as written: `prepare` resolves symlinks, so a project file linked into
+// `node_modules` is a package there and not-a-package here.
 function namesProjectFile(importerPath: string, specifier: string): boolean {
   const absolute = specifier.startsWith("/");
   if (!absolute && !specifier.startsWith(".")) return false;
@@ -117,7 +119,7 @@ export class ImportResolver {
    * The bundled module a stylesheet's `@plugin` or `@config` rule names. Only prepare
    * writes one, so a rule it did not see (a stylesheet added since) is missing; the error
    * names the rule's resolution specifier, `@plugin x`, which the next artifact answers.
-   * A project stylesheet's rule naming a project file outside `node_modules` is one no
+   * A project stylesheet's rule naming a project file outside any `node_modules` is one no
    * prepare answers.
    */
   resolveTailwindModule(importer: SourceModule, ref: TailwindModuleRef): ModuleId {
