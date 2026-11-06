@@ -55,7 +55,9 @@ export interface WorkspaceStoreOptions {
   /**
    * The version of each file at the workspace paths asked, for `ProjectFiles.versions`, in
    * one call: a scan asks for a whole collection. A version changes with every write to its
-   * file and is never shared by two files of this workspace. Unset, files carry no version.
+   * file, and equal versions must mean equal text across every workspace whose renders share
+   * an isolate: where one isolate serves several workspaces, put the workspace's identity in
+   * it. Unset, files carry no version.
    */
   versions?: (paths: readonly string[]) => (string | null)[];
   /**
