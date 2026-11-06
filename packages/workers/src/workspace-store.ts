@@ -58,6 +58,11 @@ export interface WorkspaceStoreOptions {
    * file and is never shared by two files of this workspace. Unset, files carry no version.
    */
   versions?: (paths: readonly string[]) => (string | null)[];
+  /**
+   * The text of each file at the workspace paths asked, `null` where there is none, in one read:
+   * a collection asks for all of its files. Unset, each file is read on its own.
+   */
+  readMany?: (paths: readonly string[]) => (string | null)[];
 }
 
 /** Build products and dependencies. npm packages arrive through the artifact (023 §6). */
@@ -151,6 +156,7 @@ export function createWorkspaceProjectStore(
             }
             return keys.map((key) => known.get(key) ?? null);
           };
+    const readTexts = options.readMany;
     return {
       files: new LazyWorkspaceFiles(
         listing.text,
@@ -159,6 +165,12 @@ export function createWorkspaceProjectStore(
           return readText(files, path);
         },
         versions,
+        readTexts === undefined
+          ? undefined
+          : (paths) => {
+              assertCurrent();
+              return readTexts(paths);
+            },
       ),
       assets: createLazyProjectAssetsView(listing.binary.keys(), readBytesOf),
       revision,
@@ -199,16 +211,35 @@ class LazyWorkspaceFiles implements ProjectFiles {
   readonly #paths: ReadonlyMap<string, string>;
   readonly #read: (path: string) => string | null;
   readonly #sources = new Map<string, string | null>();
+  readonly #readMany: ((paths: readonly string[]) => (string | null)[]) | undefined;
   readonly versions?: (paths: readonly string[]) => (string | null)[];
 
   constructor(
     paths: ReadonlyMap<string, string>,
     read: (path: string) => string | null,
     versions: ((paths: readonly string[]) => (string | null)[]) | undefined,
+    readMany: ((paths: readonly string[]) => (string | null)[]) | undefined,
   ) {
     this.#paths = paths;
     this.#read = read;
+    this.#readMany = readMany;
     if (versions !== undefined) this.versions = versions;
+  }
+
+  getMany(keys: readonly string[]): (string | undefined)[] {
+    const missing: string[] = [];
+    const paths: string[] = [];
+    for (const key of keys) {
+      const path = this.#paths.get(key);
+      if (path === undefined || this.#sources.has(key)) continue;
+      missing.push(key);
+      paths.push(path);
+    }
+    if (paths.length > 0 && this.#readMany !== undefined) {
+      const texts = this.#readMany(paths);
+      missing.forEach((key, index) => this.#sources.set(key, texts[index] ?? null));
+    }
+    return keys.map((key) => this.get(key));
   }
 
   keys(): Iterable<string> {

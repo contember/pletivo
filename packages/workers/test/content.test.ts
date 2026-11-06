@@ -512,6 +512,25 @@ describe("ContentFiles", () => {
     expect(() => store.readMany(handle.ref, ["site/src/content/posts/a.md"])).toThrow(ContentRefClosedError);
   });
 
+  test("read several files through the store's batched read when it has one", () => {
+    const asked: string[][] = [];
+    const batched: ProjectFiles = {
+      keys: () => files.keys(),
+      get: (path) => files.get(path),
+      has: (path) => files.has(path),
+      getMany: (paths) => {
+        asked.push([...paths]);
+        return paths.map((path) => files.get(path));
+      },
+    };
+    const store = new ContentFiles();
+    const handle = store.open(batched);
+
+    expect(store.readMany(handle.ref, ["site/src/content/posts/a.md", "site/src/content/posts/missing.md"])).toEqual(["a", null]);
+    expect(asked).toEqual([["site/src/content/posts/a.md", "site/src/content/posts/missing.md"]]);
+    handle.close();
+  });
+
   test("name a call for a ref that is not open, so a host can tell it from a failed read", () => {
     const store = new ContentFiles();
     const handle = store.open(files, undefined, "session-a");

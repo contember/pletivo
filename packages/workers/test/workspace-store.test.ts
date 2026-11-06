@@ -156,6 +156,29 @@ describe("createWorkspaceProjectStore", () => {
     expect(asked).toEqual([["/src/content/b.md", "/src/content/a.md"], ["/src/content/a.md"]]);
   });
 
+  test("reads several files in one call, each once per snapshot, and only at the snapshot's revision", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/src/content/a.md", "a");
+    workspace.write("/src/content/b.md", "b");
+    workspace.write("/src/content/c.md", "c");
+    const asked: string[][] = [];
+    const store = createWorkspaceProjectStore(workspace, {
+      revision: () => workspace.revision,
+      readMany: (paths) => {
+        asked.push([...paths]);
+        return paths.map((path) => String(workspace.readFileSync(path, "utf-8")));
+      },
+    });
+
+    const snapshot = await store.snapshot();
+    expect(snapshot.files.get("src/content/a.md")).toBe("a");
+    expect(snapshot.files.getMany?.(["src/content/b.md", "src/content/missing.md", "src/content/a.md"])).toEqual(["b", undefined, "a"]);
+    expect(snapshot.files.getMany?.(["src/content/b.md"])).toEqual(["b"]);
+    workspace.write("/src/content/x.md", "x");
+    expect(() => snapshot.files.getMany?.(["src/content/c.md"])).toThrow(WorkspaceSnapshotChangedError);
+    expect(asked).toEqual([["/src/content/b.md"]]);
+  });
+
   test("versions nothing unless the workspace can", async () => {
     const workspace = new FakeWorkspace();
     workspace.write("/src/content/a.md", "a");

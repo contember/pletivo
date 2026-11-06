@@ -24,6 +24,8 @@ export interface ProjectFiles {
    * the isolate keeps a file's text by it. Absent: the isolate reads each file every render.
    */
   versions?(paths: readonly string[]): (string | null)[];
+  /** `get` of each of `paths`, in the order asked, in one read where the store can batch it. */
+  getMany?(paths: readonly string[]): (string | undefined)[];
 }
 
 /** The project as one render sees it: text and assets from one revision. */

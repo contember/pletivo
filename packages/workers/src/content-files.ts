@@ -145,7 +145,7 @@ export class ContentFiles implements ContentBinding {
 
   readMany(ref: string, paths: readonly string[]): (string | null)[] {
     const project = this.#project(ref);
-    return recording(project, () => paths.map((path) => project.files.get(path) ?? null));
+    return recording(project, () => readMany(project.files, paths));
   }
 
   image(ref: string, path: string): ImageInfo | null {
@@ -167,7 +167,7 @@ export class ContentFiles implements ContentBinding {
       },
       readMany: (ref, paths) => {
         const project = this.#project(ref, owner);
-        return recording(project, () => paths.map((path) => project.files.get(path) ?? null));
+        return recording(project, () => readMany(project.files, paths));
       },
       image: (ref, path) => {
         const project = this.#project(ref, owner);
@@ -226,6 +226,11 @@ function scanFiles(files: ProjectFiles, dir: string, pattern: string): ContentFi
     if (version !== null && file !== undefined) file.version = version;
   });
   return found;
+}
+
+function readMany(files: ProjectFiles, paths: readonly string[]): (string | null)[] {
+  const texts = files.getMany ? files.getMany(paths) : paths.map((path) => files.get(path));
+  return texts.map((text) => text ?? null);
 }
 
 function recording<T>(project: OpenProject, read: () => T): T {
