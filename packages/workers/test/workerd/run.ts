@@ -167,6 +167,11 @@ function validateReport(value: unknown): void {
   for (const name of ["pluginRendered", "ownIsolate", "isolateReused"]) {
     requireTrue(tailwind, name, "$report.tailwind");
   }
+
+  const compiler = requireObject(field(report, "compiler", "$report"), "$report.compiler");
+  for (const name of ["transformMatchesInProcess", "parseMatchesInProcess", "renderedThroughIsolate", "isolateCreatedOnce"]) {
+    requireTrue(compiler, name, "$report.compiler");
+  }
 }
 
 /**
@@ -206,6 +211,11 @@ await fs.mkdir(persistence);
 await fs.mkdir(wranglerHome);
 const tailwindPlugin = await bundledCommonJsPlugin(path.join(tempRoot, "plugin-project"));
 const tailwindRuntime = await bundleTailwindRuntime();
+const astroWasm = Buffer.from(
+  await Bun.file(
+    path.join(path.dirname(Bun.resolveSync("@astrojs/compiler/package.json", import.meta.dir)), "dist/astro.wasm"),
+  ).arrayBuffer(),
+).toString("base64");
 const sourceConfig = await fs.readFile(path.join(import.meta.dir, "wrangler.jsonc"), "utf8");
 const stagedConfig = sourceConfig.replace(
   '"main": "entry.ts"',
@@ -267,6 +277,7 @@ try {
         sidecar: `http://127.0.0.1:${sidecarPort}/probe?nonce=${encodeURIComponent(nonce)}`,
         tailwindPlugin,
         tailwindRuntime,
+        astroWasm,
       }),
       signal: AbortSignal.timeout(120_000),
     }),

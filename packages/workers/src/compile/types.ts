@@ -43,8 +43,8 @@ export interface CompileProjectOptions {
    * compiled. Absent, every module-shaped file in the map is compiled.
    */
   entries?: readonly string[];
-  /** Overrides the compiler bound to the bundled `astro.wasm` — see `bundled`. */
-  compiler?: AstroCompiler;
+  /** `bundledAstroCompiler()` in a Worker that embeds `astro.wasm`; see `astro-compiler.ts`. */
+  compiler: AstroCompiler;
   /** Where the source tree starts in `files`, e.g. `src`. Used to probe for the content config. */
   srcDir?: string;
   /** What `pletivo prepare` froze: resolutions for bare specifiers and their `node_modules` sources. */

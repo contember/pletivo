@@ -34,6 +34,7 @@ import {
   type DurableObjectStorageLike,
   type Filesystem,
 } from "@kompjutr/do/fs";
+import { bundledAstroCompiler } from "@pletivo/workers/bundled-astro-compiler";
 import { ContentFiles } from "@pletivo/workers/content-files";
 import type {
   ContentBinding,
@@ -92,6 +93,7 @@ export class ProjectDO extends DurableObject<Env> {
         revision: () => this.#filesystem.rev(),
       }),
       loader: this.env.LOADER,
+      compiler: bundledAstroCompiler(),
       content: {
         binding: ctx.exports.ProjectBinding({ props: { projectId: ctx.id.toString() } }),
         store: this.#content,

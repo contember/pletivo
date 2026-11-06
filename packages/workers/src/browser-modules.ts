@@ -16,7 +16,7 @@ import { executionNameForModuleId, projectModuleId, type ProjectArtifact } from 
 import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import type { ProgramScript } from "./compiled-program.ts";
-import { bundled, compileCached } from "./compile/compile-file.ts";
+import { compileCached } from "./compile/compile-file.ts";
 import { extensionOf, projectModuleKind } from "./compile/module-kind.ts";
 import { resolveInFiles } from "./compile/resolve-in-files.ts";
 import { collectImports, resolveSpecifier, rewriteImports } from "./rewrite-imports.ts";
@@ -44,7 +44,7 @@ export function moduleUrl(moduleId: ModuleId): string {
 export interface BrowserModuleSource {
   files: ProjectFiles;
   artifact?: ProjectArtifact;
-  compiler?: AstroCompiler;
+  compiler: AstroCompiler;
   compileCache?: CompileCache;
   /** As the page was compiled, so a shared cache entry is reused rather than replaced. */
   annotateSourceFile?: boolean;
@@ -237,7 +237,7 @@ async function scriptCode(
       executionName: executionNameForModuleId(moduleId),
       origin: located.origin,
     },
-    project.compiler ?? bundled,
+    project.compiler,
     project.compileCache,
     project.annotateSourceFile === true,
   );

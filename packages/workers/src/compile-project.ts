@@ -4,7 +4,7 @@
  */
 
 import { normalizeProjectPath } from "./project-path.ts";
-import { bundled, compileCached } from "./compile/compile-file.ts";
+import { compileCached } from "./compile/compile-file.ts";
 import { emitProject } from "./compile/emit.ts";
 import { linkModule, linkStylesheet } from "./compile/link.ts";
 import { ImportResolver } from "./compile/resolve.ts";
@@ -34,7 +34,7 @@ export type { CompiledProject, CompileProjectOptions } from "./compile/types.ts"
  * reaches is never read, so its syntax errors never surface.
  */
 export async function compileProject(options: CompileProjectOptions): Promise<CompiledProject> {
-  const { compiler = bundled, cache } = options;
+  const { compiler, cache } = options;
   const artifact = options.artifact?.resolver ?? EMPTY_ARTIFACT_RESOLVER;
   const walk = new CompileWalk(options.files, artifact, options.srcDir);
   const resolver = new ImportResolver(walk, {

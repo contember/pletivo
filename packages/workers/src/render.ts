@@ -84,11 +84,14 @@ import type { ExecutableProgram, ProgramMarkdownPlugin } from "./compiled-progra
 // the package keeps working whichever typings the host app has installed.
 
 /** What a dynamic Worker is: modules, and which one to start at. */
+/** A Loader module: JavaScript source, or a wasm module's bytes. */
+export type DynamicWorkerModule = string | { wasm: ArrayBuffer };
+
 export interface DynamicWorkerCode {
   compatibilityDate: string;
   compatibilityFlags?: string[];
   mainModule: string;
-  modules: Record<string, string>;
+  modules: Record<string, DynamicWorkerModule>;
   /**
    * `null` cuts the isolate off from the network, a binding proxies it, and *absent*
    * inherits the host worker's own access. See `outbound.ts`.
@@ -146,8 +149,8 @@ export interface ProjectOptions {
   /** `compatibility_date` for the render isolate. */
   compatibilityDate?: string;
   compatibilityFlags?: readonly string[];
-  /** Overrides the compiler bound to the bundled `astro.wasm`. For tests outside a Worker. */
-  compiler?: AstroCompiler;
+  /** `bundledAstroCompiler()` in a Worker that embeds `astro.wasm`; see `astro-compiler.ts`. */
+  compiler: AstroCompiler;
   /**
    * Compiled files kept between renders, keyed by path and checked by `source ===`.
    * Absent, every file the page reaches is compiled. See `compile-cache.ts`.

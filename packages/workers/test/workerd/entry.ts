@@ -5,6 +5,9 @@ import tailwindPreflight from "tailwindcss/preflight.css";
 import tailwindTheme from "tailwindcss/theme.css";
 import tailwindUtilities from "tailwindcss/utilities.css";
 import { loadProjectArtifact } from "../../src/artifact.ts";
+import { bundledAstroCompiler } from "../../src/bundled-astro-compiler.ts";
+import { createIsolateAstroCompiler } from "../../src/compiler-isolate.ts";
+import { parseCompilerReply } from "../../src/compiler-isolate-protocol.ts";
 import {
   ContentFiles,
   type ContentBinding,
@@ -90,12 +93,20 @@ interface TailwindReport {
   isolateReused: boolean;
 }
 
+interface CompilerReport {
+  transformMatchesInProcess: boolean;
+  parseMatchesInProcess: boolean;
+  renderedThroughIsolate: boolean;
+  isolateCreatedOnce: boolean;
+}
+
 interface QualificationReport {
   identity: IdentityReport;
   content: ContentReport;
   runtime: RuntimeReport;
   outbound: OutboundReport;
   tailwind: TailwindReport;
+  compiler: CompilerReport;
 }
 
 class ExecutionRecords {
@@ -246,7 +257,13 @@ export class QualificationDO extends DurableObject<Env> {
     return fetch(request);
   }
 
-  async qualify(sidecar: string, nonce: string, tailwindPlugin: string, tailwindRuntime: string): Promise<QualificationReport> {
+  async qualify(
+    sidecar: string,
+    nonce: string,
+    tailwindPlugin: string,
+    tailwindRuntime: string,
+    astroWasm: ArrayBuffer,
+  ): Promise<QualificationReport> {
     const probeId = `pletivo-workerd-loader-probe-v1:${nonce}`;
     const factoryCallsBefore = loaderProbeFactoryCalls;
     const firstProbe = this.env.LOADER.get(probeId, loaderProbeFactory);
@@ -266,7 +283,51 @@ export class QualificationDO extends DurableObject<Env> {
     const runtime = await this.#runtime(nonce, binding);
     const outbound = await this.#outbound(nonce, sidecar, binding);
     const tailwind = await this.#tailwind(nonce, tailwindPlugin, tailwindRuntime);
-    return { identity, content, runtime, outbound, tailwind };
+    const compiler = await this.#compiler(nonce, astroWasm);
+    return { identity, content, runtime, outbound, tailwind, compiler };
+  }
+
+  /** The compiler in its own Loader isolate answers as the one in this isolate does. */
+  async #compiler(nonce: string, astroWasm: ArrayBuffer): Promise<CompilerReport> {
+    let created = 0;
+    const loader: WorkerLoaderBinding = {
+      get: (id, code) =>
+        this.env.LOADER.get(id, () => {
+          created++;
+          return code();
+        }),
+    };
+    const isolated = createIsolateAstroCompiler({
+      loader,
+      namespace: namespace(`${nonce}:compiler`, "cap-v1"),
+      compatibilityDate: "2026-01-01",
+      compatibilityFlags: ["nodejs_compat"],
+      wasm: () => astroWasm,
+    });
+    const inProcess = bundledAstroCompiler();
+    const source =
+      '---\nimport Card from "../components/Card.astro";\nconst title = "Compiled";\n---\n' +
+      '<h1 class="title">{title}</h1>\n<Card client:load />\n<style>.title { color: red }</style>\n' +
+      '<script>console.log("hoisted")</script>\n';
+    const options = { filename: "/src/pages/index.astro", internalURL: "pletivo/astro-shim", sourcemap: false, annotateSourceFile: true };
+    const [isolatedResult, inProcessResult] = [await isolated.transform(source, options), await inProcess.transform(source, options)];
+    const [isolatedAst, inProcessAst] = [await isolated.parse(source, { position: true }), await inProcess.parse(source, { position: true })];
+    const page = await renderPage({
+      compiler: isolated,
+      files: new Map([["src/pages/index.astro", '---\nconst who = "isolate";\n---\n<p>compiled in the {who}</p>\n']]),
+      pathname: "/",
+      loader: this.#recordingLoader(),
+      executionNamespace: namespace(`${nonce}:compiler-render`, "cap-v1"),
+    });
+    return {
+      // Both through the reply's typed projection: the Go result also carries fields the type does not name.
+      transformMatchesInProcess:
+        JSON.stringify(parseCompilerReply({ status: "transformed", result: isolatedResult })) ===
+        JSON.stringify(parseCompilerReply({ status: "transformed", result: inProcessResult })),
+      parseMatchesInProcess: JSON.stringify(isolatedAst) === JSON.stringify(inProcessAst),
+      renderedThroughIsolate: page.html.includes("compiled in the isolate"),
+      isolateCreatedOnce: created === 1,
+    };
   }
 
   /** The Loader, recording every isolate id a render asks it for. */
@@ -292,6 +353,7 @@ export class QualificationDO extends DurableObject<Env> {
       files,
       pathname: "/",
       loader: this.#recordingLoader(),
+      compiler: bundledAstroCompiler(),
       executionNamespace,
       ...(input.content
         ? { content: { binding: input.content, store: this.#content } }
@@ -352,6 +414,7 @@ export class QualificationDO extends DurableObject<Env> {
         files: contentProject("No namespace"),
         pathname: "/",
         loader: this.#recordingLoader(),
+        compiler: bundledAstroCompiler(),
         content: { binding, store: this.#content },
       });
     } catch (error) {
@@ -507,6 +570,7 @@ try { new Function("return 1")(); } catch { marker = "refused"; }
     const render = async (): Promise<{ html: string; ids: string[] }> => {
       const before = this.#execution.ids.length;
       const page = await renderPage({
+        compiler: bundledAstroCompiler(),
         files: new Map([
           [
             "src/pages/index.astro",
@@ -658,6 +722,13 @@ export class PletivoBinding extends WorkerEntrypoint<
   }
 }
 
+function base64Bytes(value: string): ArrayBuffer {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes.buffer;
+}
+
 function requestString(object: object, name: string): string {
   const value = Reflect.get(object, name);
   if (typeof value !== "string" || value === "") throw new Error(`${name} must be a string`);
@@ -680,8 +751,9 @@ export default {
       const sidecar = requestString(value, "sidecar");
       const tailwindPlugin = requestString(value, "tailwindPlugin");
       const tailwindRuntime = requestString(value, "tailwindRuntime");
+      const astroWasm = base64Bytes(requestString(value, "astroWasm"));
       const target = env.QUALIFIER.getByName(nonce);
-      const report = await target.qualify(sidecar, nonce, tailwindPlugin, tailwindRuntime);
+      const report = await target.qualify(sidecar, nonce, tailwindPlugin, tailwindRuntime, astroWasm);
       return Response.json(report);
     } catch (error) {
       return new Response(error instanceof Error ? (error.stack ?? error.message) : String(error), {

@@ -48,6 +48,7 @@ imports Tailwind fails with `TailwindNotConfiguredError`.
 The smallest host:
 
 ```ts
+import { bundledAstroCompiler } from "@pletivo/workers/bundled-astro-compiler";
 import { createProjectHost } from "@pletivo/workers/project-host";
 import { createMapProjectStore } from "@pletivo/workers/project-store";
 import type { WorkerLoaderBinding } from "@pletivo/workers/render";
@@ -61,6 +62,7 @@ export default {
     const host = createProjectHost({
       store: createMapProjectStore(new Map([["src/pages/index.astro", "<h1>Hello</h1>"]])),
       loader: env.LOADER,
+      compiler: bundledAstroCompiler(),
       compatibilityDate: "2026-01-01",
       compatibilityFlags: ["nodejs_compat"],
       outbound: { kind: "blocked" },
@@ -70,6 +72,30 @@ export default {
   },
 };
 ```
+
+### Where the Astro compiler runs
+
+Every host passes a `compiler`. `bundledAstroCompiler()` runs `@astrojs/compiler` in the
+host's own isolate, and importing `@pletivo/workers/bundled-astro-compiler` is what puts
+`astro.wasm` in your bundle. The Go program's memory grows to what the largest source
+needed and is never returned, so a host whose isolate is short of memory, such as a Durable
+Object that also holds a workspace, can compile in a Worker Loader isolate of its own:
+
+```ts
+import astroWasm from "@astrojs/compiler/astro.wasm"; // as bytes: a `Data` rule for this file
+import { createIsolateAstroCompiler } from "@pletivo/workers/compiler-isolate";
+
+const compiler = createIsolateAstroCompiler({
+  loader: env.LOADER,
+  namespace: { tenant: projectId, capabilityGeneration: "v1" },
+  compatibilityDate: "2026-01-01",
+  compatibilityFlags: ["nodejs_compat"],
+  wasm: () => astroWasm,
+});
+```
+
+Each call is one `fetch` to that isolate, about a millisecond when it is warm; Pletivo
+compiles a file once per source and caches it.
 
 Your TypeScript program checks this source as part of your own code. It needs
 `@cloudflare/workers-types` and `@types/node` in `types`, `"moduleResolution": "bundler"`,

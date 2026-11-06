@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
-import { createAstroCompiler, compileAstro } from "../src/astro-compiler.ts";
+import { createAstroCompiler } from "../src/astro-compiler.ts";
+import { compileAstro } from "../src/bundled-astro-compiler.ts";
 import { collectAstroFiles } from "./compile-corpus.ts";
 import { astroWasmModule, compile } from "./astro-wasm.ts";
 
