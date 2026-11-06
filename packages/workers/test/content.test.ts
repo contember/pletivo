@@ -6,6 +6,7 @@ import { compileProject } from "../src/compile-project.ts";
 import { imageOutputPath } from "@pletivo/core/image";
 import {
   ContentFiles,
+  ContentRefClosedError,
   createLazyProjectAssetsView,
   globMatcher,
   ProjectAssetOutputAmbiguityError,
@@ -453,7 +454,7 @@ describe("ContentFiles", () => {
     expect(store.read(handle.ref, "site/src/content/posts/a.md")).toBe("a");
     expect(store.read(handle.ref, "site/src/content/posts/missing.md")).toBeNull();
     handle.close();
-    expect(() => store.read(handle.ref, "site/src/content/posts/a.md")).toThrow(/no open project/);
+    expect(() => store.read(handle.ref, "site/src/content/posts/a.md")).toThrow(ContentRefClosedError);
   });
 
   test("read several files in one call, in the order asked", () => {
@@ -463,7 +464,22 @@ describe("ContentFiles", () => {
       store.readMany(handle.ref, ["site/src/content/posts/nested/b.md", "site/src/content/posts/missing.md", "site/src/content/posts/a.md"]),
     ).toEqual(["b", null, "a"]);
     handle.close();
-    expect(() => store.readMany(handle.ref, ["site/src/content/posts/a.md"])).toThrow(/no open project/);
+    expect(() => store.readMany(handle.ref, ["site/src/content/posts/a.md"])).toThrow(ContentRefClosedError);
+  });
+
+  test("name a call for a ref that is not open, so a host can tell it from a failed read", () => {
+    const store = new ContentFiles();
+    const handle = store.open(files, undefined, "session-a");
+    handle.close();
+    const closed = (() => {
+      try {
+        store.forOwner("session-a").read(handle.ref, "site/src/content/posts/a.md");
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(closed).toBeInstanceOf(ContentRefClosedError);
+    expect(closed).toHaveProperty("name", "ContentRefClosedError");
   });
 
   test("keep two open projects apart", () => {
@@ -492,7 +508,7 @@ describe("ContentFiles", () => {
     const binding = store.forOwner("session-a");
     expect(await binding.read(mine.ref, "x.md")).toBe("mine");
     expect(() => binding.read(theirs.ref, "x.md")).toThrow(/no open project/);
-    expect(() => binding.readMany(theirs.ref, ["x.md"])).toThrow(/no open project/);
+    expect(() => binding.readMany(theirs.ref, ["x.md"])).toThrow(ContentRefClosedError);
     expect(() => binding.scan(theirs.ref, "", "*.md")).toThrow(/no open project/);
     expect(() => binding.image(theirs.ref, "x.png")).toThrow(/no open project/);
   });

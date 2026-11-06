@@ -178,13 +178,23 @@ export class ContentFiles implements ContentBinding {
     const opened = this.#open.get(ref);
     // The same answer as an unknown ref, so a foreign one cannot be told apart.
     const project = owner === undefined || opened?.owner === owner ? opened : undefined;
-    if (!project) {
-      throw new Error(
-        `[pletivo-workers] no open project for content ref ${JSON.stringify(ref)} — ` +
-          "the render that opened it has already finished",
-      );
-    }
+    if (!project) throw new ContentRefClosedError(ref);
     return project;
+  }
+}
+
+/**
+ * A binding call for a ref that is not open, or not open for the caller's owner. A render
+ * the host stopped waiting for can still have calls in flight; a host that reports errors
+ * can tell this one apart by `name` and answer it as the end of that render.
+ */
+export class ContentRefClosedError extends Error {
+  constructor(readonly ref: string) {
+    super(
+      `[pletivo-workers] no open project for content ref ${JSON.stringify(ref)} — ` +
+        "the render that opened it has already finished",
+    );
+    this.name = "ContentRefClosedError";
   }
 }
 
