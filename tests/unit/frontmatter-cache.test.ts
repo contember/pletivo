@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   createContentRuntime,
   defineCollection,
@@ -11,6 +11,7 @@ import {
   type ParsedFrontmatter,
   z,
 } from "@pletivo/core/content/collection";
+import * as markdown from "@pletivo/core/content/markdown";
 
 // Loose, so `tags` reaches the entry as parsed rather than as a copy the schema made.
 const collections = { posts: defineCollection({ loader: glob({ base: "posts" }), schema: z.looseObject({ title: z.string() }) }) };
@@ -62,14 +63,20 @@ describe("ContentHost.frontmatterCache", () => {
       ["posts/b.md", "---\ntitle: B\n---\nBody B\n"],
     ]);
     const cache = new CountingCache();
-    await loadPosts(files, cache);
-    expect(cache.sets).toBe(2);
+    const parse = spyOn(markdown, "parseFrontmatter");
+    try {
+      await loadPosts(files, cache);
+      expect(parse).toHaveBeenCalledTimes(2);
 
-    files.set("posts/b.md", "---\ntitle: B2\n---\nBody B\n");
-    const entries = await loadPosts(files, cache);
+      files.set("posts/b.md", "---\ntitle: B2\n---\nBody B\n");
+      const entries = await loadPosts(files, cache);
 
-    expect(cache.sets).toBe(3);
-    expect(entries.map((entry) => entry.data.title)).toEqual(["A", "B2"]);
+      expect(parse).toHaveBeenCalledTimes(3);
+      expect(parse.mock.calls[2]?.[0]).toContain("title: B2");
+      expect(entries.map((entry) => entry.data.title)).toEqual(["A", "B2"]);
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   test("a change one render makes to an entry's data does not reach the next", async () => {
