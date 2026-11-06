@@ -5,6 +5,7 @@ import { CompilerIsolateError, createIsolateAstroCompiler } from "../src/compile
 import { IsolateProtocolError } from "../src/isolate-protocol.ts";
 import type { DynamicWorkerCode, WorkerLoaderBinding } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
+import { transformFields } from "./transform-fields.ts";
 
 const astroWasm = await astroWasmModule();
 const WASM_BYTES = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer;
@@ -53,23 +54,7 @@ describe("compiler isolate", () => {
     expect(expected.css.length).toBe(1);
     expect(expected.scripts.length).toBe(1);
     expect(expected.hydratedComponents.length).toBe(1);
-    expect(transformed).toEqual({
-      code: expected.code,
-      map: expected.map,
-      scope: expected.scope,
-      styleError: expected.styleError,
-      diagnostics: expected.diagnostics,
-      css: expected.css,
-      // The typed fields: an inline script also carries an empty `src` its type does not have.
-      scripts: expected.scripts.map((script) =>
-        script.type === "inline" ? { type: script.type, code: script.code, map: script.map } : { type: script.type, src: script.src },
-      ),
-      hydratedComponents: expected.hydratedComponents,
-      clientOnlyComponents: expected.clientOnlyComponents,
-      serverComponents: expected.serverComponents,
-      containsHead: expected.containsHead,
-      propagation: expected.propagation,
-    });
+    expect(transformed).toEqual(transformFields(expected));
     expect(transformed.code).not.toContain("$$createMetadata");
     expect(await isolated.parse(SOURCE, { position: true })).toEqual(await local.parse(SOURCE, { position: true }));
   });

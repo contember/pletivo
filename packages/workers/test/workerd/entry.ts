@@ -7,7 +7,6 @@ import tailwindUtilities from "tailwindcss/utilities.css";
 import { loadProjectArtifact } from "../../src/artifact.ts";
 import { bundledAstroCompiler } from "../../src/bundled-astro-compiler.ts";
 import { createIsolateAstroCompiler } from "../../src/compiler-isolate.ts";
-import { parseCompilerReply } from "../../src/compiler-isolate-protocol.ts";
 import {
   ContentFiles,
   type ContentBinding,
@@ -25,6 +24,7 @@ import {
   type RenderedPage,
   type WorkerLoaderBinding,
 } from "../../src/render.ts";
+import { transformFields } from "../transform-fields.ts";
 
 interface Env {
   QUALIFIER: DurableObjectNamespace<QualificationDO>;
@@ -310,7 +310,9 @@ export class QualificationDO extends DurableObject<Env> {
       '<h1 class="title">{title}</h1>\n<Card client:load />\n<style>.title { color: red }</style>\n' +
       '<script>console.log("hoisted")</script>\n';
     const options = { filename: "/src/pages/index.astro", internalURL: "pletivo/astro-shim", sourcemap: false, annotateSourceFile: true };
-    const [isolatedResult, inProcessResult] = [await isolated.transform(source, options), await inProcess.transform(source, options)];
+    // In process as the compile does it: imports resolve to their own specifier, as in the isolate.
+    const inProcessOptions = { ...options, resolvePath: async (specifier: string) => specifier };
+    const [isolatedResult, inProcessResult] = [await isolated.transform(source, options), await inProcess.transform(source, inProcessOptions)];
     const [isolatedAst, inProcessAst] = [await isolated.parse(source, { position: true }), await inProcess.parse(source, { position: true })];
     const page = await renderPage({
       compiler: isolated,
@@ -320,10 +322,10 @@ export class QualificationDO extends DurableObject<Env> {
       executionNamespace: namespace(`${nonce}:compiler-render`, "cap-v1"),
     });
     return {
-      // Both through the reply's typed projection: the Go result also carries fields the type does not name.
       transformMatchesInProcess:
-        JSON.stringify(parseCompilerReply({ status: "transformed", result: isolatedResult })) ===
-        JSON.stringify(parseCompilerReply({ status: "transformed", result: inProcessResult })),
+        inProcessResult.css.length === 1 &&
+        inProcessResult.hydratedComponents.length === 1 &&
+        JSON.stringify(isolatedResult) === JSON.stringify(transformFields(inProcessResult)),
       parseMatchesInProcess: JSON.stringify(isolatedAst) === JSON.stringify(inProcessAst),
       renderedThroughIsolate: page.html.includes("compiled in the isolate"),
       isolateCreatedOnce: created === 1,
