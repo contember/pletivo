@@ -151,12 +151,16 @@ const BASE = "/";
 
 /** Content texts the isolate keeps between renders, by path and version. Counted as UTF-16. */
 const CONTENT_CACHE_BOUNDS = { maxEntries: 20_000, maxBytes: 32 * 1024 * 1024 };
+/** Frontmatter parses the isolate keeps between renders, by text. Counted as their text, in UTF-16. */
+const FRONTMATTER_CACHE_BOUNDS = { maxEntries: 20_000, maxBytes: 16 * 1024 * 1024 };
 
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
   let markdownConfigured = false;
   let i18nConfig: ResolvedI18nConfig | null | undefined;
   // Safe across renders and projects: a version names one text wherever it appears.
   const contentCache = new BoundedLru<string>(CONTENT_CACHE_BOUNDS);
+  // Safe across renders and projects too: a text always parses the same.
+  const frontmatterCache = new BoundedLru<ContentCollection.ParsedFrontmatter>(FRONTMATTER_CACHE_BOUNDS);
   // Module state is safe: the map is part of the program, so of the isolate's id.
   setScriptUrlResolver((id) => (Object.hasOwn(program.scripts, id) ? program.scripts[id] : null));
   async function handle(request: Request, env: IsolateEnv): Promise<IsolatePayload> {
@@ -181,7 +185,7 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
       // Per request: `site` is the request's, and the helpers read it.
       i18n.module.setI18nRuntimeState(i18nConfig, "/", body.site);
     }
-    return withContent(program, env[CONTENT_BINDING], contentCache, body, () => {
+    return withContent(program, env[CONTENT_BINDING], { texts: contentCache, frontmatter: frontmatterCache }, body, () => {
       if (body.op === "paths") return listPaths(program, body.routes);
       if (body.op === "markdown") return renderMarkdownPage(program, body);
       if (body.op === "warm") return warmPage(program, body.file);
@@ -426,6 +430,12 @@ function dirname(path: string): string {
   return at === -1 ? "" : path.slice(0, at);
 }
 
+/** What the isolate keeps of content between renders. */
+interface ContentCaches {
+  texts: BoundedLru<string>;
+  frontmatter: BoundedLru<ContentCollection.ParsedFrontmatter>;
+}
+
 /**
  * Runs `run` inside a content runtime built for this request. Per request because the
  * isolate is reused: calls carry this request's ref, and a content edit keeps the isolate.
@@ -433,7 +443,7 @@ function dirname(path: string): string {
 async function withContent(
   program: IsolateProgram,
   files: ContentBinding | undefined,
-  cache: BoundedLru<string>,
+  caches: ContentCaches,
   body: IsolateRequest,
   run: () => Promise<IsolatePayload>,
 ): Promise<IsolatePayload> {
@@ -453,7 +463,7 @@ async function withContent(
       const found = await files.scan(ref, dir, pattern);
       const missing: ContentFileRef[] = [];
       for (const file of found) {
-        const cached = file.version === undefined ? undefined : cache.get(contentCacheKey(file.path, file.version));
+        const cached = file.version === undefined ? undefined : caches.texts.get(contentCacheKey(file.path, file.version));
         if (cached === undefined) missing.push(file);
         else scanned.set(file.path, cached);
       }
@@ -461,7 +471,7 @@ async function withContent(
       missing.forEach((file, index) => {
         const text = texts[index] ?? null;
         scanned.set(file.path, text);
-        if (text !== null && file.version !== undefined) cache.set(contentCacheKey(file.path, file.version), text, text.length * 2);
+        if (text !== null && file.version !== undefined) caches.texts.set(contentCacheKey(file.path, file.version), text, text.length * 2);
       });
       return {
         root: dir,
@@ -495,6 +505,10 @@ async function withContent(
       if (!loadConfig) return {};
       const module = await loadConfig();
       return module.collections || {};
+    },
+    frontmatterCache: {
+      get: (text) => caches.frontmatter.get(text),
+      set: (text, parsed) => caches.frontmatter.set(text, parsed, text.length * 2),
     },
   });
   return collections.runWithContentRuntime(runtime, async () => {

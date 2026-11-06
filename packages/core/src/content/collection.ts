@@ -296,6 +296,23 @@ export interface ContentHost {
   ): Promise<string>;
   /** Astro config surfaced to a Content Layer loader as `context.config`. */
   loaderConfig?(): Record<string, unknown> | Promise<Record<string, unknown>>;
+  /**
+   * Keeps frontmatter parses across runtimes, for a host that builds one per request. It only
+   * stores: the parse is still this module's. Absent: a load parses every file it reads.
+   */
+  frontmatterCache?: FrontmatterCache;
+}
+
+/** A Markdown file's frontmatter and body, as `parseFrontmatter` split them. */
+export interface ParsedFrontmatter {
+  frontmatter: Record<string, unknown>;
+  body: string;
+}
+
+/** Parses by the file text they came from; a text always parses the same. */
+export interface FrontmatterCache {
+  get(text: string): ParsedFrontmatter | undefined;
+  set(text: string, parsed: ParsedFrontmatter): void;
 }
 
 /** One host plus all collection state that belongs to one coherent lifecycle. */
@@ -449,7 +466,7 @@ export function glob(options: GlobOptions): Loader {
           }
           extras = { _filePath: fullPath };
         } else if (ext === ".mdx") {
-          const parsed = parseFrontmatter(content);
+          const parsed = frontmatterOf(host, content);
           data = parsed.frontmatter;
           body = parsed.body;
           extras = { _filePath: fullPath, _mdxFilePath: fullPath };
@@ -458,7 +475,7 @@ export function glob(options: GlobOptions): Loader {
           // to HTML until `entry.render()` is called. Listing pages read only
           // frontmatter, so rendering every entry's body up front is wasted
           // work (dominant cost of loading a large collection).
-          const parsed = parseFrontmatter(content);
+          const parsed = frontmatterOf(host, content);
           data = parsed.frontmatter;
           body = parsed.body;
           extras = { _filePath: fullPath };
@@ -475,6 +492,21 @@ export function glob(options: GlobOptions): Loader {
     },
   };
   return loader;
+}
+
+/**
+ * `parseFrontmatter` through the host's cache. A kept parse is handed out as a copy, so a page
+ * that changes an entry's data changes it for its own render only.
+ */
+function frontmatterOf(host: ContentHost, content: string): ParsedFrontmatter {
+  const cache = host.frontmatterCache;
+  if (!cache) return parseFrontmatter(content);
+  let parsed = cache.get(content);
+  if (parsed === undefined) {
+    parsed = parseFrontmatter(content);
+    cache.set(content, parsed);
+  }
+  return { frontmatter: structuredClone(parsed.frontmatter), body: parsed.body };
 }
 
 /**
