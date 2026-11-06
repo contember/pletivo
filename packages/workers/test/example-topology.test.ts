@@ -65,6 +65,7 @@ describe("Workers example topology", () => {
     );
     expect(source).toContain("return this.#content.scan(ref, dir, pattern)");
     expect(source).toContain("return this.#content.read(ref, path)");
+    expect(source).toContain("return this.#content.readMany(ref, paths)");
     expect(source).toContain("return await this.#content.image(ref, path)");
     expect(source).toContain("extends WorkerEntrypoint<Env, { projectId: string }>");
     expect(source).toContain("#target(): DurableObjectStub<ProjectDO>");

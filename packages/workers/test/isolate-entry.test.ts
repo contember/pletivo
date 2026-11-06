@@ -319,6 +319,9 @@ describe("isolate entry content scope", () => {
     read(ref, path) {
       return sources[ref]?.[path] ?? null;
     },
+    readMany(ref, paths) {
+      return paths.map((path) => sources[ref]?.[path] ?? null);
+    },
     image() {
       return null;
     },

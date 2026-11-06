@@ -120,6 +120,9 @@ export class ProjectDO extends DurableObject<Env> {
   read(ref: string, path: string): string | null {
     return this.#content.read(ref, path);
   }
+  readMany(ref: string, paths: string[]): (string | null)[] {
+    return this.#content.readMany(ref, paths);
+  }
   async image(ref: string, path: string): Promise<ImageInfo | null> {
     return await this.#content.image(ref, path);
   }
@@ -229,6 +232,10 @@ export class ProjectBinding extends WorkerEntrypoint<Env, { projectId: string }>
 
   read(ref: string, path: string): Promise<string | null> {
     return this.#target().read(ref, path);
+  }
+
+  readMany(ref: string, paths: string[]): Promise<(string | null)[]> {
+    return this.#target().readMany(ref, paths);
   }
 
   image(ref: string, path: string): Promise<ImageInfo | null> {

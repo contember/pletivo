@@ -202,6 +202,11 @@ function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "non-error";
 }
 
+function forcedReadThrow(source: string | null): string | null {
+  if (source?.includes("FORCE_READ_THROW")) throw new Error("forced workerd content failure");
+  return source;
+}
+
 export class QualificationDO extends DurableObject<Env> {
   readonly #content = new ContentFiles();
   readonly #execution = new ExecutionRecords();
@@ -226,9 +231,11 @@ export class QualificationDO extends DurableObject<Env> {
   }
 
   read(ref: string, path: string): string | null {
-    const source = this.#content.read(ref, path);
-    if (source?.includes("FORCE_READ_THROW")) throw new Error("forced workerd content failure");
-    return source;
+    return forcedReadThrow(this.#content.read(ref, path));
+  }
+
+  readMany(ref: string, paths: string[]): (string | null)[] {
+    return this.#content.readMany(ref, paths).map(forcedReadThrow);
   }
 
   async image(ref: string, path: string): Promise<ImageInfo | null> {
@@ -634,6 +641,10 @@ export class PletivoBinding extends WorkerEntrypoint<
 
   read(ref: string, path: string): Promise<string | null> {
     return this.#target().read(ref, path);
+  }
+
+  readMany(ref: string, paths: string[]): Promise<(string | null)[]> {
+    return this.#target().readMany(ref, paths);
   }
 
   image(ref: string, path: string): Promise<ImageInfo | null> {

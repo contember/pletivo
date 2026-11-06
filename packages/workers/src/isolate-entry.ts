@@ -433,18 +433,23 @@ async function withContent(
   if (ref === undefined) throw new Error("[pletivo-workers] the render request carries no content ref");
   const { collections, images } = modules;
   const loadConfig = program.contentConfig;
+  // A collection reads every file its scan found, so they cross the binding in one call.
+  const scanned = new Map<string, string | null>();
   const runtime = collections.createContentRuntime({
     async scan(projectRoot, base, pattern) {
       const dir = resolveFrom(projectRoot, base);
+      const found = await files.scan(ref, dir, pattern);
+      const texts = found.length === 0 ? [] : await files.readMany(ref, found.map((file) => file.path));
+      found.forEach((file, index) => scanned.set(file.path, texts[index] ?? null));
       return {
         root: dir,
         // Rooted at the file map, so `generateId` sees a different prefix than on Bun.
         rootUrl: new URL("file:///" + dir + "/"),
-        files: await files.scan(ref, dir, pattern),
+        files: found,
       };
     },
     async readFile(path) {
-      const text = await files.read(ref, path);
+      const text = scanned.has(path) ? (scanned.get(path) ?? null) : await files.read(ref, path);
       if (text === null) throw new Error("[pletivo-workers] no content file " + path);
       return text;
     },

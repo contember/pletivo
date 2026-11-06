@@ -30,6 +30,11 @@ export interface ContentBinding {
   scan(ref: string, dir: string, pattern: string): Promise<ContentFileRef[]> | ContentFileRef[];
   /** A file's text, or `null` when the project has no such file. */
   read(ref: string, path: string): Promise<string | null> | string | null;
+  /**
+   * `read` of each path, in the order asked, in one call. A collection reads every file its
+   * scan found; one call each costs a round trip per file when the binding is remote.
+   */
+  readMany(ref: string, paths: readonly string[]): Promise<(string | null)[]> | (string | null)[];
   /** What a binary asset is, or `null` when the project has no such file. */
   image(ref: string, path: string): Promise<ImageInfo | null> | ImageInfo | null;
 }
@@ -77,6 +82,8 @@ export interface ContentHandle {
  * export class PletivoContent extends WorkerEntrypoint {
  *   scan(ref: string, dir: string, pattern: string) { return CONTENT.scan(ref, dir, pattern); }
  *   read(ref: string, path: string) { return CONTENT.read(ref, path); }
+ *   readMany(ref: string, paths: string[]) { return CONTENT.readMany(ref, paths); }
+ *   image(ref: string, path: string) { return CONTENT.image(ref, path); }
  * }
  * // per request:
  * renderPage({ files, loader: env.LOADER, content: { binding: ctx.exports.PletivoContent({}), store: CONTENT } })
@@ -134,6 +141,11 @@ export class ContentFiles implements ContentBinding {
     return recording(project, () => project.files.get(path) ?? null);
   }
 
+  readMany(ref: string, paths: readonly string[]): (string | null)[] {
+    const project = this.#project(ref);
+    return recording(project, () => paths.map((path) => project.files.get(path) ?? null));
+  }
+
   image(ref: string, path: string): ImageInfo | null {
     // `#project` first: an asset map may be absent, a finished render's ref may not.
     const project = this.#project(ref);
@@ -150,6 +162,10 @@ export class ContentFiles implements ContentBinding {
       read: (ref, path) => {
         const project = this.#project(ref, owner);
         return recording(project, () => project.files.get(path) ?? null);
+      },
+      readMany: (ref, paths) => {
+        const project = this.#project(ref, owner);
+        return recording(project, () => paths.map((path) => project.files.get(path) ?? null));
       },
       image: (ref, path) => {
         const project = this.#project(ref, owner);

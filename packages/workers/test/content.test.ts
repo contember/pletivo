@@ -121,7 +121,14 @@ class ScanBarrier implements ContentBinding {
   }
 
   read(ref: string, path: string): string | null {
-    const source = this.inner.read(ref, path);
+    return this.#rejecting(this.inner.read(ref, path));
+  }
+
+  readMany(ref: string, paths: readonly string[]): (string | null)[] {
+    return this.inner.readMany(ref, paths).map((source) => this.#rejecting(source));
+  }
+
+  #rejecting(source: string | null): string | null {
     if (source?.includes(this.rejectedText)) throw new Error("forced content read failure");
     return source;
   }
@@ -131,10 +138,47 @@ class ScanBarrier implements ContentBinding {
   }
 }
 
+/** Counts the calls a render makes, which over a remote binding are round trips. */
+class CountingBinding implements ContentBinding {
+  readonly calls: string[] = [];
+
+  constructor(readonly inner: ContentFiles) {}
+
+  scan(ref: string, dir: string, pattern: string): ContentFileRef[] {
+    this.calls.push("scan");
+    return this.inner.scan(ref, dir, pattern);
+  }
+
+  read(ref: string, path: string): string | null {
+    this.calls.push("read");
+    return this.inner.read(ref, path);
+  }
+
+  readMany(ref: string, paths: readonly string[]): (string | null)[] {
+    this.calls.push(`readMany:${paths.length}`);
+    return this.inner.readMany(ref, paths);
+  }
+
+  image(ref: string, path: string): ImageInfo | null {
+    this.calls.push("image");
+    return this.inner.image(ref, path);
+  }
+}
+
 describe("content collections", () => {
   test("render a collection into a page", async () => {
     const page = await render(project({ "a.md": note("Alpha"), "b.md": note("Beta") }));
     expect(page.html).toContain("<li>Alpha</li><li>Beta</li>");
+  });
+
+  test("read a collection's files in one binding call, not one per file", async () => {
+    const store = new ContentFiles();
+    const binding = new CountingBinding(store);
+    const notes = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`n${i}.md`, note(`Note ${i}`)]));
+    const namespace = { tenant: "content-tests", capabilityGeneration: "counting-v1" };
+    const page = await render(project(notes), { binding, store }, namespace);
+    expect(page.html).toContain("<li>Note 0</li>");
+    expect(binding.calls).toEqual(["scan", "readMany:20"]);
   });
 
   test("enumerate in scan order, not in file-map order", async () => {
@@ -412,6 +456,16 @@ describe("ContentFiles", () => {
     expect(() => store.read(handle.ref, "site/src/content/posts/a.md")).toThrow(/no open project/);
   });
 
+  test("read several files in one call, in the order asked", () => {
+    const store = new ContentFiles();
+    const handle = store.open(files);
+    expect(
+      store.readMany(handle.ref, ["site/src/content/posts/nested/b.md", "site/src/content/posts/missing.md", "site/src/content/posts/a.md"]),
+    ).toEqual(["b", null, "a"]);
+    handle.close();
+    expect(() => store.readMany(handle.ref, ["site/src/content/posts/a.md"])).toThrow(/no open project/);
+  });
+
   test("keep two open projects apart", () => {
     const store = new ContentFiles();
     const left = store.open(new Map([["x.md", "left"]]));
@@ -438,6 +492,7 @@ describe("ContentFiles", () => {
     const binding = store.forOwner("session-a");
     expect(await binding.read(mine.ref, "x.md")).toBe("mine");
     expect(() => binding.read(theirs.ref, "x.md")).toThrow(/no open project/);
+    expect(() => binding.readMany(theirs.ref, ["x.md"])).toThrow(/no open project/);
     expect(() => binding.scan(theirs.ref, "", "*.md")).toThrow(/no open project/);
     expect(() => binding.image(theirs.ref, "x.png")).toThrow(/no open project/);
   });
