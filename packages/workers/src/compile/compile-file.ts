@@ -75,6 +75,7 @@ async function compileFile(
     filename: compilePath,
     internalURL: "pletivo/astro-shim",
     sourcemap: false,
+    resolvePath: async (specifier) => specifier,
     // `data-astro-source-file` / `-loc` on every element, for a visual editor.
     annotateSourceFile,
   });

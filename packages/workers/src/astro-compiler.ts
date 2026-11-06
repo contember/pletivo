@@ -25,20 +25,25 @@ export interface RawCompilerApi {
   parse(source: string, options: ParseOptions): { ast: string; diagnostics: DiagnosticMessage[] };
 }
 
-/**
- * The transform options a compiler takes: data only, so a compiler in another isolate
- * takes the same. Pletivo resolves imports itself, so every implementation passes an
- * identity `resolvePath`; without one the compiler emits its own `$$createMetadata`.
- */
-export type AstroTransformOptions = Omit<TransformOptions, "resolvePath" | "preprocessStyle">;
-
 /** Promise-returning wrappers, matching what `@astrojs/compiler` exports on other hosts. */
 export interface AstroCompiler {
-  transform(source: string, options?: AstroTransformOptions): Promise<TransformResult>;
+  transform(source: string, options?: TransformOptions): Promise<TransformResult>;
   parse(source: string, options?: ParseOptions): Promise<ParseResult>;
 }
 
-/** The transform options the Go program is called with. See `AstroTransformOptions`. */
+/**
+ * The transform options that cross to a compiler isolate: data only. A function cannot
+ * cross, so there every import resolves to its own specifier, which is what Pletivo asks.
+ */
+export type AstroTransformOptions = Omit<TransformOptions, "resolvePath" | "preprocessStyle">;
+
+/** `options` as they cross to a compiler isolate. See `AstroTransformOptions`. */
+export function transformData(options: TransformOptions): AstroTransformOptions {
+  const { resolvePath: _resolvePath, preprocessStyle: _preprocessStyle, ...data } = options;
+  return data;
+}
+
+/** The options a compiler isolate calls the Go program with. See `AstroTransformOptions`. */
 export function goTransformOptions(options: AstroTransformOptions): TransformOptions {
   return { ...options, resolvePath: async (specifier) => specifier };
 }
@@ -93,7 +98,7 @@ export function rawApi(wasm: WebAssembly.Module): RawCompilerApi {
 export function createAstroCompiler(wasm: WebAssembly.Module): AstroCompiler {
   return {
     async transform(source, options = {}) {
-      return rawApi(wasm).transform(source, goTransformOptions(options));
+      return rawApi(wasm).transform(source, options);
     },
     async parse(source, options = {}) {
       const result = rawApi(wasm).parse(source, options);

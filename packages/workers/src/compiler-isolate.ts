@@ -1,11 +1,13 @@
 /**
  * The Astro compiler in a Worker Loader isolate of its own. The Go wasm's memory grows to
  * what the largest source needed and never shrinks, so a host whose own isolate is short
- * of memory compiles here. Same answers as `createAstroCompiler`, one `fetch` per call.
+ * of memory compiles here. Same answers as `createAstroCompiler`, one `fetch` per call,
+ * except that `resolvePath` and `preprocessStyle` cannot cross: there every import resolves
+ * to its own specifier, as Pletivo asks, and styles are not preprocessed.
  */
 
-import type { ParseOptions, ParseResult, TransformResult } from "@astrojs/compiler/types";
-import { astFromJson, type AstroCompiler, type AstroTransformOptions } from "./astro-compiler.ts";
+import type { ParseOptions, ParseResult, TransformOptions, TransformResult } from "@astrojs/compiler/types";
+import { astFromJson, transformData, type AstroCompiler } from "./astro-compiler.ts";
 import { parseCompilerReply, type CompilerIsolateReply, type CompilerIsolateRequest } from "./compiler-isolate-protocol.ts";
 import { isolateKey, programHash, type ExecutionNamespace, type IsolateKey } from "./execution-identity.ts";
 import {
@@ -75,8 +77,8 @@ export function createIsolateAstroCompiler(options: CompilerIsolateOptions): Ast
   }
 
   return {
-    async transform(source: string, transformOptions: AstroTransformOptions = {}): Promise<TransformResult> {
-      const reply = await call({ op: "transform", source, options: transformOptions });
+    async transform(source: string, transformOptions: TransformOptions = {}): Promise<TransformResult> {
+      const reply = await call({ op: "transform", source, options: transformData(transformOptions) });
       if (reply.status !== "transformed") throw new IsolateProtocolError("$.status", "expected transformed");
       return reply.result;
     },

@@ -4,7 +4,7 @@
  * isolate.
  */
 
-import { createAstroCompiler, rawApi } from "./astro-compiler.ts";
+import { createAstroCompiler, goTransformOptions, rawApi } from "./astro-compiler.ts";
 import type { CompilerIsolateReply, CompilerIsolateRequest } from "./compiler-isolate-protocol.ts";
 
 export interface CompilerEntry {
@@ -15,7 +15,7 @@ export function createCompilerEntry(wasm: WebAssembly.Module): CompilerEntry {
   const compiler = createAstroCompiler(wasm);
 
   async function handle(body: CompilerIsolateRequest): Promise<CompilerIsolateReply> {
-    if (body.op === "transform") return { status: "transformed", result: await compiler.transform(body.source, body.options) };
+    if (body.op === "transform") return { status: "transformed", result: await compiler.transform(body.source, goTransformOptions(body.options)) };
     // The AST crosses as the Go program's JSON text; parsing it here only to serialize it again is waste.
     const parsed = rawApi(wasm).parse(body.source, body.options);
     return { status: "parsed", ast: parsed.ast, diagnostics: parsed.diagnostics };

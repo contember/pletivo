@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { createCompilerEntry } from "../src/compiler-isolate-entry.ts";
 import { CompilerIsolateError, createIsolateAstroCompiler } from "../src/compiler-isolate.ts";
-import { parseCompilerReply } from "../src/compiler-isolate-protocol.ts";
 import { IsolateProtocolError } from "../src/isolate-protocol.ts";
 import type { DynamicWorkerCode, WorkerLoaderBinding } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
@@ -49,9 +48,28 @@ describe("compiler isolate", () => {
     const local = createAstroCompiler(astroWasm);
 
     const transformed = await isolated.transform(SOURCE, OPTIONS);
-    expect(parseCompilerReply({ status: "transformed", result: transformed })).toEqual(
-      parseCompilerReply({ status: "transformed", result: await local.transform(SOURCE, OPTIONS) }),
-    );
+    // Compared with the upstream result field by field, not through the reply's projection.
+    const expected = await local.transform(SOURCE, { ...OPTIONS, resolvePath: async (specifier: string) => specifier });
+    expect(expected.css.length).toBe(1);
+    expect(expected.scripts.length).toBe(1);
+    expect(expected.hydratedComponents.length).toBe(1);
+    expect(transformed).toEqual({
+      code: expected.code,
+      map: expected.map,
+      scope: expected.scope,
+      styleError: expected.styleError,
+      diagnostics: expected.diagnostics,
+      css: expected.css,
+      // The typed fields: an inline script also carries an empty `src` its type does not have.
+      scripts: expected.scripts.map((script) =>
+        script.type === "inline" ? { type: script.type, code: script.code, map: script.map } : { type: script.type, src: script.src },
+      ),
+      hydratedComponents: expected.hydratedComponents,
+      clientOnlyComponents: expected.clientOnlyComponents,
+      serverComponents: expected.serverComponents,
+      containsHead: expected.containsHead,
+      propagation: expected.propagation,
+    });
     expect(transformed.code).not.toContain("$$createMetadata");
     expect(await isolated.parse(SOURCE, { position: true })).toEqual(await local.parse(SOURCE, { position: true }));
   });

@@ -6,8 +6,8 @@
  */
 
 import astroWasm from "@astrojs/compiler/astro.wasm";
-import type { ParseOptions, ParseResult, TransformResult } from "@astrojs/compiler/types";
-import { createAstroCompiler, type AstroCompiler, type AstroTransformOptions } from "./astro-compiler.ts";
+import type { ParseOptions, ParseResult, TransformOptions, TransformResult } from "@astrojs/compiler/types";
+import { createAstroCompiler, type AstroCompiler } from "./astro-compiler.ts";
 
 let bundled: AstroCompiler | undefined;
 
@@ -27,7 +27,7 @@ export function bundledAstroCompiler(): AstroCompiler {
 }
 
 /** Compile one `.astro` source. Mirrors `transform()` from `@astrojs/compiler`. */
-export async function compileAstro(source: string, options?: AstroTransformOptions): Promise<TransformResult> {
+export async function compileAstro(source: string, options?: TransformOptions): Promise<TransformResult> {
   return bundledAstroCompiler().transform(source, options);
 }
 
