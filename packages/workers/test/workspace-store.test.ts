@@ -13,6 +13,7 @@ class FakeWorkspace implements WorkspaceFiles {
   onReaddir: ((path: string) => void) | undefined;
   readonly #text = new Map<string, string>();
   readonly #bytes = new Map<string, Uint8Array>();
+  readonly #versions = new Map<string, number>();
   #revision = 0;
 
   get revision(): number {
@@ -28,6 +29,12 @@ class FakeWorkspace implements WorkspaceFiles {
       this.#text.delete(path);
     }
     this.#revision++;
+    this.#versions.set(path, this.#revision);
+  }
+
+  versionOf(path: string): string | null {
+    const version = this.#versions.get(path);
+    return version === undefined ? null : `v${version}`;
   }
 
   readdirSync(path: string): WorkspaceDirent[] {
@@ -117,6 +124,44 @@ describe("createWorkspaceProjectStore", () => {
     expect(second).toBe(first);
     expect(second.assets).toBe(first.assets);
     expect(workspace.reads.length).toBe(reads);
+  });
+
+  test("versions text files by the workspace's versions, once per file, and only at the snapshot's revision", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/src/content/a.md", "a");
+    workspace.write("/src/content/b.md", "b");
+    workspace.write("/src/assets/hero.gif", gif(1, 1, 1));
+    workspace.write("/src/content/c.md", "c");
+    const store = createWorkspaceProjectStore(workspace, {
+      revision: () => workspace.revision,
+      versions: (paths) => {
+        asked.push([...paths]);
+        return paths.map((path) => workspace.versionOf(path));
+      },
+    });
+    const asked: string[][] = [];
+
+    const snapshot = await store.snapshot();
+    expect(snapshot.files.versions?.(["src/content/b.md", "src/content/missing.md", "src/assets/hero.gif", "src/content/a.md"])).toEqual([
+      "v2",
+      null,
+      null,
+      "v1",
+    ]);
+    expect(snapshot.files.versions?.(["src/content/a.md", "src/content/b.md"])).toEqual(["v1", "v2"]);
+    workspace.write("/src/content/a.md", "a2");
+    expect(() => snapshot.files.versions?.(["src/content/c.md"])).toThrow(WorkspaceSnapshotChangedError);
+    expect((await store.snapshot()).files.versions?.(["src/content/a.md"])).toEqual(["v5"]);
+    // Once per file and snapshot, in one call; a path the snapshot does not list is not asked.
+    expect(asked).toEqual([["/src/content/b.md", "/src/content/a.md"], ["/src/content/a.md"]]);
+  });
+
+  test("versions nothing unless the workspace can", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/src/content/a.md", "a");
+    const store = createWorkspaceProjectStore(workspace, { revision: () => workspace.revision });
+
+    expect((await store.snapshot()).files.versions).toBeUndefined();
   });
 
   test("fails when the workspace changes during the walk", async () => {

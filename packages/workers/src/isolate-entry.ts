@@ -23,7 +23,8 @@ import {
 } from "@pletivo/runtime/astro-shim";
 import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
 import { runWithLogCapture } from "./log-capture.ts";
-import type { ContentBinding } from "./content-files.ts";
+import { BoundedLru } from "./bounded-lru.ts";
+import type { ContentBinding, ContentFileRef } from "./content-files.ts";
 import {
   ENV_BINDING,
   IMPORT_META_ENV_BINDING,
@@ -148,9 +149,14 @@ export interface IsolateEntry {
 // The Workers host has no `base` yet, so paginate's URLs are root-relative.
 const BASE = "/";
 
+/** Content texts the isolate keeps between renders, by path and version. Counted as UTF-16. */
+const CONTENT_CACHE_BOUNDS = { maxEntries: 20_000, maxBytes: 32 * 1024 * 1024 };
+
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
   let markdownConfigured = false;
   let i18nConfig: ResolvedI18nConfig | null | undefined;
+  // Safe across renders and projects: a version names one text wherever it appears.
+  const contentCache = new BoundedLru<string>(CONTENT_CACHE_BOUNDS);
   // Module state is safe: the map is part of the program, so of the isolate's id.
   setScriptUrlResolver((id) => (Object.hasOwn(program.scripts, id) ? program.scripts[id] : null));
   async function handle(request: Request, env: IsolateEnv): Promise<IsolatePayload> {
@@ -175,7 +181,7 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
       // Per request: `site` is the request's, and the helpers read it.
       i18n.module.setI18nRuntimeState(i18nConfig, "/", body.site);
     }
-    return withContent(program, env[CONTENT_BINDING], body, () => {
+    return withContent(program, env[CONTENT_BINDING], contentCache, body, () => {
       if (body.op === "paths") return listPaths(program, body.routes);
       if (body.op === "markdown") return renderMarkdownPage(program, body);
       if (body.op === "warm") return warmPage(program, body.file);
@@ -403,6 +409,10 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
   return response;
 }
 
+function contentCacheKey(path: string, version: string): string {
+  return `${path}\0${version}`;
+}
+
 /**
  * A path against a directory, as a file-map key. Normalised, not joined: a verbatim
  * `./content/x` base is a prefix no key starts with, silently emptying the collection.
@@ -423,6 +433,7 @@ function dirname(path: string): string {
 async function withContent(
   program: IsolateProgram,
   files: ContentBinding | undefined,
+  cache: BoundedLru<string>,
   body: IsolateRequest,
   run: () => Promise<IsolatePayload>,
 ): Promise<IsolatePayload> {
@@ -433,14 +444,25 @@ async function withContent(
   if (ref === undefined) throw new Error("[pletivo-workers] the render request carries no content ref");
   const { collections, images } = modules;
   const loadConfig = program.contentConfig;
-  // A collection reads every file its scan found, so they cross the binding in one call.
+  // A collection reads every file its scan found, so they cross the binding in one call,
+  // and only those the isolate does not hold at the version the scan reported.
   const scanned = new Map<string, string | null>();
   const runtime = collections.createContentRuntime({
     async scan(projectRoot, base, pattern) {
       const dir = resolveFrom(projectRoot, base);
       const found = await files.scan(ref, dir, pattern);
-      const texts = found.length === 0 ? [] : await files.readMany(ref, found.map((file) => file.path));
-      found.forEach((file, index) => scanned.set(file.path, texts[index] ?? null));
+      const missing: ContentFileRef[] = [];
+      for (const file of found) {
+        const cached = file.version === undefined ? undefined : cache.get(contentCacheKey(file.path, file.version));
+        if (cached === undefined) missing.push(file);
+        else scanned.set(file.path, cached);
+      }
+      const texts = missing.length === 0 ? [] : await files.readMany(ref, missing.map((file) => file.path));
+      missing.forEach((file, index) => {
+        const text = texts[index] ?? null;
+        scanned.set(file.path, text);
+        if (text !== null && file.version !== undefined) cache.set(contentCacheKey(file.path, file.version), text, text.length * 2);
+      });
       return {
         root: dir,
         // Rooted at the file map, so `generateId` sees a different prefix than on Bun.

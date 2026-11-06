@@ -52,6 +52,12 @@ export interface WorkspaceStoreOptions {
    * enormous file can exhaust the isolate heap. `ProjectSnapshot.readBytes` is not bound by it.
    */
   maxFileBytes?: number;
+  /**
+   * The version of each file at the workspace paths asked, for `ProjectFiles.versions`, in
+   * one call: a scan asks for a whole collection. A version changes with every write to its
+   * file and is never shared by two files of this workspace. Unset, files carry no version.
+   */
+  versions?: (paths: readonly string[]) => (string | null)[];
 }
 
 /** Build products and dependencies. npm packages arrive through the artifact (023 §6). */
@@ -122,11 +128,38 @@ export function createWorkspaceProjectStore(
       assertCurrent();
       return readBytes(files, path);
     };
+    const readVersions = options.versions;
+    // A version holds for the snapshot's revision, so each file's is asked for once.
+    const known = new Map<string, string | null>();
+    const versions =
+      readVersions === undefined
+        ? undefined
+        : (keys: readonly string[]): (string | null)[] => {
+            const missing: string[] = [];
+            const paths: string[] = [];
+            for (const key of keys) {
+              const path = listing.text.get(key);
+              if (path === undefined || known.has(key)) continue;
+              missing.push(key);
+              paths.push(path);
+            }
+            if (paths.length > 0) {
+              // Synchronous: one check covers the versions read below.
+              assertCurrent();
+              const read = readVersions(paths);
+              missing.forEach((key, index) => known.set(key, read[index] ?? null));
+            }
+            return keys.map((key) => known.get(key) ?? null);
+          };
     return {
-      files: new LazyWorkspaceFiles(listing.text, (path) => {
-        assertCurrent();
-        return readText(files, path);
-      }),
+      files: new LazyWorkspaceFiles(
+        listing.text,
+        (path) => {
+          assertCurrent();
+          return readText(files, path);
+        },
+        versions,
+      ),
       assets: createLazyProjectAssetsView(listing.binary.keys(), readBytesOf),
       revision,
       readBytes: (key) => {
@@ -166,10 +199,16 @@ class LazyWorkspaceFiles implements ProjectFiles {
   readonly #paths: ReadonlyMap<string, string>;
   readonly #read: (path: string) => string | null;
   readonly #sources = new Map<string, string | null>();
+  readonly versions?: (paths: readonly string[]) => (string | null)[];
 
-  constructor(paths: ReadonlyMap<string, string>, read: (path: string) => string | null) {
+  constructor(
+    paths: ReadonlyMap<string, string>,
+    read: (path: string) => string | null,
+    versions: ((paths: readonly string[]) => (string | null)[]) | undefined,
+  ) {
     this.#paths = paths;
     this.#read = read;
+    if (versions !== undefined) this.versions = versions;
   }
 
   keys(): Iterable<string> {

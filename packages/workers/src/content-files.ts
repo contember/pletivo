@@ -58,6 +58,8 @@ export type ProjectAssets = ReadonlyMap<string, ProjectAsset>;
 export interface ContentFileRef {
   entry: string;
   path: string;
+  /** The file's `ProjectFiles` version, when the store has one: the isolate keeps the text by it. */
+  version?: string;
 }
 
 /** A render's handle on the sources. Closed when the render is done, however it ends. */
@@ -218,6 +220,11 @@ function scanFiles(files: ProjectFiles, dir: string, pattern: string): ContentFi
   }
   // The sort is part of the `ContentScan.files` contract both hosts share.
   found.sort((a, b) => (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+  const versions = files.versions?.(found.map((file) => file.path));
+  versions?.forEach((version, index) => {
+    const file = found[index];
+    if (version !== null && file !== undefined) file.version = version;
+  });
   return found;
 }
 

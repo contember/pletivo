@@ -15,6 +15,7 @@ import {
   type ImageInfo,
 } from "../src/content-files.ts";
 import { CONTENT_MODULE_NAME } from "../src/generated/runtime-modules.ts";
+import type { ProjectFiles } from "../src/project-store.ts";
 import {
   ContentUnavailableError,
   projectPaths,
@@ -139,6 +140,30 @@ class ScanBarrier implements ContentBinding {
   }
 }
 
+/** Files with versions: `1` unless `overrides` names another. */
+class VersionedFiles implements ProjectFiles {
+  constructor(
+    readonly files: ReadonlyMap<string, string>,
+    readonly overrides: Readonly<Record<string, string>> = {},
+  ) {}
+
+  keys(): Iterable<string> {
+    return this.files.keys();
+  }
+
+  get(path: string): string | undefined {
+    return this.files.get(path);
+  }
+
+  has(path: string): boolean {
+    return this.files.has(path);
+  }
+
+  versions(paths: readonly string[]): (string | null)[] {
+    return paths.map((path) => (this.files.has(path) ? (this.overrides[path] ?? "1") : null));
+  }
+}
+
 /** Counts the calls a render makes, which over a remote binding are round trips. */
 class CountingBinding implements ContentBinding {
   readonly calls: string[] = [];
@@ -180,6 +205,26 @@ describe("content collections", () => {
     const page = await render(project(notes), { binding, store }, namespace);
     expect(page.html).toContain("<li>Note 0</li>");
     expect(binding.calls).toEqual(["scan", "readMany:20"]);
+  });
+
+  test("read again only the files whose version changed since the last render", async () => {
+    const store = new ContentFiles();
+    const binding = new CountingBinding(store);
+    const namespace = { tenant: "content-tests", capabilityGeneration: "versioned-v1" };
+    const notes = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`n${i}.md`, note(`Note ${i}`)]));
+    const renderAt = (files: VersionedFiles) =>
+      renderPage({ files, pathname: "/", loader, compiler, content: { binding, store }, executionNamespace: namespace });
+
+    const first = await renderAt(new VersionedFiles(project(notes)));
+    const edited = new VersionedFiles(project({ ...notes, "n3.md": note("Edited") }), { "src/content/notes/n3.md": "2" });
+    const second = await renderAt(edited);
+    const third = await renderAt(edited);
+
+    expect(first.html).toContain("<li>Note 3</li>");
+    expect(second.html).toContain("<li>Edited</li>");
+    expect(second.html).not.toContain("Note 3");
+    expect(third.html).toBe(second.html);
+    expect(binding.calls).toEqual(["scan", "readMany:20", "scan", "readMany:1", "scan"]);
   });
 
   test("enumerate in scan order, not in file-map order", async () => {
