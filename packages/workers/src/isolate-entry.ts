@@ -24,6 +24,7 @@ import {
 import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
 import { runWithLogCapture } from "./log-capture.ts";
 import { BoundedLru } from "./bounded-lru.ts";
+import { retainedBytes } from "./retained-bytes.ts";
 import type { ContentBinding, ContentFileRef } from "./content-files.ts";
 import {
   ENV_BINDING,
@@ -151,7 +152,7 @@ const BASE = "/";
 
 /** Content texts the isolate keeps between renders, by path and version. Counted as UTF-16. */
 const CONTENT_CACHE_BOUNDS = { maxEntries: 20_000, maxBytes: 32 * 1024 * 1024 };
-/** Frontmatter parses the isolate keeps between renders, by text. Counted as their text, in UTF-16. */
+/** Frontmatter parses the isolate keeps between renders, by text. Counted with the text that keys them. */
 const FRONTMATTER_CACHE_BOUNDS = { maxEntries: 20_000, maxBytes: 16 * 1024 * 1024 };
 
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
@@ -430,6 +431,12 @@ function dirname(path: string): string {
   return at === -1 ? "" : path.slice(0, at);
 }
 
+/** A kept parse with its key. A merge key can make the parse far larger than its text. */
+function frontmatterBytes(text: string, parsed: ContentCollection.ParsedFrontmatter): number {
+  const limit = FRONTMATTER_CACHE_BOUNDS.maxBytes;
+  return text.length * 2 + parsed.body.length * 2 + retainedBytes(parsed.frontmatter, limit);
+}
+
 /** What the isolate keeps of content between renders. */
 interface ContentCaches {
   texts: BoundedLru<string>;
@@ -508,7 +515,7 @@ async function withContent(
     },
     frontmatterCache: {
       get: (text) => caches.frontmatter.get(text),
-      set: (text, parsed) => caches.frontmatter.set(text, parsed, text.length * 2),
+      set: (text, parsed) => caches.frontmatter.set(text, parsed, frontmatterBytes(text, parsed)),
     },
   });
   return collections.runWithContentRuntime(runtime, async () => {
