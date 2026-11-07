@@ -88,7 +88,8 @@ function sortedEntries(record: Readonly<Record<string, string>>): Array<[string,
   return Object.entries(record).sort((left, right) => compareStrings(left[0], right[0]));
 }
 
-async function digest(value: string): Promise<string> {
+/** The SHA-256 of `value`'s UTF-8 bytes, as hex. */
+export async function digest(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const digestBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return [...digestBytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
