@@ -23,7 +23,9 @@ import {
 } from "@pletivo/runtime/astro-shim";
 import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
 import { runWithLogCapture } from "./log-capture.ts";
-import type { ContentBinding } from "./content-files.ts";
+import { BoundedLru } from "./bounded-lru.ts";
+import { retainedBytes } from "./retained-bytes.ts";
+import type { ContentBinding, ContentFileRef } from "./content-files.ts";
 import {
   ENV_BINDING,
   IMPORT_META_ENV_BINDING,
@@ -148,9 +150,18 @@ export interface IsolateEntry {
 // The Workers host has no `base` yet, so paginate's URLs are root-relative.
 const BASE = "/";
 
+/** Content texts the isolate keeps between renders, by path and version. Counted as UTF-16. */
+const CONTENT_CACHE_BOUNDS = { maxEntries: 20_000, maxBytes: 32 * 1024 * 1024 };
+/** Frontmatter parses the isolate keeps between renders, by text. Counted with the text that keys them. */
+const FRONTMATTER_CACHE_BOUNDS = { maxEntries: 20_000, maxBytes: 16 * 1024 * 1024 };
+
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
   let markdownConfigured = false;
   let i18nConfig: ResolvedI18nConfig | null | undefined;
+  // Safe across renders and projects: a version names one text wherever it appears.
+  const contentCache = new BoundedLru<string>(CONTENT_CACHE_BOUNDS);
+  // Safe across renders and projects too: a text always parses the same.
+  const frontmatterCache = new BoundedLru<ContentCollection.ParsedFrontmatter>(FRONTMATTER_CACHE_BOUNDS);
   // Module state is safe: the map is part of the program, so of the isolate's id.
   setScriptUrlResolver((id) => (Object.hasOwn(program.scripts, id) ? program.scripts[id] : null));
   async function handle(request: Request, env: IsolateEnv): Promise<IsolatePayload> {
@@ -175,7 +186,7 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
       // Per request: `site` is the request's, and the helpers read it.
       i18n.module.setI18nRuntimeState(i18nConfig, "/", body.site);
     }
-    return withContent(program, env[CONTENT_BINDING], body, () => {
+    return withContent(program, env[CONTENT_BINDING], { texts: contentCache, frontmatter: frontmatterCache }, body, () => {
       if (body.op === "paths") return listPaths(program, body.routes);
       if (body.op === "markdown") return renderMarkdownPage(program, body);
       if (body.op === "warm") return warmPage(program, body.file);
@@ -403,6 +414,10 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
   return response;
 }
 
+function contentCacheKey(path: string, version: string): string {
+  return `${path}\0${version}`;
+}
+
 /**
  * A path against a directory, as a file-map key. Normalised, not joined: a verbatim
  * `./content/x` base is a prefix no key starts with, silently emptying the collection.
@@ -416,6 +431,18 @@ function dirname(path: string): string {
   return at === -1 ? "" : path.slice(0, at);
 }
 
+/** A kept parse with its key. A merge key can make the parse far larger than its text. */
+function frontmatterBytes(text: string, parsed: ContentCollection.ParsedFrontmatter): number {
+  const limit = FRONTMATTER_CACHE_BOUNDS.maxBytes;
+  return text.length * 2 + parsed.body.length * 2 + retainedBytes(parsed.frontmatter, limit);
+}
+
+/** What the isolate keeps of content between renders. */
+interface ContentCaches {
+  texts: BoundedLru<string>;
+  frontmatter: BoundedLru<ContentCollection.ParsedFrontmatter>;
+}
+
 /**
  * Runs `run` inside a content runtime built for this request. Per request because the
  * isolate is reused: calls carry this request's ref, and a content edit keeps the isolate.
@@ -423,6 +450,7 @@ function dirname(path: string): string {
 async function withContent(
   program: IsolateProgram,
   files: ContentBinding | undefined,
+  caches: ContentCaches,
   body: IsolateRequest,
   run: () => Promise<IsolatePayload>,
 ): Promise<IsolatePayload> {
@@ -433,18 +461,34 @@ async function withContent(
   if (ref === undefined) throw new Error("[pletivo-workers] the render request carries no content ref");
   const { collections, images } = modules;
   const loadConfig = program.contentConfig;
+  // A collection reads every file its scan found, so they cross the binding in one call,
+  // and only those the isolate does not hold at the version the scan reported.
+  const scanned = new Map<string, string | null>();
   const runtime = collections.createContentRuntime({
     async scan(projectRoot, base, pattern) {
       const dir = resolveFrom(projectRoot, base);
+      const found = await files.scan(ref, dir, pattern);
+      const missing: ContentFileRef[] = [];
+      for (const file of found) {
+        const cached = file.version === undefined ? undefined : caches.texts.get(contentCacheKey(file.path, file.version));
+        if (cached === undefined) missing.push(file);
+        else scanned.set(file.path, cached);
+      }
+      const texts = missing.length === 0 ? [] : await files.readMany(ref, missing.map((file) => file.path));
+      missing.forEach((file, index) => {
+        const text = texts[index] ?? null;
+        scanned.set(file.path, text);
+        if (text !== null && file.version !== undefined) caches.texts.set(contentCacheKey(file.path, file.version), text, text.length * 2);
+      });
       return {
         root: dir,
         // Rooted at the file map, so `generateId` sees a different prefix than on Bun.
         rootUrl: new URL("file:///" + dir + "/"),
-        files: await files.scan(ref, dir, pattern),
+        files: found,
       };
     },
     async readFile(path) {
-      const text = await files.read(ref, path);
+      const text = scanned.has(path) ? (scanned.get(path) ?? null) : await files.read(ref, path);
       if (text === null) throw new Error("[pletivo-workers] no content file " + path);
       return text;
     },
@@ -468,6 +512,10 @@ async function withContent(
       if (!loadConfig) return {};
       const module = await loadConfig();
       return module.collections || {};
+    },
+    frontmatterCache: {
+      get: (text) => caches.frontmatter.get(text),
+      set: (text, parsed) => caches.frontmatter.set(text, parsed, frontmatterBytes(text, parsed)),
     },
   });
   return collections.runWithContentRuntime(runtime, async () => {

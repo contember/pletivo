@@ -30,6 +30,11 @@ export interface ContentBinding {
   scan(ref: string, dir: string, pattern: string): Promise<ContentFileRef[]> | ContentFileRef[];
   /** A file's text, or `null` when the project has no such file. */
   read(ref: string, path: string): Promise<string | null> | string | null;
+  /**
+   * `read` of each path, in the order asked, in one call. A collection reads every file its
+   * scan found; one call each costs a round trip per file when the binding is remote.
+   */
+  readMany(ref: string, paths: readonly string[]): Promise<(string | null)[]> | (string | null)[];
   /** What a binary asset is, or `null` when the project has no such file. */
   image(ref: string, path: string): Promise<ImageInfo | null> | ImageInfo | null;
 }
@@ -53,6 +58,8 @@ export type ProjectAssets = ReadonlyMap<string, ProjectAsset>;
 export interface ContentFileRef {
   entry: string;
   path: string;
+  /** The file's `ProjectFiles` version, when the store has one: the isolate keeps the text by it. */
+  version?: string;
 }
 
 /** A render's handle on the sources. Closed when the render is done, however it ends. */
@@ -77,6 +84,8 @@ export interface ContentHandle {
  * export class PletivoContent extends WorkerEntrypoint {
  *   scan(ref: string, dir: string, pattern: string) { return CONTENT.scan(ref, dir, pattern); }
  *   read(ref: string, path: string) { return CONTENT.read(ref, path); }
+ *   readMany(ref: string, paths: string[]) { return CONTENT.readMany(ref, paths); }
+ *   image(ref: string, path: string) { return CONTENT.image(ref, path); }
  * }
  * // per request:
  * renderPage({ files, loader: env.LOADER, content: { binding: ctx.exports.PletivoContent({}), store: CONTENT } })
@@ -134,6 +143,11 @@ export class ContentFiles implements ContentBinding {
     return recording(project, () => project.files.get(path) ?? null);
   }
 
+  readMany(ref: string, paths: readonly string[]): (string | null)[] {
+    const project = this.#project(ref);
+    return recording(project, () => readMany(project.files, paths));
+  }
+
   image(ref: string, path: string): ImageInfo | null {
     // `#project` first: an asset map may be absent, a finished render's ref may not.
     const project = this.#project(ref);
@@ -151,6 +165,10 @@ export class ContentFiles implements ContentBinding {
         const project = this.#project(ref, owner);
         return recording(project, () => project.files.get(path) ?? null);
       },
+      readMany: (ref, paths) => {
+        const project = this.#project(ref, owner);
+        return recording(project, () => readMany(project.files, paths));
+      },
       image: (ref, path) => {
         const project = this.#project(ref, owner);
         return recording(project, () => project.assets?.info(path) ?? null);
@@ -162,13 +180,23 @@ export class ContentFiles implements ContentBinding {
     const opened = this.#open.get(ref);
     // The same answer as an unknown ref, so a foreign one cannot be told apart.
     const project = owner === undefined || opened?.owner === owner ? opened : undefined;
-    if (!project) {
-      throw new Error(
-        `[pletivo-workers] no open project for content ref ${JSON.stringify(ref)} — ` +
-          "the render that opened it has already finished",
-      );
-    }
+    if (!project) throw new ContentRefClosedError(ref);
     return project;
+  }
+}
+
+/**
+ * A binding call for a ref that is not open, or not open for the caller's owner. A render
+ * the host stopped waiting for can still have calls in flight; a host that reports errors
+ * can tell this one apart by `name` and answer it as the end of that render.
+ */
+export class ContentRefClosedError extends Error {
+  constructor(readonly ref: string) {
+    super(
+      `[pletivo-workers] no open project for content ref ${JSON.stringify(ref)} — ` +
+        "the render that opened it has already finished",
+    );
+    this.name = "ContentRefClosedError";
   }
 }
 
@@ -192,7 +220,17 @@ function scanFiles(files: ProjectFiles, dir: string, pattern: string): ContentFi
   }
   // The sort is part of the `ContentScan.files` contract both hosts share.
   found.sort((a, b) => (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+  const versions = files.versions?.(found.map((file) => file.path));
+  versions?.forEach((version, index) => {
+    const file = found[index];
+    if (version !== null && file !== undefined) file.version = version;
+  });
   return found;
+}
+
+function readMany(files: ProjectFiles, paths: readonly string[]): (string | null)[] {
+  const texts = files.getMany ? files.getMany(paths) : paths.map((path) => files.get(path));
+  return texts.map((text) => text ?? null);
 }
 
 function recording<T>(project: OpenProject, read: () => T): T {

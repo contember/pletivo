@@ -6,6 +6,7 @@ import { compileProject } from "../src/compile-project.ts";
 import { imageOutputPath } from "@pletivo/core/image";
 import {
   ContentFiles,
+  ContentRefClosedError,
   createLazyProjectAssetsView,
   globMatcher,
   ProjectAssetOutputAmbiguityError,
@@ -14,6 +15,7 @@ import {
   type ImageInfo,
 } from "../src/content-files.ts";
 import { CONTENT_MODULE_NAME } from "../src/generated/runtime-modules.ts";
+import type { ProjectFiles } from "../src/project-store.ts";
 import {
   ContentUnavailableError,
   projectPaths,
@@ -121,7 +123,14 @@ class ScanBarrier implements ContentBinding {
   }
 
   read(ref: string, path: string): string | null {
-    const source = this.inner.read(ref, path);
+    return this.#rejecting(this.inner.read(ref, path));
+  }
+
+  readMany(ref: string, paths: readonly string[]): (string | null)[] {
+    return this.inner.readMany(ref, paths).map((source) => this.#rejecting(source));
+  }
+
+  #rejecting(source: string | null): string | null {
     if (source?.includes(this.rejectedText)) throw new Error("forced content read failure");
     return source;
   }
@@ -131,10 +140,91 @@ class ScanBarrier implements ContentBinding {
   }
 }
 
+/** Files with versions: `1` unless `overrides` names another. */
+class VersionedFiles implements ProjectFiles {
+  constructor(
+    readonly files: ReadonlyMap<string, string>,
+    readonly overrides: Readonly<Record<string, string>> = {},
+  ) {}
+
+  keys(): Iterable<string> {
+    return this.files.keys();
+  }
+
+  get(path: string): string | undefined {
+    return this.files.get(path);
+  }
+
+  has(path: string): boolean {
+    return this.files.has(path);
+  }
+
+  versions(paths: readonly string[]): (string | null)[] {
+    return paths.map((path) => (this.files.has(path) ? (this.overrides[path] ?? "1") : null));
+  }
+}
+
+/** Counts the calls a render makes, which over a remote binding are round trips. */
+class CountingBinding implements ContentBinding {
+  readonly calls: string[] = [];
+
+  constructor(readonly inner: ContentFiles) {}
+
+  scan(ref: string, dir: string, pattern: string): ContentFileRef[] {
+    this.calls.push("scan");
+    return this.inner.scan(ref, dir, pattern);
+  }
+
+  read(ref: string, path: string): string | null {
+    this.calls.push("read");
+    return this.inner.read(ref, path);
+  }
+
+  readMany(ref: string, paths: readonly string[]): (string | null)[] {
+    this.calls.push(`readMany:${paths.length}`);
+    return this.inner.readMany(ref, paths);
+  }
+
+  image(ref: string, path: string): ImageInfo | null {
+    this.calls.push("image");
+    return this.inner.image(ref, path);
+  }
+}
+
 describe("content collections", () => {
   test("render a collection into a page", async () => {
     const page = await render(project({ "a.md": note("Alpha"), "b.md": note("Beta") }));
     expect(page.html).toContain("<li>Alpha</li><li>Beta</li>");
+  });
+
+  test("read a collection's files in one binding call, not one per file", async () => {
+    const store = new ContentFiles();
+    const binding = new CountingBinding(store);
+    const notes = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`n${i}.md`, note(`Note ${i}`)]));
+    const namespace = { tenant: "content-tests", capabilityGeneration: "counting-v1" };
+    const page = await render(project(notes), { binding, store }, namespace);
+    expect(page.html).toContain("<li>Note 0</li>");
+    expect(binding.calls).toEqual(["scan", "readMany:20"]);
+  });
+
+  test("read again only the files whose version changed since the last render", async () => {
+    const store = new ContentFiles();
+    const binding = new CountingBinding(store);
+    const namespace = { tenant: "content-tests", capabilityGeneration: "versioned-v1" };
+    const notes = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`n${i}.md`, note(`Note ${i}`)]));
+    const renderAt = (files: VersionedFiles) =>
+      renderPage({ files, pathname: "/", loader, compiler, content: { binding, store }, executionNamespace: namespace });
+
+    const first = await renderAt(new VersionedFiles(project(notes)));
+    const edited = new VersionedFiles(project({ ...notes, "n3.md": note("Edited") }), { "src/content/notes/n3.md": "2" });
+    const second = await renderAt(edited);
+    const third = await renderAt(edited);
+
+    expect(first.html).toContain("<li>Note 3</li>");
+    expect(second.html).toContain("<li>Edited</li>");
+    expect(second.html).not.toContain("Note 3");
+    expect(third.html).toBe(second.html);
+    expect(binding.calls).toEqual(["scan", "readMany:20", "scan", "readMany:1", "scan"]);
   });
 
   test("enumerate in scan order, not in file-map order", async () => {
@@ -409,7 +499,51 @@ describe("ContentFiles", () => {
     expect(store.read(handle.ref, "site/src/content/posts/a.md")).toBe("a");
     expect(store.read(handle.ref, "site/src/content/posts/missing.md")).toBeNull();
     handle.close();
-    expect(() => store.read(handle.ref, "site/src/content/posts/a.md")).toThrow(/no open project/);
+    expect(() => store.read(handle.ref, "site/src/content/posts/a.md")).toThrow(ContentRefClosedError);
+  });
+
+  test("read several files in one call, in the order asked", () => {
+    const store = new ContentFiles();
+    const handle = store.open(files);
+    expect(
+      store.readMany(handle.ref, ["site/src/content/posts/nested/b.md", "site/src/content/posts/missing.md", "site/src/content/posts/a.md"]),
+    ).toEqual(["b", null, "a"]);
+    handle.close();
+    expect(() => store.readMany(handle.ref, ["site/src/content/posts/a.md"])).toThrow(ContentRefClosedError);
+  });
+
+  test("read several files through the store's batched read when it has one", () => {
+    const asked: string[][] = [];
+    const batched: ProjectFiles = {
+      keys: () => files.keys(),
+      get: (path) => files.get(path),
+      has: (path) => files.has(path),
+      getMany: (paths) => {
+        asked.push([...paths]);
+        return paths.map((path) => files.get(path));
+      },
+    };
+    const store = new ContentFiles();
+    const handle = store.open(batched);
+
+    expect(store.readMany(handle.ref, ["site/src/content/posts/a.md", "site/src/content/posts/missing.md"])).toEqual(["a", null]);
+    expect(asked).toEqual([["site/src/content/posts/a.md", "site/src/content/posts/missing.md"]]);
+    handle.close();
+  });
+
+  test("name a call for a ref that is not open, so a host can tell it from a failed read", () => {
+    const store = new ContentFiles();
+    const handle = store.open(files, undefined, "session-a");
+    handle.close();
+    const closed = (() => {
+      try {
+        store.forOwner("session-a").read(handle.ref, "site/src/content/posts/a.md");
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(closed).toBeInstanceOf(ContentRefClosedError);
+    expect(closed).toHaveProperty("name", "ContentRefClosedError");
   });
 
   test("keep two open projects apart", () => {
@@ -438,6 +572,7 @@ describe("ContentFiles", () => {
     const binding = store.forOwner("session-a");
     expect(await binding.read(mine.ref, "x.md")).toBe("mine");
     expect(() => binding.read(theirs.ref, "x.md")).toThrow(/no open project/);
+    expect(() => binding.readMany(theirs.ref, ["x.md"])).toThrow(ContentRefClosedError);
     expect(() => binding.scan(theirs.ref, "", "*.md")).toThrow(/no open project/);
     expect(() => binding.image(theirs.ref, "x.png")).toThrow(/no open project/);
   });

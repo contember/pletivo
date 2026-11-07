@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type {
   DynamicWorkerCode,
+  DynamicWorkerModule,
   DynamicWorkerStub,
   WorkerLoaderBinding,
 } from "../src/render.ts";
@@ -18,9 +19,26 @@ import { programHash } from "../src/execution-identity.ts";
  * registry, `nodejs_compat`. That is what `test/parity.ts` against `wrangler dev`
  * is for.
  */
+/** A bundle this stand-in can run: JavaScript modules only. */
+export interface JavaScriptBundle extends Omit<DynamicWorkerCode, "modules"> {
+  modules: Record<string, string>;
+}
+
+/** Bun cannot import a wasm module as workerd does; the compiler isolate is qualified in workerd. */
+function javaScriptBundle(code: DynamicWorkerCode): JavaScriptBundle {
+  const modules: Record<string, string> = {};
+  for (const [name, module] of Object.entries(code.modules)) modules[name] = javaScript(name, module);
+  return { ...code, modules };
+}
+
+function javaScript(name: string, module: DynamicWorkerModule): string {
+  if (typeof module !== "string") throw new Error(`${name}: the Bun Loader stand-in runs JavaScript modules only`);
+  return module;
+}
+
 export class FileLoader implements WorkerLoaderBinding {
-  readonly bundles = new Map<string, DynamicWorkerCode>();
-  readonly programs = new Map<string, DynamicWorkerCode>();
+  readonly bundles = new Map<string, JavaScriptBundle>();
+  readonly programs = new Map<string, JavaScriptBundle>();
   readonly getCounts = new Map<string, number>();
   readonly factoryCounts = new Map<string, number>();
   #roots: string[] = [];
@@ -30,7 +48,7 @@ export class FileLoader implements WorkerLoaderBinding {
     this.getCounts.set(id, (this.getCounts.get(id) ?? 0) + 1);
     const load = async (): Promise<{ fetch(request: Request): Promise<Response> }> => {
       this.factoryCounts.set(id, (this.factoryCounts.get(id) ?? 0) + 1);
-      const bundle = await code();
+      const bundle = javaScriptBundle(await code());
       this.bundles.set(id, bundle);
       this.programs.set(
         await programHash({ mainModule: bundle.mainModule, modules: bundle.modules }),

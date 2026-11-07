@@ -14,6 +14,7 @@
  * report the authoritative ContentUnavailableError because this preview owns no binding.
  */
 
+import { bundledAstroCompiler } from "@pletivo/workers/bundled-astro-compiler";
 import { createMapProjectStore } from "@pletivo/workers/project-store";
 import { createProjectHost } from "@pletivo/workers/project-host";
 import type { ProjectEnv } from "@pletivo/workers/env";
@@ -141,6 +142,7 @@ function requestHost(
   return createProjectHost({
     store: createMapProjectStore(parsed.files),
     loader: env.LOADER,
+    compiler: bundledAstroCompiler(),
     compileCache: false,
     generatedAssetCache: { maxEntries: 0, maxBytes: 0 },
     pagesDir: parsed.pagesDir,

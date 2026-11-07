@@ -18,6 +18,14 @@ export interface ProjectFiles {
   keys(): Iterable<string>;
   get(path: string): string | undefined;
   has(path: string): boolean;
+  /**
+   * A version of each of `paths`, in the order asked; `null` where the store has none.
+   * Equal versions mean equal text, across every project one render isolate serves, so
+   * the isolate keeps a file's text by it. Absent: the isolate reads each file every render.
+   */
+  versions?(paths: readonly string[]): (string | null)[];
+  /** `get` of each of `paths`, in the order asked, in one read where the store can batch it. */
+  getMany?(paths: readonly string[]): (string | undefined)[];
 }
 
 /** The project as one render sees it: text and assets from one revision. */

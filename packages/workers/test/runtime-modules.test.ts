@@ -5,6 +5,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { bundleRuntimeModule, strayImports } from "../scripts/build-runtime.ts";
 import {
+  COMPILER_ISOLATE_MODULES,
+  COMPILER_MAIN_MODULE_NAME,
+  COMPILER_WASM_MODULE_NAME,
   CONTENT_MODULE_NAME,
   GENERATED_MODULES,
   I18N_MODULE_NAME,
@@ -99,6 +102,12 @@ describe("generated runtime modules", () => {
     }
   });
 
+  test("give the compiler isolate its entry, which imports the Astro compiler only as the wasm the host hands over", () => {
+    expect(Object.keys(COMPILER_ISOLATE_MODULES)).toEqual([COMPILER_MAIN_MODULE_NAME, "pletivo-compiler-entry.js"]);
+    expect(COMPILER_ISOLATE_MODULES["pletivo-compiler-entry.js"]).toContain("function createCompilerEntry");
+    expect(COMPILER_ISOLATE_MODULES[COMPILER_MAIN_MODULE_NAME]).toContain(`from "./${COMPILER_WASM_MODULE_NAME}"`);
+  });
+
   test("import nothing but the Loader modules each one is paired with", () => {
     const loaderImports: Record<string, { allowed: string[]; nodeBuiltins: boolean }> = {
       [RUNTIME_MODULE_NAME]: { allowed: [], nodeBuiltins: true },
@@ -116,6 +125,11 @@ describe("generated runtime modules", () => {
         nodeBuiltins: false,
       },
       [TAILWIND_ENTRY_MODULE_NAME]: { allowed: [`./${TAILWIND_MODULE_NAME}`], nodeBuiltins: false },
+      "pletivo-compiler-entry.js": { allowed: [], nodeBuiltins: false },
+      [COMPILER_MAIN_MODULE_NAME]: {
+        allowed: [`./${COMPILER_WASM_MODULE_NAME}`, "./pletivo-compiler-entry.js"],
+        nodeBuiltins: false,
+      },
     };
     expect(Object.keys(loaderImports).sort()).toEqual(Object.keys(GENERATED_MODULES).sort());
     for (const [name, { allowed, nodeBuiltins }] of Object.entries(loaderImports)) {

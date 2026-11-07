@@ -1,7 +1,7 @@
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
-import { compileAstro, parseAstro, type AstroCompiler } from "../astro-compiler.ts";
+import type { AstroCompiler } from "../astro-compiler.ts";
 import type { CompileCache, CompiledFile } from "../compile-cache.ts";
 import { IMPORT_META_ENV_GLOBAL } from "../env.ts";
 import { collectImports } from "../rewrite-imports.ts";
@@ -10,9 +10,6 @@ import { stripTypes, TranspileError } from "../transpile.ts";
 import { COMPILED } from "./module-kind.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
 import type { AstroStyles, StyleBlock } from "./types.ts";
-
-/** The compiler bound to the embedded `astro.wasm`; only works inside a real Worker, so tests inject their own. */
-export const bundled: AstroCompiler = { transform: compileAstro, parse: parseAstro };
 
 /**
  * One module's compile, from the cache when it holds this exact source and kind.

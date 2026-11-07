@@ -1,12 +1,11 @@
-/// <reference path="./astro-wasm.d.ts" />
-
 /**
  * `@astrojs/compiler` inside a Worker isolate. workerd forbids runtime
  * `WebAssembly.compile()`, so the Go wasm is a module the bundler compiled ahead of time,
- * run against the vendored Go runtime.
+ * run against the vendored Go runtime. Nothing here imports `astro.wasm`: a host that
+ * compiles elsewhere (`compiler-isolate.ts`) never loads it. The embedded one is
+ * `bundled-astro-compiler.ts`.
  */
 
-import astroWasm from "@astrojs/compiler/astro.wasm";
 import type {
   DiagnosticMessage,
   ParseOptions,
@@ -21,7 +20,7 @@ import { a as Go } from "./vendor/wasm_exec.js";
 const GLOBAL_KEY = "@astrojs/compiler";
 
 /** The synchronous surface the Go program exposes. `parse` returns its AST as JSON text. */
-interface RawCompilerApi {
+export interface RawCompilerApi {
   transform(source: string, options: TransformOptions): TransformResult;
   parse(source: string, options: ParseOptions): { ast: string; diagnostics: DiagnosticMessage[] };
 }
@@ -30,6 +29,23 @@ interface RawCompilerApi {
 export interface AstroCompiler {
   transform(source: string, options?: TransformOptions): Promise<TransformResult>;
   parse(source: string, options?: ParseOptions): Promise<ParseResult>;
+}
+
+/**
+ * The transform options that cross to a compiler isolate: data only. A function cannot
+ * cross, so there every import resolves to its own specifier, which is what Pletivo asks.
+ */
+export type AstroTransformOptions = Omit<TransformOptions, "resolvePath" | "preprocessStyle">;
+
+/** `options` as they cross to a compiler isolate. See `AstroTransformOptions`. */
+export function transformData(options: TransformOptions): AstroTransformOptions {
+  const { resolvePath: _resolvePath, preprocessStyle: _preprocessStyle, ...data } = options;
+  return data;
+}
+
+/** The options a compiler isolate calls the Go program with. See `AstroTransformOptions`. */
+export function goTransformOptions(options: AstroTransformOptions): TransformOptions {
+  return { ...options, resolvePath: async (specifier) => specifier };
 }
 
 function isRawCompilerApi(value: unknown): value is RawCompilerApi {
@@ -50,7 +66,7 @@ function isRootNode(value: unknown): value is RootNode {
  */
 let started: { wasm: WebAssembly.Module; api: RawCompilerApi } | undefined;
 
-function rawApi(wasm: WebAssembly.Module): RawCompilerApi {
+export function rawApi(wasm: WebAssembly.Module): RawCompilerApi {
   if (started) {
     if (started.wasm !== wasm) {
       throw new Error(
@@ -86,41 +102,16 @@ export function createAstroCompiler(wasm: WebAssembly.Module): AstroCompiler {
     },
     async parse(source, options = {}) {
       const result = rawApi(wasm).parse(source, options);
-      const ast: unknown = JSON.parse(result.ast);
-      if (!isRootNode(ast)) {
-        throw new Error("[pletivo-workers] the Astro compiler returned an AST without a root node");
-      }
-      return { ast, diagnostics: result.diagnostics };
+      return { ast: astFromJson(result.ast), diagnostics: result.diagnostics };
     },
   };
 }
 
-let bundled: AstroCompiler | undefined;
-
-/** The compiler bound to the `astro.wasm` this module's bundler embedded. */
-function bundledCompiler(): AstroCompiler {
-  if (!bundled) {
-    if (!(astroWasm instanceof WebAssembly.Module)) {
-      throw new Error(
-        "[pletivo-workers] `@astrojs/compiler/astro.wasm` did not resolve to a WebAssembly.Module. " +
-          'Bundle it with wrangler\'s `{ "type": "CompiledWasm", "globs": ["**/*.wasm"] }` rule, ' +
-          "or call createAstroCompiler() with a module you compiled yourself.",
-      );
-    }
-    bundled = createAstroCompiler(astroWasm);
+/** The AST the Go program hands over as JSON text. */
+export function astFromJson(json: string): RootNode {
+  const ast: unknown = JSON.parse(json);
+  if (!isRootNode(ast)) {
+    throw new Error("[pletivo-workers] the Astro compiler returned an AST without a root node");
   }
-  return bundled;
-}
-
-/** Compile one `.astro` source. Mirrors `transform()` from `@astrojs/compiler`. */
-export async function compileAstro(
-  source: string,
-  options?: TransformOptions,
-): Promise<TransformResult> {
-  return bundledCompiler().transform(source, options);
-}
-
-/** Parse one `.astro` source to an AST. Mirrors `parse()` from `@astrojs/compiler`. */
-export async function parseAstro(source: string, options?: ParseOptions): Promise<ParseResult> {
-  return bundledCompiler().parse(source, options);
+  return ast;
 }

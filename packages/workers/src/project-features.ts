@@ -6,7 +6,6 @@
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import type { AstroCompiler } from "./astro-compiler.ts";
-import { bundled } from "./compile/compile-file.ts";
 import { extensionOf } from "./compile/module-kind.ts";
 import type { ProjectFiles } from "./project-store.ts";
 import { projectRoutes } from "./render.ts";
@@ -25,8 +24,7 @@ export interface ProjectFeatures {
 
 export interface DetectFeaturesOptions {
   pagesDir?: string;
-  /** Overrides the compiler bound to the bundled `astro.wasm`. For tests outside a Worker. */
-  compiler?: AstroCompiler;
+  compiler: AstroCompiler;
 }
 
 const CLIENT_DIRECTIVE = /\bclient:(?:load|idle|visible|media|only)\b/;
@@ -34,11 +32,11 @@ const PRERENDER_FALSE = /^\s*export\s+const\s+prerender\s*=\s*false\b/m;
 
 export async function detectProjectFeatures(
   files: ProjectFiles,
-  options: DetectFeaturesOptions = {},
+  options: DetectFeaturesOptions,
 ): Promise<ProjectFeatures> {
   const pagesDir = options.pagesDir ?? "src/pages";
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
-  const compiler = options.compiler ?? bundled;
+  const compiler = options.compiler;
   const features: ProjectFeatures = { mdx: [], islands: [], endpoints: [], onDemand: [] };
 
   for (const file of files.keys()) {
