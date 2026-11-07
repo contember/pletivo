@@ -69,10 +69,14 @@ describe("compiler isolate", () => {
       expect(await isolated.parse(SOURCE, { position: true })).toEqual(first);
       expect(compiled).toHaveBeenCalledTimes(1);
 
-      // Other options or another source is another parse.
-      expect(await isolated.parse(SOURCE, { position: false })).not.toEqual(first);
-      await isolated.parse(`${SOURCE}<p>More</p>\n`, { position: true });
-      expect(compiled).toHaveBeenCalledTimes(3);
+      // Other options or another source is another parse, answered as the compiler answers it.
+      const local = createAstroCompiler(astroWasm);
+      const changed = `${SOURCE}<p>More</p>\n`;
+      expect(await isolated.parse(SOURCE, { position: false })).toEqual(await local.parse(SOURCE, { position: false }));
+      expect(await isolated.parse(changed, { position: true })).toEqual(await local.parse(changed, { position: true }));
+      expect(await isolated.parse(changed, { position: true })).not.toEqual(first);
+      // Three in the isolate and the two local ones; the repeated changed parse was kept.
+      expect(compiled).toHaveBeenCalledTimes(5);
     } finally {
       compiled.mockRestore();
     }
