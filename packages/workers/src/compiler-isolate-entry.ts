@@ -4,8 +4,19 @@
  * isolate.
  */
 
+import type { ParseOptions } from "@astrojs/compiler/types";
 import { createAstroCompiler, goTransformOptions, rawApi } from "./astro-compiler.ts";
-import type { CompilerIsolateReply, CompilerIsolateRequest } from "./compiler-isolate-protocol.ts";
+import { BoundedLru } from "./bounded-lru.ts";
+import type { CompilerIsolateParsed, CompilerIsolateReply, CompilerIsolateRequest } from "./compiler-isolate-protocol.ts";
+import { digest } from "./execution-identity.ts";
+
+/**
+ * Parses kept by source and options. A host that parses every component again whenever its own
+ * caches start over (an editor's host restarting) asks for the same parses; the Go wasm takes
+ * milliseconds per file, a kept answer none. The isolate is keyed by the wasm, so a kept parse
+ * is always this compiler's.
+ */
+const PARSE_CACHE_BOUNDS = { maxEntries: 4_000, maxBytes: 24 * 1024 * 1024 };
 
 export interface CompilerEntry {
   fetch(request: Request): Promise<Response>;
@@ -13,12 +24,22 @@ export interface CompilerEntry {
 
 export function createCompilerEntry(wasm: WebAssembly.Module): CompilerEntry {
   const compiler = createAstroCompiler(wasm);
+  const parses = new BoundedLru<CompilerIsolateParsed>(PARSE_CACHE_BOUNDS);
+
+  async function parse(source: string, options: ParseOptions): Promise<CompilerIsolateParsed> {
+    const key = await digest(JSON.stringify([options, source]));
+    const kept = parses.get(key);
+    if (kept !== undefined) return kept;
+    // The AST crosses as the Go program's JSON text; parsing it here only to serialize it again is waste.
+    const parsed = rawApi(wasm).parse(source, options);
+    const reply: CompilerIsolateParsed = { status: "parsed", ast: parsed.ast, diagnostics: parsed.diagnostics };
+    parses.set(key, reply, (reply.ast.length + JSON.stringify(reply.diagnostics).length) * 2);
+    return reply;
+  }
 
   async function handle(body: CompilerIsolateRequest): Promise<CompilerIsolateReply> {
     if (body.op === "transform") return { status: "transformed", result: await compiler.transform(body.source, goTransformOptions(body.options)) };
-    // The AST crosses as the Go program's JSON text; parsing it here only to serialize it again is waste.
-    const parsed = rawApi(wasm).parse(body.source, body.options);
-    return { status: "parsed", ast: parsed.ast, diagnostics: parsed.diagnostics };
+    return parse(body.source, body.options);
   }
 
   return {

@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { createAstroCompiler } from "../src/astro-compiler.ts";
+import { describe, expect, spyOn, test } from "bun:test";
+import { createAstroCompiler, rawApi } from "../src/astro-compiler.ts";
 import { createCompilerEntry } from "../src/compiler-isolate-entry.ts";
 import { CompilerIsolateError, createIsolateAstroCompiler } from "../src/compiler-isolate.ts";
 import { IsolateProtocolError } from "../src/isolate-protocol.ts";
@@ -57,6 +57,29 @@ describe("compiler isolate", () => {
     expect(transformed).toEqual(transformFields(expected));
     expect(transformed.code).not.toContain("$$createMetadata");
     expect(await isolated.parse(SOURCE, { position: true })).toEqual(await local.parse(SOURCE, { position: true }));
+  });
+
+  test("answers a parse it already made without running the compiler again", async () => {
+    const entry = createCompilerEntry(astroWasm);
+    const { loader } = loaderAnswering((request) => entry.fetch(request));
+    const isolated = compilerOver(loader);
+    const compiled = spyOn(rawApi(astroWasm), "parse");
+    try {
+      const first = await isolated.parse(SOURCE, { position: true });
+      expect(await isolated.parse(SOURCE, { position: true })).toEqual(first);
+      expect(compiled).toHaveBeenCalledTimes(1);
+
+      // Other options or another source is another parse, answered as the compiler answers it.
+      const local = createAstroCompiler(astroWasm);
+      const changed = `${SOURCE}<p>More</p>\n`;
+      expect(await isolated.parse(SOURCE, { position: false })).toEqual(await local.parse(SOURCE, { position: false }));
+      expect(await isolated.parse(changed, { position: true })).toEqual(await local.parse(changed, { position: true }));
+      expect(await isolated.parse(changed, { position: true })).not.toEqual(first);
+      // Three in the isolate and the two local ones; the repeated changed parse was kept.
+      expect(compiled).toHaveBeenCalledTimes(5);
+    } finally {
+      compiled.mockRestore();
+    }
   });
 
   test("creates its isolate once, with the wasm next to the entry and no network", async () => {
