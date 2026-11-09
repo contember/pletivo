@@ -5,7 +5,8 @@
  *
  * - `/_pletivo/script/<index>/<module>` — script `<index>` of a `.astro` module.
  * - `/_pletivo/module/<module>` — a project file, or a package module from the
- *   artifact's browser graph (`browserResolutions`).
+ *   artifact's browser graph (`browserResolutions`). A package module's URL carries
+ *   `?v=<artifactBrowserVersion>`, so what it serves at that URL never changes.
  *
  * `<module>` is the ModuleId with its first `:` as `/`, each segment URL-encoded.
  */
@@ -38,6 +39,40 @@ export function scriptUrl(moduleId: ModuleId, index: number, code: string): stri
 
 export function moduleUrl(moduleId: ModuleId): string {
   return `${MODULE_PREFIX}${modulePath(moduleId)}`;
+}
+
+/**
+ * What an artifact module is served as, besides the artifact: how its imports are rewritten, how it is
+ * wrapped. Bump it with any change to that, since a browser keeps a versioned artifact module forever.
+ */
+export const BROWSER_MODULE_FORMAT = 1;
+
+const artifactBrowserVersions = new WeakMap<ProjectArtifact, string>();
+
+/**
+ * The version every artifact module's URL carries: a digest of all its served code is made of, the
+ * browser graph's modules and resolutions, and `BROWSER_MODULE_FORMAT`. A package's own digest in
+ * its ModuleId does not do: it names the package, not what its imports resolve to in this artifact.
+ */
+export function artifactBrowserVersion(artifact: ProjectArtifact): string {
+  const known = artifactBrowserVersions.get(artifact);
+  if (known !== undefined) return known;
+  const resolutions = artifact.prepared.artifact.browserResolutions ?? [];
+  const parts = [String(BROWSER_MODULE_FORMAT), JSON.stringify(resolutions)];
+  const ids = new Set(resolutions.flatMap((resolution) => (resolution.target.kind === "module" ? [resolution.target.id] : [])));
+  for (const id of [...ids].sort()) {
+    const module = artifact.browserResolver.module(id);
+    parts.push(JSON.stringify([id, module?.kind ?? null, module?.compilePath ?? null, module?.source ?? null]));
+  }
+  const version = md5Hex(parts.join("\n")).slice(0, 16);
+  artifactBrowserVersions.set(artifact, version);
+  return version;
+}
+
+/** Whether `url` names an artifact module at the version its artifact serves now: what it serves never changes. */
+export function isImmutableBrowserModule(url: URL, artifact: ProjectArtifact | undefined): boolean {
+  if (artifact === undefined || !url.pathname.startsWith(MODULE_PREFIX) || url.pathname.startsWith(PROJECT_MODULE_PREFIX)) return false;
+  return url.searchParams.get("v") === artifactBrowserVersion(artifact);
 }
 
 /** What a browser-module request needs from the project as one snapshot sees it. */
@@ -304,9 +339,11 @@ function rewriteForBrowser(
       }
       return moduleUrl(projectModuleId(file));
     }
-    const target = project.artifact?.browserResolver.resolve(importer, specifier) ?? null;
-    if (target === null || target.kind !== "module") throw new UnresolvedBrowserImportError(pathname, importer, specifier);
-    return moduleUrl(target.id);
+    const artifact = project.artifact;
+    const target = artifact?.browserResolver.resolve(importer, specifier) ?? null;
+    if (artifact === undefined || target === null || target.kind !== "module") throw new UnresolvedBrowserImportError(pathname, importer, specifier);
+    if (target.id.startsWith("project:")) return moduleUrl(target.id);
+    return `${moduleUrl(target.id)}?v=${artifactBrowserVersion(artifact)}`;
   }
   const rewritten = rewriteImports(code, {
     importer: importerFile ?? importer,

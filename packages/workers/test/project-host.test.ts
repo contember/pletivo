@@ -10,7 +10,7 @@ import {
   ArtifactVersionError,
   digestArtifactInput,
 } from "@pletivo/core/artifact";
-import { UnsupportedArtifactExternalError } from "../src/artifact.ts";
+import { loadProjectArtifact, UnsupportedArtifactExternalError } from "../src/artifact.ts";
 import type {
   ParseOptions,
   ParseResult,
@@ -19,7 +19,12 @@ import type {
 } from "@astrojs/compiler/types";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles, createProjectAssetsView, probeImage } from "../src/content-files.ts";
-import { BrowserModuleError, UnresolvedBrowserImportError } from "../src/browser-modules.ts";
+import {
+  artifactBrowserVersion,
+  BROWSER_MODULE_FORMAT,
+  BrowserModuleError,
+  UnresolvedBrowserImportError,
+} from "../src/browser-modules.ts";
 import {
   createProjectHost,
   GeneratedAssetRetentionError,
@@ -786,6 +791,7 @@ import "../styles/global.css";
         ],
       },
     };
+    const VERSION = artifactBrowserVersion(loadProjectArtifact(artifact));
 
     function scriptHost(
       page = PAGE_WITH_SCRIPT,
@@ -826,7 +832,7 @@ import "../styles/global.css";
       const code = await script.text();
       expect(script.status, code).toBe(200);
       expect(script.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-      expect(code).toContain('from "/_pletivo/module/npm/browser-pkg/browser.js"');
+      expect(code).toContain(`from "/_pletivo/module/npm/browser-pkg/browser.js?v=${VERSION}"`);
       expect(code).toContain('from "/_pletivo/module/project/src/lib/menu.ts"');
       expect(code).not.toContain("HTMLElement | null");
     });
@@ -838,7 +844,57 @@ import "../styles/global.css";
       expect(menu).not.toContain(": void");
 
       const pkg = await (await host.fetch(new Request("https://example.test/_pletivo/module/npm/browser-pkg/browser.js"))).text();
-      expect(pkg).toContain('from "/_pletivo/module/npm/browser-pkg/dep.js"');
+      expect(pkg).toContain(`from "/_pletivo/module/npm/browser-pkg/dep.js?v=${VERSION}"`);
+    });
+
+    describe("carried package modules", () => {
+      const cacheControl = async (host: ReturnType<typeof scriptHost>, url: string) =>
+        (await host.fetch(new Request(`https://example.test${url}`))).headers.get("cache-control");
+
+      test("are cached for good at the URL a page imports them by, and revalidated at any other", async () => {
+        const host = scriptHost();
+        const script = await (await host.fetch(new Request(`https://example.test${await scriptSrc(host)}`))).text();
+        const imported = /from "(\/_pletivo\/module\/npm\/[^"]+)"/.exec(script)?.[1];
+        expect(imported).toBe(`/_pletivo/module/npm/browser-pkg/browser.js?v=${VERSION}`);
+
+        expect(await cacheControl(host, imported ?? "")).toBe("public, max-age=31536000, immutable");
+        expect(await cacheControl(host, "/_pletivo/module/npm/browser-pkg/browser.js")).toBe("no-cache");
+        expect(await cacheControl(host, "/_pletivo/module/npm/browser-pkg/browser.js?v=0000000000000000")).toBe("no-cache");
+        expect(await cacheControl(host, `/_pletivo/module/project/src/lib/menu.ts?v=${VERSION}`)).toBe("no-cache");
+        expect((await host.fetch(new Request(`https://example.test/_pletivo/module/npm/browser-pkg/missing.js?v=${VERSION}`))).status).toBe(404);
+      });
+
+      test("change their version with any module or resolution of the browser graph, and only with those", () => {
+        const versionOf = (change: (site: typeof artifact) => void) => {
+          const site = structuredClone(artifact);
+          change(site);
+          return artifactBrowserVersion(loadProjectArtifact(site));
+        };
+        expect(versionOf(() => {})).toBe(VERSION);
+
+        const changed = [
+          versionOf((site) => {
+            site.artifact.modules[1].source = "export function dep() { return 1; }\n";
+          }),
+          versionOf((site) => {
+            site.artifact.browserResolutions[1].specifier = "./dep";
+          }),
+        ];
+        for (const version of changed) expect(version).not.toBe(VERSION);
+        expect(
+          versionOf((site) => {
+            site.artifact.modules.push({ id: "npm:server-pkg/index.js", kind: "js", source: "export {};\n" });
+          }),
+        ).toBe(VERSION);
+      });
+
+      test("are served as the format they are versioned by: a changed format needs BROWSER_MODULE_FORMAT bumped", async () => {
+        const served = await (await scriptHost().fetch(new Request("https://example.test/_pletivo/module/npm/browser-pkg/browser.js"))).text();
+        expect({ format: BROWSER_MODULE_FORMAT, served: served.replaceAll(VERSION, "<version>") }).toEqual({
+          format: 1,
+          served: 'import { dep } from "/_pletivo/module/npm/browser-pkg/dep.js?v=<version>";\nexport function greet() { dep(); }\n',
+        });
+      });
     });
 
     test("an import the browser graph does not carry is a 500 that says to prepare again", async () => {
@@ -912,8 +968,8 @@ import "../styles/global.css";
 
         const hints = preloadHints(html);
         expect(hints).toEqual([
-          "/_pletivo/module/npm/browser-pkg/dep.js",
-          "/_pletivo/module/npm/browser-pkg/browser.js",
+          `/_pletivo/module/npm/browser-pkg/dep.js?v=${VERSION}`,
+          `/_pletivo/module/npm/browser-pkg/browser.js?v=${VERSION}`,
           "/_pletivo/module/project/src/lib/menu.ts",
           src,
         ]);
