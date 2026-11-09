@@ -12,6 +12,7 @@
  */
 
 import type { ModuleId } from "@pletivo/core/artifact";
+import { browserStylesheetModule } from "@pletivo/core/browser-stylesheet";
 import { md5Hex } from "@pletivo/core/md5";
 import { executionNameForModuleId, projectModuleId, type ProjectArtifact } from "./artifact.ts";
 import type { AstroCompiler } from "./astro-compiler.ts";
@@ -312,15 +313,7 @@ async function scriptCode(
 
 async function moduleCode(moduleId: ModuleId, project: BrowserModuleSource, pathname: string): Promise<RewrittenModule> {
   const located = locate(moduleId, project, pathname);
-  if (located.kind === "css") {
-    // A stylesheet a script imports is applied when the import runs, as Vite dev does.
-    const code =
-      `const style = document.createElement("style");\n` +
-      `style.dataset.pletivoModule = ${JSON.stringify(moduleId)};\n` +
-      `style.textContent = ${JSON.stringify(located.source)};\n` +
-      `document.head.append(style);\n`;
-    return { code, staticImports: [] };
-  }
+  if (located.kind === "css") return { code: browserStylesheetModule(moduleId, located.source), staticImports: [] };
   if (located.kind === "json") return { code: `export default ${located.source.trim() || "null"};\n`, staticImports: [] };
   if (located.kind === "js" || located.kind === "ts") {
     const code = located.kind === "ts" ? stripTypes(located.source, { file: located.compilePath }) : located.source;

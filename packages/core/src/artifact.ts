@@ -44,6 +44,14 @@ export const ANY_PROJECT_IMPORTER = "project:*";
  */
 export const TAILWIND_MODULE_PREFIX = "tailwind-module:";
 
+/**
+ * Id prefix of a module `pletivo prepare` bundled from the browser graph's packages: an entry
+ * a browser script imports, or a chunk the entries share. `browser-bundle:<digest>/<file>`,
+ * the digest covering every file of the bundle; its imports are resolved like any carried
+ * module's, under its own id.
+ */
+export const BROWSER_BUNDLE_MODULE_PREFIX = "browser-bundle:";
+
 /** Id prefix of the `tailwindcss` bundle a host's Tailwind isolate runs those modules in. */
 export const TAILWIND_RUNTIME_MODULE_PREFIX = "tailwind-runtime:";
 
@@ -155,7 +163,9 @@ export interface SiteArtifact {
   /**
    * Resolutions of the browser graph: imports of processed `<script>` blocks and of
    * what they reach, resolved with browser export conditions. Targets are `modules`
-   * entries; a project importer is always `ANY_PROJECT_IMPORTER`.
+   * entries; a project importer is always `ANY_PROJECT_IMPORTER`. `pletivo prepare`
+   * answers a script's package import with a `BROWSER_BUNDLE_MODULE_PREFIX` module; an
+   * artifact may also carry the packages' own modules, as one from before bundling does.
    */
   browserResolutions?: ArtifactResolution[];
 }
