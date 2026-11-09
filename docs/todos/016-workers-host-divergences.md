@@ -68,8 +68,10 @@ These contracts landed after the measurements below. They are the current baseli
 - Hosted-preview behaviour that differs from a static build, by design:
   - Processed `<script>` blocks are served unbundled, one ES module per file, as a Vite
     dev server serves them; bare imports resolve through the artifact's browser graph
-    (`browserResolutions`). A CSS import from a script is applied as a `<style>` when it
-    runs, with no Tailwind or `@import` processing.
+    (`browserResolutions`). Packages are pre-bundled by `pletivo prepare`, as Vite's
+    dependency optimizer does, with `process.env.NODE_ENV` as `"development"`. A CSS import
+    from a script is applied as a `<style>` when it runs, with no Tailwind or `@import`
+    processing.
   - `trailingSlash`, config `redirects` and i18n's default-locale and fallback redirects
     are HTTP 301/302 responses, where a static build writes meta-refresh pages.
   - Tailwind always compiles against the host-embedded release, not the project's

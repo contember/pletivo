@@ -14,6 +14,7 @@ import {
   tailwindModuleSpecifier,
 } from "@pletivo/core/artifact";
 import { tailwindModuleRefs, type TailwindModuleRef } from "@pletivo/core/css-imports";
+import { bundleBrowserGraph } from "./browser-bundle";
 import { prepareFailure, PrepareError } from "./error";
 import { processedScripts } from "./scripts";
 import { bundleTailwindModule, bundleTailwindRuntime, TailwindModuleBundleError } from "./tailwind-modules";
@@ -281,7 +282,14 @@ export async function prepareModuleGraph(
     });
   }
 
-  const browserResolutions = await prepareBrowserGraph(root, projectSources, carried);
+  const serverModules = new Set(modules.keys());
+  const browserGraph = await prepareBrowserGraph(root, projectSources, carried);
+  const browser = await bundleBrowserGraph(modules, browserGraph);
+  // A package file only the browser reaches is in the bundle now; the artifact carries it once.
+  for (const id of [...modules.keys()]) {
+    if (!serverModules.has(id)) modules.delete(id);
+  }
+  for (const module of browser.modules) modules.set(module.id, module);
   // Not shared through ANY_PROJECT_IMPORTER: a host loads one only for the stylesheet naming it.
   const tailwindResolutions = await prepareTailwindModules(root, tailwindRequests, modules);
   // Discovery order; serializePreparedSite owns the canonical order.
@@ -292,7 +300,7 @@ export async function prepareModuleGraph(
       ...anyProjectResolutions(resolutions),
       ...tailwindResolutions,
     ]),
-    browserResolutions,
+    browserResolutions: browser.resolutions,
   };
 }
 

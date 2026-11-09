@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import {
   ANY_PROJECT_IMPORTER,
+  BROWSER_BUNDLE_MODULE_PREFIX,
   parsePreparedSite,
   TAILWIND_MODULE_PREFIX,
   TAILWIND_RUNTIME_MODULE_ID,
@@ -629,23 +630,82 @@ describe("pletivo prepare, browser scripts", () => {
   test("closes processed <script> imports with browser conditions, apart from the server graph", async () => {
     const site = await prepare(browserProject);
     const browser = site.artifact.browserResolutions ?? [];
-    const entry = browser.find((edge) => edge.importer === ANY_PROJECT_IMPORTER && edge.specifier === "browser-pkg");
-    const target = entry?.target;
-    if (target?.kind !== "module") throw new Error("browser-pkg has no browser resolution");
-    expect(moduleById(site, target.id).source).toContain("browser-condition");
+    const pkg = browserTarget(site, ANY_PROJECT_IMPORTER, "browser-pkg");
+    expect(bundleCode(site, pkg)).toContain("browser-condition");
+    expect(bundleCode(site, pkg)).not.toContain("server-condition");
 
     // A project file the script imports contributes its own package imports.
-    expect(browser.some((edge) => edge.specifier === "browser-pkg/extra")).toBe(true);
-    // A carried module's imports are closed under its own identity.
-    expect(browser.some((edge) => edge.importer === target.id && edge.specifier === "browser-dep")).toBe(true);
+    browserTarget(site, ANY_PROJECT_IMPORTER, "browser-pkg/extra");
     // is:inline is the browser's business; nothing is carried for it.
     expect(browser.some((edge) => edge.specifier === "inline-only-package")).toBe(false);
     // A carried component's script resolves from its own package identity.
     const widget = site.artifact.modules.find((module) => module.compilePath?.endsWith("/Widget.astro"));
     if (!widget) throw new Error("the component was not carried");
-    expect(browser.some((edge) => edge.importer === widget.id && edge.specifier === "browser-dep")).toBe(true);
+    const widgetDep = browserTarget(site, widget.id, "browser-dep");
     // The script's own imports never reach the server graph.
     expect(site.artifact.resolutions.some((edge) => edge.specifier === "browser-pkg")).toBe(false);
+
+    // browser-dep, reached by both, is one module of a chunk both import, so it runs once.
+    const depFiles = site.artifact.modules.filter((module) => module.source.includes("document.title=label"));
+    expect(depFiles.map((module) => module.id)).toHaveLength(1);
+    const chunk = depFiles[0]?.id ?? "";
+    expect(chunk).toStartWith(BROWSER_BUNDLE_MODULE_PREFIX);
+    expect(browser.filter((edge) => edge.target.kind === "module" && edge.target.id === chunk).map((edge) => edge.importer).sort())
+      .toEqual([pkg, widgetDep].sort());
+  });
+
+  test("answers every browser import from the bundle, and carries a browser-only package file nowhere else", async () => {
+    const site = await prepare(browserProject);
+    const browser = site.artifact.browserResolutions ?? [];
+    const bundle = site.artifact.modules.filter((module) => module.id.startsWith(BROWSER_BUNDLE_MODULE_PREFIX));
+    expect(bundle.length).toBeGreaterThan(0);
+    for (const edge of browser) {
+      expect(edge.target.kind === "module" && edge.target.id.startsWith(BROWSER_BUNDLE_MODULE_PREFIX)).toBe(true);
+    }
+    // Each bundle file's import is answered under its own id.
+    for (const module of bundle) {
+      for (const match of module.source.matchAll(/from"(\.\/[^"]+)"/g)) {
+        expect(browser.some((edge) => edge.importer === module.id && edge.specifier === match[1])).toBe(true);
+      }
+    }
+    // browser-dep is imported by no server module: the artifact carries it only inside the bundle.
+    expect(site.artifact.modules.some((module) => module.id.startsWith("npm:") && module.source.includes("document.title = label"))).toBe(false);
+  });
+
+  test("bundles a package's stylesheet, JSON and lazy import as the host serves them one by one", async () => {
+    const directory = await projectWithFiles({
+      "src/pages/index.astro": '<p>x</p>\n<script>\n  import { load, value } from "styled-pkg";\n  load().then(() => value);\n</script>\n',
+      "node_modules/styled-pkg/package.json": JSON.stringify({ name: "styled-pkg", version: "1.0.0", type: "module", exports: "./index.js" }),
+      "node_modules/styled-pkg/index.js":
+        'import "./style.css";\nimport data from "./data.json";\nexport const value = data.answer;\nexport const load = () => import("./lazy.js");\n',
+      "node_modules/styled-pkg/style.css": ".styled { color: red; }\n",
+      "node_modules/styled-pkg/data.json": '{ "answer": 42 }\n',
+      "node_modules/styled-pkg/lazy.js": 'export const lazy = "lazy-module";\n',
+    });
+    const site = await prepare(directory);
+    const entry = browserTarget(site, ANY_PROJECT_IMPORTER, "styled-pkg");
+    const code = bundleCode(site, entry);
+    // Applied when the import runs, as the host applies a stylesheet it serves on its own.
+    const style = site.artifact.modules.find((module) => module.source.includes("style.dataset.pletivoModule"));
+    expect(style?.id).toBe(entry);
+    expect(code).toMatch(/style\.dataset\.pletivoModule="npm:[0-9a-f]+\/style\.css"/);
+    expect(code).toContain(".styled { color: red; }");
+    expect(code).toContain("document.head.append(style)");
+    expect(code).toContain("{answer:42}");
+    // The lazy module is a chunk of its own, loaded only when the import runs.
+    const lazySpecifier = /import\("(\.\/[^"]+)"\)/.exec(code)?.[1];
+    const lazy = browserTarget(site, entry, lazySpecifier ?? "");
+    expect(bundleCode(site, lazy)).toContain("lazy-module");
+    expect(code).not.toContain("lazy-module");
+  });
+
+  test("bundles the same bytes whatever the checkout root", async () => {
+    const first = await prepare(browserProject);
+    const directory = await temporaryRepository();
+    await fs.cp(browserProject, path.join(directory, "browser-scripts"), { recursive: true });
+    __resetForTests();
+    const copied = await prepare(path.join(directory, "browser-scripts"));
+    expect(serializePreparedSite(copied)).toBe(serializePreparedSite(first));
   });
 
   test("refuses a script import that only exists on the server", async () => {
@@ -760,6 +820,20 @@ function targetFor(site: unknown, importer: string, specifier: string): string {
     throw new Error(`Missing module resolution ${importer} -> ${specifier}`);
   }
   return edge.target.id;
+}
+
+function browserTarget(site: PreparedSite, importer: string, specifier: string): string {
+  const edge = (site.artifact.browserResolutions ?? []).find(
+    (candidate) => candidate.importer === importer && candidate.specifier === specifier,
+  );
+  if (edge?.target.kind !== "module") throw new Error(`Missing browser resolution ${importer} -> ${specifier}`);
+  return edge.target.id;
+}
+
+/** A bundle file's code; fails for a module that is not one. */
+function bundleCode(site: PreparedSite, id: string): string {
+  expect(id).toStartWith(BROWSER_BUNDLE_MODULE_PREFIX);
+  return moduleById(site, id).source;
 }
 
 function moduleById(site: unknown, id: string) {
