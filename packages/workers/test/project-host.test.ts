@@ -4,13 +4,13 @@
  * the split — `example-playground/` wires the same two objects to a real workspace.
  */
 
-import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import {
   ARTIFACT_VERSION,
   ArtifactVersionError,
   digestArtifactInput,
 } from "@pletivo/core/artifact";
-import { UnsupportedArtifactExternalError } from "../src/artifact.ts";
+import { loadProjectArtifact, UnsupportedArtifactExternalError } from "../src/artifact.ts";
 import type {
   ParseOptions,
   ParseResult,
@@ -19,7 +19,12 @@ import type {
 } from "@astrojs/compiler/types";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles, createProjectAssetsView, probeImage } from "../src/content-files.ts";
-import { BrowserModuleError, UnresolvedBrowserImportError } from "../src/browser-modules.ts";
+import {
+  BROWSER_MODULE_FORMAT,
+  browserGraphOf,
+  BrowserModuleError,
+  UnresolvedBrowserImportError,
+} from "../src/browser-modules.ts";
 import {
   createProjectHost,
   GeneratedAssetRetentionError,
@@ -778,14 +783,26 @@ import "../styles/global.css";
         modules: [
           { id: "npm:browser-pkg/browser.js", kind: "js", source: 'import { dep } from "./dep.js";\nexport function greet() { dep(); }\n' },
           { id: "npm:browser-pkg/dep.js", kind: "js", source: "export function dep() {}\n" },
+          // Reached by no import here; each is served in its own format.
+          { id: "npm:browser-pkg/typed.ts", kind: "ts", source: "export const typed: number = 1;\n" },
+          { id: "npm:browser-pkg/style.css", kind: "css", source: ".menu { color: red; }\n" },
+          { id: "npm:browser-pkg/data.json", kind: "json", source: '{ "a": 1 }\n' },
+          { id: "npm:server-pkg/index.js", kind: "js", source: "export {};\n" },
         ],
         resolutions: [],
         browserResolutions: [
           { importer: "project:*", specifier: "browser-pkg", target: { kind: "module", id: "npm:browser-pkg/browser.js" } },
           { importer: "npm:browser-pkg/browser.js", specifier: "./dep.js", target: { kind: "module", id: "npm:browser-pkg/dep.js" } },
+          { importer: "npm:browser-pkg/browser.js", specifier: "./typed", target: { kind: "module", id: "npm:browser-pkg/typed.ts" } },
+          { importer: "npm:browser-pkg/browser.js", specifier: "./style.css", target: { kind: "module", id: "npm:browser-pkg/style.css" } },
+          { importer: "npm:browser-pkg/browser.js", specifier: "./data.json", target: { kind: "module", id: "npm:browser-pkg/data.json" } },
         ],
       },
     };
+    let VERSION = "";
+    beforeAll(async () => {
+      VERSION = (await browserGraphOf(loadProjectArtifact(artifact))).version;
+    });
 
     function scriptHost(
       page = PAGE_WITH_SCRIPT,
@@ -826,7 +843,7 @@ import "../styles/global.css";
       const code = await script.text();
       expect(script.status, code).toBe(200);
       expect(script.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-      expect(code).toContain('from "/_pletivo/module/npm/browser-pkg/browser.js"');
+      expect(code).toContain(`from "/_pletivo/module/npm/browser-pkg/browser.js?v=${VERSION}"`);
       expect(code).toContain('from "/_pletivo/module/project/src/lib/menu.ts"');
       expect(code).not.toContain("HTMLElement | null");
     });
@@ -838,7 +855,91 @@ import "../styles/global.css";
       expect(menu).not.toContain(": void");
 
       const pkg = await (await host.fetch(new Request("https://example.test/_pletivo/module/npm/browser-pkg/browser.js"))).text();
-      expect(pkg).toContain('from "/_pletivo/module/npm/browser-pkg/dep.js"');
+      expect(pkg).toContain(`from "/_pletivo/module/npm/browser-pkg/dep.js?v=${VERSION}"`);
+    });
+
+    describe("carried package modules", () => {
+      const cacheControl = async (host: ReturnType<typeof scriptHost>, url: string) =>
+        (await host.fetch(new Request(`https://example.test${url}`))).headers.get("cache-control");
+
+      test("are cached for good at the URL a page imports them by, and revalidated at any other", async () => {
+        const host = scriptHost();
+        const script = await (await host.fetch(new Request(`https://example.test${await scriptSrc(host)}`))).text();
+        const imported = /from "(\/_pletivo\/module\/npm\/[^"]+)"/.exec(script)?.[1];
+        expect(imported).toBe(`/_pletivo/module/npm/browser-pkg/browser.js?v=${VERSION}`);
+
+        expect(await cacheControl(host, imported ?? "")).toBe("public, max-age=31536000, immutable");
+        expect(await cacheControl(host, "/_pletivo/module/npm/browser-pkg/browser.js")).toBe("no-cache");
+        expect(await cacheControl(host, "/_pletivo/module/npm/browser-pkg/browser.js?v=0000000000000000")).toBe("no-cache");
+        expect(await cacheControl(host, `/_pletivo/module/project/src/lib/menu.ts?v=${VERSION}`)).toBe("no-cache");
+        expect((await host.fetch(new Request(`https://example.test/_pletivo/module/npm/browser-pkg/missing.js?v=${VERSION}`))).status).toBe(404);
+      });
+
+      test("are the browser graph's only: an encoded project path and a server module are revalidated at the version", async () => {
+        const host = scriptHost();
+        expect(await cacheControl(host, `/_pletivo/module/%70roject/src/lib/menu.ts?v=${VERSION}`)).toBe("no-cache");
+        expect(await cacheControl(host, `/_pletivo/module/npm/server-pkg/index.js?v=${VERSION}`)).toBe("no-cache");
+      });
+
+      test("change their version with any module or resolution of the browser graph, and only with those", async () => {
+        interface Site {
+          artifact: {
+            modules: { id: string; kind: string; source: string; compilePath?: string }[];
+            browserResolutions: { importer: string; specifier: string; target: { kind: string; id: string } }[];
+          };
+        }
+        const versionOf = async (change: (site: Site) => void) => {
+          const site = structuredClone(artifact);
+          change(site);
+          return (await browserGraphOf(loadProjectArtifact(site))).version;
+        };
+        const dep = (site: Site) => site.artifact.modules[1] ?? { id: "", kind: "", source: "" };
+        expect(await versionOf(() => {})).toBe(VERSION);
+
+        const changed = [
+          await versionOf((site) => {
+            dep(site).source = "export function dep() { return 1; }\n";
+          }),
+          await versionOf((site) => {
+            dep(site).kind = "ts";
+          }),
+          await versionOf((site) => {
+            dep(site).compilePath = "node_modules/browser-pkg/dep.js";
+          }),
+          await versionOf((site) => {
+            const resolution = site.artifact.browserResolutions[1];
+            if (resolution !== undefined) resolution.specifier = "./dep";
+          }),
+        ];
+        for (const version of changed) expect(version).not.toBe(VERSION);
+        expect(
+          await versionOf((site) => {
+            site.artifact.modules.push({ id: "npm:other-server-pkg/index.js", kind: "js", source: "export {};\n" });
+          }),
+        ).toBe(VERSION);
+      });
+
+      test("are served in the format they are versioned by: a changed format needs BROWSER_MODULE_FORMAT bumped", async () => {
+        const host = scriptHost();
+        const served: Record<string, string> = {};
+        for (const file of ["browser.js", "typed.ts", "style.css", "data.json"]) {
+          const code = await (await host.fetch(new Request(`https://example.test/_pletivo/module/npm/browser-pkg/${file}`))).text();
+          served[file] = code.replaceAll(VERSION, "<version>");
+        }
+        expect({ format: BROWSER_MODULE_FORMAT, served }).toEqual({
+          format: 1,
+          served: {
+            "browser.js": 'import { dep } from "/_pletivo/module/npm/browser-pkg/dep.js?v=<version>";\nexport function greet() { dep(); }\n',
+            "typed.ts": "export const typed = 1;\n",
+            "style.css":
+              'const style = document.createElement("style");\n' +
+              'style.dataset.pletivoModule = "npm:browser-pkg/style.css";\n' +
+              'style.textContent = ".menu { color: red; }\\n";\n' +
+              "document.head.append(style);\n",
+            "data.json": 'export default { "a": 1 };\n',
+          },
+        });
+      });
     });
 
     test("an import the browser graph does not carry is a 500 that says to prepare again", async () => {
@@ -912,8 +1013,8 @@ import "../styles/global.css";
 
         const hints = preloadHints(html);
         expect(hints).toEqual([
-          "/_pletivo/module/npm/browser-pkg/dep.js",
-          "/_pletivo/module/npm/browser-pkg/browser.js",
+          `/_pletivo/module/npm/browser-pkg/dep.js?v=${VERSION}`,
+          `/_pletivo/module/npm/browser-pkg/browser.js?v=${VERSION}`,
           "/_pletivo/module/project/src/lib/menu.ts",
           src,
         ]);

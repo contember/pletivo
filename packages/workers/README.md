@@ -174,7 +174,10 @@ same pletivo writes the same module, so only a pletivo released with this host f
 1. a generated `?url` asset (`/_astro/…`): the in-memory cache, then `generatedAssetStore`;
 2. a processed `<script>` (`/_pletivo/script/…`) or a module it imports
    (`/_pletivo/module/…`), served unbundled with bare imports rewritten to the artifact's
-   browser graph;
+   browser graph. A package module of that graph is imported at `?v=<browser graph version>`
+   and cached `immutable` there; project files and scripts are `no-cache`. A page left open
+   across a new artifact loads a later dynamic import at the new version, beside the modules
+   it already runs;
 3. a file in `public/`, with its exact bytes;
 4. an image output (`/_astro/<name>.<hash>.<ext>`);
 5. a redirect from `trailingSlash`, config `redirects` or i18n routing;

@@ -350,12 +350,13 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     return stored;
   }
 
-  async function serveBrowserModule(pathname: string, snapshot: ProjectSnapshot): Promise<Response> {
+  async function serveBrowserModule(url: URL, snapshot: ProjectSnapshot): Promise<Response> {
+    const { pathname } = url;
     try {
-      const code = await browserModule(pathname, browserSource(snapshot));
+      const { code, immutable } = await browserModule(url, browserSource(snapshot));
+      // Any other URL names the file as it is now; a reload must see an edit.
       return new Response(code, {
-        // Unversioned URLs name the file as it is now; a reload must see an edit.
-        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": immutable ? IMMUTABLE : "no-cache" },
       });
     } catch (error) {
       if (!(error instanceof BrowserModuleError)) throw error;
@@ -412,7 +413,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
         }
 
         return await withSnapshot(async (snapshot) => {
-          if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url.pathname, snapshot);
+          if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url, snapshot);
 
           // Before routing, as Astro's dev server does: a public file shadows a page.
           const publicFile = publicFileResponse(request, url.pathname, snapshot, projectRoot(renderOptions));
