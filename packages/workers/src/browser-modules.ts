@@ -6,7 +6,7 @@
  * - `/_pletivo/script/<index>/<module>` — script `<index>` of a `.astro` module.
  * - `/_pletivo/module/<module>` — a project file, or a package module from the
  *   artifact's browser graph (`browserResolutions`). A package module's URL carries
- *   `?v=<artifactBrowserVersion>`, so what it serves at that URL never changes.
+ *   `?v=<browser graph version>`, so what it serves at that URL never changes.
  *
  * `<module>` is the ModuleId with its first `:` as `/`, each segment URL-encoded.
  */
@@ -47,32 +47,44 @@ export function moduleUrl(moduleId: ModuleId): string {
  */
 export const BROWSER_MODULE_FORMAT = 1;
 
-const artifactBrowserVersions = new WeakMap<ProjectArtifact, string>();
+/** An artifact's browser graph: the modules a browser loads from it, and the version their URLs carry. */
+export interface BrowserGraph {
+  /**
+   * A digest of all those modules' served code is made of: the graph's modules and resolutions, and
+   * `BROWSER_MODULE_FORMAT`. A package's own digest in its ModuleId does not do: it names the package,
+   * not what its imports resolve to in this artifact.
+   */
+  version: string;
+  /** The artifact modules a browser import resolves to; no other module is served at a version. */
+  modules: ReadonlySet<ModuleId>;
+}
 
-/**
- * The version every artifact module's URL carries: a digest of all its served code is made of, the
- * browser graph's modules and resolutions, and `BROWSER_MODULE_FORMAT`. A package's own digest in
- * its ModuleId does not do: it names the package, not what its imports resolve to in this artifact.
- */
-export function artifactBrowserVersion(artifact: ProjectArtifact): string {
-  const known = artifactBrowserVersions.get(artifact);
-  if (known !== undefined) return known;
+const browserGraphs = new WeakMap<ProjectArtifact, Promise<BrowserGraph>>();
+
+/** Once per artifact: the first page's preload walk waits for it, so it is a native digest. */
+export function browserGraphOf(artifact: ProjectArtifact): Promise<BrowserGraph> {
+  let graph = browserGraphs.get(artifact);
+  if (graph === undefined) {
+    graph = digestBrowserGraph(artifact);
+    browserGraphs.set(artifact, graph);
+  }
+  return graph;
+}
+
+async function digestBrowserGraph(artifact: ProjectArtifact): Promise<BrowserGraph> {
   const resolutions = artifact.prepared.artifact.browserResolutions ?? [];
   const parts = [String(BROWSER_MODULE_FORMAT), JSON.stringify(resolutions)];
-  const ids = new Set(resolutions.flatMap((resolution) => (resolution.target.kind === "module" ? [resolution.target.id] : [])));
-  for (const id of [...ids].sort()) {
+  const modules = new Set<ModuleId>();
+  for (const resolution of resolutions) {
+    if (resolution.target.kind === "module" && !resolution.target.id.startsWith("project:")) modules.add(resolution.target.id);
+  }
+  for (const id of [...modules].sort()) {
     const module = artifact.browserResolver.module(id);
     parts.push(JSON.stringify([id, module?.kind ?? null, module?.compilePath ?? null, module?.source ?? null]));
   }
-  const version = md5Hex(parts.join("\n")).slice(0, 16);
-  artifactBrowserVersions.set(artifact, version);
-  return version;
-}
-
-/** Whether `url` names an artifact module at the version its artifact serves now: what it serves never changes. */
-export function isImmutableBrowserModule(url: URL, artifact: ProjectArtifact | undefined): boolean {
-  if (artifact === undefined || !url.pathname.startsWith(MODULE_PREFIX) || url.pathname.startsWith(PROJECT_MODULE_PREFIX)) return false;
-  return url.searchParams.get("v") === artifactBrowserVersion(artifact);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(parts.join("\n"))));
+  const version = [...digest.subarray(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return { version, modules };
 }
 
 /** What a browser-module request needs from the project as one snapshot sees it. */
@@ -124,9 +136,13 @@ export function isBrowserModulePath(pathname: string): boolean {
   return pathname.startsWith(SCRIPT_PREFIX) || pathname.startsWith(MODULE_PREFIX);
 }
 
-/** The JavaScript `pathname` names. Throws `BrowserModuleError` with the status to answer. */
-export async function browserModule(pathname: string, project: BrowserModuleSource): Promise<string> {
-  return (await servedModule(pathname, project)).code;
+/**
+ * The JavaScript `url` names, and whether it is served for good: an artifact module of the browser
+ * graph, asked for at the graph's version. Throws `BrowserModuleError` with the status to answer.
+ */
+export async function browserModule(url: URL, project: BrowserModuleSource): Promise<{ code: string; immutable: boolean }> {
+  const served = await servedModule(url.pathname, project);
+  return { code: served.code, immutable: served.version !== null && url.searchParams.get("v") === served.version };
 }
 
 /**
@@ -195,9 +211,17 @@ function artifactMemo(pathname: string, artifact: ProjectArtifact | undefined): 
 }
 
 /** What one browser-module URL serves, and the URLs its static imports load. */
+/** A module's code with its imports rewritten, and the URLs its static imports load. */
+interface RewrittenModule {
+  code: string;
+  staticImports: readonly string[];
+}
+
 interface ServedModule {
   code: string;
   staticImports: readonly string[];
+  /** The browser graph version this module is served for good at; null for a project file, a script or a module outside the graph. */
+  version: string | null;
 }
 
 async function servedModule(pathname: string, project: BrowserModuleSource): Promise<ServedModule> {
@@ -210,11 +234,14 @@ async function servedModule(pathname: string, project: BrowserModuleSource): Pro
     }
     const moduleId = moduleIdOf(rest.slice(slash + 1, -".js".length), pathname);
     const code = await scriptCode(moduleId, index, project, pathname);
-    return rewriteForBrowser(stripTypes(code, { file: moduleId }), moduleId, project, pathname);
+    return { ...(await rewriteForBrowser(stripTypes(code, { file: moduleId }), moduleId, project, pathname)), version: null };
   }
   if (pathname.startsWith(MODULE_PREFIX)) {
     const moduleId = moduleIdOf(pathname.slice(MODULE_PREFIX.length), pathname);
-    return moduleCode(moduleId, project, pathname);
+    const served = await moduleCode(moduleId, project, pathname);
+    // Decided on the decoded id: an encoded `project` segment names a project file all the same.
+    const graph = project.artifact === undefined || moduleId.startsWith("project:") ? null : await browserGraphOf(project.artifact);
+    return { ...served, version: graph !== null && graph.modules.has(moduleId) ? graph.version : null };
   }
   throw new BrowserModuleError(pathname, "not a browser module URL", 404);
 }
@@ -283,7 +310,7 @@ async function scriptCode(
   return code;
 }
 
-async function moduleCode(moduleId: ModuleId, project: BrowserModuleSource, pathname: string): Promise<ServedModule> {
+async function moduleCode(moduleId: ModuleId, project: BrowserModuleSource, pathname: string): Promise<RewrittenModule> {
   const located = locate(moduleId, project, pathname);
   if (located.kind === "css") {
     // A stylesheet a script imports is applied when the import runs, as Vite dev does.
@@ -323,12 +350,13 @@ function locate(moduleId: ModuleId, project: BrowserModuleSource, pathname: stri
 }
 
 /** Every import of `code` as a URL this host answers, or a 500 naming the first it cannot. */
-function rewriteForBrowser(
+async function rewriteForBrowser(
   code: string,
   importer: ModuleId,
   project: BrowserModuleSource,
   pathname: string,
-): ServedModule {
+): Promise<RewrittenModule> {
+  const version = project.artifact === undefined ? null : (await browserGraphOf(project.artifact)).version;
   const importerFile = importer.startsWith("project:") ? importer.slice("project:".length) : null;
   const staticImports: string[] = [];
   function urlOf(resolved: string, specifier: string): string {
@@ -339,11 +367,10 @@ function rewriteForBrowser(
       }
       return moduleUrl(projectModuleId(file));
     }
-    const artifact = project.artifact;
-    const target = artifact?.browserResolver.resolve(importer, specifier) ?? null;
-    if (artifact === undefined || target === null || target.kind !== "module") throw new UnresolvedBrowserImportError(pathname, importer, specifier);
+    const target = project.artifact?.browserResolver.resolve(importer, specifier) ?? null;
+    if (version === null || target === null || target.kind !== "module") throw new UnresolvedBrowserImportError(pathname, importer, specifier);
     if (target.id.startsWith("project:")) return moduleUrl(target.id);
-    return `${moduleUrl(target.id)}?v=${artifactBrowserVersion(artifact)}`;
+    return `${moduleUrl(target.id)}?v=${version}`;
   }
   const rewritten = rewriteImports(code, {
     importer: importerFile ?? importer,

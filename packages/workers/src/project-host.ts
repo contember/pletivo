@@ -29,7 +29,6 @@ import {
   browserModule,
   BrowserModuleError,
   isBrowserModulePath,
-  isImmutableBrowserModule,
   staticModuleGraph,
   type BrowserModuleSource,
 } from "./browser-modules.ts";
@@ -354,12 +353,10 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   async function serveBrowserModule(url: URL, snapshot: ProjectSnapshot): Promise<Response> {
     const { pathname } = url;
     try {
-      const source = browserSource(snapshot);
-      const code = await browserModule(pathname, source);
+      const { code, immutable } = await browserModule(url, browserSource(snapshot));
       // Any other URL names the file as it is now; a reload must see an edit.
-      const cacheControl = isImmutableBrowserModule(url, source.artifact) ? IMMUTABLE : "no-cache";
       return new Response(code, {
-        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": cacheControl },
+        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": immutable ? IMMUTABLE : "no-cache" },
       });
     } catch (error) {
       if (!(error instanceof BrowserModuleError)) throw error;
