@@ -29,10 +29,11 @@ import {
   browserModule,
   BrowserModuleError,
   isBrowserModulePath,
+  pinScriptUrls,
   staticModuleGraph,
   type BrowserModuleSource,
 } from "./browser-modules.ts";
-import { htmlTags } from "./html-tags.ts";
+import { attributeValue, htmlTags } from "./html-tags.ts";
 import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
 import { publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
@@ -200,6 +201,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     revision: string;
     artifact: ProjectArtifact | undefined;
     imports: Map<string, readonly string[]>;
+    scriptVersions: Map<string, string>;
   } | null = null;
 
   /** The artifact for this snapshot: the caller's, or the project's own file. */
@@ -276,9 +278,9 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   function preloadSource(snapshot: ProjectSnapshot): BrowserModuleSource {
     const source = browserSource(snapshot);
     if (importsFrom?.revision !== snapshot.revision || importsFrom.artifact !== source.artifact) {
-      importsFrom = { revision: snapshot.revision, artifact: source.artifact, imports: new Map() };
+      importsFrom = { revision: snapshot.revision, artifact: source.artifact, imports: new Map(), scriptVersions: new Map() };
     }
-    return { ...source, staticImports: importsFrom.imports };
+    return { ...source, staticImports: importsFrom.imports, scriptVersions: importsFrom.scriptVersions };
   }
 
   /** Before a render of `pathname`, so it reuses what a warm-up of it in flight compiles. */
@@ -309,6 +311,8 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     const project = projectOptions(snapshot);
     const stale = await staleArtifactInputs(snapshot, project.artifact);
     let page = await renderPage({ ...project, pathname, search });
+    const pinned = await pinScriptUrls(page.scriptUrls, preloadSource(snapshot));
+    page = { ...page, html: withPinnedScripts(page.html, pinned), scriptUrls: page.scriptUrls.map((url) => pinned.get(url) ?? url) };
     if (modulePreload) {
       const preloads = await staticModuleGraph(page.scriptUrls, preloadSource(snapshot));
       page = { ...page, html: withModulePreloads(page.html, preloads) };
@@ -554,6 +558,25 @@ function parseArtifact(source: string, path: string): ProjectArtifact {
  * A `<link rel="modulepreload">` per URL, before `</head>`, else before `<body>`, where the
  * parser puts it in the implied head. A page with neither gets none.
  */
+const SRC_ATTRIBUTE = /(\ssrc\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'>]+)/i;
+
+/** The page with each `<script src>` it loads by a URL in `pinned` loading the pinned one instead. */
+function withPinnedScripts(html: string, pinned: ReadonlyMap<string, string>): string {
+  if (pinned.size === 0) return html;
+  let out = "";
+  let from = 0;
+  for (const tag of htmlTags(html)) {
+    if (tag.name !== "script" || tag.closing) continue;
+    const src = attributeValue(tag, "src");
+    const to = src === null ? undefined : pinned.get(src);
+    if (to === undefined) continue;
+    // A replacement function: the URL is not a replacement pattern.
+    out += html.slice(from, tag.start) + tag.source.replace(SRC_ATTRIBUTE, (_, name: string) => `${name}"${escapeAttribute(to)}"`);
+    from = tag.start + tag.source.length;
+  }
+  return out + html.slice(from);
+}
+
 function withModulePreloads(html: string, urls: readonly string[]): string {
   if (urls.length === 0) return html;
   const at = headEndOf(html);
