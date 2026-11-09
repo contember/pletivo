@@ -11,9 +11,11 @@ import {
   TAILWIND_MODULE_PREFIX,
   TAILWIND_RUNTIME_MODULE_ID,
   serializePreparedSite,
+  type ArtifactModule,
   type PreparedSite,
 } from "@pletivo/core/artifact";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
+import { bundleBrowserGraph } from "../../packages/pletivo/src/prepare/browser-bundle";
 import { emitArtifact } from "../../packages/pletivo/src/prepare/emit";
 import { PrepareError, prepare } from "../../packages/pletivo/src/prepare/index";
 import * as tailwindModules from "../../packages/pletivo/src/prepare/tailwind-modules";
@@ -697,6 +699,18 @@ describe("pletivo prepare, browser scripts", () => {
     const lazy = browserTarget(site, entry, lazySpecifier ?? "");
     expect(bundleCode(site, lazy)).toContain("lazy-module");
     expect(code).not.toContain("lazy-module");
+  });
+
+  test("refuses, naming the module, a browser graph whose import it does not answer", async () => {
+    const entry: ArtifactModule = { id: "npm:pkg/index.js", kind: "js", source: 'import { dep } from "./dep.js";\nexport const value = dep;\n' };
+    const error = await bundleBrowserGraph(new Map([[entry.id, entry]]), [
+      { importer: ANY_PROJECT_IMPORTER, specifier: "pkg", target: { kind: "module", id: entry.id } },
+    ]).then(
+      () => null,
+      (rejection: unknown) => rejection,
+    );
+    if (!(error instanceof PrepareError)) throw new Error(`expected a PrepareError, got ${String(error)}`);
+    expect(error.message).toContain('npm:pkg/index.js (browser bundle): "./dep.js" is not in the browser graph');
   });
 
   test("bundles the same bytes whatever the checkout root", async () => {
