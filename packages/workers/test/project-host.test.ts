@@ -875,6 +875,34 @@ import "../styles/global.css";
         expect(await scriptSrc(scriptHost(PAGE_WITH_SCRIPT.replace("greet();", "greet(); greet();")))).not.toBe(src);
       });
 
+      test("move to a new URL when the code they serve changes with the same source, and the old URL is revalidated", async () => {
+        const files = (menuPath: string) =>
+          new Map([
+            ["src/pages/index.astro", PAGE_WITH_SCRIPT],
+            [menuPath, "export function openMenu() {}\n"],
+            ["src/styles/global.css", '@import "tailwindcss";\n'],
+          ]);
+        let current = createMapProjectStore(files("src/lib/menu.ts"), new Map(), "before");
+        const host = createProjectHost({
+          store: { snapshot: () => current.snapshot() },
+          artifact,
+          loader,
+          compiler,
+          ...(TAILWIND === undefined ? {} : { tailwind: TAILWIND }),
+        });
+        const before = await scriptSrc(host);
+
+        // The script's own source is unchanged; its import now resolves to another file.
+        current = createMapProjectStore(files("src/lib/menu/index.ts"), new Map(), "after");
+        const after = await scriptSrc(host);
+        const script = await host.fetch(new Request(`https://example.test${after}`));
+
+        expect(after).not.toBe(before);
+        expect(await script.text()).toContain('from "/_pletivo/module/project/src/lib/menu/index.ts"');
+        expect(script.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+        expect(await cacheControl(host, before)).toBe("no-cache");
+      });
+
       test("are preloaded by the URL the page loads them by", async () => {
         const host = scriptHost();
         const html = await (await host.fetch(new Request("https://example.test/"))).text();

@@ -145,8 +145,9 @@ export function isBrowserModulePath(pathname: string): boolean {
 }
 
 /**
- * The JavaScript `url` names, and whether it is served for good: an artifact module of the browser
- * graph, asked for at the graph's version. Throws `BrowserModuleError` with the status to answer.
+ * The JavaScript `url` names, and whether it is served for good: a script asked for at the digest of
+ * the code it serves, or an artifact module of the browser graph asked for at the graph's version.
+ * Throws `BrowserModuleError` with the status to answer.
  */
 export async function browserModule(url: URL, project: BrowserModuleSource): Promise<{ code: string; immutable: boolean }> {
   const served = await servedModule(url.pathname, project);
@@ -175,6 +176,8 @@ export async function pinScriptUrls(urls: readonly string[], project: BrowserMod
           if (error instanceof WorkspaceSnapshotChangedError) throw error;
           return;
         }
+        // A script's static imports are kept per file set too, so the preload walk after this reuses the build.
+        project.staticImports?.set(pathname, served.staticImports);
         if (served.version === null) return;
         version = served.version;
         project.scriptVersions?.set(pathname, version);
@@ -234,6 +237,8 @@ async function staticImportsOf(url: string, project: BrowserModuleSource): Promi
     return null;
   }
   memo?.set(pathname, served.staticImports);
+  // Pinning the page's script URLs after a warm-up reuses this build.
+  if (pathname.startsWith(SCRIPT_PREFIX) && served.version !== null) project.scriptVersions?.set(pathname, served.version);
   return served.staticImports;
 }
 
