@@ -919,6 +919,44 @@ import "../styles/global.css";
         ).toBe(VERSION);
       });
 
+      test("include a prepared bundle: its files are cached for good, the imports between them rewritten at the version", async () => {
+        const entry = "browser-bundle:0123abcd/pletivo-browser-entry-0.js";
+        const chunk = "browser-bundle:0123abcd/chunk-a1b2c3d4.js";
+        const bundled = {
+          artifact: {
+            ...artifact.artifact,
+            modules: [
+              { id: entry, kind: "js", source: 'import{dep}from"./chunk-a1b2c3d4.js";function greet(){dep()}export{greet};\n' },
+              { id: chunk, kind: "js", source: "function dep(){}\nexport{dep};\n" },
+            ],
+            browserResolutions: [
+              { importer: "project:*", specifier: "browser-pkg", target: { kind: "module", id: entry } },
+              { importer: entry, specifier: "./chunk-a1b2c3d4.js", target: { kind: "module", id: chunk } },
+            ],
+          },
+        };
+        const version = (await browserGraphOf(loadProjectArtifact(bundled))).version;
+        const host = createProjectHost({
+          store: createMapProjectStore(
+            new Map([
+              ["src/pages/index.astro", '<p>x</p>\n<script>\n  import { greet } from "browser-pkg";\n  greet();\n</script>\n'],
+            ]),
+          ),
+          artifact: bundled,
+          loader,
+          compiler,
+        });
+        const script = await (await host.fetch(new Request(`https://example.test${await scriptSrc(host)}`))).text();
+        const entryUrl = `/_pletivo/module/browser-bundle/0123abcd/pletivo-browser-entry-0.js?v=${version}`;
+        expect(script).toContain(`from "${entryUrl}"`);
+
+        const served = await host.fetch(new Request(`https://example.test${entryUrl}`));
+        expect(served.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+        const chunkUrl = `/_pletivo/module/browser-bundle/0123abcd/chunk-a1b2c3d4.js?v=${version}`;
+        expect(await served.text()).toContain(`from"${chunkUrl}"`);
+        expect(await cacheControl(host, chunkUrl)).toBe("public, max-age=31536000, immutable");
+      });
+
       test("are served in the format they are versioned by: a changed format needs BROWSER_MODULE_FORMAT bumped", async () => {
         const host = scriptHost();
         const served: Record<string, string> = {};
