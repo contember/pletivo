@@ -176,8 +176,9 @@ same pletivo writes the same module, so only a pletivo released with this host f
    (`/_pletivo/module/…`), served unbundled with bare imports rewritten to the artifact's
    browser graph. `pletivo prepare` bundles the graph's packages, so a package import loads
    one bundle entry and the chunks entries share, not each file of the package. A module of
-   that graph is imported at `?v=<browser graph version>` and cached `immutable` there;
-   project files and scripts are `no-cache`. A page left open
+   that graph is imported at `?v=<browser graph version>` and cached `immutable` there. A
+   page loads a script at `?v=<digest of the code served>`, imports rewritten, and it is
+   cached `immutable` there; project files, and a script at any other URL, are `no-cache`. A page left open
    across a new artifact loads a later dynamic import at the new version, beside the modules
    it already runs;
 3. a file in `public/`, with its exact bytes;

@@ -58,8 +58,20 @@ export function* htmlTags(html: string): Generator<HtmlTag> {
 
 /** An attribute's value as written in `tag`, entities left as they are; `null` when absent. */
 export function attributeValue(tag: HtmlTag, name: string): string | null {
-  const pattern = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i");
+  return attributeSpan(tag, name)?.value ?? null;
+}
+
+/** An attribute's raw value and where its value, quotes included, sits in `tag.source`. */
+export interface AttributeSpan {
+  value: string;
+  start: number;
+  end: number;
+}
+
+export function attributeSpan(tag: HtmlTag, name: string): AttributeSpan | null {
+  const pattern = new RegExp(`(\\s${name}\\s*=\\s*)(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i");
   const match = pattern.exec(tag.source);
   if (match === null) return null;
-  return match[1] ?? match[2] ?? match[3] ?? "";
+  const start = match.index + (match[1] ?? "").length;
+  return { value: match[2] ?? match[3] ?? match[4] ?? "", start, end: match.index + match[0].length };
 }

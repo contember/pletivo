@@ -848,6 +848,69 @@ import "../styles/global.css";
       expect(code).not.toContain("HTMLElement | null");
     });
 
+    describe("scripts", () => {
+      const cacheControl = async (host: ReturnType<typeof scriptHost>, url: string) =>
+        (await host.fetch(new Request(`https://example.test${url}`))).headers.get("cache-control");
+      const sha256Prefix = async (text: string) =>
+        [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))]
+          .slice(0, 8)
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+
+      test("are named by the digest of the code they serve, cached for good at it and revalidated at any other", async () => {
+        const host = scriptHost();
+        const src = await scriptSrc(host);
+        const path = src.slice(0, src.indexOf("?"));
+        const served = await host.fetch(new Request(`https://example.test${src}`));
+
+        expect(src).toBe(`${path}?v=${await sha256Prefix(await served.text())}`);
+        expect(served.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+        expect(await cacheControl(host, path)).toBe("no-cache");
+        expect(await cacheControl(host, `${path}?v=0000000000000000`)).toBe("no-cache");
+      });
+
+      test("change their URL with their own code, not with a project file they import", async () => {
+        const src = await scriptSrc(scriptHost());
+        expect(await scriptSrc(scriptHost(PAGE_WITH_SCRIPT, "export function openMenu() {}\n"))).toBe(src);
+        expect(await scriptSrc(scriptHost(PAGE_WITH_SCRIPT.replace("greet();", "greet(); greet();")))).not.toBe(src);
+      });
+
+      test("move to a new URL when the code they serve changes with the same source, and the old URL is revalidated", async () => {
+        const files = (menuPath: string) =>
+          new Map([
+            ["src/pages/index.astro", PAGE_WITH_SCRIPT],
+            [menuPath, "export function openMenu() {}\n"],
+            ["src/styles/global.css", '@import "tailwindcss";\n'],
+          ]);
+        let current = createMapProjectStore(files("src/lib/menu.ts"), new Map(), "before");
+        const host = createProjectHost({
+          store: { snapshot: () => current.snapshot() },
+          artifact,
+          loader,
+          compiler,
+          ...(TAILWIND === undefined ? {} : { tailwind: TAILWIND }),
+        });
+        const before = await scriptSrc(host);
+
+        // The script's own source is unchanged; its import now resolves to another file.
+        current = createMapProjectStore(files("src/lib/menu/index.ts"), new Map(), "after");
+        const after = await scriptSrc(host);
+        const script = await host.fetch(new Request(`https://example.test${after}`));
+
+        expect(after).not.toBe(before);
+        expect(await script.text()).toContain('from "/_pletivo/module/project/src/lib/menu/index.ts"');
+        expect(script.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+        expect(await cacheControl(host, before)).toBe("no-cache");
+      });
+
+      test("are preloaded by the URL the page loads them by", async () => {
+        const host = scriptHost();
+        const html = await (await host.fetch(new Request("https://example.test/"))).text();
+        const src = await scriptSrc(host);
+        expect(html).toContain(`<link rel="modulepreload" href="${src}">`);
+      });
+    });
+
     test("serve project files and carried packages with their imports rewritten", async () => {
       const host = scriptHost();
       const menu = await (await host.fetch(new Request("https://example.test/_pletivo/module/project/src/lib/menu.ts"))).text();
