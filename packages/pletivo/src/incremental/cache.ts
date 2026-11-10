@@ -12,7 +12,9 @@ const { version: PLETIVO_VERSION } = require_("../../package.json") as { version
  */
 // Bumped to 4 — added per-route `size` so warm builds can sum sizes
 // without stat'ing every cached output file.
-export const CACHE_SCHEMA_VERSION = 4;
+// Bumped to 5: added per-route `cssEntry`. A page that rewrote, cached by
+// version 4, would keep linking its own CSS groups instead of the target's.
+export const CACHE_SCHEMA_VERSION = 5;
 
 export interface CachedFragmentRef {
   hash: string;
@@ -79,6 +81,13 @@ export interface RouteCacheEntry {
    * to scan for `_astro/hoisted-<hash>.js` markers.
    */
   hoistedHashes: string[];
+  /**
+   * Page module whose CSS this output links, when it is not the route's own
+   * entry (the page `Astro.rewrite`s to another route). Persisted because a
+   * cached page is not re-rendered, and the CSS links are re-derived every
+   * build. Absent means the route's own entry.
+   */
+  cssEntry?: string;
   /**
    * Byte size of the rendered HTML output. Cached so warm builds
    * don't have to stat every cached file just to print the total.

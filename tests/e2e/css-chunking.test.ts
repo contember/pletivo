@@ -44,8 +44,8 @@ async function write(rel: string, content: string): Promise<void> {
 	await fs.writeFile(abs, content);
 }
 
-function runBuild(): { stdout: string; stderr: string; status: number } {
-	const result = spawnSync("bun", ["run", cliPath, "build"], {
+function runBuild(...args: string[]): { stdout: string; stderr: string; status: number } {
+	const result = spawnSync("bun", ["run", cliPath, "build", ...args], {
 		cwd: projectRoot,
 		encoding: "utf8",
 		env: { ...process.env, NODE_ENV: "production" },
@@ -308,5 +308,53 @@ describe("CSS chunking — the Tailwind entry ships once", () => {
 		expect(allCss).not.toContain(`@import "tailwindcss"`);
 		expect(allCss).not.toContain("@theme");
 		expect(occurrences(allCss, ".raw-entry-marker")).toBe(0);
+	});
+});
+
+/**
+ * `Astro.rewrite` writes the target's HTML at the rewriting page's path, so
+ * the output has to link the target's CSS groups. Linking the rewriting
+ * page's own groups ships the target's markup with none of its stylesheets.
+ */
+async function setupRewrite(): Promise<void> {
+	await write("vendor/target.css", `.target-marker { color: rgb(9, 8, 7); }\n`);
+	await write("vendor/other.css", `.other-marker { color: rgb(1, 2, 3); }\n`);
+	await write(
+		"src/pages/target.astro",
+		`---\nimport "../../vendor/target.css";\n---\n<html><head><title>Target</title></head><body><h1 class="target-marker">Target</h1></body></html>\n`,
+	);
+	await write("src/pages/rewritten.astro", `---\nreturn Astro.rewrite("/target");\n---\n`);
+	await write(
+		"src/pages/other.astro",
+		`---\nimport "../../vendor/other.css";\n---\n<html><head><title>Other</title></head><body><h1>Other</h1></body></html>\n`,
+	);
+}
+
+describe("CSS chunking: a rewritten page links the target's CSS", () => {
+	async function expectTargetSheets(): Promise<void> {
+		const sheets = await emittedStylesheets();
+		const targetHref = [...sheets].find(([, css]) => css.includes(".target-marker"))?.[0];
+		const otherHref = [...sheets].find(([, css]) => css.includes(".other-marker"))?.[0];
+		if (!targetHref || !otherHref) throw new Error("Expected a stylesheet per page group");
+		const links = await stylesheetsOf("rewritten/index.html");
+		expect(links).toContain(targetHref);
+		expect(links).not.toContain(otherHref);
+		expect(links).toEqual(await stylesheetsOf("target/index.html"));
+	}
+
+	it("in a full build", async () => {
+		await setupRewrite();
+		const result = runBuild();
+		expect(result.status).toBe(0);
+		await expectTargetSheets();
+	});
+
+	it("when the rewriting page is restored from the incremental cache", async () => {
+		await setupRewrite();
+		expect(runBuild("--incremental").status).toBe(0);
+		const warm = runBuild("--incremental");
+		expect(warm.status).toBe(0);
+		expect(warm.stdout).toContain("0 rendered");
+		await expectTargetSheets();
 	});
 });
