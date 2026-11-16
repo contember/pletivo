@@ -109,10 +109,10 @@ Ordered by how many examples each one blocked at baseline.
 4. **Framework renderers** (preact, react, solid, svelte, vue, multiple,
    with-mdx, with-nanostores). Not fixed. Since #51 a framework component a
    `.astro` file imports fails the build by file and framework, instead of a tag
-   named by its path or `[object Object]`. Outside that import the error names
-   the component but not the file, and some cases still fail inside the
-   framework: with-mdx's `Counter.jsx`, imported from `.mdx`, still crashes on
-   `react/jsx-dev-runtime`. Real renderers (each integration's server
+   named by its path or `[object Object]`. Outside that import the error does
+   not name the file, and not every case reaches it: with-mdx's `Counter.jsx`,
+   imported from `.mdx`, is compiled for React, which is not installed, so the
+   build stops on a missing `react/jsx-dev-runtime`. Real renderers (each integration's server
    renderer, `<astro-island>` and Astro's client runtime, on both hosts) are
    the next piece of work and replace the error.
 5. **Small hoisted scripts and stylesheets linked, Astro inlines them**
