@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { experimental_AstroContainer } from "@pletivo/runtime/astro-container";
-import { createComponent } from "@pletivo/runtime/astro-shim";
+import { createComponent, runInPage } from "@pletivo/runtime/astro-shim";
 
 describe("experimental_AstroContainer", () => {
   test("create() returns an instance", async () => {
@@ -42,6 +42,16 @@ describe("experimental_AstroContainer", () => {
     const container = await experimental_AstroContainer.create();
     await expect(container.renderToString(Component, { slots: { default: "x" } }))
       .rejects.toThrow(/slots/);
+  });
+
+  test("renderToString() inside a page render gets its own request, not the page's", async () => {
+    const Component = createComponent(
+      async (result) => ({ __html: `<p>${result.pageContext.request?.url ?? ""}</p>` }),
+      "src/components/Url.astro",
+    );
+    const container = await experimental_AstroContainer.create();
+    const html = await runInPage({ url: new URL("https://site.test/page/") }, () => container.renderToString(Component));
+    expect(html).toBe("<p>https://example.com/</p>");
   });
 
   test("renderToResponse() returns a text/html Response", async () => {

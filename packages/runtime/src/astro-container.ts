@@ -19,11 +19,20 @@
  * producing wrong output.
  */
 
-import type { AstroComponentFactory, HtmlString } from "./astro-shim";
+import type { AstroComponentFactory, HtmlString, PageContext } from "./astro-shim";
 
 export interface RenderOptions {
   props?: Record<string, unknown>;
   slots?: Record<string, unknown>;
+}
+
+/**
+ * A container render is its own request, as in Astro (`https://example.com/`): it
+ * must not join a page that happens to be rendering around it.
+ */
+function containerPageContext(): PageContext {
+  const url = new URL("https://example.com/");
+  return { url, request: new Request(url) };
 }
 
 export class experimental_AstroContainer {
@@ -50,7 +59,7 @@ export class experimental_AstroContainer {
     const result = await (component as (
       props: Record<string, unknown>,
     ) => Promise<HtmlString | string> | HtmlString | string)(
-      options.props ?? {},
+      { ...options.props, __pageContext: containerPageContext() },
     );
     if (typeof result === "string") return result;
     if (result && typeof result === "object" && "__html" in result) {
