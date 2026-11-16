@@ -449,4 +449,30 @@ import { helper } from "../lib/util";
       }),
     ).rejects.toThrow(/src\/pages\/a\.astro.*\.\/missing/);
   });
+
+  test("refuses a Svelte or Vue component by name, as the Bun host does", async () => {
+    for (const [file, framework] of [["Counter.svelte", "Svelte"], ["Counter.vue", "Vue"]]) {
+      await expect(
+        compileProject({
+          files: new Map([
+            ["src/pages/a.astro", `---\nimport Counter from "../components/${file}";\n---\n<Counter />\n`],
+            [`src/components/${file}`, "<button>+</button>\n"],
+          ]),
+          compiler,
+        }),
+      ).rejects.toThrow(`pletivo cannot render ${framework} components: src/components/${file}`);
+    }
+  });
+
+  test("refuses JSX whose pragma compiles it for another framework, and compiles a pletivo one", async () => {
+    const files = (pragma: string) =>
+      new Map([
+        ["src/pages/a.astro", `---\nimport Counter from "../components/Counter.tsx";\n---\n<Counter />\n`],
+        ["src/components/Counter.tsx", `/** @jsxImportSource ${pragma} */\nexport default function Counter() { return <b>+</b>; }\n`],
+      ]);
+    await expect(compileProject({ files: files("solid-js"), compiler })).rejects.toThrow(
+      'pletivo cannot render Solid components: src/components/Counter.tsx (jsxImportSource "solid-js", set by its @jsxImportSource pragma)',
+    );
+    expect(hasModule(await compileProject({ files: files("pletivo"), compiler }), "src/components/Counter.tsx")).toBe(true);
+  });
 });

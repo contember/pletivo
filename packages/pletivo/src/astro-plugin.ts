@@ -26,6 +26,7 @@ import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { stripTypes } from "./transpile";
 import { collectCssSideEffectImports } from "./js-imported-css";
+import { assertRenderableImports } from "./framework-components";
 import { materializeViteVirtualImports } from "./astro-host/vite-plugins";
 import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
@@ -384,8 +385,10 @@ export async function registerAstroPlugin(): Promise<void> {
 
         // The module's imports, taken from the compiler's own output so the
         // list is the one Bun will execute. Feeds the cascade ordering of the
-        // CSS collected below — see astro-css-order.ts.
-        recordAstroImports(cleanPath, result.code);
+        // CSS collected below (astro-css-order.ts) and the refusal of framework
+        // components pletivo cannot render (framework-components.ts).
+        const imports = recordAstroImports(cleanPath, result.code);
+        assertRenderableImports(cleanPath, imports);
 
         // Collect CSS emitted by the Astro compiler. Each `result.css[]`
         // entry is the compiled output of one `<style>` block, in source

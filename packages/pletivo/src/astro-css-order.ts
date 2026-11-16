@@ -72,14 +72,15 @@ export function moduleIdFor(file: string): string {
 }
 
 /**
- * Record a compiled `.astro` module's imports. `code` is the compiler's own
- * output, so the import list it carries is the one Bun will execute.
+ * Record a compiled `.astro` module's imports, and return them. `code` is the
+ * compiler's own output, so the import list it carries is the one Bun will execute.
  */
-export function recordAstroImports(file: string, code: string): void {
+export function recordAstroImports(file: string, code: string): readonly string[] {
   const specs = scanImports(code, "ts");
   const previous = specifiers.get(file);
   specifiers.set(file, specs);
   if (!previous || previous.join("\n") !== specs.join("\n")) graphGeneration++;
+  return specs;
 }
 
 export function clearAstroImportGraph(): void {

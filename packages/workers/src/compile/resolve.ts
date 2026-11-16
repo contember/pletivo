@@ -8,6 +8,7 @@ import {
 import type { TailwindModuleRef } from "@pletivo/core/css-imports";
 import { imageOutputPath } from "@pletivo/core/image";
 import { md5Hex } from "@pletivo/core/md5";
+import { FRAMEWORK_RENDERERS_UNSUPPORTED, frameworkOfFile } from "@pletivo/runtime/framework-components";
 import { projectModuleId, type ArtifactResolver } from "../artifact.ts";
 import type { ProjectAssetInfo, ProjectAssetsView } from "../asset-port.ts";
 import { ASSETS_DIR } from "../astro-assets.ts";
@@ -221,7 +222,15 @@ export class ImportResolver {
     if (local !== null) {
       const target = this.#walk.projectModule(local);
       if (target === null) {
-        throw unresolvedImport(importer, rawSpecifier, "unsupported-target-kind", "the target kind is unsupported");
+        const framework = frameworkOfFile(local);
+        throw unresolvedImport(
+          importer,
+          rawSpecifier,
+          "unsupported-target-kind",
+          framework === null
+            ? "the target kind is unsupported"
+            : `pletivo cannot render ${framework} components: ${local}. ${FRAMEWORK_RENDERERS_UNSUPPORTED}`,
+        );
       }
       return moduleResolution(target);
     }

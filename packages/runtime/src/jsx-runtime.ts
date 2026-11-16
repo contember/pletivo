@@ -1,6 +1,7 @@
 import { renderIslandWrapper, registerIsland } from "./island";
 import { pushTsxStyle } from "./render-context";
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
+import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
 export { HtmlString };
 
 const VOID_ELEMENTS = new Set([
@@ -84,6 +85,7 @@ function renderChildren(children: unknown): string | Promise<string> {
   if (isHtmlString(children)) {
     return children.__html;
   }
+  assertNotForeignElement(children);
   return escapeHtml(String(children));
 }
 
@@ -166,13 +168,20 @@ export function jsx(
     if (result instanceof Promise) {
       return result.then((resolved) => {
         if (typeof resolved === "string") return createHtml(escapeHtml(resolved));
+        if (!isHtmlString(resolved)) assertNotForeignElement(resolved, tag.name || undefined);
         return resolved;
       });
     }
 
     if (typeof result === "string") return createHtml(escapeHtml(result));
+    // A page's root element reaches no later sink: the host only checks it is HTML.
+    if (!isHtmlString(result)) assertNotForeignElement(result, tag.name || undefined);
     return result;
   }
+
+  // Typed as a string here, but an object (React's `forwardRef`, `memo`) gets this far at runtime.
+  if (typeof tag !== "string") throw unrenderableComponent(undefined, tag);
+  assertElementName(tag);
 
   // `<style>` blocks in TSX pages/components are hoisted into <head> as
   // page-global CSS (parity with Astro `<style is:global>`). Emitting the

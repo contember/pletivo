@@ -2,6 +2,8 @@ import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import { foreignJsxMessage, frameworkOfJsxImportSource, jsxImportSourcePragma } from "@pletivo/core/framework-jsx";
+import { FRAMEWORK_RENDERERS_UNSUPPORTED } from "@pletivo/runtime/framework-components";
 import type { AstroCompiler } from "../astro-compiler.ts";
 import type { CompileCache, CompiledFile } from "../compile-cache.ts";
 import { IMPORT_META_ENV_GLOBAL } from "../env.ts";
@@ -72,6 +74,7 @@ async function compileFile(
     }
     return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind, [], compilePath);
   }
+  if (kind === "tsx" || kind === "jsx") assertPletivoJsx(source, compilePath);
   if (kind === "ts" || kind === "tsx" || kind === "jsx") {
     return fileEntry(
       source,
@@ -227,4 +230,20 @@ function transpile(code: string, options: { file: string; jsx?: boolean }): stri
       : "";
     throw new UnsupportedFileError(options.file, detail + where);
   }
+}
+
+/**
+ * Sucrase compiles every JSX file for pletivo's runtime, so a pragma naming another
+ * framework is refused here as the Bun host refuses it. A tsconfig's
+ * `jsxImportSource` is not read: its `extends` chain reaches into `node_modules`.
+ */
+function assertPletivoJsx(source: string, file: string): void {
+  const pragma = jsxImportSourcePragma(source);
+  if (pragma.kind !== "leading") return;
+  const framework = frameworkOfJsxImportSource(pragma.importSource);
+  if (framework === null) return;
+  throw new UnsupportedFileError(
+    file,
+    `${foreignJsxMessage(framework, file, pragma.importSource, "its @jsxImportSource pragma")}. ${FRAMEWORK_RENDERERS_UNSUPPORTED}`,
+  );
 }

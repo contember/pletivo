@@ -15,6 +15,7 @@
 import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-string";
 import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
+import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
 import {
   getSlotArgs,
   recordRenderedModule,
@@ -470,6 +471,7 @@ async function renderValue(value: unknown): Promise<string> {
     const slotArgs = getSlotArgs();
     return renderValue(slotArgs ? value(...slotArgs) : value());
   }
+  assertNotForeignElement(value);
   // Fallback: stringify + escape
   return escapeHtml(String(value));
 }
@@ -582,11 +584,13 @@ const voidElements = new Set([
 
 export async function renderComponent(
   result: AstroResult,
-  _displayName: string,
+  displayName: string,
   Component: unknown,
   props: Record<string, unknown> = {},
   slots: SlotsRecord = {},
 ): Promise<HtmlString> {
+  // Astro awaits a component given as a promise, e.g. `import("./G.astro").then((m) => m.default)`.
+  if (Component instanceof Promise) Component = await Component;
   if (Component == null) {
     return createHtml("");
   }
@@ -630,12 +634,14 @@ export async function renderComponent(
     const awaited = out instanceof Promise ? await out : out;
     if (isHtmlString(awaited)) return awaited;
     if (typeof awaited === "string") return createHtml(escapeHtml(awaited));
+    assertNotForeignElement(awaited, displayName);
     return createHtml(await renderValue(awaited));
   }
 
   // String tag — dynamic HTML element (e.g. Control = 'input')
   if (typeof Component === "string") {
     const tag = Component;
+    assertElementName(tag);
     let attrs = "";
     for (const [k, v] of Object.entries(cleanProps)) {
       attrs += addAttribute(v, k).__html;
@@ -649,8 +655,7 @@ export async function renderComponent(
     return createHtml(`<${tag}${attrs}>${childHtml}</${tag}>`);
   }
 
-  // Unknown thing — give up
-  return createHtml("");
+  throw unrenderableComponent(displayName, Component);
 }
 
 function normalizeClassList(value: unknown): string {
