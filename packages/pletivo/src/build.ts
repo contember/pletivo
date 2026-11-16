@@ -38,6 +38,7 @@ import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from 
 import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
+import type { ViteUserConfig } from "@pletivo/core/astro-host/types";
 
 /** Shape a dynamic page module is used through: its default export + getStaticPaths. */
 interface DynamicMod {
@@ -949,6 +950,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // final stylesheet.
   const islandNames = new Set<string>();
   const referencedHashes = new Set<string>();
+  // Endpoint output is written verbatim, never inlined, so its scripts keep their file.
+  const rawHashes = new Set<string>();
   for (const result of dedupedResults) {
     if (result.islands || result.hoistedHashes) {
       for (const name of result.islands ?? []) islandNames.add(name);
@@ -956,13 +959,17 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       continue;
     }
     for (const name of extractAll(result.html, ISLAND_NAME_RE)) islandNames.add(name);
-    for (const hash of extractAll(result.html, HOISTED_URL_RE)) referencedHashes.add(hash);
+    for (const hash of extractAll(result.html, HOISTED_URL_RE)) {
+      referencedHashes.add(hash);
+      if (result.raw) rawHashes.add(hash);
+    }
   }
 
   let inlinedScripts = new Map<string, string>();
   if (referencedHashes.size > 0) {
     const tHoisted = performance.now();
-    inlinedScripts = await bundleHoistedScripts(referencedHashes, distDir);
+    const inlineLimit = readScriptInlineLimit(astroHost?.config.vite);
+    inlinedScripts = await bundleHoistedScripts(referencedHashes, rawHashes, inlineLimit, distDir);
     phase("hoisted bundling", tHoisted);
   }
 
@@ -1665,24 +1672,59 @@ async function render404Page(
   return null;
 }
 
-/** Vite's `build.assetsInlineLimit` default, which Astro applies to processed scripts too. */
-const SCRIPT_INLINE_LIMIT = 4096;
+/** Vite's `build.assetsInlineLimit`: a byte limit, or a per-file verdict where `undefined` defers to the default. */
+type ScriptInlineLimit = number | ((filePath: string, content: Buffer) => boolean | undefined);
+
+/** Vite's default, which Astro applies to processed scripts too. */
+const DEFAULT_SCRIPT_INLINE_LIMIT = 4096;
 const scriptScanner = new Bun.Transpiler({ loader: "js" });
 
-/**
- * Astro inlines a processed script whose bundle imports nothing and is under the limit
- * (`plugin-scripts.ts`). Also kept external: code that resolves against its own URL,
- * which an inline module would resolve against the page, and code holding `</script`.
- */
-function inlinableScript(code: string): boolean {
-  if (Buffer.byteLength(code) >= SCRIPT_INLINE_LIMIT) return false;
-  if (/<\/script/i.test(code) || code.includes("import.meta")) return false;
-  return scriptScanner.scanImports(code).length === 0;
+/** Reads `vite.build.assetsInlineLimit` from the Astro config; projects without one get Vite's default. */
+function readScriptInlineLimit(vite: ViteUserConfig | undefined): ScriptInlineLimit {
+  const viteBuild = vite?.build;
+  if (typeof viteBuild !== "object" || viteBuild === null || !("assetsInlineLimit" in viteBuild)) {
+    return DEFAULT_SCRIPT_INLINE_LIMIT;
+  }
+  const limit = viteBuild.assetsInlineLimit;
+  if (limit === undefined) return DEFAULT_SCRIPT_INLINE_LIMIT;
+  if (typeof limit === "number") return limit;
+  if (typeof limit === "function") {
+    return (filePath, content) => {
+      const verdict: unknown = limit(filePath, content);
+      return typeof verdict === "boolean" ? verdict : undefined;
+    };
+  }
+  throw new Error(`vite.build.assetsInlineLimit must be a number or a function, got ${typeof limit}`);
 }
 
-/** Bundles the referenced hoisted scripts; returns hash → code for those to inline. */
+/** Astro's `shouldInlineAsset` (`core/build/plugins/util.ts`). */
+function shouldInlineAsset(code: string, filePath: string, limit: ScriptInlineLimit): boolean {
+  if (typeof limit === "function") {
+    return limit(filePath, Buffer.from(code)) ?? Buffer.byteLength(code) < DEFAULT_SCRIPT_INLINE_LIMIT;
+  }
+  return Buffer.byteLength(code) < limit;
+}
+
+/**
+ * Astro inlines a processed script whose bundle imports nothing and passes the inline
+ * limit (`plugin-scripts.ts`). Also kept external: code that resolves against its own
+ * URL, which an inline module would resolve against the page, and code holding
+ * `</script` or `<!--`, which could end the tag early or swallow its end.
+ */
+function inlinableScript(code: string, filePath: string, limit: ScriptInlineLimit): boolean {
+  if (scriptScanner.scanImports(code).length > 0) return false;
+  if (!shouldInlineAsset(code, filePath, limit)) return false;
+  return !/<\/script|<!--/i.test(code) && !code.includes("import.meta");
+}
+
+/**
+ * Bundles the referenced hoisted scripts; returns hash → code for those to inline.
+ * An inlined script keeps its file only when an endpoint (`rawHashes`) links it.
+ */
 async function bundleHoistedScripts(
   referencedHashes: Set<string>,
+  rawHashes: Set<string>,
+  inlineLimit: ScriptInlineLimit,
   distDir: string,
 ): Promise<Map<string, string>> {
   const inlined = new Map<string, string>();
@@ -1731,14 +1773,16 @@ async function bundleHoistedScripts(
     if (!m) continue;
     const hash = m[1];
     const size = output.size;
-    const code = (await output.text()).trim();
-    if (inlinableScript(code)) {
-      inlined.set(hash, code);
-      await fs.rm(output.path, { force: true });
-      console.log(`  hoisted-${hash} inlined (${formatSize(size)})`);
-      continue;
-    }
     const finalPath = path.join(astroOutDir, `hoisted-${hash}.js`);
+    const code = await output.text();
+    if (inlinableScript(code, path.relative(distDir, finalPath), inlineLimit)) {
+      inlined.set(hash, code.trim());
+      console.log(`  hoisted-${hash} inlined (${formatSize(size)})`);
+      if (!rawHashes.has(hash)) {
+        await fs.rm(output.path, { force: true });
+        continue;
+      }
+    }
     await fs.rename(output.path, finalPath);
     console.log(`  _astro/hoisted-${hash}.js (${formatSize(size)})`);
   }

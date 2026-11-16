@@ -18,6 +18,7 @@ import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
 import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
 import {
+  claimScript,
   getSlotArgs,
   recordRenderedModule,
   runWithSlotArgs,
@@ -799,9 +800,10 @@ export function maybeRenderHead(_result: AstroResult): HtmlString {
   return createHtml("");
 }
 
+/** Emits a processed script once per render pass, as Astro's `renderedScripts` does. */
 export function renderScript(_result: AstroResult, id: string): HtmlString {
   const src = resolveScriptUrl(id);
-  if (!src) return createHtml("");
+  if (!src || !claimScript(id)) return createHtml("");
   return createHtml(
     `<script type="module" src="${withBase(src)}"></script>`,
   );

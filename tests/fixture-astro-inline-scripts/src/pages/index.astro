@@ -1,10 +1,18 @@
 ---
+import Counter from "../components/Counter.astro";
+import SlotProbe from "../components/SlotProbe.astro";
+import Probed from "../components/Probed.astro";
+import Widget from "../components/Widget.astro";
 const title = "Inline Scripts";
 ---
 <html>
   <head><title>{title}</title></head>
   <body>
     <h1>Inline Scripts</h1>
+    <Counter />
+    <Counter />
+    <SlotProbe><Probed /></SlotProbe>
+    <Widget />
   </body>
 </html>
 
@@ -22,4 +30,20 @@ const title = "Inline Scripts";
   import("https://example.com/remote-module.js").then(() => {
     document.documentElement.dataset.remote = "remote-script-marker";
   });
+</script>
+
+<script>
+  document.documentElement.dataset.closeTag = "close-tag-marker <\/script>";
+</script>
+
+<script>
+  document.documentElement.dataset.comment = "comment-marker <!--";
+</script>
+
+<script>
+  document.documentElement.dataset.meta = new URL("./x", import.meta.url).href + "import-meta-marker";
+</script>
+
+<script>
+  import "../styles/only.css";
 </script>
