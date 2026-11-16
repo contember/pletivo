@@ -12,6 +12,7 @@
  * attributes, `unescapeHTML`) are inserted raw.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-string";
 import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
@@ -508,6 +509,13 @@ export type AstroComponentFactory = {
 // reach it without importing this module. Re-exported for existing callers.
 export { runWithRenderTracking, pushTsxStyle } from "./render-context";
 
+/**
+ * The result of the page being rendered. A component called with props alone, from
+ * MDX content or JSX, joins it: under Astro, content renders inside the page's request.
+ * Not in ./render-context, which must not depend on this module (jsx-runtime imports it).
+ */
+const pageResultStorage = new AsyncLocalStorage<AstroResult>();
+
 export function createComponent(
   fn: (
     result: AstroResult,
@@ -530,6 +538,7 @@ export function createComponent(
     let result: AstroResult;
     let props: Record<string, unknown>;
     let slots: SlotsRecord;
+    let startsPage = false;
 
     if (
       resultOrProps &&
@@ -540,12 +549,14 @@ export function createComponent(
       props = propsArg || {};
       slots = slotsArg || {};
     } else {
-      // Called as top-level page or from JSX/MDX context: (props)
-      result = makeResult(
-        (resultOrProps as Record<string, unknown> | undefined)?.[
-          "__pageContext"
-        ] as PageContext | undefined,
-      );
+      // Called as top-level page or from JSX/MDX context: (props). Without a
+      // page context of its own it joins the page being rendered.
+      const pageContext = (resultOrProps as Record<string, unknown> | undefined)?.[
+        "__pageContext"
+      ] as PageContext | undefined;
+      const enclosing = pageResultStorage.getStore();
+      result = enclosing && pageContext === undefined ? enclosing : makeResult(pageContext);
+      startsPage = result !== enclosing;
       // Strip __pageContext from props
       const raw = (resultOrProps as Record<string, unknown>) || {};
       const { __pageContext, children, ...userProps } = raw;
@@ -555,7 +566,9 @@ export function createComponent(
       slots = children != null ? { default: () => children } : {};
     }
 
-    const out = fn(result, props, slots);
+    const out = startsPage
+      ? pageResultStorage.run(result, () => fn(result, props, slots))
+      : fn(result, props, slots);
     const rendered = out instanceof Promise ? await out : out;
     // Normalize a plain `{ __html }` carrier into an HtmlString. Anything else
     // passes through untouched — a frontmatter `Astro.redirect()` returns a
