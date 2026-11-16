@@ -121,8 +121,12 @@ single page. ES-module URL dedup means they execute once, so this is markup and
 load-order noise rather than broken behaviour — but it is 2.6× the tags.
 
 Since then: the shim's `renderScript` emits each script id once per render pass,
-as Astro's `renderedScripts` does, so the identical tags are gone. Scripts are
-still not moved to `<head>`.
+as Astro's `renderedScripts` does, so a page carries one tag per script, inline or
+linked. `Astro.slots.render()` claims the slot's scripts when it is called, as in
+Astro, so a slot rendered once to probe it and then again by `<slot />` keeps its
+script only in the discarded probe. The "one script in `<head>`" above is the
+Astro 4.16 baseline of this site; Astro 5 renders processed scripts at the
+component's position, as pletivo does, so placement is no longer a gap.
 
 `build` inlines a processed script as Astro does: its bundle imports nothing and
 passes `vite.build.assetsInlineLimit` (default 4096 B; `0` keeps every script
