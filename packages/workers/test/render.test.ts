@@ -94,6 +94,35 @@ describe("projectRoutes", () => {
   });
 });
 
+describe("renderPage, an .astro component reached through JSX", () => {
+  // The leaf is called with props alone, as JSX and MDX call it, so it must join the
+  // page's request rather than get a result of its own.
+  const files = new Map<string, string>([
+    ["src/components/Here.astro", `<i>{Astro.url.pathname}</i>\n`],
+    [
+      "src/components/Bridge.tsx",
+      `import Here from "./Here.astro";\n\nexport default function Bridge() {\n  return <b><Here /></b>;\n}\n`,
+    ],
+    [
+      "src/pages/astro-page.astro",
+      `---\nimport Bridge from "../components/Bridge.tsx";\n---\n<html><body><Bridge /></body></html>\n`,
+    ],
+    [
+      "src/pages/tsx-page.tsx",
+      `import Here from "../components/Here.astro";\n\nexport default function Page() {\n  return <html><body><Here /></body></html>;\n}\n`,
+    ],
+  ]);
+  const renderIn = (pathname: string) => renderPage({ files, pathname, loader, compiler });
+
+  test("from an .astro page sees the page's Astro.url", async () => {
+    expect((await renderIn("/astro-page")).html).toContain("<i>/astro-page</i>");
+  });
+
+  test("from a .tsx page sees the page's Astro.url", async () => {
+    expect((await renderIn("/tsx-page")).html).toContain("<i>/tsx-page</i>");
+  });
+});
+
 describe("renderPage, .astro through the Worker Loader", () => {
   test("renders the page, its layout and a nested component", async () => {
     const page = await render("/");

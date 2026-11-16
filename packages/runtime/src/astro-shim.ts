@@ -510,11 +510,37 @@ export type AstroComponentFactory = {
 export { runWithRenderTracking, pushTsxStyle } from "./render-context";
 
 /**
- * The result of the page being rendered. A component called with props alone, from
- * MDX content or JSX, joins it: under Astro, content renders inside the page's request.
+ * The page being rendered. A component called with props alone, from MDX content or
+ * JSX, joins its result: under Astro, content renders inside the page's request.
  * Not in ./render-context, which must not depend on this module (jsx-runtime imports it).
  */
-const pageResultStorage = new AsyncLocalStorage<AstroResult>();
+interface PageScope {
+  pageContext: PageContext | undefined;
+  result: AstroResult;
+}
+const pageScopeStorage = new AsyncLocalStorage<PageScope>();
+
+/**
+ * Render a page inside its request: every Astro component reached from `fn`
+ * without a page context of its own, `.astro` or `.tsx` page alike, shares the
+ * result for `pageContext`. Hosts call this once per page render.
+ */
+export function runInPage<T>(pageContext: PageContext, fn: () => T): T {
+  return pageScopeStorage.run({ pageContext, result: makeResult(pageContext) }, fn);
+}
+
+/** The enclosing page's scope when `pageContext` is its own or absent, else a new one. */
+function pageScopeFor(pageContext: PageContext | undefined): { scope: PageScope; opens: boolean } {
+  const enclosing = pageScopeStorage.getStore();
+  if (enclosing && (pageContext === undefined || pageContext === enclosing.pageContext)) {
+    return { scope: enclosing, opens: false };
+  }
+  return { scope: { pageContext, result: makeResult(pageContext) }, opens: true };
+}
+
+function inPageScope<T>(page: { scope: PageScope; opens: boolean }, fn: () => T): T {
+  return page.opens ? pageScopeStorage.run(page.scope, fn) : fn();
+}
 
 export function createComponent(
   fn: (
@@ -538,7 +564,7 @@ export function createComponent(
     let result: AstroResult;
     let props: Record<string, unknown>;
     let slots: SlotsRecord;
-    let startsPage = false;
+    let page: { scope: PageScope; opens: boolean } | undefined;
 
     if (
       resultOrProps &&
@@ -554,9 +580,8 @@ export function createComponent(
       const pageContext = (resultOrProps as Record<string, unknown> | undefined)?.[
         "__pageContext"
       ] as PageContext | undefined;
-      const enclosing = pageResultStorage.getStore();
-      result = enclosing && pageContext === undefined ? enclosing : makeResult(pageContext);
-      startsPage = result !== enclosing;
+      page = pageScopeFor(pageContext);
+      result = page.scope.result;
       // Strip __pageContext from props
       const raw = (resultOrProps as Record<string, unknown>) || {};
       const { __pageContext, children, ...userProps } = raw;
@@ -566,8 +591,8 @@ export function createComponent(
       slots = children != null ? { default: () => children } : {};
     }
 
-    const out = startsPage
-      ? pageResultStorage.run(result, () => fn(result, props, slots))
+    const out = page
+      ? inPageScope(page, () => fn(result, props, slots))
       : fn(result, props, slots);
     const rendered = out instanceof Promise ? await out : out;
     // Normalize a plain `{ __html }` carrier into an HtmlString. Anything else
@@ -870,8 +895,8 @@ export async function renderAstroPage(
   props: Record<string, unknown>,
   pageContext: PageContext = {},
 ): Promise<string> {
-  const result = makeResult(pageContext);
-  const out = (await Component(result, props, {})) as unknown;
+  const page = pageScopeFor(pageContext);
+  const out = (await inPageScope(page, () => Component(page.scope.result, props, {}))) as unknown;
   // The page returned a Response: a redirect folds into a meta-refresh page,
   // a rewrite's HTML body is the page's content (same rules as build.ts).
   if (out instanceof Response) {
