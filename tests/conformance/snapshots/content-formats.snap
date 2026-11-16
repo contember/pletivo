@@ -66,19 +66,6 @@ sitemap.xml
 <h1>Handbook</h1>
 <p>An <code>.mdx</code> file used as a page route, not as a collection entry.</p>
 <p class="from-jsx">Inline JSX inside an MDX page.</p>
-
-
-
-
-
-
-
-
-
-
-
-
-
 <table><thead><tr><th>Column</th><th>Value</th></tr></thead><tbody><tr><td>routed</td><td>yes</td></tr></tbody></table>
 
 --- pletivo:conformance index.html ---
