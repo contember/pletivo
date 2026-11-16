@@ -228,23 +228,28 @@ function normalizeResolvedId(result: ResolveIdResult): string | null {
 }
 
 export async function loadViteId(id: string): Promise<{ code: string; loader: Loader } | null> {
+  const { loaded, errors } = await tryLoadViteId(id);
+  for (const error of errors) console.error(`[pletivo-vite-host] ${error.message}`);
+  return loaded;
+}
+
+/** `loadViteId` that returns the plugins' `load()` errors instead of logging them. */
+export async function tryLoadViteId(
+  id: string,
+): Promise<{ loaded: { code: string; loader: Loader } | null; errors: Error[] }> {
+  const errors: Error[] = [];
   for (const p of collectedPlugins) {
     if (typeof p.load !== "function") continue;
     try {
       const result = await p.load(id);
       if (result == null) continue;
-      return {
-        code: codeFromLoadResult(result),
-        loader: loaderForVirtualId(id),
-      };
+      return { loaded: { code: codeFromLoadResult(result), loader: loaderForVirtualId(id) }, errors };
     } catch (e) {
-      console.error(
-        `[pletivo-vite-host] ${p.name}.load failed for ${id}:`,
-        (e as Error).message,
-      );
+      const message = e instanceof Error ? e.message : String(e);
+      errors.push(new Error(`${p.name}.load failed for ${id}: ${message}`, { cause: e }));
     }
   }
-  return null;
+  return { loaded: null, errors };
 }
 
 function codeFromLoadResult(result: LoadResult): string {

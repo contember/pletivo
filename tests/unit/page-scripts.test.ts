@@ -41,6 +41,20 @@ describe("bundlePageScripts", () => {
       .rejects.toThrow(/virtual:nobody-serves-this/);
   });
 
+  test("a plugin load() error is the reported cause", async () => {
+    addVitePlugins([
+      {
+        name: "test:exploding",
+        resolveId: (source: string) => (source === "virtual:test/explodes" ? "\0virtual:test/explodes" : undefined),
+        load: () => {
+          throw new Error("load exploded");
+        },
+      },
+    ]);
+    await expect(bundlePageScripts(['import "virtual:test/explodes";'], projectRoot))
+      .rejects.toThrow(/test:exploding\.load failed for \0virtual:test\/explodes: load exploded/);
+  });
+
   test("escapes </script so the inline tag holds", async () => {
     const code = await bundlePageScripts(['document.title = "a</script><SCRIPT>b</Script>";'], projectRoot);
     expect(code).not.toMatch(/<\/script/i);

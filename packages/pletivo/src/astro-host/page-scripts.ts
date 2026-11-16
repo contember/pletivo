@@ -13,7 +13,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { BunPlugin, Loader } from "bun";
 import { preactResolver } from "../islands-bundle";
-import { extensionForLoader, loadViteId, resolveViteId } from "./vite-plugins";
+import { extensionForLoader, resolveViteId, tryLoadViteId } from "./vite-plugins";
 
 const ENTRY = "pletivo:page-scripts";
 const SCRIPT_PREFIX = "pletivo:page-script:";
@@ -55,7 +55,8 @@ export async function bundlePageScripts(
 
 /**
  * `</script` would end the inline tag. `<\/script` means the same in a string, template,
- * regular expression or comment, the only places minified code holds it.
+ * regular expression or comment, the only places minified code holds it. One exception:
+ * a tagged template's raw text (`String.raw`) keeps the backslash.
  */
 function inlineSafe(code: string): string {
   const escaped = code.replace(/<\/(script)/gi, (_match, name: string) => `<\\/${name}`);
@@ -100,12 +101,14 @@ function pageScriptsPlugin(scripts: readonly string[], projectRoot: string): Bun
       // like the scripts' do.
       build.onResolve({ filter: /^(virtual:|\/@|@id\/|\0virtual:)/ }, async (args) => {
         const id = (await resolveViteId(args.path, args.importer)) ?? args.path;
-        const loaded = await loadViteId(id);
+        const { loaded, errors } = await tryLoadViteId(id);
         if (loaded) {
           const file = path.join(dir, "virtual", `${Bun.hash(id).toString(16)}${extensionForLoader(loaded.loader)}`);
           sources.set(file, { contents: loaded.code, loader: loaded.loader });
           return { path: file };
         }
+        const [failure] = errors;
+        if (failure) throw new Error(`cannot load ${JSON.stringify(args.path)}: ${failure.message}`, { cause: failure });
         if (path.isAbsolute(id) && existsSync(id)) return { path: id };
         throw new Error(`no Vite plugin resolves or loads ${JSON.stringify(args.path)}`);
       });
