@@ -68,9 +68,11 @@ fixed.
 
 1. **`public/` is hashed** (10 of 10 building). Astro copies `public/` verbatim;
    pletivo renames every file and rewrites the references it can see. Same
-   decision as [017](017-dogfood-static-site.md) item 2.
+   decision as [017](017-dogfood-static-site.md) item 2. Fixed in #49 for
+   Astro projects.
 2. **Fallback `sitemap.xml`** (10 of 10). pletivo writes one unless
-   `@astrojs/sitemap` is configured; Astro writes none.
+   `@astrojs/sitemap` is configured; Astro writes none. Fixed in #49 for Astro
+   projects.
 3. **Scoped style strategy** (8 of 10). Astro 5 defaults `scopedStyleStrategy`
    to `attribute` (`[data-astro-cid-x]`, specificity 0-1-0); pletivo leaves the
    compiler at `where` (`:where(.astro-x)`, specificity 0). A cascade
