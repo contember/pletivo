@@ -446,7 +446,7 @@ export async function registerAstroPlugin(): Promise<void> {
           /import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?/g,
           "",
         );
-        cleanedCode = substituteImportMetaEnv(cleanedCode);
+        cleanedCode = substituteImportMetaEnv(cleanedCode, "ts");
         cleanedCode = await materializeViteVirtualImports(cleanedCode, cleanPath);
         await collectCssSideEffectImports(cleanPath, cleanedCode, `astro:${rel}`);
 

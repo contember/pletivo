@@ -272,7 +272,7 @@ export async function registerMdxPlugin(): Promise<void> {
         // In dev mode, append version query to .astro and .json imports for
         // cache busting (same as the astro plugin does for its own output).
         // JSON needs this too so translation dictionaries reload on edit.
-        code = applyDevCacheBust(substituteImportMetaEnv(code), getDevVersion());
+        code = applyDevCacheBust(substituteImportMetaEnv(code, "js"), getDevVersion());
 
         return {
           contents: code,

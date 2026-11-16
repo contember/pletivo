@@ -1,9 +1,11 @@
 ---
-import { fromModule } from "../env";
+import { fromModule, prose } from "../env";
 ---
 <html>
   <body>
     <pre id="module">{JSON.stringify(fromModule)}</pre>
     <pre id="astro">{import.meta.env.BASE_URL}|{import.meta.env.MODE}</pre>
+    <p id="astro-text">Read import.meta.env.BASE_URL in a component.</p>
+    <p id="module-text">{prose}</p>
   </body>
 </html>

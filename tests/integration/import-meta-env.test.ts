@@ -5,8 +5,9 @@ import { build } from "../../packages/pletivo/src/build";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import type { PletivoConfig } from "../../packages/pletivo/src/config";
 
-const fixtureRoot = path.join(import.meta.dir, "../fixture-astro-import-meta-env");
-const distDir = path.join(fixtureRoot, "dist");
+const astroFixture = path.join(import.meta.dir, "../fixture-astro-import-meta-env");
+const nativeFixture = path.join(import.meta.dir, "../fixture-native-import-meta-env");
+const cli = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
 const config: PletivoConfig = {
   host: "localhost",
@@ -30,15 +31,15 @@ describe("import.meta.env in an Astro project build", () => {
   beforeAll(async () => {
     __resetForTests();
     process.env.PUBLIC_FIXTURE_VAR = "from-env";
-    await build(fixtureRoot, config);
-    index = await Bun.file(path.join(distDir, "index.html")).text();
-    notes = await Bun.file(path.join(distDir, "notes", "index.html")).text();
+    await build(astroFixture, config);
+    index = await Bun.file(path.join(astroFixture, "dist", "index.html")).text();
+    notes = await Bun.file(path.join(astroFixture, "dist", "notes", "index.html")).text();
   });
 
   afterAll(async () => {
     __resetForTests();
     delete process.env.PUBLIC_FIXTURE_VAR;
-    await fs.rm(distDir, { recursive: true, force: true });
+    await fs.rm(path.join(astroFixture, "dist"), { recursive: true, force: true });
   });
 
   test("a plain .ts module sees Astro's built-ins and the process env", () => {
@@ -60,4 +61,69 @@ describe("import.meta.env in an Astro project build", () => {
   test("an .mdx page sees the same values", () => {
     expect(textOf(notes, "mdx")).toBe("/docs|true");
   });
+
+  test("text that mentions import.meta.env renders as written", () => {
+    expect(textOf(index, "astro-text")).toBe("Read import.meta.env.BASE_URL in a component.");
+    expect(textOf(index, "module-text")).toBe("import.meta.env.BASE_URL");
+    expect(notes).toContain("<code>import.meta.env.BASE_URL</code>");
+    expect(notes).toContain("const base = import.meta.env.BASE_URL;");
+  });
 });
+
+describe("import.meta.env in a pletivo-native project build", () => {
+  let index: string;
+
+  beforeAll(async () => {
+    __resetForTests();
+    await build(nativeFixture, { ...config, base: "/sub" });
+    index = await Bun.file(path.join(nativeFixture, "dist", "index.html")).text();
+  });
+
+  afterAll(async () => {
+    __resetForTests();
+    await fs.rm(path.join(nativeFixture, "dist"), { recursive: true, force: true });
+  });
+
+  test("BASE_URL comes from pletivo's base", () => {
+    expect(JSON.parse(textOf(index, "env"))).toEqual({ base: "/sub", mode: "production", dev: false });
+  });
+});
+
+describe("import.meta.env under pletivo dev", () => {
+  let server: ReturnType<typeof Bun.spawn> | undefined;
+  let index: string;
+
+  beforeAll(async () => {
+    const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const port = probe.port;
+    probe.stop(true);
+    server = Bun.spawn(["bun", cli, "dev", "--host", "127.0.0.1", "--port", String(port), "--no-restart"], {
+      cwd: astroFixture,
+      stdout: "ignore",
+      stderr: "inherit",
+    });
+    index = await fetchWhenUp(`http://127.0.0.1:${port}/docs`);
+  }, 60_000);
+
+  afterAll(async () => {
+    server?.kill();
+    await server?.exited;
+  });
+
+  test("modules see the development built-ins", () => {
+    const fromModule = JSON.parse(textOf(index, "module"));
+    expect(fromModule).toMatchObject({ base: "/docs", mode: "development", dev: true, prod: false });
+    expect(textOf(index, "astro")).toBe("/docs|development");
+  });
+});
+
+/** The page body once the dev server answers it with a 200. */
+async function fetchWhenUp(url: string): Promise<string> {
+  const deadline = Date.now() + 50_000;
+  while (Date.now() < deadline) {
+    const response = await fetch(url).catch(() => undefined);
+    if (response?.ok) return await response.text();
+    await Bun.sleep(250);
+  }
+  throw new Error(`dev server did not serve ${url} in time`);
+}

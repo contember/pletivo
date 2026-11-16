@@ -1,5 +1,5 @@
 /**
- * Bun plugin for the project's own `.ts`/`.tsx`/`.js`/`.jsx` files. Bun has no
+ * Bun plugin for the project's own `.ts`/`.tsx`/`.mts`/`.js`/`.jsx`/`.mjs` files. Bun has no
  * transform hook for these extensions, so this `onLoad` is the only place to:
  *
  * - substitute `import.meta.env` with Astro's values, as `.astro` and `.mdx` get it;
@@ -15,14 +15,16 @@
 import path from "path";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { escapeRegex } from "@pletivo/core/escape-regex";
-import { substituteImportMetaEnv } from "./import-meta-env";
+import { substituteImportMetaEnv, type SourceLoader } from "./import-meta-env";
 
 const registeredScopes = new Set<string>();
 
-const LOADER_FOR_EXT: Record<string, "ts" | "tsx" | "js" | "jsx"> = {
+const LOADER_FOR_EXT: Record<string, SourceLoader> = {
   ".ts": "ts",
+  ".mts": "ts",
   ".tsx": "tsx",
   ".js": "js",
+  ".mjs": "js",
   ".jsx": "jsx",
 };
 
@@ -35,7 +37,7 @@ export async function registerProjectSourcePlugin(
   registeredScopes.add(srcPath);
 
   const filter = new RegExp(
-    `^${escapeRegex(srcPath + path.sep)}.*\\.(tsx?|jsx?)(?:\\?.*)?$`,
+    `^${escapeRegex(srcPath + path.sep)}.*\\.(tsx?|jsx?|mts|mjs)(?:\\?.*)?$`,
   );
 
   await Bun.plugin({
@@ -45,13 +47,13 @@ export async function registerProjectSourcePlugin(
         const cleanPath = stripQuery(args.path);
         // Type-only files have no runtime value; return empty contents so
         // Bun doesn't try to execute `declare` statements.
-        if (cleanPath.endsWith(".d.ts")) return { contents: "", loader: "ts" };
+        if (/\.d\.m?ts$/.test(cleanPath)) return { contents: "", loader: "ts" };
 
-        const ext = path.extname(cleanPath).toLowerCase();
-        const source = substituteImportMetaEnv(await Bun.file(cleanPath).text());
+        const loader = LOADER_FOR_EXT[path.extname(cleanPath).toLowerCase()] ?? "ts";
+        const source = substituteImportMetaEnv(await Bun.file(cleanPath).text(), loader);
         return {
           contents: applyDevCacheBust(source, getDevVersion()),
-          loader: LOADER_FOR_EXT[ext] ?? "ts",
+          loader,
         };
       });
     },

@@ -8,3 +8,6 @@ export const fromModule = {
   site: import.meta.env.SITE,
   publicVar: import.meta.env.PUBLIC_FIXTURE_VAR,
 };
+
+// Text about import.meta.env is not code and must stay as written.
+export const prose = "import.meta.env.BASE_URL";
