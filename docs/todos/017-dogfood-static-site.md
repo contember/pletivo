@@ -64,6 +64,14 @@ back in. pletivo-native projects still hash. The Workers host already served
 `public/` verbatim (`public-files.ts`), so for an Astro project both hosts now
 agree.
 
+**Known divergence, inline vs linked scripts,** wherever `public/` is still
+hashed. A processed `<script>` inlined into the page (item 7) goes through the page's public-asset rewrite, so
+`"/logo.png"` in its code becomes the hashed name. A linked
+`_astro/hoisted-<hash>.js` bundle is never rewritten and keeps `"/logo.png"`,
+which 404s. A script's public references therefore break once its bundle grows
+past the inline limit. The linked side is the older bug; fixing it means running
+the rewrite over hoisted bundles too.
+
 ## 3. Responsive images are silently dropped
 
 1873 `srcset` attributes in Astro's output, **0** in pletivo's.
@@ -111,6 +119,19 @@ Astro: one `<script type="module">` in `<head>` per page. pletivo: **544 in
 `<body>`**, at each component's inline position, up to 35 identical tags on a
 single page. ES-module URL dedup means they execute once, so this is markup and
 load-order noise rather than broken behaviour — but it is 2.6× the tags.
+
+Since then: the shim's `renderScript` emits each script id once per render pass,
+as Astro's `renderedScripts` does, so the identical tags are gone. Scripts are
+still not moved to `<head>`.
+
+`build` inlines a processed script as Astro does: its bundle imports nothing and
+passes `vite.build.assetsInlineLimit` (default 4096 B; `0` keeps every script
+linked, the function form is honoured). Bundles that mention `import.meta` or
+hold `</script` or `<!--` stay linked. pletivo-native projects (no Astro config)
+always use 4096 B and have no switch. `dev` always links, as `astro dev` does,
+so the build-only behaviours are: `import.meta` resolution, CSP (`script-src
+'self'` blocks inline scripts unless the limit is `0`; pletivo emits no CSP
+hashes), and the public-asset rewrite of item 2.
 
 ## Cosmetic classes (listed so nobody re-investigates them)
 
