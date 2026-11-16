@@ -61,7 +61,7 @@ describe("a collection whose schema is Zod 3 (Astro 5's astro:content)", () => {
     });
     expect(failures).toHaveLength(1);
     expect(failures[0].errors).toContain(
-      'author: Expected an entry id of collection "authors", or { id, collection }',
+      'author: Expected an entry id of collection "authors", { id, collection } or { slug, collection }',
     );
     expect(failures[0].errors).toContain("cover: image not found: ./missing.png");
   });
