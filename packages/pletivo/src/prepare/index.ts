@@ -127,9 +127,9 @@ function unsupportedProjectSemantics(config: PletivoConfig): PrepareDiagnostic[]
   );
   addProjectConfigDiagnostic(
     diagnostics,
-    config.hashAssets === false,
+    config.hashAssets === true,
     "hashAssets",
-    "hashAssets=false conflicts with the Workers content-addressed asset contract",
+    "hashAssets=true renames public/ files, which the Workers host serves under their own names",
   );
   addProjectConfigDiagnostic(
     diagnostics,

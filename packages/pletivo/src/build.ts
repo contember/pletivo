@@ -240,7 +240,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const publicManifest = hashAssets
     ? await hashPublicAssets(publicDir, distDir)
     : await copyPublicAssets(publicDir, distDir);
-  phase("hashPublicAssets", tPublic);
+  phase("public assets", tPublic);
 
   // Scan routes
   const tScan = performance.now();
