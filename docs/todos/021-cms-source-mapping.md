@@ -448,9 +448,9 @@ To wire it up:
    them, so `renderAttrs` gets a flat record and last-write wins).
 3. Turn on dev-runtime output where the flag is set:
    - Bun host: project tsconfig `"jsx": "react-jsxdev"`, or a per-file transform in the existing
-     `packages/pletivo/src/dev-ts-plugin.ts:41` `onLoad` hook
-     (already scoped to project `src/`, node_modules excluded by construction). Note that plugin is
-     **dev-only** — a build-mode `.tsx` annotation needs it widened.
+     `packages/pletivo/src/project-source-plugin.ts:46` `onLoad` hook
+     (already scoped to project `src/`, node_modules excluded by construction). It runs in dev
+     and build; only its cache-bust is dev-only.
    - Workers host: `packages/workers/src/transpile.ts:83-95`,
      flip `production: true` → `false`; sucrase then emits
      `jsxDEV(type, props, key, isStatic, {fileName, lineNumber, columnNumber}, this)`.
@@ -686,7 +686,7 @@ byte-identical for `index.ts` and `html-processor.ts`; only `dev-middleware.ts` 
 | JSX choke point | `packages/runtime/src/jsx-runtime.ts:92,143,179,181,187,195,198` |
 | astro shim render/attrs | `packages/runtime/src/astro-shim.ts:437,532,650,666,796` |
 | component boundary | `packages/runtime/src/astro-shim.ts:469-490` (`moduleId` `:475`, `:483`) |
-| dev `.tsx` loader hook | `packages/pletivo/src/dev-ts-plugin.ts:33,38,41` |
+| project `.tsx` loader hook | `packages/pletivo/src/project-source-plugin.ts:31,39,46` |
 | MDX `development:false` | `packages/pletivo/src/mdx-plugin.ts:243-246` |
 | Workers `production:true` | `packages/workers/src/transpile.ts:83-95` |
 | `astro:server:setup` | `packages/pletivo/src/astro-host/runner.ts:355-368` (`injectScript` `:239-242`) |
