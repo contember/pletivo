@@ -455,8 +455,8 @@ one's bytes.
 - **The content bundle adds the `workerd` export condition**, because
   `decode-named-character-reference`'s `browser` entry calls `document.createElement`
   at module scope.
-- **The content collection runtime is about 1 MB** (Zod plus unified/remark), so it
-  enters a program only when the walk reaches the content API.
+- **The content collection runtime is about 1.25 MB** (Zod, unified/remark and parse5
+  for `rehype-raw`), so it enters a program only when the walk reaches the content API.
 
 Two compile-time constraints sit beside it:
 

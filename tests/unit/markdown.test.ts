@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { astroMarkdownSettings, parseMarkdown } from "@pletivo/core/content/markdown";
 
 // `parseMarkdown` runs the unified/remark pipeline (remark-parse → remark-gfm →
-// remark-rehype → heading-id slugs → rehype-stringify) and is async. HTML is
+// remark-rehype → heading-id slugs → rehype-raw → rehype-stringify) and is async. HTML is
 // rehype-stringify output, so block elements carry remark's whitespace and `<`
 // is escaped as `&#x3C;`.
 
@@ -293,6 +293,22 @@ describe("edge cases", () => {
   test("raw HTML in markdown passes through (allowDangerousHtml)", async () => {
     const result = await parseMarkdown("---\ntitle: test\n---\n\n<div class=\"custom\">hello</div>");
     expect(result.html).toContain('<div class="custom">hello</div>');
+  });
+
+  test("raw HTML is re-serialized like Astro's rehype-raw pass", async () => {
+    const result = await parseMarkdown('<div>\n <a\n  href="/"\n  class="link"\n >\n  Go home\n </a>\n</div>');
+    expect(result.html).toBe('<div>\n <a href="/" class="link">\n  Go home\n </a>\n</div>');
+  });
+
+  test("a GFM table keeps its whitespace inside the table through the raw pass", async () => {
+    // hast-util-raw 9.1.0 foster-parented the newlines between table rows out of the table.
+    const result = await parseMarkdown("| a | b |\n|---|---|\n| 1 | 2 |");
+    expect(result.html).toBe("<table>\n<thead>\n<tr>\n<th>a</th>\n<th>b</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>1</td>\n<td>2</td>\n</tr>\n</tbody>\n</table>");
+  });
+
+  test("an unclosed raw tag is closed within its block", async () => {
+    const result = await parseMarkdown("<div class=\"box\">\n\nText\n\n</div>\n\n<span>open");
+    expect(result.html).toBe('<div class="box">\n<p>Text</p>\n</div>\n<p><span>open</span></p>');
   });
 
   test("consecutive paragraphs with inline formatting", async () => {

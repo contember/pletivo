@@ -3,7 +3,7 @@
  * so user-configured remark/rehype plugins actually run (Astro parity):
  *
  *   remark-parse → [remark-gfm] → remarkPlugins → remark-rehype
- *     → heading-id slugs → rehypePlugins → rehype-stringify
+ *     → heading-id slugs → rehypePlugins → rehype-raw → rehype-stringify
  *
  * Plugins come from the Astro config's top-level `markdown` options and are
  * installed once via `configureMarkdown()` (see dev.ts / build.ts) before any
@@ -15,6 +15,7 @@ import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import remarkRehype from "remark-rehype";
+import rehypeRaw from "rehype-raw";
 import rehypeStringify from "rehype-stringify";
 import type { CompileOptions } from "@mdx-js/mdx";
 
@@ -178,6 +179,8 @@ export async function renderMarkdown(body: string): Promise<string> {
   processor.use(remarkRehype, { allowDangerousHtml: true, ...markdownOptions.remarkRehype });
   processor.use(rehypeHeadingIds);
   if (markdownOptions.rehypePlugins?.length) processor.use(markdownOptions.rehypePlugins);
+  // Last, as in Astro: raw HTML is re-serialized like the rest (`<a\n href>` → `<a href>`).
+  processor.use(rehypeRaw);
   processor.use(rehypeStringify, { allowDangerousHtml: true });
 
   const file = await processor.process(body.trim());
