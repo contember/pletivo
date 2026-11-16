@@ -22,6 +22,7 @@ import remarkGfm from "remark-gfm";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import type { PletivoConfig } from "./config";
 import type { AstroIntegration } from "@pletivo/core/astro-host/types";
+import { astroMarkdownSettings, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
 
 // Resolve absolute path to pletivo's jsx-runtime so compiled MDX can
 // import it even when pletivo isn't installed as a node_modules dep
@@ -104,7 +105,7 @@ export function captureMdxIntegrationOptions(
 
 /**
  * Merge MDX options from three sources, in pipeline order:
- *  1. Astro config top-level `markdown.remarkPlugins` / `markdown.rehypePlugins`
+ *  1. Astro config `markdown` plugins, a `unified()` processor's included (astroMarkdownSettings)
  *  2. Plugins passed to the `mdx({...})` integration (captured by the host
  *     and stashed under `MDX_INTEGRATION_OPTIONS_KEY`) — mirrors Astro, where
  *     @astrojs/mdx extends the top-level markdown config with its own plugins
@@ -117,9 +118,9 @@ export function captureMdxIntegrationOptions(
  */
 export function resolveMdxOptions(
   pletivoConfig: PletivoConfig,
-  astroConfig?: { markdown?: { remarkPlugins?: PluggableList; rehypePlugins?: PluggableList; gfm?: boolean }; [key: string]: unknown } | null,
+  astroConfig?: { markdown?: AstroMarkdownConfig; [key: string]: unknown } | null,
 ): MdxOptions {
-  const astroMarkdown = astroConfig?.markdown;
+  const astroMarkdown = astroMarkdownSettings(astroConfig);
   const mdxIntegration = astroConfig?.[MDX_INTEGRATION_OPTIONS_KEY] as
     | { remarkPlugins?: PluggableList; rehypePlugins?: PluggableList; gfm?: boolean }
     | undefined;
