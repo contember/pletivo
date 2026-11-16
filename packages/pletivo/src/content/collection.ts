@@ -53,30 +53,32 @@ async function findContentConfigPath(projectRoot: string): Promise<string | null
 /**
  * The Bun host's half of `image()`: a path becomes bytes by opening the file.
  *
- * Everything a schema author can get wrong is decided by `imageSchemaFor` in
+ * Everything a schema author can get wrong is decided by `imageSchemaWith` in
  * `@pletivo/core`, so both hosts refuse the same frontmatter with the same words.
  */
+async function resolveImage(dir: string, relPath: string): Promise<ImageMetadata> {
+  const fsPath = path.resolve(dir, relPath);
+  try {
+    const probe = await probeAndRegisterImage(fsPath);
+    return makeImageMetadata({
+      src: imageUrlFor(fsPath, probe.outputPath),
+      width: probe.width,
+      height: probe.height,
+      format: probe.format,
+      fsPath,
+    });
+  } catch (e) {
+    const notFound = e instanceof Error && "code" in e && e.code === "ENOENT";
+    throw new Error(
+      notFound
+        ? `image not found: ${relPath} (resolved to ${fsPath})`
+        : `could not read image ${relPath}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 function makeImageSchema(entryDir: string | null): z.ZodType<ImageMetadata, unknown> {
-  return imageSchemaFor(entryDir, async (dir, relPath) => {
-    const fsPath = path.resolve(dir, relPath);
-    try {
-      const probe = await probeAndRegisterImage(fsPath);
-      return makeImageMetadata({
-        src: imageUrlFor(fsPath, probe.outputPath),
-        width: probe.width,
-        height: probe.height,
-        format: probe.format,
-        fsPath,
-      });
-    } catch (e) {
-      const err = e as NodeJS.ErrnoException;
-      throw new Error(
-        err.code === "ENOENT"
-          ? `image not found: ${relPath} (resolved to ${fsPath})`
-          : `could not read image ${relPath}: ${err.message}`,
-      );
-    }
-  });
+  return imageSchemaFor(entryDir, resolveImage);
 }
 
 const bunContentHost: ContentHost = {
@@ -113,6 +115,8 @@ const bunContentHost: ContentHost = {
   recordDep: recordRuntimeDep,
 
   image: makeImageSchema,
+
+  resolveImage,
 
   async renderMdx(filePath, components, version) {
     const mod = await import(filePath + `?v=${version}`);

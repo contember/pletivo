@@ -1,0 +1,12 @@
+---
+import { getCollection, getEntry, z } from "astro:content";
+import * as astroZodModule from "astro/zod";
+import astroZodDefault from "astro/zod";
+
+const major = (zod: { string(): object }) => ("_zod" in zod.string() ? 4 : 3);
+const [post] = await getCollection("posts");
+const author = await getEntry(post.data.author);
+---
+<p id="zod">astro:content {major(z)}, astro/zod {major(astroZodModule.z)}, same {String(z === astroZodModule.z)}, project {String("projectZodMarker" in astroZodModule)}</p>
+<p id="api">returns {typeof astroZodModule.z.function().returns}, default {String(astroZodDefault === astroZodModule.z)}</p>
+<p id="post">{post.data.title} by {author?.data.name}, cover {post.data.cover.width}x{post.data.cover.height}</p>
