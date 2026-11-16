@@ -17,7 +17,7 @@ import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-strin
 import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
 import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
-import { bindPageResult, renderFrameworkComponent } from "./astro-islands";
+import { bindPageResult, bindRenderValue, renderFrameworkComponent } from "./astro-islands";
 import {
   getSlotArgs,
   recordRenderedModule,
@@ -521,6 +521,7 @@ interface PageScope {
 }
 const pageScopeStorage = new AsyncLocalStorage<PageScope>();
 bindPageResult(() => pageScopeStorage.getStore()?.result);
+bindRenderValue((value) => renderValue(value));
 
 /**
  * Render a page inside its request: every Astro component reached from `fn`

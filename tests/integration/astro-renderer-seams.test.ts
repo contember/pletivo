@@ -7,7 +7,9 @@ import type { FrameworkCompiler } from "../../packages/core/src/framework-compil
 import { __resetForTests, initAstroHost, type AstroHost } from "../../packages/pletivo/src/astro-host/runner";
 import { resolveComponentPath } from "../../packages/pletivo/src/astro-plugin";
 import { frameworkCompilePlugin } from "../../packages/pletivo/src/framework-compile";
-import { renderFrameworkComponent } from "../../packages/runtime/src/astro-islands";
+import { renderFrameworkComponent, renderValueToString } from "../../packages/runtime/src/astro-islands";
+import { createHtml } from "../../packages/runtime/src/html-string";
+import "../../packages/runtime/src/astro-shim";
 
 describe("parseAstroRenderer", () => {
   test("reads a name and string entrypoints", () => {
@@ -131,5 +133,9 @@ describe("renderFrameworkComponent", () => {
     expect(
       renderFrameworkComponent({ source: "astro", result: {}, displayName: "X", Component: () => "", props: {}, slots: {} }),
     ).toBeNull();
+  });
+
+  test("renders slot values through the shim", async () => {
+    expect(await renderValueToString(["a", createHtml("<b>b</b>"), "<c>"])).toBe("a<b>b</b>&lt;c&gt;");
   });
 });

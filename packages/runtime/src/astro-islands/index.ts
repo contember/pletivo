@@ -25,6 +25,20 @@ export function bindPageResult(accessor: () => object | undefined): void {
   pageResult = accessor;
 }
 
+let renderToString: (value: unknown) => Promise<string> = async () => {
+  throw new Error("the Astro shim has not bound its renderer");
+};
+
+/** The shim binds its value renderer here, for slots and JSX children. */
+export function bindRenderValue(renderer: (value: unknown) => Promise<string>): void {
+  renderToString = renderer;
+}
+
+/** Render a slot's or a child's value to HTML, the way the shim renders any value. */
+export function renderValueToString(value: unknown): Promise<string> {
+  return renderToString(value);
+}
+
 /** The result of the page being rendered, for a JSX-runtime call. */
 export function currentPageResult(): object | undefined {
   return pageResult();
