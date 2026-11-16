@@ -14,7 +14,7 @@ export interface StyleBlock {
 }
 
 export interface AstroStyles {
-  /** The compiler's scope hash — the page carries it as `class="astro-{scope}"`. */
+  /** The compiler's scope hash — the page carries it as `class="astro-{scope}"` or `data-astro-cid-{scope}`. */
   scope: string;
   blocks: StyleBlock[];
 }

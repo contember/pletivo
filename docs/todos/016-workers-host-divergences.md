@@ -34,6 +34,14 @@ These contracts landed after the measurements below. They are the current baseli
   identity. With `artifactPath` the host compares them with
   the workspace and names changed ones in `x-pletivo-artifact-stale`: a warning, never a
   failure ([023 §10.4](023-live-workspace-architecture.md)).
+- `.astro` compiles with the artifact's `config.scopedStyleStrategy`, which `prepare`
+  sets for every Astro project (its configured value, else Astro's `attribute`), as the
+  Bun host does. Without an artifact the Workers host compiles with the compiler
+  default `where`, while the Bun host gives a project with any `astro.config.*` the
+  `attribute` strategy: the hosts agree only once the project is prepared. The field
+  did not bump the artifact version: a host older than this field rejects an Astro
+  project's new artifact as malformed at `$.artifact.config`, and an artifact prepared
+  before it renders with `where` until it is prepared again.
 - The isolate's logic is a typed module, `src/isolate-entry.ts`, bundled by
   `scripts/build-runtime.ts` into the committed `src/generated/runtime-modules.ts` with
   the runtime and protocol kept external; `test/runtime-modules.test.ts` fails when the

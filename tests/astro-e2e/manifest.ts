@@ -124,6 +124,15 @@ export const integrationEntries: FixtureEntry[] = [
         search: "describe('preview',",
         replace: "describe.skip('preview [astro-specific]',",
       },
+      // Under the default `attribute` strategy the compiler passes the scope class to
+      // a spread only when the element has no class of its own. Astro's
+      // spreadAttributes() then writes it into the caller's object, so later spreads
+      // of the same object print a second `class` attribute; this test reads that one.
+      // pletivo does not mutate the caller's object.
+      {
+        search: "it('Allows scoped classes with spread',",
+        replace: "it.skip('Allows scoped classes with spread [astro mutates the spread object]',",
+      },
       // special chars in .md filename
       {
         search: "it('supports special chars in filename',",

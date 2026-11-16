@@ -10,7 +10,11 @@ import {
   type PreparedSite,
 } from "@pletivo/core/artifact";
 import type { AstroConfig } from "@pletivo/core/astro-host/types";
-import { resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import {
+  invalidScopedStyleStrategy,
+  isScopedStyleStrategy,
+  resolveScopedStyleStrategy,
+} from "@pletivo/core/astro-host/scoped-style";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
@@ -47,6 +51,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
     ...unsupportedSemantics(host),
     ...markdown.diagnostics,
     ...routing.diagnostics,
+    ...scopedStyleDiagnostics(host?.config),
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
@@ -157,6 +162,12 @@ function addProjectConfigDiagnostic(
 ): void {
   if (!unsupported) return;
   diagnostics.push({ source: "pletivo.config", hook, reason });
+}
+
+function scopedStyleDiagnostics(config: AstroConfig | undefined): PrepareDiagnostic[] {
+  const configured = config?.scopedStyleStrategy;
+  if (configured === undefined || isScopedStyleStrategy(configured)) return [];
+  return [{ source: "astro.config", hook: "scopedStyleStrategy", reason: invalidScopedStyleStrategy(configured) }];
 }
 
 function freezeConfig(

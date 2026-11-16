@@ -478,7 +478,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       // without a manual <link> get styles.
       //
       // Scoped CSS from <style> blocks is inlined per-page: we match
-      // astro scope classes present in this page's HTML to include only
+      // astro scope ids present in this page's HTML to include only
       // relevant entries, avoiding cross-page leaks from unscoped rules.
       const styleLink = `<link rel="stylesheet" href="${withBase("/__styles.css")}">`;
       const pageAstroCss = await getAstroCssForPage({

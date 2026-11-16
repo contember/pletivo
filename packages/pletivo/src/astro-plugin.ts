@@ -389,7 +389,8 @@ export async function registerAstroPlugin(): Promise<void> {
 
         // Collect CSS emitted by the Astro compiler. Each `result.css[]`
         // entry is the compiled output of one `<style>` block, in source
-        // order. Scoped blocks contain `:where(.astro-{scope})` selectors;
+        // order. Scoped blocks carry the scope in their selectors (`:where(.astro-{scope})`
+        // or `[data-astro-cid-{scope}]`, per the strategy);
         // `is:global` blocks are emitted as-is (no scope selector), and the
         // two are gated differently at emission time (see `astroCssMap`).
         if (result.css && result.css.length > 0) {

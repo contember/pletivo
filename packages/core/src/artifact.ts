@@ -1,7 +1,7 @@
 /** Serialized executable input shared by `pletivo prepare` and non-Bun hosts. */
 
 import { compareStrings } from "./compare-strings";
-import type { ScopedStyleStrategy } from "./astro-host/scoped-style";
+import { isScopedStyleStrategy, type ScopedStyleStrategy } from "./astro-host/scoped-style";
 
 export const ARTIFACT_VERSION = 2;
 
@@ -337,7 +337,7 @@ function parseConfig(value: unknown): ArtifactConfig {
   if (hasOwn(config, "redirects")) parsed.redirects = parseRedirects(Reflect.get(config, "redirects"), `${at}.redirects`);
   if (hasOwn(config, "scopedStyleStrategy")) {
     const strategy = Reflect.get(config, "scopedStyleStrategy");
-    if (strategy !== "where" && strategy !== "class" && strategy !== "attribute") {
+    if (!isScopedStyleStrategy(strategy)) {
       throw new ArtifactFormatError(`${at}.scopedStyleStrategy`, 'expected "where", "class" or "attribute"');
     }
     parsed.scopedStyleStrategy = strategy;

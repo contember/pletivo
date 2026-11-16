@@ -3,6 +3,14 @@ import type { AstroConfig } from "./types";
 /** `@astrojs/compiler`'s `scopedStyleStrategy`. */
 export type ScopedStyleStrategy = "where" | "class" | "attribute";
 
+export function isScopedStyleStrategy(value: unknown): value is ScopedStyleStrategy {
+  return value === "where" || value === "class" || value === "attribute";
+}
+
+export function invalidScopedStyleStrategy(value: unknown): string {
+  return `scopedStyleStrategy ${JSON.stringify(value)} is not "where", "class" or "attribute"`;
+}
+
 /**
  * The scoped-style strategy an Astro project compiles `.astro` with: its
  * `scopedStyleStrategy`, or Astro's default `attribute`. Without an Astro config
@@ -13,10 +21,8 @@ export function resolveScopedStyleStrategy(config: AstroConfig | undefined): Sco
   if (!config) return undefined;
   const configured = config.scopedStyleStrategy;
   if (configured === undefined) return "attribute";
-  if (configured === "where" || configured === "class" || configured === "attribute") return configured;
-  throw new Error(
-    `scopedStyleStrategy ${JSON.stringify(configured)} is not "where", "class" or "attribute"`,
-  );
+  if (isScopedStyleStrategy(configured)) return configured;
+  throw new Error(invalidScopedStyleStrategy(configured));
 }
 
 /**

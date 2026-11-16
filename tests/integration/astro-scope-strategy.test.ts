@@ -10,6 +10,12 @@ import type { PletivoConfig } from "../../packages/pletivo/src/config";
 const fixtureRoot = path.join(import.meta.dir, "../fixture-astro-scope-strategy");
 const distDir = path.join(fixtureRoot, "dist");
 
+function scopeOf(html: string, pattern: RegExp): string {
+  const scope = pattern.exec(html)?.[1];
+  if (scope === undefined) throw new Error(`no scope id matching ${pattern} in the page`);
+  return scope;
+}
+
 const config: PletivoConfig = {
   host: "localhost",
   outDir: "dist",
@@ -40,10 +46,19 @@ describe("Astro project scoped styles", () => {
   });
 
   test("emits each component's scoped CSS with attribute selectors", () => {
-    const cardScope = html.match(/<p class="card" data-astro-cid-([a-z0-9]+)>/)![1];
-    const pageScope = html.match(/<h1 data-astro-cid-([a-z0-9]+)>/)![1];
+    const cardScope = scopeOf(html, /<p class="card" data-astro-cid-([a-z0-9]+)>/);
+    const pageScope = scopeOf(html, /<h1 data-astro-cid-([a-z0-9]+)>/);
     expect(html).toContain(`.card[data-astro-cid-${cardScope}]`);
     expect(html).toContain(`h1[data-astro-cid-${pageScope}]`);
     expect(html).not.toContain(":where(");
+  });
+
+  test("merges the scope class into a spread without writing it into the spread object", async () => {
+    const spread = await Bun.file(path.join(distDir, "spread/index.html")).text();
+    const scope = scopeOf(spread, /<body data-astro-cid-([a-z0-9]+)>/);
+    expect(spread).toContain(`<div id="spread-plain" data-x="1" class="astro-${scope}" data-astro-cid-${scope}>`);
+    // Astro's spreadAttributes() would have left `class` on `spread` here.
+    expect(spread).toContain(`<div id="spread-own" data-x="1" class="own" data-astro-cid-${scope}>`);
+    expect(spread).toMatch(new RegExp(`<div id="spread-list" class="listed astro-${scope}"`));
   });
 });

@@ -394,9 +394,9 @@ describe("pletivo prepare", () => {
     });
   });
 
-  test("rejects routing configuration the Workers host ignores", async () => {
+  test("rejects routing configuration the Workers host ignores, and an unknown scopedStyleStrategy", async () => {
     const error = await capturedPrepareError(path.join(fixtures, "fatal-routing"));
-    expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["base", "build.format"]);
+    expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["base", "build.format", "scopedStyleStrategy"]);
   });
 
   test("rejects Worker-relevant pletivo config and source directories outside the root", async () => {
