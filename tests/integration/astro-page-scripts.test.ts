@@ -25,7 +25,8 @@ const config: PletivoConfig = {
   publicDir: "public",
 };
 
-const MARKERS = ["page-script-lib-marker", "virtual-entry-marker-", "second-script-marker"];
+/** The last one must survive verbatim: a string replacement would rewrite `$$`, `$&` and `$'`. */
+const MARKERS = ["page-script-lib-marker", "virtual-entry-marker-", "second-script-marker", `"$$|$&|$'"`];
 
 afterEach(() => {
   __resetForTests();

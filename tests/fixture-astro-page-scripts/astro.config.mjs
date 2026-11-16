@@ -4,7 +4,8 @@ const VIRTUAL_ENTRY = "virtual:test-page-scripts/entry";
 
 /**
  * Page scripts the way `@astrojs/alpinejs` writes them: a package import, a Vite virtual
- * module, TypeScript, and a second script that reuses a top-level name.
+ * module, TypeScript, a second script that reuses a top-level name, and the `$` patterns
+ * of `String.prototype.replace`.
  */
 function testPageScripts() {
   return {
@@ -23,6 +24,8 @@ function testPageScripts() {
           `const label = "second-script-marker";\n` +
             `document.documentElement.dataset.second = label;`,
         );
+        // `String.replace` reads these as substitution patterns in a string replacement.
+        injectScript("page", "document.documentElement.dataset.dollar = \"$$|$&|$'\";");
         updateConfig({
           vite: {
             plugins: [

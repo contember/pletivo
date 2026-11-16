@@ -491,9 +491,9 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         : "";
       const headInjection = styleLink + "\n" + scopedStyleTag + "\n" + scripts + (integrationScripts ? "\n" + integrationScripts : "");
       if (html.includes("</head>")) {
-        html = html.replace("</head>", headInjection + "\n</head>");
+        html = html.replace("</head>", () => headInjection + "\n</head>");
       } else if (html.includes("</body>")) {
-        html = html.replace("</body>", headInjection + "\n</body>");
+        html = html.replace("</body>", () => headInjection + "\n</body>");
       } else {
         html += headInjection;
       }
@@ -632,9 +632,9 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     const styleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
     const headInjection = `${styleLink}\n${styleTag}\n${hmrClientScript()}`;
     if (html.includes("</head>")) {
-      html = html.replace("</head>", headInjection + "\n</head>");
+      html = html.replace("</head>", () => headInjection + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", headInjection + "\n</body>");
+      html = html.replace("</body>", () => headInjection + "\n</body>");
     } else {
       html += headInjection;
     }

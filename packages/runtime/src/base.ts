@@ -60,7 +60,7 @@ const substituteCache = new Map<string, { base: string; result: string }>();
 export function substituteBase(template: string): string {
   const cached = substituteCache.get(template);
   if (cached && cached.base === base) return cached.result;
-  const result = template.replace(/__BASE__/g, base === "/" ? "" : base);
+  const result = template.replace(/__BASE__/g, () => (base === "/" ? "" : base));
   substituteCache.set(template, { base, result });
   return result;
 }

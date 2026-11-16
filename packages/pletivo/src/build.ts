@@ -1504,7 +1504,7 @@ async function writeHtml(
   html = timeSync("rewriteRefs", () => rewriteRefs(html, publicManifest));
 
   if (cssHrefs.length > 0 && html.includes("</head>")) {
-    html = html.replace("</head>", `${stylesheetLinks(base, cssHrefs)}</head>`);
+    html = html.replace("</head>", () => `${stylesheetLinks(base, cssHrefs)}</head>`);
   }
 
   // Inject per-page CSS from <style> blocks in .astro components, in the
@@ -1524,9 +1524,9 @@ async function writeHtml(
   if (combinedCss) {
     const styleTag = `<style>${combinedCss}</style>`;
     if (html.includes("</head>")) {
-      html = html.replace("</head>", styleTag + "\n</head>");
+      html = html.replace("</head>", () => styleTag + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", styleTag + "\n</body>");
+      html = html.replace("</body>", () => styleTag + "\n</body>");
     } else {
       html = styleTag + "\n" + html;
     }
@@ -1537,9 +1537,9 @@ async function writeHtml(
   if (cssModulesOutput) {
     const moduleStyleTag = `<style>${cssModulesOutput}</style>`;
     if (html.includes("</head>")) {
-      html = html.replace("</head>", moduleStyleTag + "\n</head>");
+      html = html.replace("</head>", () => moduleStyleTag + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", moduleStyleTag + "\n</body>");
+      html = html.replace("</body>", () => moduleStyleTag + "\n</body>");
     } else {
       html = moduleStyleTag + "\n" + html;
     }
@@ -1555,7 +1555,7 @@ async function writeHtml(
       ...(pageScript === null ? [] : [`<script type="module">${pageScript}</script>`]),
     ].join("\n");
     if (injected && html.includes("</head>")) {
-      html = html.replace("</head>", injected + "\n</head>");
+      html = html.replace("</head>", () => injected + "\n</head>");
     }
   }
 
@@ -1566,9 +1566,9 @@ async function writeHtml(
       .join("\n") ?? "";
     const hydrationBlock = (beforeHydration ? beforeHydration + "\n" : "") + hydrationScript();
     if (html.includes("</head>")) {
-      html = html.replace("</head>", hydrationBlock + "\n</head>");
+      html = html.replace("</head>", () => hydrationBlock + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", hydrationBlock + "\n</body>");
+      html = html.replace("</body>", () => hydrationBlock + "\n</body>");
     } else {
       html += hydrationBlock;
     }
@@ -1619,7 +1619,7 @@ async function refreshCachedHtmlCssLink(
   });
 
   if (cssHrefs.length > 0 && !replaced && html.includes("</head>")) {
-    next = html.replace("</head>", nextLinks + "</head>");
+    next = html.replace("</head>", () => nextLinks + "</head>");
   }
 
   if (next !== html) {

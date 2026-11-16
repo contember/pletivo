@@ -113,6 +113,21 @@ describe("finalizeHtml", () => {
     expect(html).toContain("\\3C /style><script>");
   });
 
+  test("inserts CSS and scripts verbatim, `$` replacement patterns included", () => {
+    const dollars = "$$|$&|$'|$`";
+    for (const html of ["<html><head></head><body>x</body></html>", "<html><body>x</body></html>"]) {
+      const out = finalizeHtml(html, [`a::after{content:"${dollars}"}`], {
+        headInline: [`head("${dollars}")`],
+        page: [`page("${dollars}")`],
+      });
+      expect(out).toContain(`content:"${dollars}"`);
+      if (html.includes("</head>")) {
+        expect(out).toContain(`<script>head("${dollars}")</script>`);
+        expect(out).toContain(`<script type="module">page("${dollars}")</script>`);
+      }
+    }
+  });
+
   test("falls back to body then front without reversing CSS", () => {
     const ordered = "<style>site{}</style>\n<style>scoped{}</style>";
     expect(finalizeHtml("<html><body>x</body></html>", ["site{}", "scoped{}"]))

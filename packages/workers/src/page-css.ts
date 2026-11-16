@@ -94,12 +94,12 @@ export function finalizeHtml(
   const parts = css.filter(Boolean);
   if (parts.length > 0) {
     const tag = parts.map((part) => `<style>${escapeInlineStyle(part)}</style>`).join("\n");
-    if (out.includes("</head>")) out = out.replace("</head>", tag + "\n</head>");
-    else if (out.includes("</body>")) out = out.replace("</body>", tag + "\n</body>");
+    if (out.includes("</head>")) out = out.replace("</head>", () => tag + "\n</head>");
+    else if (out.includes("</body>")) out = out.replace("</body>", () => tag + "\n</body>");
     else out = tag + "\n" + out;
   }
   const injected = injectedScriptTags(scripts);
-  if (injected && out.includes("</head>")) out = out.replace("</head>", injected + "\n</head>");
+  if (injected && out.includes("</head>")) out = out.replace("</head>", () => injected + "\n</head>");
   return out;
 }
 
