@@ -267,6 +267,16 @@ the same prologue. With the flag, a module containing no TypeScript comes back
 **byte-identical**, so the transform cannot disturb anything that already
 rendered. Explicit `import type` is still removed.
 
+**Sucrase compiles every `.tsx`/`.jsx` for pletivo's runtime and ignores
+`jsxImportSource`**, both the `@jsxImportSource` pragma and the tsconfig. The Bun
+host honours both, and refuses a `.astro` import of JSX compiled for React, Preact,
+Solid or Vue (`packages/pletivo/src/framework-components.ts`), because that JSX
+never renders under pletivo. Here the same file compiles as pletivo JSX: one using
+only JSX renders, one importing its framework fails on the import unless the
+artifact vendors that package. Refusing it here too would need the tsconfig
+`extends` chain, which reaches into `node_modules`, inside the host worker.
+A `.svelte` or `.vue` import fails the same way on both hosts, by framework name.
+
 ### The CSS pipeline: the hosts fork here, on purpose
 
 **This is the one divergence that is a decision rather than a limitation.** The
