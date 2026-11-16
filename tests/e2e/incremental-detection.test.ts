@@ -474,3 +474,36 @@ describe("incremental detection #10: Astro.rewrite targets", () => {
 		expect(after).toContain("v2");
 	});
 });
+
+describe("incremental detection #11: injectScript('page') bundle", () => {
+	it("a package the page script imports changing re-renders every page", async () => {
+		// The bundle reads node_modules, which no page's dependency graph covers: a
+		// cached page would keep the old inline module.
+		await write("node_modules/page-dep/package.json", `{"name":"page-dep","type":"module","exports":"./index.js"}`);
+		await write("node_modules/page-dep/index.js", `document.documentElement.dataset.dep = "dep-v1";`);
+		await write("astro.config.mjs", `
+			export default {
+				integrations: [{
+					name: "page-dep-script",
+					hooks: { "astro:config:setup": ({ injectScript }) => injectScript("page", 'import "page-dep";') },
+				}],
+			};
+		`);
+		await write("src/pages/index.astro", `<html><head><title>a</title></head><body>a</body></html>`);
+		await write("src/pages/other.astro", `<html><head><title>b</title></head><body>b</body></html>`);
+
+		expect(runBuild().status).toBe(0);
+		for (const page of ["index.html", "other/index.html"]) {
+			expect(await fs.readFile(path.join(projectRoot, "dist", page), "utf8")).toContain("dep-v1");
+		}
+
+		await write("node_modules/page-dep/index.js", `document.documentElement.dataset.dep = "dep-v2";`);
+
+		expect(runBuild().status).toBe(0);
+		for (const page of ["index.html", "other/index.html"]) {
+			const html = await fs.readFile(path.join(projectRoot, "dist", page), "utf8");
+			expect(html).toContain("dep-v2");
+			expect(html).not.toContain("dep-v1");
+		}
+	});
+});

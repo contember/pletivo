@@ -180,7 +180,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // and (if present) the user's astro config file content + lockfile —
   // any of those changing busts the entire route cache.
   const tCacheLoad = performance.now();
-  const configHash = await computeProjectConfigHash(projectRoot, config);
+  // One inline module on every page, the same one `pletivo prepare` freezes for Workers.
+  // It is part of every cached page, so it is part of the config hash.
+  const pageScript = astroHost ? await bundlePageScripts(astroHost.injectedPageScripts, projectRoot) : null;
+  const configHash = await computeProjectConfigHash(projectRoot, config, pageScript);
   // Incremental is opt-in: a plain build is a full rebuild. `clean`
   // implies incremental — you only wipe the cache to rebuild it fresh.
   const incremental = options.incremental || options.clean;
@@ -207,8 +210,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       }
     }
   }
-  // One inline module on every page, the same one `pletivo prepare` freezes for Workers.
-  const pageScript = astroHost ? await bundlePageScripts(astroHost.injectedPageScripts, projectRoot) : null;
 
   // Persistent dist when incremental is on: we leave whatever the
   // previous build produced in place, and each route's writeHtml call
@@ -1237,7 +1238,11 @@ async function canReuseDeps(deps: Record<string, import("./incremental/cache").D
  *     when the bundle's filename changes, cached pages would otherwise
  *     ship a <link> to a file that no longer exists).
  */
-async function computeProjectConfigHash(projectRoot: string, config: PletivoConfig): Promise<string> {
+async function computeProjectConfigHash(
+  projectRoot: string,
+  config: PletivoConfig,
+  pageScript: string | null,
+): Promise<string> {
   const parts: Array<string | Buffer> = [];
   parts.push(JSON.stringify({
     base: config.base,
@@ -1272,6 +1277,7 @@ async function computeProjectConfigHash(projectRoot: string, config: PletivoConf
   if (lock !== "__missing__") parts.push(`bun.lock=${lock}`);
   const cssParts = await hashSrcCssFiles(path.join(projectRoot, config.srcDir));
   for (const p of cssParts) parts.push(p);
+  if (pageScript !== null) parts.push(`pageScript=${pageScript}`);
   return await computeConfigHash(parts);
 }
 
