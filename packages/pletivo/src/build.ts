@@ -5,7 +5,7 @@ import { matchRoute, resolveScriptRoute, routeToOutputPath, type Route, type Rou
 import { createPaginate } from "@pletivo/core/paginate";
 import { initCollections, getValidationFailures, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry } from "@pletivo/runtime/island";
-import { runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse } from "@pletivo/runtime/astro-shim";
+import { runInPage, runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
 import { bundleCss, cssHrefsForPage, type CssBundle } from "./css";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
@@ -340,7 +340,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         props = match.props || {};
       }
       const ctx = makePageContext(routePath, params, route, undefined, depth + 1);
-      const html = await renderComponent(mod.default, { ...props, ...ctx });
+      const html = await renderComponent(mod.default, props, ctx);
       if (html === null) continue;
       // A chain of rewrites ends at the innermost page.
       rewriteEntries.set(from, cssEntryOf(ctx, fullPath));
@@ -651,7 +651,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
           resetIslandRegistry();
           const ctx = makePageContext(pathname, {}, route);
           const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-            renderComponent(mod.default, ctx),
+            renderComponent(mod.default, {}, ctx),
           );
           warnDroppedSsrWrites(route.file, ctx, mod);
           return { html: html ?? "", renderedModules, tsxStyles, cssEntry: rewriteEntries.get(ctx.__pageContext) };
@@ -754,7 +754,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
           const mod = await getMod();
           const pathProps = await getPropsFor(paramsKey);
           const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-            renderComponent(mod.default as (props: Record<string, unknown>) => unknown, { ...(pathProps || {}), ...ctx }),
+            renderComponent(mod.default as (props: Record<string, unknown>) => unknown, pathProps || {}, ctx),
           );
           // Keyed by route file, not by slug — one warning per route is the
           // signal; repeating it per slug is noise.
@@ -828,10 +828,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         emission.targetLocale,
       );
       const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-        renderComponent(mod.default, {
-          ...(emission.sourceProps || {}),
-          ...ctx,
-        }),
+        renderComponent(mod.default, emission.sourceProps || {}, ctx),
       );
       if (html === null) continue;
       results.push({
@@ -877,7 +874,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
           resetIslandRegistry();
           const ctx = makePageContext("/" + pattern, {}, { file: injected.entrypoint, segments: [], isDynamic: false, priority: 0, isEndpoint: false });
           const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-            renderComponent(mod.default, ctx),
+            renderComponent(mod.default, {}, ctx),
           );
           if (html !== null) {
             results.push({
@@ -1446,8 +1443,9 @@ async function renderMarkdownFile(fullPath: string): Promise<string> {
 async function renderComponent(
   component: (props: Record<string, unknown>) => unknown,
   props: Record<string, unknown>,
+  ctx: { __pageContext: PageContext },
 ): Promise<string | null> {
-  let result = component(props);
+  let result = runInPage(ctx.__pageContext, () => component({ ...props, ...ctx }));
   if (result instanceof Promise) result = await result;
 
   if (typeof result === "string") return result;
@@ -1618,7 +1616,7 @@ async function refreshCachedHtmlCssLink(
 
 async function render404Page(
   pagesDir: string,
-  pageContext: Record<string, unknown>,
+  pageContext: { __pageContext: PageContext },
 ): Promise<{ file: string; entry: string; html: string; renderedModules: Set<string>; tsxStyles: string[] } | null> {
   for (const ext of [".tsx", ".jsx", ".astro"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
@@ -1630,7 +1628,7 @@ async function render404Page(
       if (typeof mod.default === "function") {
         resetIslandRegistry();
         const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-          renderComponent(mod.default, pageContext),
+          renderComponent(mod.default, {}, pageContext),
         );
         if (html) {
           return { file: `404${ext}`, entry: fullPath, html, renderedModules, tsxStyles };

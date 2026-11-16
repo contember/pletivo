@@ -6,7 +6,7 @@ import { matchRoute, resolveScriptRoute, type Route, type RouteParams, type Stat
 import { createPaginate } from "@pletivo/core/paginate";
 import { getContentBaseDirs, initCollections, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
-import { runWithRenderTracking, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse } from "@pletivo/runtime/astro-shim";
+import { runInPage, runWithRenderTracking, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
 import { hmrClientScript } from "@pletivo/runtime/hmr-client";
 import { devCss } from "./css";
@@ -431,7 +431,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
 
       resetIslandRegistry();
       const { value: renderResult, renderedModules, tsxStyles } = await runWithRenderTracking(async () => {
-        let r = component({ ...props, __pageContext: pageContext });
+        let r = runInPage(pageContext, () => component({ ...props, __pageContext: pageContext }));
         if (r instanceof Promise) r = await r;
         return r;
       });
@@ -586,7 +586,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   // route-level integration scripts that don't apply to meta pages.
   async function renderComponentFile(
     fullPath: string,
-    props: Record<string, unknown> = {},
+    pageContext: PageContext = {},
   ): Promise<string | null> {
     const importPath = fullPath + `?v=${getDevVersion()}`;
     const mod = await import(importPath);
@@ -594,7 +594,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     if (typeof mod.default !== "function") return null;
     resetIslandRegistry();
     const { value: result, renderedModules, tsxStyles } = await runWithRenderTracking(async () => {
-      let r = mod.default(props);
+      let r = runInPage(pageContext, () => mod.default({ __pageContext: pageContext }));
       if (r instanceof Promise) r = await r;
       return r;
     });
@@ -801,7 +801,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     for (const fullPath of candidates) {
       if (!fs.existsSync(fullPath)) continue;
       try {
-        const html = await renderComponentFile(fullPath, { __pageContext: pageContext });
+        const html = await renderComponentFile(fullPath, pageContext);
         if (html) return { html, response, cookies };
       } catch (e) {
         console.error(`Error rendering 404 page ${fullPath}:`, e);

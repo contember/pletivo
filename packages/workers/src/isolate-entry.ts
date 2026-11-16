@@ -18,6 +18,7 @@ import {
   isAstroComponent,
   redirectPageHtml,
   renderAstroPage,
+  runInPage,
   runWithRenderTracking,
   type PageContext,
 } from "@pletivo/runtime/astro-shim";
@@ -339,7 +340,7 @@ async function renderPageComponent(
   // one takes plain props — the same split `build.ts` makes.
   if (isAstroComponent(component)) return renderAstroPage(component, props, pageContext);
   if (typeof component !== "function") return "";
-  const output: unknown = await component({ ...props, __pageContext: pageContext });
+  const output: unknown = await runInPage(pageContext, () => component({ ...props, __pageContext: pageContext }));
   if (typeof output === "string") return output;
   // A static file cannot send a 3xx, so a redirect becomes the meta-refresh page
   // Astro's static output emits. Any other Response has no static equivalent.
