@@ -15,7 +15,7 @@
 import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-string";
 import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
-import { assertElementName } from "./framework-components";
+import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
 import {
   getSlotArgs,
   recordRenderedModule,
@@ -471,6 +471,7 @@ async function renderValue(value: unknown): Promise<string> {
     const slotArgs = getSlotArgs();
     return renderValue(slotArgs ? value(...slotArgs) : value());
   }
+  assertNotForeignElement(value);
   // Fallback: stringify + escape
   return escapeHtml(String(value));
 }
@@ -583,7 +584,7 @@ const voidElements = new Set([
 
 export async function renderComponent(
   result: AstroResult,
-  _displayName: string,
+  displayName: string,
   Component: unknown,
   props: Record<string, unknown> = {},
   slots: SlotsRecord = {},
@@ -631,6 +632,7 @@ export async function renderComponent(
     const awaited = out instanceof Promise ? await out : out;
     if (isHtmlString(awaited)) return awaited;
     if (typeof awaited === "string") return createHtml(escapeHtml(awaited));
+    assertNotForeignElement(awaited, displayName);
     return createHtml(await renderValue(awaited));
   }
 
@@ -651,8 +653,7 @@ export async function renderComponent(
     return createHtml(`<${tag}${attrs}>${childHtml}</${tag}>`);
   }
 
-  // Unknown thing — give up
-  return createHtml("");
+  throw unrenderableComponent(displayName, Component);
 }
 
 function normalizeClassList(value: unknown): string {

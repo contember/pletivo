@@ -1,7 +1,7 @@
 import { renderIslandWrapper, registerIsland } from "./island";
 import { pushTsxStyle } from "./render-context";
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
-import { assertElementName } from "./framework-components";
+import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
 export { HtmlString };
 
 const VOID_ELEMENTS = new Set([
@@ -85,6 +85,7 @@ function renderChildren(children: unknown): string | Promise<string> {
   if (isHtmlString(children)) {
     return children.__html;
   }
+  assertNotForeignElement(children);
   return escapeHtml(String(children));
 }
 
@@ -175,6 +176,8 @@ export function jsx(
     return result;
   }
 
+  // Typed as a string here, but an object (React's `forwardRef`, `memo`) gets this far at runtime.
+  if (typeof tag !== "string") throw unrenderableComponent(undefined, tag);
   assertElementName(tag);
 
   // `<style>` blocks in TSX pages/components are hoisted into <head> as
