@@ -449,4 +449,18 @@ import { helper } from "../lib/util";
       }),
     ).rejects.toThrow(/src\/pages\/a\.astro.*\.\/missing/);
   });
+
+  test("refuses a Svelte or Vue component by name, as the Bun host does", async () => {
+    for (const [file, framework] of [["Counter.svelte", "Svelte"], ["Counter.vue", "Vue"]]) {
+      await expect(
+        compileProject({
+          files: new Map([
+            ["src/pages/a.astro", `---\nimport Counter from "../components/${file}";\n---\n<Counter />\n`],
+            [`src/components/${file}`, "<button>+</button>\n"],
+          ]),
+          compiler,
+        }),
+      ).rejects.toThrow(`pletivo cannot render ${framework} components: src/components/${file}`);
+    }
+  });
 });

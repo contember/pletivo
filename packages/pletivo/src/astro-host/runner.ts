@@ -209,7 +209,14 @@ export async function initAstroHost(
         applyConfigPatch(config, patch, host, queue, alreadySetup, dedupe);
         return config;
       },
-      addRenderer() {},
+      addRenderer(renderer) {
+        if (dedupe) return;
+        const name =
+          typeof renderer === "object" && renderer !== null && "name" in renderer && typeof renderer.name === "string"
+            ? renderer.name
+            : integration.name;
+        logger.warn(`renderer "${name}" ignored: pletivo does not implement Astro framework renderers`);
+      },
       addWatchFile() {},
       addClientDirective() {},
       addMiddleware() {},

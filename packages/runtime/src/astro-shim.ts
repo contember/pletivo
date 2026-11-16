@@ -15,6 +15,7 @@
 import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-string";
 import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
+import { assertElementName } from "./framework-components";
 import {
   getSlotArgs,
   recordRenderedModule,
@@ -636,6 +637,7 @@ export async function renderComponent(
   // String tag — dynamic HTML element (e.g. Control = 'input')
   if (typeof Component === "string") {
     const tag = Component;
+    assertElementName(tag);
     let attrs = "";
     for (const [k, v] of Object.entries(cleanProps)) {
       attrs += addAttribute(v, k).__html;

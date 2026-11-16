@@ -1,6 +1,7 @@
 import { renderIslandWrapper, registerIsland } from "./island";
 import { pushTsxStyle } from "./render-context";
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
+import { assertElementName } from "./framework-components";
 export { HtmlString };
 
 const VOID_ELEMENTS = new Set([
@@ -173,6 +174,8 @@ export function jsx(
     if (typeof result === "string") return createHtml(escapeHtml(result));
     return result;
   }
+
+  assertElementName(tag);
 
   // `<style>` blocks in TSX pages/components are hoisted into <head> as
   // page-global CSS (parity with Astro `<style is:global>`). Emitting the

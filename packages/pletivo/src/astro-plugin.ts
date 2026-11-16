@@ -26,6 +26,7 @@ import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { stripTypes } from "./transpile";
 import { collectCssSideEffectImports } from "./js-imported-css";
+import { assertRenderableImports } from "./framework-components";
 import { materializeViteVirtualImports } from "./astro-host/vite-plugins";
 import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
@@ -370,6 +371,8 @@ export async function registerAstroPlugin(): Promise<void> {
             .join("\n");
           throw new Error(`Astro compiler errors in ${rel}:\n${errors}`);
         }
+
+        assertRenderableImports(cleanPath, result.code);
 
         // Clear this file's previous contributions before re-populating.
         // Without this, entries linger across dev recompiles when the
