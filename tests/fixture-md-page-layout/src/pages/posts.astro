@@ -1,5 +1,6 @@
 ---
 import { getCollection, render } from "astro:content";
+import Note from "../components/Note.mdx";
 
 const [post] = await getCollection("posts");
 const { Content } = await render(post);
@@ -8,5 +9,6 @@ const { Content } = await render(post);
   <head><title>{post.data.title}</title></head>
   <body>
     <article data-layout={post.data.layout}><Content /></article>
+    <aside><Note /></aside>
   </body>
 </html>
