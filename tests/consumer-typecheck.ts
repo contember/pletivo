@@ -148,7 +148,7 @@ async function assertAstroPageBuilt(project: string): Promise<void> {
   if (!html.includes("packaged astro")) throw new Error("astro page did not render its content");
 
   // Bundled to well under 4096 B with no imports left, so the build inlines it, as Astro does.
-  const script = /<script type="module">([^<]*)<\/script>/.exec(html);
+  const script = /<script type="module">([\s\S]*?)<\/script>/.exec(html);
   if (!script) throw new Error("astro hoisted script was not emitted");
   if (!script[1].includes("hoisted-ok") || /\bimport\b/.test(script[1])) {
     throw new Error(`astro hoisted script was not bundled: ${script[1]}`);
