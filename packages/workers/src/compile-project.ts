@@ -57,7 +57,10 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
       if (module.kind === "css") {
         await linkStylesheet(walk, resolver, module);
       } else {
-        const compiled = await compileCached(module, compiler, cache, options.annotateSourceFile === true);
+        const compiled = await compileCached(module, compiler, cache, {
+          annotateSourceFile: options.annotateSourceFile === true,
+          scopedStyleStrategy: options.artifact?.prepared.artifact.config.scopedStyleStrategy,
+        });
         await linkModule(walk, resolver, module, compiled);
       }
     }

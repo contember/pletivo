@@ -56,6 +56,12 @@ const HOISTED_BUNDLE_RE = /hoisted-([0-9a-f]{16})\.js/g;
 const ASTRO_SCOPE_RE = /astro-([a-z0-9]{8})\b/g;
 
 /**
+ * The same scope id under Astro's `attribute` strategy: `data-astro-cid-jn3ixs4m`.
+ * One ordinal space with `ASTRO_SCOPE_RE`, so a component keeps its number either way.
+ */
+const ASTRO_CID_RE = /data-astro-cid-([a-z0-9]{8})\b/g;
+
+/**
  * Build a normalizer whose ordinal placeholders are shared across every file of
  * one case. Call it once per case, then for each file in a deterministic order.
  */
@@ -91,6 +97,7 @@ export function createNormalizer(ctx: NormalizeContext): (file: string, raw: str
 
     text = text.replace(HASHED_ASSET_RE, (_m, hash: string, ext: string) => `.${ordinal("hash", hash.toLowerCase())}.${ext}`);
     text = text.replace(HOISTED_BUNDLE_RE, (_m, hash: string) => `hoisted-${ordinal("bundle", hash)}.js`);
+    text = text.replace(ASTRO_CID_RE, (_m, scope: string) => `data-astro-cid-${ordinal("scope", scope)}`);
     text = text.replace(ASTRO_SCOPE_RE, (_m, scope: string) => `astro-${ordinal("scope", scope)}`);
 
     return text;

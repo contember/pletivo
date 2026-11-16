@@ -1,6 +1,7 @@
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
+import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import type { AstroCompiler } from "../astro-compiler.ts";
 import type { CompileCache, CompiledFile } from "../compile-cache.ts";
 import { IMPORT_META_ENV_GLOBAL } from "../env.ts";
@@ -11,6 +12,14 @@ import { COMPILED } from "./module-kind.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
 import type { AstroStyles, StyleBlock } from "./types.ts";
 
+/** The `.astro` compiler options a project sets; both are part of a cached file's identity. */
+export interface AstroCompileOptions {
+  /** See `ProjectOptions.annotateSourceFile`. */
+  annotateSourceFile: boolean;
+  /** The artifact's `config.scopedStyleStrategy`; absent leaves the compiler's default. */
+  scopedStyleStrategy: ScopedStyleStrategy | undefined;
+}
+
 /**
  * One module's compile, from the cache when it holds this exact source and kind.
  * Cached only after a full compile, so a failure never poisons an entry.
@@ -19,32 +28,35 @@ export async function compileCached(
   module: SourceModule,
   compiler: AstroCompiler,
   cache: CompileCache | undefined,
-  annotateSourceFile = false,
+  options: AstroCompileOptions,
 ): Promise<CompiledFile> {
-  // Only the Astro compiler annotates; any other kind compiles the same either way.
-  const annotate = annotateSourceFile && module.kind === "astro";
+  // Only the Astro compiler reads these; any other kind compiles the same either way.
+  const astro = module.kind === "astro";
+  const annotate = options.annotateSourceFile && astro;
+  const scopedStyleStrategy = astro ? options.scopedStyleStrategy : undefined;
   const held = cache?.get(module.compilePath);
   if (
     held !== undefined &&
     held.source === module.source &&
     held.kind === module.kind &&
-    held.annotated === annotate
+    held.annotated === annotate &&
+    held.scopedStyleStrategy === scopedStyleStrategy
   ) {
     return held;
   }
-  const entry = await compileFile(module, compiler, annotate);
+  const entry = await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy });
   cache?.set(module.compilePath, entry);
   return entry;
 }
 
 /**
- * What depends only on the file's path, bytes, the compiler and `annotateSourceFile`;
+ * What depends only on the file's path, bytes, the compiler and its options;
  * the file set's part is `linkModule`.
  */
 async function compileFile(
   module: SourceModule,
   compiler: AstroCompiler,
-  annotateSourceFile: boolean,
+  { annotateSourceFile, scopedStyleStrategy }: AstroCompileOptions,
 ): Promise<CompiledFile> {
   const { source, compilePath, kind } = module;
   if (kind === "js") return fileEntry(source, source, null, kind, [], compilePath);
@@ -78,6 +90,7 @@ async function compileFile(
     resolvePath: async (specifier) => specifier,
     // `data-astro-source-file` / `-loc` on every element, for a visual editor.
     annotateSourceFile,
+    scopedStyleStrategy,
   });
   const errors = (result.diagnostics ?? []).filter((diagnostic) => diagnostic.severity === 1);
   if (errors.length > 0) {
@@ -105,6 +118,7 @@ async function compileFile(
       compilePath,
     ),
     annotated: annotateSourceFile,
+    scopedStyleStrategy,
   };
 }
 
@@ -196,6 +210,7 @@ function fileEntry(
     styles,
     scripts,
     annotated: false,
+    scopedStyleStrategy: undefined,
     globs,
   };
 }

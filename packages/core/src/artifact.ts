@@ -1,6 +1,7 @@
 /** Serialized executable input shared by `pletivo prepare` and non-Bun hosts. */
 
 import { compareStrings } from "./compare-strings";
+import { isScopedStyleStrategy, type ScopedStyleStrategy } from "./astro-host/scoped-style";
 
 export const ARTIFACT_VERSION = 2;
 
@@ -145,6 +146,8 @@ export interface ArtifactConfig {
   trailingSlash?: ArtifactTrailingSlash;
   /** In config order; the first whose source matches wins. */
   redirects?: ArtifactRedirect[];
+  /** What `.astro` compiles with; absent leaves the compiler's default (`where`). */
+  scopedStyleStrategy?: ScopedStyleStrategy;
 }
 
 /** Injected scripts the Workers host currently emits, in semantic order. */
@@ -315,7 +318,7 @@ export function serializePreparedSite(value: unknown): string {
 function parseConfig(value: unknown): ArtifactConfig {
   const at = "$.artifact.config";
   const config = requireObject(value, at, "an object");
-  assertExactFields(config, ["site", "markdown", "i18n", "trailingSlash", "redirects"], at);
+  assertExactFields(config, ["site", "markdown", "i18n", "trailingSlash", "redirects", "scopedStyleStrategy"], at);
   const parsed: ArtifactConfig = {};
   if (hasOwn(config, "site")) {
     const site = Reflect.get(config, "site");
@@ -332,6 +335,13 @@ function parseConfig(value: unknown): ArtifactConfig {
     parsed.trailingSlash = trailingSlash;
   }
   if (hasOwn(config, "redirects")) parsed.redirects = parseRedirects(Reflect.get(config, "redirects"), `${at}.redirects`);
+  if (hasOwn(config, "scopedStyleStrategy")) {
+    const strategy = Reflect.get(config, "scopedStyleStrategy");
+    if (!isScopedStyleStrategy(strategy)) {
+      throw new ArtifactFormatError(`${at}.scopedStyleStrategy`, 'expected "where", "class" or "attribute"');
+    }
+    parsed.scopedStyleStrategy = strategy;
+  }
   return parsed;
 }
 
@@ -700,6 +710,7 @@ function canonicalConfig(config: ArtifactConfig): ArtifactConfig {
       status: redirect.status,
     }));
   }
+  if (config.scopedStyleStrategy !== undefined) canonical.scopedStyleStrategy = config.scopedStyleStrategy;
   return canonical;
 }
 

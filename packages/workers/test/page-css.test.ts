@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ModuleId } from "@pletivo/core/artifact";
 import type { ResolvedStyleGraph } from "../src/compiled-program.ts";
-import { extractAstroClasses, finalizeHtml, moduleOrder, pageCss } from "../src/page-css.ts";
+import { finalizeHtml, moduleOrder, pageCss } from "../src/page-css.ts";
 
 const PAGE = "project:page.astro";
 const LAYOUT = "npm:layout/Layout.astro";
@@ -78,12 +78,14 @@ describe("pageCss", () => {
   });
 });
 
-describe("extractAstroClasses", () => {
-  test("finds every scope class in the HTML", () => {
-    expect([...extractAstroClasses('<p class="card astro-a1b2 astro-c3d4">x</p>')].sort()).toEqual([
-      "astro-a1b2",
-      "astro-c3d4",
-    ]);
+describe("pageCss under the attribute strategy", () => {
+  test("a data-astro-cid attribute shows the component, as a scope class does", () => {
+    expect(pageCss({
+      entry: PAGE,
+      graph: styleGraph,
+      html: '<div data-astro-cid-aaa>x</div><p data-astro-cid-ddd>y</p>',
+      renderedModules: new Set([PAGE, LAYOUT]),
+    })).toBe("L{}\nP{}");
   });
 });
 

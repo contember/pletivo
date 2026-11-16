@@ -1,6 +1,7 @@
 /** Scoped Astro CSS ordering and safe HTML insertion. */
 
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
+import { extractAstroScopes } from "@pletivo/core/astro-host/scoped-style";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 
 export interface PageCssOptions {
@@ -11,11 +12,11 @@ export interface PageCssOptions {
 }
 
 export function pageCss(options: PageCssOptions): string {
-  const classes = extractAstroClasses(options.html);
+  const scopes = extractAstroScopes(options.html);
   const contributions = new Map<ModuleId, string[]>();
 
   for (const styles of options.graph.styles) {
-    const scoped = classes.has(`astro-${styles.scope}`);
+    const scoped = scopes.has(styles.scope);
     const rendered = options.renderedModules.has(styles.moduleId);
     if (!scoped && !rendered) continue;
     const css = styles.blocks
@@ -79,10 +80,6 @@ export function adjacency(
     else byImporter.set(edge.importer, [edge.target]);
   }
   return byImporter;
-}
-
-export function extractAstroClasses(html: string): Set<string> {
-  return new Set(html.match(/astro-[a-z0-9]+/g) ?? []);
 }
 
 export function finalizeHtml(

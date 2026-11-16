@@ -720,10 +720,13 @@ export function spreadAttributes(
   { class: scopedClassName }: { class?: string } = {},
 ): HtmlString {
   if (!values) return createHtml("");
-  // Merge compiler-provided scope class into the spread values
+  // Merge the compiler-provided scope class into a copy: Astro writes it into the
+  // caller's object, which leaks the class into every later spread of it.
   if (scopedClassName) {
     if (typeof values.class !== "undefined") {
       values = { ...values, class: `${values.class} ${scopedClassName}` };
+    } else if (typeof values["class:list"] !== "undefined") {
+      values = { ...values, "class:list": [values["class:list"], scopedClassName] };
     } else {
       values = { ...values, class: scopedClassName };
     }
@@ -739,7 +742,7 @@ export function spreadAttributes(
 
 /**
  * Intentional no-op. Scoped CSS is injected post-render by build.ts
- * and dev.ts via `getAstroCssForPage()`, which matches scope classes
+ * and dev.ts via `getAstroCssForPage()`, which matches scope ids
  * in the rendered HTML to include only relevant entries (per-page CSS
  * tree-shaking). This can't be done inline during render because the
  * full set of rendered components isn't known until the template

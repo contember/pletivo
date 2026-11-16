@@ -10,7 +10,8 @@ import { runWithRenderTracking, AstroCookies, MAX_REWRITE_DEPTH, type AstroRespo
 import { hydrationScript } from "@pletivo/runtime/hydration";
 import { hmrClientScript } from "@pletivo/runtime/hmr-client";
 import { devCss } from "./css";
-import { registerAstroPlugin, getAstroCssForPage, extractAstroClasses, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
+import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
@@ -212,6 +213,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     broadcastHmr(JSON.stringify(payload));
   });
 
+  configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureJsImportedCss(projectRoot, config.srcDir);
@@ -476,12 +478,12 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       // without a manual <link> get styles.
       //
       // Scoped CSS from <style> blocks is inlined per-page: we match
-      // astro scope classes present in this page's HTML to include only
+      // astro scope ids present in this page's HTML to include only
       // relevant entries, avoiding cross-page leaks from unscoped rules.
       const styleLink = `<link rel="stylesheet" href="${withBase("/__styles.css")}">`;
       const pageAstroCss = await getAstroCssForPage({
         entryFile: fullPath,
-        astroClasses: extractAstroClasses(html),
+        astroScopes: extractAstroScopes(html),
         renderedModules,
       });
       const pageTsxCss = tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
@@ -623,7 +625,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
 
     const astroCss = await getAstroCssForPage({
       entryFile: fullPath,
-      astroClasses: extractAstroClasses(html),
+      astroScopes: extractAstroScopes(html),
       renderedModules,
     });
     const tsxCss = tsxStyles.length > 0 ? tsxStyles.join("\n") : "";

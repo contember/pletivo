@@ -11,7 +11,8 @@ import { bundleCss, cssHrefsForPage, type CssBundle } from "./css";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { generateSitemap } from "./sitemap";
-import { registerAstroPlugin, getAstroCssForPage, extractAstroClasses, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
+import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
@@ -158,6 +159,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   await registerCssModulesPlugin();
   await registerScssPlugin(projectRoot);
   const astroHost = await initAstroHost(projectRoot, "build");
+  configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureScss(readScssOptions(astroHost?.config.vite));
@@ -1467,13 +1469,13 @@ async function writeHtml(
 
   // Inject per-page CSS from <style> blocks in .astro components, in the
   // cascade order the page's import graph dictates. Scoped blocks are matched
-  // by astro scope class in the HTML (so unscoped rules inside a regular
+  // by scope id (class or `data-astro-cid-*`) in the HTML (so unscoped rules inside a regular
   // <style> — `:global()`, `body` — can't leak onto other pages), `is:global`
   // blocks by whether the component rendered.
   const combinedCss = await timeAsync("pageCss", async () => {
     const pageAstroCss = await getAstroCssForPage({
       entryFile,
-      astroClasses: extractAstroClasses(html),
+      astroScopes: extractAstroScopes(html),
       renderedModules: renderedModules ?? new Set(),
     });
     const pageTsxCss = tsxStyles && tsxStyles.length > 0 ? tsxStyles.join("\n") : "";

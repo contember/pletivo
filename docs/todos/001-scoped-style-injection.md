@@ -26,3 +26,13 @@
 - `packages/runtime/src/astro-shim.ts` — documented `renderHead()` no-op rationale
 - `tests/integration/scoped-styles.test.ts` — new test file
 - `tests/fixture-astro-styles/` — new test fixture
+
+## Scoped style strategy
+
+An Astro project compiles `.astro` with its `scopedStyleStrategy`, or Astro 5's
+default `attribute` (`data-astro-cid-{scope}` on elements, `[data-astro-cid-{scope}]`
+in selectors). A pletivo-native project keeps the compiler default `where`
+(`class="astro-{scope}"`, `:where(.astro-{scope})`). The strategy is resolved once
+in `@pletivo/core/astro-host/scoped-style`, carried in the Workers artifact as
+`config.scopedStyleStrategy`, and the page-CSS gate reads scope ids under either
+spelling (`extractAstroScopes`).

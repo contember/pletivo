@@ -1,1 +1,1 @@
-export default { base: "/docs", trailingSlash: "always", build: { format: "file" } };
+export default { base: "/docs", trailingSlash: "always", build: { format: "file" }, scopedStyleStrategy: "inline" };

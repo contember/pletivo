@@ -1,0 +1,15 @@
+---
+const spread = { "data-x": "1" };
+const listed = { "class:list": ["listed"] };
+---
+<html lang="en">
+  <head><title>spread</title></head>
+  <body>
+    <div id="spread-plain" {...spread} />
+    <div id="spread-own" {...spread} class="own" />
+    <div id="spread-list" {...listed} />
+    <style>
+      div { color: red; }
+    </style>
+  </body>
+</html>

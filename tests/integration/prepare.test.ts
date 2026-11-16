@@ -394,9 +394,9 @@ describe("pletivo prepare", () => {
     });
   });
 
-  test("rejects routing configuration the Workers host ignores", async () => {
+  test("rejects routing configuration the Workers host ignores, and an unknown scopedStyleStrategy", async () => {
     const error = await capturedPrepareError(path.join(fixtures, "fatal-routing"));
-    expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["base", "build.format"]);
+    expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["base", "build.format", "scopedStyleStrategy"]);
   });
 
   test("rejects Worker-relevant pletivo config and source directories outside the root", async () => {
@@ -430,6 +430,7 @@ describe("pletivo prepare", () => {
         { source: "/old", destination: "/new", status: 301 },
         { source: "/blog/[slug]", destination: "/posts/[slug]", status: 302 },
       ],
+      scopedStyleStrategy: "attribute",
     });
     expect(site.artifact.resolutions).toContainEqual({
       importer: "project:src/pages/index.astro",
@@ -742,7 +743,7 @@ describe("pletivo prepare on the vendor fixture", () => {
   });
 
   test("freezes only config fields the Workers host consumes", () => {
-    expect(site.artifact.config).toEqual({ site: "https://vendor.example" });
+    expect(site.artifact.config).toEqual({ site: "https://vendor.example", scopedStyleStrategy: "attribute" });
   });
 
   test("freezes supported injectScript bodies in semantic order", () => {

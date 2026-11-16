@@ -79,7 +79,7 @@ fixed.
 3. **Scoped style strategy** (8 of 10). Astro 5 defaults `scopedStyleStrategy`
    to `attribute` (`[data-astro-cid-x]`, specificity 0-1-0); pletivo leaves the
    compiler at `where` (`:where(.astro-x)`, specificity 0). A cascade
-   difference, not only a markup one.
+   difference, not only a markup one. Fixed in #52 for Astro projects.
 4. **Framework renderers** (7: preact, react, solid, svelte, vue, multiple,
    with-mdx; with-nanostores after its own fix). `addRenderer()` is a no-op;
    pletivo renders JSX components itself. A Svelte or Vue component comes out
