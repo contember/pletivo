@@ -120,13 +120,19 @@ Astro: one `<script type="module">` in `<head>` per page. pletivo: **544 in
 single page. ES-module URL dedup means they execute once, so this is markup and
 load-order noise rather than broken behaviour — but it is 2.6× the tags.
 
-Since then: the shim's `renderScript` emits each script id once per render pass,
-as Astro's `renderedScripts` does, so a page carries one tag per script, inline or
-linked. `Astro.slots.render()` claims the slot's scripts when it is called, as in
-Astro, so a slot rendered once to probe it and then again by `<slot />` keeps its
-script only in the discarded probe. The "one script in `<head>`" above is the
-Astro 4.16 baseline of this site; Astro 5 renders processed scripts at the
-component's position, as pletivo does, so placement is no longer a gap.
+Since then: `build` keeps the first tag per script on each written page and drops
+the rest, inline or linked, so a page runs each script once, as in Astro. It
+dedupes the written HTML, not render calls, because pletivo also renders slot
+fallbacks and children it may discard; a claim at render time would lose the
+script. One deliberate divergence follows: a slot probed with
+`Astro.slots.render()`, discarded, and rendered again by `<slot />` keeps its
+script, where Astro emits none. `dev` and the Workers host do not dedupe, so a
+component used twice still gives two identical *linked* tags there; the module
+runs once, so that is noise, not double execution.
+
+The "one script in `<head>`" above is the Astro 4.16 baseline of this site;
+Astro 5 renders processed scripts at the component's position, as pletivo does,
+so placement is no longer a gap.
 
 `build` inlines a processed script as Astro does: its bundle imports nothing and
 passes `vite.build.assetsInlineLimit` (default 4096 B; `0` keeps every script
