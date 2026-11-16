@@ -10,7 +10,7 @@
 
 ## Current State
 
-- `"page"` — works, wrapped in `<script type="module">`
+- `"page"` — works: every page script is bundled into one module (packages and Vite virtual modules resolved), written inline as `<script type="module">` by build, dev and `prepare`
 - `"head-inline"` — works, inline `<script>`
 - `"page-ssr"` — logged as unsupported, ignored
 - `"before-hydration"` — logged as unsupported, ignored
