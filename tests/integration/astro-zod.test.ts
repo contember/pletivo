@@ -26,7 +26,7 @@ async function buildWith(astroZod: string | null): Promise<string> {
     await fs.writeFile(
       path.join(astroDir, "zod.js"),
       `export * from ${JSON.stringify(astroZod)};\n` +
-        `export { z } from ${JSON.stringify(astroZod)};\n` +
+        `export { z, default } from ${JSON.stringify(astroZod)};\n` +
         `export const projectZodMarker = true;\n`,
     );
   }
@@ -47,18 +47,23 @@ describe("astro/zod and astro:content's z come from the project's Astro", () => 
   test("Astro 5 (Zod 3): z, image() and reference() are Zod 3 and a schema mixing them validates", async () => {
     const html = await buildWith(Bun.resolveSync("zod/v3", import.meta.dir));
     expect(html).toContain("astro:content 3, astro/zod 3, same true, project true");
+    // The API `@astrojs/rss` failed on.
+    expect(html).toContain("returns function");
+    expect(html).toContain("default true");
     expect(html).toContain("Hello by Jane, cover 4x4");
   }, 60_000);
 
   test("Astro 6 (Zod 4): stays on Zod 4, from the project's Astro", async () => {
     const html = await buildWith(Bun.resolveSync("zod", import.meta.dir));
     expect(html).toContain("astro:content 4, astro/zod 4, same true, project true");
+    expect(html).toContain("default true");
     expect(html).toContain("Hello by Jane, cover 4x4");
   }, 60_000);
 
   test("without astro installed: pletivo's own Zod", async () => {
     const html = await buildWith(null);
     expect(html).toContain("astro:content 4, astro/zod 4, same true, project false");
+    expect(html).toContain("default true");
     expect(html).toContain("Hello by Jane, cover 4x4");
   }, 60_000);
 });

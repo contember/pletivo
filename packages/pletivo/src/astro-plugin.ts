@@ -320,6 +320,15 @@ export async function classifyCompilerCss(
   return { scoped, global, blocks };
 }
 
+function resolvesFrom(specifier: string, dir: string): boolean {
+  try {
+    Bun.resolveSync(specifier, dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function registerAstroPlugin(): Promise<void> {
   if (registered) return;
   registered = true;
@@ -335,11 +344,15 @@ export async function registerAstroPlugin(): Promise<void> {
   const shimPath = path.resolve(pletivoSrcDir, "runtime/astro-shim.ts");
   const containerPath = path.resolve(pletivoSrcDir, "runtime/astro-container.ts");
   const contentPath = path.resolve(pletivoSrcDir, "content/index.ts");
+  // The content module itself, for helpers that stay out of the public `pletivo/content`.
+  const contentCollectionPath = path.resolve(pletivoSrcDir, "content/collection.ts");
   const i18nVirtualPath = path.resolve(pletivoSrcDir, "i18n/virtual-module.ts");
   const imagePath = path.resolve(pletivoSrcDir, "image.ts");
   // Zod is a dep of pletivo; resolve from pletivo's package context. The
   // fallback for `astro/zod` when the project has no astro.
-  const zodPath = require.resolve("zod", { paths: [pletivoSrcDir] });
+  // `Bun.resolveSync` picks the ESM entry, the module core imports; `require.resolve`
+  // would pick `index.cjs`, a second Zod instance without a `z` default export.
+  const zodPath = Bun.resolveSync("zod", pletivoSrcDir);
 
   if (process.env.PLETIVO_DEBUG) console.log("[pletivo-astro] registering plugin, shim:", shimPath);
 
@@ -488,6 +501,12 @@ export async function registerAstroPlugin(): Promise<void> {
             projectZod = Bun.resolveSync("astro/zod", process.cwd());
           } catch {
             projectZod = zodPath;
+            if (resolvesFrom("astro/package.json", process.cwd())) {
+              console.warn(
+                "[pletivo] astro is installed but astro/zod does not resolve; using pletivo's Zod 4. " +
+                  "Integrations written for Astro's Zod may fail. Check the astro install.",
+              );
+            }
           }
         }
         return projectZod;
@@ -497,10 +516,10 @@ export async function registerAstroPlugin(): Promise<void> {
         loader: "ts",
         contents: `
           import { z } from ${JSON.stringify(projectZodPath())};
-          import { defineCollectionFor, referenceWith } from ${JSON.stringify(contentPath)};
+          import { defineCollectionWith, referenceWith } from ${JSON.stringify(contentCollectionPath)};
           export { getCollection, getEntry, render } from ${JSON.stringify(contentPath)};
           export { z };
-          export const defineCollection = defineCollectionFor(z);
+          export const defineCollection = defineCollectionWith(z);
           export const reference = (collection) => referenceWith(z, collection);
         `,
       }));
@@ -512,7 +531,10 @@ export async function registerAstroPlugin(): Promise<void> {
 
       mod("astro/zod", () => ({
         loader: "ts",
-        contents: `export { z } from ${JSON.stringify(projectZodPath())}; export * from ${JSON.stringify(projectZodPath())};`,
+        contents: `
+          export { z, default } from ${JSON.stringify(projectZodPath())};
+          export * from ${JSON.stringify(projectZodPath())};
+        `,
       }));
 
       // `astro:components` — re-export the batch of .astro components

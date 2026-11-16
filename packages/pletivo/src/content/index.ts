@@ -1,21 +1,17 @@
 export {
   defineCollection,
-  defineCollectionFor,
   getCollection,
   getEntry,
   glob,
   initCollections,
   reference,
-  referenceWith,
   render,
   z,
 } from "./collection";
 export type {
   AnyLoader,
   AstroLoader,
-  BoundSchemaFn,
   CollectionConfig,
-  ContentSchema,
   CollectionEntry,
   DataStore,
   DataStoreEntry,

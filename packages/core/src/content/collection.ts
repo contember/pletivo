@@ -271,7 +271,7 @@ export type SchemaFn = (
 
 /**
  * A schema function already bound to the Zod it was written against, so the
- * content layer can hand it an `image()` of that Zod. Made by `defineCollectionFor`.
+ * content layer can hand it an `image()` of that Zod. Made by `defineCollectionWith`.
  */
 export interface BoundSchemaFn {
   bound(resolveImage: ImageResolver | null, entryDir: string | null): ContentSchema<Record<string, unknown>>;
@@ -396,7 +396,7 @@ export interface ContentHost {
   image?(entryDir: string | null): z.ZodType<ImageMetadata, unknown>;
   /**
    * How `image()` paths become metadata, for a schema built with another Zod than
-   * pletivo's (`defineCollectionFor`). Absent: those image() schemas fail with a clear message.
+   * pletivo's (`defineCollectionWith`). Absent: those image() schemas fail with a clear message.
    */
   resolveImage?: ImageResolver;
   /** Render an `.mdx` entry's body to HTML. Absent: `.mdx` entries fail with a clear message. */
@@ -723,18 +723,42 @@ export interface ZodCollectionConfig<I> extends Omit<CollectionConfig, "schema">
  * `defineCollection` for schemas written with `z`, a Zod that need not be pletivo's:
  * an Astro project's `astro:content` is backed by this with the Zod its Astro ships.
  */
-export function defineCollectionFor<I>(z: ImageZod<I>): (config: ZodCollectionConfig<I>) => CollectionConfig {
+export function defineCollectionWith<I>(z: ImageZod<I>): (config: ZodCollectionConfig<I>) => CollectionConfig {
   return (config) => {
     const schema = config.schema;
     if (typeof schema !== "function") return defineCollection({ ...config, schema });
     return defineCollection({
       ...config,
       schema: {
-        bound: (resolveImage, entryDir) =>
-          schema({ image: () => imageSchemaWith(z, entryDir, resolveImage) }),
+        bound: (resolveImage, entryDir) => {
+          let built: ContentSchema<Record<string, unknown>>;
+          try {
+            built = schema({ image: () => imageSchemaWith(z, entryDir, resolveImage) });
+          } catch (error) {
+            throw withZodMixHint(error);
+          }
+          return {
+            safeParseAsync: (data) => built.safeParseAsync(data).catch((error: unknown) => {
+              throw withZodMixHint(error);
+            }),
+          };
+        },
       },
     });
   };
+}
+
+/**
+ * A schema that throws instead of reporting issues is typically one mixing Zod
+ * installs: Zod 3 and Zod 4 schemas do not nest, and their errors name Zod internals.
+ */
+function withZodMixHint(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `${message}\n  If the schema mixes Zod installs: image() and reference() from astro:content use ` +
+      "Astro's own Zod, so build the schema with z from astro:content or astro/zod.",
+    { cause: error },
+  );
 }
 
 // ── Runtime state ──

@@ -68,11 +68,11 @@ async function resolveImage(dir: string, relPath: string): Promise<ImageMetadata
       fsPath,
     });
   } catch (e) {
-    const err = e as NodeJS.ErrnoException;
+    const notFound = e instanceof Error && "code" in e && e.code === "ENOENT";
     throw new Error(
-      err.code === "ENOENT"
+      notFound
         ? `image not found: ${relPath} (resolved to ${fsPath})`
-        : `could not read image ${relPath}: ${err.message}`,
+        : `could not read image ${relPath}: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 }
