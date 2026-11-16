@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { ANY_PROJECT_IMPORTER, ARTIFACT_VERSION } from "@pletivo/core/artifact";
 import { loadProjectArtifact } from "../src/artifact.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
@@ -350,6 +350,41 @@ const { note } = Astro.props;
       executionNamespace: EXECUTION_NAMESPACE,
     });
     expect(paths.map((path) => path.pathname).sort()).toEqual(["/", "/notes/a/", "/notes/b/"]);
+  });
+
+  test("read a collection without a loader from src/content/<name>, and warn when it is empty", async () => {
+    const files = new Map<string, string>([
+      [
+        "src/content.config.ts",
+        `import { defineCollection } from "astro:content";
+export const collections = { docs: defineCollection({}), missing: defineCollection({}) };
+`,
+      ],
+      [
+        "src/pages/index.astro",
+        `---
+import { getCollection, getEntry } from "astro:content";
+const missing = await getCollection("missing");
+const intro = await getEntry("docs", "intro");
+const { Content } = await intro.render();
+---
+<html><body><h1>{intro.data.title}</h1><p>{missing.length}</p><Content /></body></html>
+`,
+      ],
+      ["src/content/docs/intro.md", note("Intro", "Hello from **intro**.")],
+    ]);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const page = await render(files);
+      expect(page.html).toContain("<h1>Intro</h1><p>0</p>");
+      expect(page.html).toContain("Hello from <strong>intro</strong>.");
+      expect(warn.mock.calls.map((args) => args.join(" "))).toEqual([
+        'No files found matching "**/*.{md,markdown,mdown,mkdn,mkd,mdwn,mdx,mdoc}" in directory ' +
+          '"src/content/missing". Collection "missing" has no loader, so it is read from there.',
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("refuse to render a content project with nothing to read content with", async () => {
