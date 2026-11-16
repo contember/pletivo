@@ -17,6 +17,7 @@ import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-strin
 import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
 import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
+import { bindPageResult, renderFrameworkComponent } from "./astro-islands";
 import {
   getSlotArgs,
   recordRenderedModule,
@@ -519,6 +520,7 @@ interface PageScope {
   result: AstroResult;
 }
 const pageScopeStorage = new AsyncLocalStorage<PageScope>();
+bindPageResult(() => pageScopeStorage.getStore()?.result);
 
 /**
  * Render a page inside its request: every Astro component reached from `fn`
@@ -629,9 +631,6 @@ export async function renderComponent(
 ): Promise<HtmlString> {
   // Astro awaits a component given as a promise, e.g. `import("./G.astro").then((m) => m.default)`.
   if (Component instanceof Promise) Component = await Component;
-  if (Component == null) {
-    return createHtml("");
-  }
 
   // Strip out internal-only keys
   const cleanProps: Record<string, unknown> = {};
@@ -656,6 +655,24 @@ export async function renderComponent(
       slots,
     );
     return rendered;
+  }
+
+  // A framework component, or `client:only` (a null component), once the host registered renderers.
+  const framework = renderFrameworkComponent({
+    source: "astro",
+    result,
+    displayName,
+    Component,
+    props: cleanProps,
+    slots,
+  });
+  if (framework) {
+    const rendered = await framework;
+    if (rendered) return rendered;
+  }
+
+  if (Component == null) {
+    return createHtml("");
   }
 
   // Plain function component (pletivo JSX, or shim Fragment)
