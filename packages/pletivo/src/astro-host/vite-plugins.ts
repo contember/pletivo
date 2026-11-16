@@ -19,7 +19,7 @@ import { createHash } from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { pathToFileURL } from "url";
-import type { BunPlugin, Loader } from "bun";
+import type { Loader } from "bun";
 import type { ServerShim } from "@pletivo/core/astro-host/server-shim";
 import type { LoadResult, ResolveIdResult, ViteLikePlugin } from "@pletivo/core/astro-host/types";
 
@@ -40,15 +40,8 @@ export function configureVitePluginHost(projectRoot: string): void {
 export async function ensureBunPlugin(): Promise<void> {
   if (bunPluginRegistered) return;
   bunPluginRegistered = true;
-  await Bun.plugin(viteVirtualModulesPlugin());
-}
 
-/**
- * Collected plugins' `resolveId` → `load` as a Bun plugin: the runtime loader registers it,
- * and a `Bun.build` that bundles code importing a Vite virtual module passes it.
- */
-export function viteVirtualModulesPlugin(): BunPlugin {
-  return {
+  await Bun.plugin({
     name: "pletivo-vite-plugin-host",
     setup(build) {
       // onResolve: walk Vite plugins' resolveId hooks. First plugin to
@@ -89,7 +82,7 @@ export function viteVirtualModulesPlugin(): BunPlugin {
         },
       );
     },
-  };
+  });
 }
 
 /**
@@ -215,7 +208,7 @@ export async function freezeViteVirtualModule(
   return null;
 }
 
-async function resolveViteId(specifier: string, importer?: string): Promise<string | null> {
+export async function resolveViteId(specifier: string, importer?: string): Promise<string | null> {
   for (const p of collectedPlugins) {
     if (typeof p.resolveId !== "function") continue;
     try {
@@ -234,7 +227,7 @@ function normalizeResolvedId(result: ResolveIdResult): string | null {
   return null;
 }
 
-async function loadViteId(id: string): Promise<{ code: string; loader: Loader } | null> {
+export async function loadViteId(id: string): Promise<{ code: string; loader: Loader } | null> {
   for (const p of collectedPlugins) {
     if (typeof p.load !== "function") continue;
     try {
@@ -268,7 +261,7 @@ function loaderForVirtualId(id: string): Loader {
   return "ts";
 }
 
-function extensionForLoader(loader: Loader): string {
+export function extensionForLoader(loader: Loader): string {
   if (loader === "css") return ".css";
   if (loader === "jsx") return ".jsx";
   if (loader === "tsx") return ".tsx";

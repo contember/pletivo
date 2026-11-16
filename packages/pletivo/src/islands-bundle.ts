@@ -77,13 +77,10 @@ function pickExportTarget(entry: unknown): string | undefined {
 }
 
 /**
- * Bun plugin that redirects server-side imports to Preact for island bundles.
- * - pletivo/jsx-runtime → preact/jsx-runtime (DOM-based JSX)
- * - pletivo/hooks → preact/hooks (real reactive hooks)
- * - bare preact specifiers → the project's single copy (dedupe)
- * - react / react-dom → preact/compat (for Radix UI, lucide, uic-style libs)
+ * Where a client bundle must take preact from: the project's single copy, with every
+ * subpath through preact's own `exports` map, never through tsconfig `paths`.
  */
-export function islandPlugin(projectRoot?: string) {
+export function preactResolver(projectRoot?: string): { main: string; subpath(name: string): string } {
   // CRITICAL: resolve preact from the PROJECT's node_modules, not pletivo's.
   // Radix UI (and the island wrapper's bare `import ... from "preact"`) resolve
   // preact relative to the project; if `react`→preact/compat resolved to
@@ -140,6 +137,20 @@ export function islandPlugin(projectRoot?: string) {
     return resolve(`preact/${subpath}`);
   };
 
+  return { main: preactMain, subpath: resolveSubpath };
+}
+
+/**
+ * Bun plugin that redirects server-side imports to Preact for island bundles.
+ * - pletivo/jsx-runtime → preact/jsx-runtime (DOM-based JSX)
+ * - pletivo/hooks → preact/hooks (real reactive hooks)
+ * - bare preact specifiers → the project's single copy (dedupe)
+ * - react / react-dom → preact/compat (for Radix UI, lucide, uic-style libs)
+ */
+export function islandPlugin(projectRoot?: string) {
+  const preact = preactResolver(projectRoot);
+  const preactMain = preact.main;
+  const resolveSubpath = preact.subpath;
   const preactJsx = resolveSubpath("jsx-runtime");
   const preactJsxDev = resolveSubpath("jsx-dev-runtime");
   const preactHooks = resolveSubpath("hooks");
