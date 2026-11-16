@@ -8,10 +8,21 @@ import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import path from "path";
 import { registerAstroPlugin } from "../../packages/pletivo/src/astro-plugin";
-import { __resetForTests, initAstroHost } from "../../packages/pletivo/src/astro-host/runner";
+import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
+import { build } from "../../packages/pletivo/src/build";
+import type { PletivoConfig } from "../../packages/pletivo/src/config";
 import { renderAstroPage, isAstroComponent } from "@pletivo/runtime/astro-shim";
 
 let dir: string;
+
+const config: PletivoConfig = {
+  host: "localhost",
+  outDir: "dist",
+  port: 3000,
+  base: "/",
+  srcDir: "src",
+  publicDir: "public",
+};
 
 function write(file: string, contents: string): string {
   const absolute = path.join(dir, file);
@@ -76,32 +87,83 @@ describe("a .astro page importing a framework component", () => {
     );
   });
 
+  test("refuses a Vue component by its extension", async () => {
+    write("src/components/Counter.vue", "<template><button>+</button></template>\n");
+    await expect(import(page("vue", "../components/Counter.vue"))).rejects.toThrow(
+      `pletivo cannot render Vue components: ${rel("src/components/Counter.vue")}, imported by ${rel("src/pages/vue.astro")}`,
+    );
+  });
+
+  test("lists every refused import in one error", async () => {
+    write("src/components/A.svelte", "<b>a</b>\n");
+    write("src/components/B.tsx", `/** @jsxImportSource preact */\nexport default function B() { return <b>b</b>; }\n`);
+    const file = write(
+      "src/pages/several.astro",
+      `---\nimport A from "../components/A.svelte";\nimport B from "../components/B";\n---\n<A /><B />\n`,
+    );
+    const error = await import(file).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    const lines = error instanceof Error ? error.message.split("\n") : [];
+    expect(lines[0]).toStartWith(`pletivo cannot render Svelte components: ${rel("src/components/A.svelte")}`);
+    expect(lines[1]).toStartWith(`pletivo cannot render Preact components: ${rel("src/components/B.tsx")}`);
+  });
+
+  test("takes the last entry of an extends array, as TypeScript does", async () => {
+    write("order/solid.json", `{ "compilerOptions": { "jsxImportSource": "solid-js" } }\n`);
+    write("order/react.json", `{ "compilerOptions": { "jsxImportSource": "react" } }\n`);
+    write("order/tsconfig.json", `{ "extends": ["./solid.json", "./react.json"] }\n`);
+    write("order/src/components/Counter.tsx", `export default function Counter() { return <b>+</b>; }\n`);
+    const file = write("order/src/pages/index.astro", `---\nimport Counter from "../components/Counter";\n---\n<Counter />\n`);
+    await expect(import(file)).rejects.toThrow(`pletivo cannot render React components: ${rel("order/src/components/Counter.tsx")}`);
+  });
+
   test("renders JSX compiled for pletivo, as before", async () => {
     write("src/components/Greeting.tsx", `export default function Greeting() { return <b>hi</b>; }\n`);
     const mod = await import(page("pletivo", "../components/Greeting"));
     expect(isAstroComponent(mod.default)).toBe(true);
     expect(await renderAstroPage(mod.default, {})).toContain("<main><b>hi</b></main>");
   });
+
+  test("renders a pletivo pragma over a tsconfig that says react", async () => {
+    // Extends the repo's tsconfig for its `pletivo/jsx-runtime` path mapping.
+    write(
+      "pragma/tsconfig.json",
+      JSON.stringify({ extends: path.join(import.meta.dir, "../../tsconfig.json"), compilerOptions: { jsxImportSource: "react" } }),
+    );
+    write("pragma/src/components/Greeting.tsx", `/** @jsxImportSource pletivo */\nexport default function Greeting() { return <b>hi</b>; }\n`);
+    const file = write("pragma/src/pages/index.astro", `---\nimport Greeting from "../components/Greeting";\n---\n<main><Greeting /></main>\n`);
+    const mod = await import(file);
+    expect(await renderAstroPage(mod.default, {})).toContain("<main><b>hi</b></main>");
+  });
+
+  test("leaves a package's component to the runtime", async () => {
+    // Under node_modules the project's tsconfig does not apply; a package ships what it compiled.
+    write("node_modules/ui-kit/Label.tsx", `/** @jsxImportSource react */\nexport default function Label() { return "label"; }\n`);
+    const mod = await import(page("package", "../../node_modules/ui-kit/Label.tsx"));
+    expect(await renderAstroPage(mod.default, {})).toContain("<main>label</main>");
+  });
 });
 
-describe("an integration registering a renderer", () => {
-  test("is warned about by name, since pletivo ignores the renderer", async () => {
+describe("a project whose integration registers a renderer", () => {
+  test("warns by name and still renders its pletivo JSX", async () => {
     const root = path.join(dir, "renderer");
-    mkdirSync(root, { recursive: true });
-    writeFileSync(
-      path.join(root, "astro.config.mjs"),
-      `export default { integrations: [{ name: "svelte-like", hooks: { "astro:config:setup": ({ addRenderer }) => addRenderer({ name: "@astrojs/svelte", serverEntrypoint: "x" }) } }] }\n`,
+    write(
+      "renderer/astro.config.mjs",
+      `export default { integrations: [{ name: "react-like", hooks: { "astro:config:setup": ({ addRenderer }) => addRenderer({ name: "@astrojs/react", serverEntrypoint: "x" }) } }] }\n`,
     );
+    write("renderer/src/components/Greeting.tsx", `export default function Greeting() { return <b>hi</b>; }\n`);
+    write("renderer/src/pages/index.astro", `---\nimport Greeting from "../components/Greeting";\n---\n<main><Greeting /></main>\n`);
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
       __resetForTests();
-      await initAstroHost(root, "build");
+      await build(root, config);
       expect(warn.mock.calls.map((call) => String(call[0]))).toContain(
-        '  [svelte-like] renderer "@astrojs/svelte" ignored: pletivo does not implement Astro framework renderers',
+        '  [react-like] renderer "@astrojs/react" ignored: pletivo does not implement Astro framework renderers',
       );
     } finally {
       warn.mockRestore();
       __resetForTests();
     }
+    expect(await Bun.file(path.join(root, "dist/index.html")).text()).toContain("<main><b>hi</b></main>");
   });
 });

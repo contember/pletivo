@@ -372,8 +372,6 @@ export async function registerAstroPlugin(): Promise<void> {
           throw new Error(`Astro compiler errors in ${rel}:\n${errors}`);
         }
 
-        assertRenderableImports(cleanPath, result.code);
-
         // Clear this file's previous contributions before re-populating.
         // Without this, entries linger across dev recompiles when the
         // user removes a `<style>` or `<script>` block: the compiler
@@ -387,8 +385,10 @@ export async function registerAstroPlugin(): Promise<void> {
 
         // The module's imports, taken from the compiler's own output so the
         // list is the one Bun will execute. Feeds the cascade ordering of the
-        // CSS collected below — see astro-css-order.ts.
-        recordAstroImports(cleanPath, result.code);
+        // CSS collected below (astro-css-order.ts) and the refusal of framework
+        // components pletivo cannot render (framework-components.ts).
+        const imports = recordAstroImports(cleanPath, result.code);
+        assertRenderableImports(cleanPath, imports);
 
         // Collect CSS emitted by the Astro compiler. Each `result.css[]`
         // entry is the compiled output of one `<style>` block, in source

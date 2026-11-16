@@ -8,6 +8,8 @@
  * itself decides. Such a module never renders under pletivo — React's hooks throw
  * outside a React render, Solid has no runtime JSX export, Preact and Vue return
  * vnodes — so it fails here by name instead of somewhere inside the framework.
+ * What this edge cannot see (npm packages, barrel files, TSX pages) the runtime
+ * refuses when it meets the framework's element.
  */
 
 import fs from "fs";
@@ -16,20 +18,14 @@ import {
   FRAMEWORK_RENDERERS_UNSUPPORTED,
   frameworkOfFile,
 } from "@pletivo/runtime/framework-components";
-
-/** `jsxImportSource` values whose JSX only that framework's renderer can render. */
-const FRAMEWORK_BY_JSX_IMPORT_SOURCE: Record<string, string> = {
-  react: "React",
-  preact: "Preact",
-  "solid-js": "Solid",
-  vue: "Vue",
-};
+import {
+  foreignJsxMessage,
+  frameworkOfJsxImportSource,
+  jsxImportSourcePragma,
+} from "@pletivo/core/framework-jsx";
 
 const JSX_EXTENSIONS = new Set([".tsx", ".jsx"]);
-const JSX_PRAGMA = /@jsxImportSource\s+([^\s*]+)/;
 const TSCONFIG_NAMES = ["tsconfig.json", "jsconfig.json"];
-
-const transpiler = new Bun.Transpiler({ loader: "ts" });
 
 interface JsxImportSource {
   value: string;
@@ -42,12 +38,12 @@ const tsconfigByDir = new Map<string, JsxImportSource | null>();
 
 /**
  * Throw when the compiled `.astro` module at `file` imports framework components.
- * `code` is the compiler's output, so the imports are the ones Bun will execute.
+ * `specifiers` are scanned from the compiler's output, so they are the ones Bun will execute.
  */
-export function assertRenderableImports(file: string, code: string): void {
+export function assertRenderableImports(file: string, specifiers: readonly string[]): void {
   const fromDir = path.dirname(file);
   const refusals: string[] = [];
-  for (const { path: specifier } of transpiler.scanImports(code)) {
+  for (const specifier of specifiers) {
     const target = resolveImport(specifier, fromDir);
     if (target === null) continue;
     const refusal = frameworkComponent(target);
@@ -79,14 +75,14 @@ function frameworkComponent(file: string): string | null {
   if (!JSX_EXTENSIONS.has(path.extname(file).toLowerCase())) return null;
   if (file.includes(`${path.sep}node_modules${path.sep}`)) return null;
   const source = jsxImportSourceOf(file);
-  const framework = source === null ? undefined : FRAMEWORK_BY_JSX_IMPORT_SOURCE[source.value];
-  if (source === null || framework === undefined) return null;
-  return `pletivo cannot render ${framework} components: ${relative(file)} (jsxImportSource "${source.value}", set by ${source.origin})`;
+  const framework = source === null ? null : frameworkOfJsxImportSource(source.value);
+  if (source === null || framework === null) return null;
+  return foreignJsxMessage(framework, relative(file), source.value, source.origin);
 }
 
 function jsxImportSourceOf(file: string): JsxImportSource | null {
-  const pragma = JSX_PRAGMA.exec(fs.readFileSync(file, "utf8"));
-  if (pragma) return { value: pragma[1], origin: "its @jsxImportSource pragma" };
+  const pragma = jsxImportSourcePragma(fs.readFileSync(file, "utf8"));
+  if (pragma !== null) return { value: pragma, origin: "its @jsxImportSource pragma" };
   return nearestTsconfig(path.dirname(file));
 }
 
