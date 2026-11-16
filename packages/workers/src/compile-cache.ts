@@ -4,6 +4,7 @@
  * A cache is bound to the compiler that filled it; never share it between hosts.
  */
 
+import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 import { BoundedLru } from "./bounded-lru.ts";
 import type { ImportMetaGlob } from "./compile/import-meta-glob.ts";
@@ -38,6 +39,8 @@ export interface CompiledFile {
   scripts: readonly (string | null)[];
   /** Compiled with source annotations; only `.astro` output differs, so only it is `true`. */
   annotated: boolean;
+  /** The `.astro` scoped-style strategy it compiled with; `undefined` for every other kind. */
+  scopedStyleStrategy: ScopedStyleStrategy | undefined;
   /** `import.meta.glob` calls, replaced by placeholders in `code`; linking expands them. */
   globs: readonly ImportMetaGlob[];
 }

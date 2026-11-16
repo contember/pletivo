@@ -10,6 +10,7 @@ import {
   type PreparedSite,
 } from "@pletivo/core/artifact";
 import type { AstroConfig } from "@pletivo/core/astro-host/types";
+import { resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
@@ -169,6 +170,8 @@ function freezeConfig(
   if (routing.i18n !== null) frozen.i18n = routing.i18n;
   if (routing.trailingSlash !== null) frozen.trailingSlash = routing.trailingSlash;
   if (routing.redirects.length > 0) frozen.redirects = routing.redirects;
+  const scopedStyleStrategy = resolveScopedStyleStrategy(config);
+  if (scopedStyleStrategy !== undefined) frozen.scopedStyleStrategy = scopedStyleStrategy;
   return frozen;
 }
 

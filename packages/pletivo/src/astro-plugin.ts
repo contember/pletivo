@@ -28,6 +28,7 @@ import { stripTypes } from "./transpile";
 import { collectCssSideEffectImports } from "./js-imported-css";
 import { materializeViteVirtualImports } from "./astro-host/vite-plugins";
 import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
+import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import {
   clearAstroImportGraph,
   moduleIdFor,
@@ -36,6 +37,13 @@ import {
 } from "./astro-css-order";
 
 let registered = false;
+
+/** Set per project before any `.astro` file loads; see `resolveScopedStyleStrategy`. */
+let scopedStyleStrategy: ScopedStyleStrategy | undefined;
+
+export function configureScopedStyleStrategy(strategy: ScopedStyleStrategy | undefined): void {
+  scopedStyleStrategy = strategy;
+}
 
 /**
  * CSS collected from `<style>` blocks in `.astro` files.
@@ -49,10 +57,11 @@ let registered = false;
  *
  * Emission is gated per block, because the two kinds are visible in
  * different ways:
- *  - scoped — the component's `astro-{scope}` class is in the page HTML.
- *    Matching by class rather than by CSS content is essential: some
+ *  - scoped — the component's scope id is in the page HTML, as an
+ *    `astro-{scope}` class or a `data-astro-cid-{scope}` attribute.
+ *    Matching by scope rather than by CSS content is essential: some
  *    rules (`body`, `html`, `*`) are not scoped by the compiler even
- *    though the component's elements do get the scope class.
+ *    though the component's elements do carry the scope.
  *  - global — the component's render function ran during the page's
  *    render pass, tracked by the shim's rendered-module registry. An
  *    `is:global` block may emit no scoped DOM at all, so class presence
@@ -186,7 +195,7 @@ export function hoistedScriptBunPlugin(): BunPlugin {
 /**
  * The `.astro` CSS a page needs, concatenated in cascade order.
  *
- * A component contributes when the page shows it: its scope class is in
+ * A component contributes when the page shows it: its scope id is in
  * the HTML, or its render function ran (see `astroCssMap`). Which of its
  * blocks come along is decided per block by the same two gates.
  *
@@ -198,13 +207,14 @@ export function hoistedScriptBunPlugin(): BunPlugin {
  */
 export async function getAstroCssForPage(opts: {
   entryFile?: string;
-  astroClasses: Set<string>;
+  /** Scope ids the page HTML shows; see `extractAstroScopes`. */
+  astroScopes: Set<string>;
   renderedModules: Set<string>;
 }): Promise<string> {
-  const { entryFile, astroClasses, renderedModules } = opts;
+  const { entryFile, astroScopes, renderedModules } = opts;
   const contributions = new Map<string, string[]>();
   for (const [moduleId, entry] of astroCssMap) {
-    const scoped = astroClasses.has(`astro-${entry.scope}`);
+    const scoped = astroScopes.has(entry.scope);
     const rendered = renderedModules.has(moduleId);
     if (!scoped && !rendered) continue;
     const css = entry.blocks
@@ -245,16 +255,6 @@ async function orderContributors(
   return [...ordered, ...rendered, ...rest];
 }
 
-/** Extract all `astro-XXXXX` scope class names from an HTML string. */
-export function extractAstroClasses(html: string): Set<string> {
-  const classes = new Set<string>();
-  const re = /astro-[a-z0-9]+/g;
-  let m;
-  while ((m = re.exec(html)) !== null) {
-    classes.add(m[0]);
-  }
-  return classes;
-}
 
 export function clearAstroCss(): void {
   astroCssMap.clear();
@@ -359,6 +359,7 @@ export async function registerAstroPlugin(): Promise<void> {
           filename: rel,
           internalURL: shimPath,
           sourcemap: false,
+          scopedStyleStrategy,
           resolvePath: async (specifier) => specifier,
         });
 

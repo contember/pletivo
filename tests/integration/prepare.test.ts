@@ -430,6 +430,7 @@ describe("pletivo prepare", () => {
         { source: "/old", destination: "/new", status: 301 },
         { source: "/blog/[slug]", destination: "/posts/[slug]", status: 302 },
       ],
+      scopedStyleStrategy: "attribute",
     });
     expect(site.artifact.resolutions).toContainEqual({
       importer: "project:src/pages/index.astro",
@@ -742,7 +743,7 @@ describe("pletivo prepare on the vendor fixture", () => {
   });
 
   test("freezes only config fields the Workers host consumes", () => {
-    expect(site.artifact.config).toEqual({ site: "https://vendor.example" });
+    expect(site.artifact.config).toEqual({ site: "https://vendor.example", scopedStyleStrategy: "attribute" });
   });
 
   test("freezes supported injectScript bodies in semantic order", () => {

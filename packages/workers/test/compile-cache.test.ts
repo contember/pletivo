@@ -18,6 +18,8 @@ import type {
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
 import { createCompileCache, type CompiledFile } from "../src/compile-cache.ts";
 import { compileProject, type CompiledProject } from "../src/compile-project.ts";
+import { compileCached } from "../src/compile/compile-file.ts";
+import type { SourceModule } from "../src/compile/source-module.ts";
 import { createProjectAssetsView } from "../src/content-files.ts";
 import { IMPORT_META_ENV_GLOBAL } from "../src/env.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
@@ -333,9 +335,37 @@ describe("what a cache entry has to carry", () => {
   });
 });
 
+describe("the scoped-style strategy", () => {
+  const module: SourceModule = {
+    id: "project:src/pages/scoped.astro",
+    kind: "astro",
+    source: "<a>x</a>\n<style>a { color: red; }</style>\n",
+    compilePath: "src/pages/scoped.astro",
+    executionName: "scoped",
+    origin: "project",
+  };
+
+  test("compiles with the artifact's strategy and keys the cache on it", async () => {
+    const cache = createCompileCache();
+    const attribute = await compileCached(module, compiler, cache, {
+      annotateSourceFile: false,
+      scopedStyleStrategy: "attribute",
+    });
+    const scope = attribute.styles?.scope;
+    expect(attribute.styles?.blocks).toEqual([{ global: false, css: `a[data-astro-cid-${scope}]{color:red}` }]);
+    expect(attribute.code ?? attribute.source).toContain(`data-astro-cid-${scope}`);
+
+    const where = await compileCached(module, compiler, cache, {
+      annotateSourceFile: false,
+      scopedStyleStrategy: undefined,
+    });
+    expect(where.styles?.blocks).toEqual([{ global: false, css: `a:where(.astro-${scope}){color:red}` }]);
+  });
+});
+
 describe("createCompileCache, the bound", () => {
   function entryOf(source: string, code: string | null = null): CompiledFile {
-    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null, scripts: [], annotated: false, globs: [] };
+    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null, scripts: [], annotated: false, scopedStyleStrategy: undefined, globs: [] };
   }
 
   function retained(entry: CompiledFile, maxBytes: number): boolean {

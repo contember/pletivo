@@ -350,7 +350,10 @@ async function scriptCode(
     },
     project.compiler,
     project.compileCache,
-    project.annotateSourceFile === true,
+    {
+      annotateSourceFile: project.annotateSourceFile === true,
+      scopedStyleStrategy: project.artifact?.prepared.artifact.config.scopedStyleStrategy,
+    },
   );
   const code = compiled.scripts[index];
   if (code === undefined || code === null) {
