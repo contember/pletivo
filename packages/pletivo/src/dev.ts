@@ -41,7 +41,7 @@ import {
   resolveDefaultLocaleRedirect,
 } from "@pletivo/core/i18n/fallback";
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
-import { registerProjectSourcePlugin } from "./project-source-plugin";
+import { configureProjectJsx, registerProjectSourcePlugin } from "./project-source-plugin";
 import { installImportMetaEnv } from "./import-meta-env";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
@@ -214,6 +214,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   });
   // Before initCollections: content.config.ts is the first project module imported.
   installImportMetaEnv({ mode: "dev", base: config.base, astroConfig: astroHost?.config });
+  configureProjectJsx((name) => astroHost?.hasIntegration(name) ?? false);
 
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));

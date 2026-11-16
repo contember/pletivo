@@ -1,0 +1,10 @@
+---
+import { jsxIsPreact } from "../elements.jsx";
+import { tsxIsPreact } from "../typed-elements.tsx";
+---
+<html>
+  <body>
+    <p id="jsx">{String(jsxIsPreact)}</p>
+    <p id="tsx">{String(tsxIsPreact)}</p>
+  </body>
+</html>
