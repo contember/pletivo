@@ -160,6 +160,10 @@ describe("astro <script> inlining with vite.build.assetsInlineLimit: 0", () => {
     expect(scripts().inline).toHaveLength(0);
     expect(withMarker(scripts().linked, "limit-zero-marker")).toHaveLength(1);
   });
+
+  test("a linked script from a component used twice is linked once", () => {
+    expect(withMarker(scripts().linked, "limit-zero-twice-marker")).toHaveLength(1);
+  });
 });
 
 describe("astro <script> inlining with a function vite.build.assetsInlineLimit", () => {
