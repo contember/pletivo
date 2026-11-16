@@ -176,6 +176,32 @@ describe("ContentRuntime", () => {
     expect(entries.map((entry) => entry.data.title)).toEqual(["new"]);
   });
 
+  test("a superseded initialization returns only once the newer config has loaded", async () => {
+    const firstConfig = deferredValue<Record<string, CollectionConfig>>();
+    const secondConfig = deferredValue<Record<string, CollectionConfig>>();
+    const fixture = contentHost("config-race");
+    fixture.host.loadConfig = async (_projectRoot, version) => {
+      fixture.versions.push(version);
+      return version === 1 ? firstConfig.promise : secondConfig.promise;
+    };
+    const runtime = createContentRuntime(fixture.host);
+
+    const readAfterFirstInit = runWithContentRuntime(runtime, async () => {
+      await initCollections("old-root");
+      return getCollection<{ title: string }>("items");
+    });
+    const secondInit = runWithContentRuntime(runtime, () => initCollections("new-root"));
+
+    firstConfig.resolve(collectionConfig("old"));
+    // Let the first call finish its own load before the newer config arrives.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    secondConfig.resolve(collectionConfig("new"));
+    await secondInit;
+
+    const entries = await readAfterFirstInit;
+    expect(entries.map((entry) => entry.data.title)).toEqual(["new"]);
+  });
+
   test("keeps a paused stale load out of the reset generation", async () => {
     const staleEntered = deferred();
     const releaseStale = deferred();

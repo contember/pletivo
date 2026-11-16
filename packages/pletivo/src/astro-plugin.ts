@@ -25,6 +25,7 @@ import { imageUrlFor, probeAndRegisterImage } from "./image";
 import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { stripTypes } from "./transpile";
+import { substituteImportMetaEnv } from "./import-meta-env";
 import { collectCssSideEffectImports } from "./js-imported-css";
 import { assertRenderableImports } from "./framework-components";
 import { materializeViteVirtualImports } from "./astro-host/vite-plugins";
@@ -445,6 +446,7 @@ export async function registerAstroPlugin(): Promise<void> {
           /import\s+['"][^'"]*\?astro&type=style[^'"]*['"];?/g,
           "",
         );
+        cleanedCode = substituteImportMetaEnv(cleanedCode, "ts");
         cleanedCode = await materializeViteVirtualImports(cleanedCode, cleanPath);
         await collectCssSideEffectImports(cleanPath, cleanedCode, `astro:${rel}`);
 

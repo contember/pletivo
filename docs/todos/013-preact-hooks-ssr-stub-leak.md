@@ -118,7 +118,7 @@ onto the ESM one, so hooks now tree-shake.
 
 The alternative not taken: drop the tsconfig mapping entirely and do the SSR
 redirect in the Bun plugin layer that already exists (`astro-plugin.ts`,
-`dev-ts-plugin.ts` both register `Bun.plugin`). That puts the redirect where
+`project-source-plugin.ts`, formerly `dev-ts-plugin.ts`, both register `Bun.plugin`). That puts the redirect where
 module loading actually happens instead of in a blunt global, but it moves a
 module-resolution boundary, so it stays a separate decision.
 

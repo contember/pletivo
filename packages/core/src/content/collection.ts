@@ -436,6 +436,8 @@ interface ContentGeneration {
   collectionInflight: Map<string, Promise<InternalCollectionEntry[]>>;
   collectionDeps: Map<string, Set<string>>;
   collectionsConfig: Record<string, CollectionConfig> | null;
+  /** Settles once `initCollections` has loaded (or dropped) this generation's config. */
+  configLoad: Promise<void>;
   configProjectRoot: string;
   configVersion: number;
   validationFailures: Array<{ collection: string; id: string; errors: string }>;
@@ -466,6 +468,7 @@ function createGeneration(projectRoot: string, configVersion: number): ContentGe
     collectionInflight: new Map(),
     collectionDeps: new Map(),
     collectionsConfig: null,
+    configLoad: Promise.resolve(),
     configProjectRoot: projectRoot,
     configVersion,
     validationFailures: [],
@@ -787,9 +790,18 @@ export async function initCollections(projectRoot: string): Promise<void> {
   const generation = createGeneration(projectRoot, ++state.nextConfigVersion);
   state.current = generation;
 
-  const config = await runtime.host.loadConfig(projectRoot, generation.configVersion);
-  if (state.current === generation) {
-    generation.collectionsConfig = config;
+  generation.configLoad = runtime.host
+    .loadConfig(projectRoot, generation.configVersion)
+    .then((config) => {
+      if (state.current === generation) generation.collectionsConfig = config;
+    });
+  // A later call may have superseded this one; return only once the generation
+  // getCollection() reads has its config, or a caller would find none.
+  let awaited = generation;
+  await awaited.configLoad;
+  while (state.current !== awaited) {
+    awaited = state.current;
+    await awaited.configLoad;
   }
 }
 

@@ -21,6 +21,7 @@ import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import type { PletivoConfig } from "./config";
+import { substituteImportMetaEnv } from "./import-meta-env";
 import type { AstroIntegration } from "@pletivo/core/astro-host/types";
 import { astroMarkdownSettings, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
 
@@ -271,7 +272,7 @@ export async function registerMdxPlugin(): Promise<void> {
         // In dev mode, append version query to .astro and .json imports for
         // cache busting (same as the astro plugin does for its own output).
         // JSON needs this too so translation dictionaries reload on edit.
-        code = applyDevCacheBust(code, getDevVersion());
+        code = applyDevCacheBust(substituteImportMetaEnv(code, "js"), getDevVersion());
 
         return {
           contents: code,
