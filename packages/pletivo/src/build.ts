@@ -12,6 +12,8 @@ import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { generateSitemap } from "./sitemap";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import { registerProjectSourcePlugin } from "./project-source-plugin";
+import { installImportMetaEnv } from "./import-meta-env";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
 import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
@@ -158,8 +160,11 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   await registerMdxPlugin();
   await registerCssModulesPlugin();
   await registerScssPlugin(projectRoot);
+  await registerProjectSourcePlugin(projectRoot, config.srcDir);
   const astroHost = await initAstroHost(projectRoot, "build");
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
+  // Before initCollections: content.config.ts is the first project module imported.
+  installImportMetaEnv({ mode: "build", base: config.base, astroConfig: astroHost?.config });
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureScss(readScssOptions(astroHost?.config.vite));

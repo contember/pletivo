@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
 import { bumpDevVersion } from "@pletivo/core/dev-cache";
-import { registerDevTsPlugin } from "../../packages/pletivo/src/dev-ts-plugin";
+import { registerProjectSourcePlugin } from "../../packages/pletivo/src/project-source-plugin";
 
 const fixtureRoot = path.join(
   import.meta.dir,
@@ -42,7 +42,7 @@ async function loadEntry(version: number): Promise<() => string> {
 
 describe("dev cache-bust cascade", () => {
   beforeAll(async () => {
-    await registerDevTsPlugin(fixtureRoot, "");
+    await registerProjectSourcePlugin(fixtureRoot, "");
     await writeFixture("v1");
   });
 
