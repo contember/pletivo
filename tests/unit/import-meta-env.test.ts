@@ -65,6 +65,13 @@ describe("substituteImportMetaEnv", () => {
     expect(result).toBe(`const el = <div>{${REWRITTEN}.MODE}</div>;\nexport default el;`);
   });
 
+  test("source that already contains the placeholder text does not confuse it", () => {
+    const source = "const s = '__pletivo_import_meta_env_code_0__'; const t = 'import.meta.env'; const u = import.meta.env.MODE;";
+    expect(substituteImportMetaEnv(source, "ts")).toBe(
+      `const s = '__pletivo_import_meta_env_code_0__'; const t = 'import.meta.env'; const u = ${REWRITTEN}.MODE;`,
+    );
+  });
+
   test("leaves unparseable code to the loader", () => {
     const source = "const = import.meta.env.MODE;";
     expect(substituteImportMetaEnv(source, "ts")).toBe(source);
@@ -120,6 +127,7 @@ describe("installImportMetaEnv", () => {
     delete process.env.PLETIVO_TEST_LATE;
     delete process.env.PLETIVO_TEST_WRITTEN;
     delete process.env.SITE;
+    delete process.env.PLETIVO_TEST_DEFINED;
   });
 
   function installed(): object {
@@ -139,6 +147,39 @@ describe("installImportMetaEnv", () => {
   test("a write reaches process.env", () => {
     Reflect.set(installed(), "PLETIVO_TEST_WRITTEN", "yes");
     expect(process.env.PLETIVO_TEST_WRITTEN).toBe("yes");
+  });
+
+  test("only process.env's own keys are its keys", () => {
+    const env = installed();
+    expect(Object.hasOwn(env, "constructor")).toBe(false);
+    expect("toString" in env).toBe(false);
+    expect(Object.hasOwn(env, "PATH")).toBe(true);
+    expect(Object.hasOwn(env, "DEV")).toBe(true);
+  });
+
+  test("delete removes a built-in, and an env key from process.env", () => {
+    const env = installed();
+    process.env.PLETIVO_TEST_WRITTEN = "x";
+    expect(Reflect.deleteProperty(env, "DEV")).toBe(true);
+    expect("DEV" in env).toBe(false);
+    expect(Reflect.deleteProperty(env, "PLETIVO_TEST_WRITTEN")).toBe(true);
+    expect(process.env.PLETIVO_TEST_WRITTEN).toBeUndefined();
+  });
+
+  test("defineProperty writes a plain data property to process.env and refuses the rest", () => {
+    const env = installed();
+    const plain = { value: "v", writable: true, enumerable: true, configurable: true };
+    expect(Reflect.defineProperty(env, "PLETIVO_TEST_DEFINED", plain)).toBe(true);
+    expect(process.env.PLETIVO_TEST_DEFINED).toBe("v");
+    expect(Reflect.defineProperty(env, "PLETIVO_TEST_DEFINED", { get: () => "x" })).toBe(false);
+    expect(Reflect.defineProperty(env, "PLETIVO_TEST_DEFINED", { value: "w", configurable: false })).toBe(false);
+    expect(Reflect.defineProperty(env, "MODE", { value: "test" })).toBe(true);
+    expect(Reflect.get(env, "MODE")).toBe("test");
+  });
+
+  test("a spread copy is structured-cloneable", () => {
+    const env = installed();
+    expect(structuredClone({ ...env })).toMatchObject({ DEV: false, PATH: process.env.PATH });
   });
 
   test("built-ins shadow process.env, even when undefined", () => {

@@ -11,8 +11,7 @@ import { IMPORT_META_ENV_GLOBAL } from "@pletivo/core/import-meta-env";
 const REPLACEMENT = `(globalThis.${IMPORT_META_ENV_GLOBAL} ?? process.env)`;
 
 const OCCURRENCE = /\bimport\s*\.\s*meta\s*\.\s*env\b/g;
-const placeholder = (i: number) => `__pletivo_import_meta_env_${i}__`;
-const definedPlaceholder = (i: number) => `__pletivo_import_meta_env_code_${i}__`;
+const PLACEHOLDER_PREFIX = "__pletivo_import_meta_env_";
 
 export type SourceLoader = "ts" | "tsx" | "js" | "jsx";
 
@@ -26,6 +25,13 @@ export type SourceLoader = "ts" | "tsx" | "js" | "jsx";
 export function substituteImportMetaEnv(code: string, loader: SourceLoader): string {
   const occurrences = [...code.matchAll(OCCURRENCE)];
   if (occurrences.length === 0) return code;
+
+  // Salted when the source already holds the prefix, so its own text cannot match a placeholder.
+  const prefix = code.includes(PLACEHOLDER_PREFIX)
+    ? `${PLACEHOLDER_PREFIX}${crypto.randomUUID().replaceAll("-", "")}_`
+    : PLACEHOLDER_PREFIX;
+  const placeholder = (i: number) => `${prefix}${i}__`;
+  const definedPlaceholder = (i: number) => `${prefix}code_${i}__`;
 
   let marked = "";
   let last = 0;
@@ -85,30 +91,50 @@ export function importMetaEnvBuiltins(options: ImportMetaEnvOptions): ImportMeta
  * a write lands in `process.env`, as with Bun's own `import.meta.env`. `.env` files are
  * Bun's: read at process start by `NODE_ENV` (`.env.development` when unset), not by
  * `MODE` as Vite reads them. Call before any project module is imported.
+ *
+ * Being a Proxy, it is not structured-cloneable; spread it first (`{ ...import.meta.env }`).
  */
 export function installImportMetaEnv(options: ImportMetaEnvOptions): void {
   Reflect.set(globalThis, IMPORT_META_ENV_GLOBAL, liveEnv(importMetaEnvBuiltins(options)));
 }
 
+/**
+ * Built-in keys live on the target, other string keys in `process.env`. `defineProperty` on
+ * an env key takes only what `process.env` itself accepts: a writable, enumerable,
+ * configurable data property, stored as a string.
+ */
 function liveEnv(builtins: ImportMetaEnvBuiltins): ImportMetaEnvBuiltins {
-  const isBuiltin = (key: string | symbol): key is string =>
-    typeof key === "string" && Object.hasOwn(builtins, key);
+  const onTarget = (key: string | symbol): boolean => typeof key === "symbol" || Object.hasOwn(builtins, key);
+  const inEnv = (key: string | symbol): key is string =>
+    typeof key === "string" && !Object.hasOwn(builtins, key) && Object.hasOwn(process.env, key);
   return new Proxy(builtins, {
-    get: (target, key) => (isBuiltin(key) ? target[key] : typeof key === "string" ? process.env[key] : undefined),
+    get: (target, key) => (onTarget(key) ? Reflect.get(target, key) : process.env[String(key)]),
     set: (target, key, value) => {
-      if (isBuiltin(key)) target[key] = value;
-      else if (typeof key === "string") process.env[key] = String(value);
+      if (onTarget(key)) return Reflect.set(target, key, value);
+      process.env[String(key)] = String(value);
       return true;
     },
-    has: (_target, key) => isBuiltin(key) || (typeof key === "string" && key in process.env),
-    deleteProperty: (_target, key) => {
-      if (typeof key === "string" && !isBuiltin(key)) delete process.env[key];
+    has: (target, key) => onTarget(key) ? Reflect.has(target, key) : inEnv(key),
+    deleteProperty: (target, key) => {
+      if (onTarget(key)) return Reflect.deleteProperty(target, key);
+      delete process.env[String(key)];
       return true;
     },
-    ownKeys: (target) => [...new Set([...Object.keys(target), ...Object.keys(process.env)])],
+    defineProperty: (target, key, descriptor) => {
+      if (onTarget(key)) return Reflect.defineProperty(target, key, descriptor);
+      const plain =
+        "value" in descriptor &&
+        descriptor.writable !== false &&
+        descriptor.enumerable !== false &&
+        descriptor.configurable !== false;
+      if (!plain) return false;
+      process.env[String(key)] = String(descriptor.value);
+      return true;
+    },
+    ownKeys: (target) => [...new Set([...Reflect.ownKeys(target), ...Object.keys(process.env)])],
     getOwnPropertyDescriptor: (target, key) => {
-      if (isBuiltin(key)) return Reflect.getOwnPropertyDescriptor(target, key);
-      if (typeof key !== "string" || !(key in process.env)) return undefined;
+      if (onTarget(key)) return Reflect.getOwnPropertyDescriptor(target, key);
+      if (!inEnv(key)) return undefined;
       return { value: process.env[key], writable: true, enumerable: true, configurable: true };
     },
   });
