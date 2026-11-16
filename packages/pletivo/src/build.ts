@@ -176,25 +176,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   await initCollections(projectRoot);
   phase("initCollections", tColl);
 
-  // Cache + snapshot restore. `configHash` includes the pletivo config
-  // and (if present) the user's astro config file content + lockfile —
-  // any of those changing busts the entire route cache.
-  const tCacheLoad = performance.now();
-  // One inline module on every page, the same one `pletivo prepare` freezes for Workers.
-  // It is part of every cached page, so it is part of the config hash.
-  const pageScript = astroHost ? await bundlePageScripts(astroHost.injectedPageScripts, projectRoot) : null;
-  const configHash = await computeProjectConfigHash(projectRoot, config, pageScript);
-  // Incremental is opt-in: a plain build is a full rebuild. `clean`
-  // implies incremental — you only wipe the cache to rebuild it fresh.
-  const incremental = options.incremental || options.clean;
-  const cache: CacheStore | null = !incremental
-    ? null
-    : options.clean
-      ? await CacheStore.forceClean(projectRoot, configHash)
-      : await CacheStore.load(projectRoot, configHash);
-  const fragments: FragmentsHelper | null = await resolveFragmentsHelper(projectRoot);
-  phase("cache load + fragments resolve", tCacheLoad);
-
+  // Before the cache load: neither hook reads the cache, and `astro:build:setup` may
+  // add the Vite plugin that serves a page script.
   const tAstroStart = performance.now();
   if (astroHost) {
     await astroHost.runBuildStart();
@@ -210,6 +193,27 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       }
     }
   }
+  phase("astroHost runBuildStart+Setup", tAstroStart);
+
+  // One inline module on every page, the same one `pletivo prepare` freezes for Workers.
+  // It is part of every cached page, so it is part of the config hash.
+  const pageScript = astroHost ? await bundlePageScripts(astroHost.injectedPageScripts, projectRoot) : null;
+
+  // Cache + snapshot restore. `configHash` includes the pletivo config
+  // and (if present) the user's astro config file content + lockfile —
+  // any of those changing busts the entire route cache.
+  const tCacheLoad = performance.now();
+  const configHash = await computeProjectConfigHash(projectRoot, config, pageScript);
+  // Incremental is opt-in: a plain build is a full rebuild. `clean`
+  // implies incremental — you only wipe the cache to rebuild it fresh.
+  const incremental = options.incremental || options.clean;
+  const cache: CacheStore | null = !incremental
+    ? null
+    : options.clean
+      ? await CacheStore.forceClean(projectRoot, configHash)
+      : await CacheStore.load(projectRoot, configHash);
+  const fragments: FragmentsHelper | null = await resolveFragmentsHelper(projectRoot);
+  phase("cache load + fragments resolve", tCacheLoad);
 
   // Persistent dist when incremental is on: we leave whatever the
   // previous build produced in place, and each route's writeHtml call
@@ -221,7 +225,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // With caching off we still wipe — that path matches the historical
   // pletivo behavior exactly so tooling that diffs dist/ across runs
   // keeps working.
-  phase("astroHost runBuildStart+Setup", tAstroStart);
   const tDistWipe = performance.now();
   if (!cache) {
     await fs.rm(distDir, { recursive: true, force: true });

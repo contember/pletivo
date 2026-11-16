@@ -113,6 +113,24 @@ describe("injectScript('page') bundling", () => {
   });
 });
 
+describe("page script served by a plugin from astro:build:setup", () => {
+  const root = path.join(import.meta.dir, "../fixture-astro-page-scripts-build-setup");
+
+  afterAll(async () => {
+    await fs.rm(path.join(root, "dist"), { recursive: true, force: true });
+  });
+
+  test("build runs the hook before it bundles the page scripts", async () => {
+    __resetForTests();
+    await build(root, config);
+    const html = await Bun.file(path.join(root, "dist/index.html")).text();
+    const modules = inlineModules(html);
+    expect(modules).toHaveLength(1);
+    expect(modules[0]).toContain("build-setup-marker");
+    expect(modules[0]).not.toContain("virtual:");
+  }, 60_000);
+});
+
 /** The page body once the dev server answers it with a 200. */
 async function fetchWhenUp(url: string): Promise<string> {
   const deadline = Date.now() + 50_000;

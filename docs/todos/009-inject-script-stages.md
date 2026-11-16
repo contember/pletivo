@@ -20,9 +20,14 @@
 `astro-host/page-scripts.ts` bundles the page scripts. Packages resolve from the
 project with browser conditions. A Vite virtual module resolves through the
 collected plugins, and so do its own imports, including Vite's root-relative
-`/src/...` ids. A `</script` in the bundle is escaped to `<\/script`. A bundle that
-needs a chunk, a stylesheet or an asset fails the build, and so does one holding both
-`<!--` and `<script`.
+`/src/...` ids. A `</script` in the bundle is escaped to `<\/script`, which reads the
+same everywhere except in a tagged template's raw text: `String.raw` sees the
+backslash. A bundle that needs a chunk, a stylesheet or an asset fails the build, and
+so does one holding both `<!--` and `<script`.
+
+The build runs `astro:build:start` and `astro:build:setup` before it bundles, so a
+Vite plugin added in `astro:build:setup` can serve a page script. Dev and `pletivo
+prepare` run neither hook; there such a plugin must be added in `astro:config:setup`.
 
 - **Inline on every page, not one cached file.** Astro links a single
   `/_astro/page.*.js` from every page. pletivo writes the module inline, so each page
