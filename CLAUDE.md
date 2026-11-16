@@ -17,6 +17,9 @@ bun test tests/unit/router.test.ts       # Single test file
 bun test tests/unit/                     # Test directory
 bun test packages/workers/test           # Workers host (its own CI step)
 
+# Astro's official examples: build with Astro and pletivo, compare (docs/todos/024)
+bun tests/astro-examples/run.ts [--astro <checkout>] [--only basics,blog]
+
 # Benchmark (pletivo vs native Astro build)
 scripts/benchmark.sh                     # 5 runs (default)
 RUNS=10 scripts/benchmark.sh
