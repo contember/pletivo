@@ -15,6 +15,28 @@
 - `"page-ssr"` — logged as unsupported, ignored
 - `"before-hydration"` — logged as unsupported, ignored
 
+### `"page"`: where pletivo differs from Astro
+
+`astro-host/page-scripts.ts` bundles the page scripts. Packages resolve from the
+project with browser conditions. A Vite virtual module resolves through the
+collected plugins, and so do its own imports, including Vite's root-relative
+`/src/...` ids. A `</script` in the bundle is escaped to `<\/script`. A bundle that
+needs a chunk, a stylesheet or an asset fails the build, and so does one holding both
+`<!--` and `<script`.
+
+- **Inline on every page, not one cached file.** Astro links a single
+  `/_astro/page.*.js` from every page. pletivo writes the module inline, so each page
+  pays its full size. For `@astrojs/alpinejs` that is 47,471 B per page (16,746 B
+  gzip), where Astro's linked file is 45,324 B (16,355 B gzip) and is fetched once.
+  The Workers host has no output directory for a shared file, and inlining keeps both
+  hosts byte-identical.
+- **One module per script, not one shared scope.** Astro concatenates the page
+  scripts into one module (`vite-plugin-scripts`). Their top-level names share one
+  scope there: a name declared twice is a build error, and every script's imports run
+  before any script body. pletivo makes each script its own module, imported in
+  injection order. Each keeps its own scope, so a repeated name is fine, and each
+  script's imports run just before that script's body.
+
 ## Expected Behavior
 
 - `"page-ssr"` — script runs as a module during SSR/build (useful for polyfills or global state setup during rendering)
