@@ -76,6 +76,11 @@ describe("injectScript('page') bundling", () => {
     expect(code).toContain('"second-script-marker"');
   });
 
+  test("build inserts the page <style> verbatim", () => {
+    const styles = [...index.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((match) => match[1]);
+    expect(styles.some((css) => css.includes(`content:"$$|$&|$'"`))).toBe(true);
+  });
+
   test("prepare freezes the module the build emits", async () => {
     const site = await prepare(fixtureRoot);
     expect(site.artifact.scripts.page).toHaveLength(1);
