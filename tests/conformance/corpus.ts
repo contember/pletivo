@@ -146,6 +146,9 @@ export const corpus: CorpusEntry[] = [
     covers: [
       "endpoint routes in src/pages: .json.ts, .xml.ts, .txt.ts",
       "endpoint output emitted at its own path, not wrapped in HTML",
+      "extensionless .ts endpoint (GET, no default export) emitted as a file named after the route",
+      "a .ts page with a default export next to GET() stays an HTML page",
+      "a dynamic extensionless endpoint emits nothing",
     ],
   },
   {

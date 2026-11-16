@@ -530,6 +530,11 @@ Known follow-ups:
    `findPletivoConfig`.
 2. An image that `resolveOutput` is asked for before `info` is read twice: once to
    probe it, once to serve it.
+3. Extensionless script endpoints. The Bun host makes `api.ts` with `GET()` and no
+   default export an endpoint once the module is loaded (`resolveScriptRoute`,
+   [012](012-endpoint-routes.md)). This host classifies by filename only:
+   `detectProjectFeatures` does not list it under `endpoints`, `projectPaths`
+   enumerates `/api` as a page, and rendering it fails with `has no default export`.
 
 ## Parity that does hold
 

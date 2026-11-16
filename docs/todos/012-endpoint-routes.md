@@ -33,6 +33,26 @@ had to live outside `src/pages/`.
 - **`dev.ts`** — `serveEndpoint()` returns the handler's own `Response`
   untouched, so status and `Content-Type` come from user code.
 
+### Extensionless endpoints (`api.ts` → `/api`)
+
+Astro makes every `.ts`/`.js` file in `src/pages` an endpoint and emits its
+route path verbatim, so `api.ts` becomes a file named `api`, not
+`api/index.html`. Pletivo also renders a script page's `default` export as
+HTML, so the filename alone cannot decide. `resolveScriptRoute()` settles it
+once the module is loaded: a `.ts`/`.js` route with a `GET()` and no default
+export function is an endpoint. Build and dev both go through it. A root
+`index.ts` endpoint has no path of its own and still writes `index.html`. A
+dynamic one (`[id].ts`) is still unsupported in build, like `[slug].json.ts`
+below, and the build says so with the same warning.
+
+An incremental build keeps `dist/`, so a route that switches between page and
+endpoint finds the other kind's output at its path (`api/index.html` against
+the file `api`). The write removes that stale output first.
+
+The Workers host still classifies by filename only. It reports a GET-only
+`api.ts` as a page and fails to render it; see
+[016](016-workers-host-divergences.md), "What is left".
+
 ### Bug fixed along the way
 
 Injected endpoints were pushed into `results` *and* written directly, so they
@@ -54,13 +74,25 @@ sitemap/catalog. The build now warns explicitly rather than emitting nothing:
 Skipping [slug].json.ts: dynamic endpoint routes are not supported (only static ones like rss.xml.ts)
 ```
 
+Dev serves a dynamic endpoint the way it serves a dynamic page: only the params
+its `getStaticPaths()` lists, with their props, and any params under
+`prerender = false`. Anything else 404s.
+
 **i18n interaction** is unexplored — `tests/astro-e2e/manifest.ts` still removes
 `src/pages/test.json.js` from the i18n fixtures. Endpoints are not expanded per
 locale, which is probably right, but it is untested.
 
 ## Tests
 
-- `tests/unit/router.test.ts` — parsing, output paths, URL matching, negative cases
+- `tests/unit/router.test.ts` — parsing, output paths, URL matching, negative
+  cases, `resolveScriptRoute()`
 - `tests/integration/endpoint-routes.test.ts` + `tests/fixture-endpoint-routes/`
   — real build; asserts JSON parses, no `<style>` leaked in, XML keeps `<?xml`
-  on the first byte, and no `index.html` directory is created
+  on the first byte, no `index.html` directory is created, `api.ts` emits `api`,
+  a script page with a default export stays HTML, and a dynamic `items/[id].ts`
+  endpoint is skipped with the warning
+- `tests/e2e/dev-endpoints.test.ts` — the dev server against the same fixture:
+  handler body and `Content-Type`, the default-export page as HTML, a dynamic
+  endpoint serving a listed id and 404ing an unlisted one
+- `tests/e2e/incremental-rebuild.test.ts` — an incremental rebuild after a route
+  switches from page to endpoint and back

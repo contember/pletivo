@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs";
 import { watch } from "fs";
 import { scanRoutes } from "./router";
-import { matchRoute, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { matchRoute, resolveScriptRoute, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
 import { getContentBaseDirs, initCollections, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
@@ -351,8 +351,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   async function renderPage(
     route: Route,
     params: RouteParams,
-    pathname: string = "/",
-    request?: Request,
+    pathname: string,
+    request: Request,
     localeOverride?: string,
     /** Set when this render is the target of an `Astro.rewrite`. */
     rewrittenFrom?: RewriteContext,
@@ -373,34 +373,16 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       // Non-.astro page modules don't hit the astro plugin's onLoad, so
       // collect their CSS side-effect imports here for /__styles.css.
       await collectPageModuleCss(fullPath, `page:${route.file}`);
+      if (resolveScriptRoute(route, mod).isEndpoint) {
+        const response = await serveEndpoint(route, params, pathname, request);
+        return response ? { ok: true, raw: response } : null;
+      }
       const component = mod.default;
 
       if (typeof component !== "function") return null;
 
-      let props: Record<string, unknown> = {};
-
-      if (route.isDynamic) {
-        if (typeof mod.getStaticPaths === "function") {
-          const paginate = createPaginate(route, config.base || "/");
-          const staticPaths: StaticPath[] = await mod.getStaticPaths({ paginate });
-          const match = staticPaths.find((sp) => {
-            return Object.entries(params).every(([k, v]) => sp.params[k] === v);
-          });
-          if (!match) {
-            // No matching static path — cascade to 404
-            return null;
-          }
-          props = match.props || {};
-        } else if (mod.prerender !== false) {
-          // Dynamic route without getStaticPaths — cannot resolve, treat as miss
-          return null;
-        }
-        // `prerender = false`: an on-demand route has no path list to match
-        // against — the params come from the URL, which is what a server
-        // would do. A static build still cannot emit it, and says so
-        // (see `warnDroppedSsrWrites` in build.ts); dev renders it, so pages
-        // written for a server can be previewed instead of 404ing.
-      }
+      const props = await routeProps(route, mod, params);
+      if (props === null) return null;
 
       // Build Astro-style pageContext with url/site/params so .astro
       // templates that read `Astro.url.pathname` work correctly.
@@ -413,7 +395,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       if (i18n) {
         currentLocale =
           localeOverride ?? detectRouteLocale(route, i18n).locale?.code;
-        const accept = request?.headers.get("accept-language");
+        const accept = request.headers.get("accept-language");
         const parsed = parsePreferredLocales(i18n, accept);
         preferredLocale = parsed.preferredLocale;
         preferredLocaleList = parsed.preferredLocaleList;
@@ -438,15 +420,13 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         preferredLocaleList,
         response: astroResponse,
         cookies: astroCookies,
-        rewrite: request
-          ? (target: string) =>
-              resolveRewrite(target, request, {
-                depth: (rewrittenFrom?.depth ?? 0) + 1,
-                response: astroResponse,
-                cookies: astroCookies,
-              })
-          : undefined,
-        clientAddress: request ? clientAddressOf(request) : undefined,
+        rewrite: (target: string) =>
+          resolveRewrite(target, request, {
+            depth: (rewrittenFrom?.depth ?? 0) + 1,
+            response: astroResponse,
+            cookies: astroCookies,
+          }),
+        clientAddress: clientAddressOf(request),
       };
 
       resetIslandRegistry();
@@ -647,9 +627,36 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   }
 
   /**
+   * Props for a route's params, or null when a dynamic route cannot serve them
+   * and the request should cascade to 404.
+   */
+  async function routeProps(
+    route: Route,
+    mod: Record<string, unknown>,
+    params: RouteParams,
+  ): Promise<Record<string, unknown> | null> {
+    if (!route.isDynamic) return {};
+    if (typeof mod.getStaticPaths === "function") {
+      const paginate = createPaginate(route, config.base || "/");
+      const staticPaths: StaticPath[] = await mod.getStaticPaths({ paginate });
+      const match = staticPaths.find((sp) => {
+        return Object.entries(params).every(([k, v]) => sp.params[k] === v);
+      });
+      return match ? match.props || {} : null;
+    }
+    // `prerender = false`: an on-demand route has no path list to match
+    // against — the params come from the URL, which is what a server
+    // would do. A static build still cannot emit it, and says so
+    // (see `warnDroppedSsrWrites` in build.ts); dev renders it, so pages
+    // written for a server can be previewed instead of 404ing.
+    return mod.prerender === false ? {} : null;
+  }
+
+  /**
    * Serve an endpoint route (`robots.txt.ts`, `rss.xml.ts`) by calling its
    * exported GET(). The handler's own Response is returned untouched, so it
-   * keeps its status and Content-Type.
+   * keeps its status and Content-Type. A dynamic one serves only the params
+   * its `getStaticPaths()` lists, like a dynamic page.
    */
   async function serveEndpoint(
     route: Route,
@@ -661,6 +668,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     try {
       const mod = await import(fullPath + `?v=${getDevVersion()}`);
       if (typeof mod.GET !== "function") return null;
+      const props = await routeProps(route, mod, params);
+      if (props === null) return null;
 
       const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
       const devHost = config.host === "0.0.0.0" ? "localhost" : config.host;
@@ -670,7 +679,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         site: siteUrl,
         url,
         params,
-        props: {},
+        props,
         request: req,
         redirect: (dest: string, status = 302) => new Response(null, { status, headers: { Location: dest } }),
       });

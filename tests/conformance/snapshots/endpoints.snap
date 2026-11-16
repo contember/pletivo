@@ -4,6 +4,9 @@
 # covers:
 #   - endpoint routes in src/pages: .json.ts, .xml.ts, .txt.ts
 #   - endpoint output emitted at its own path, not wrapped in HTML
+#   - extensionless .ts endpoint (GET, no default export) emitted as a file named after the route
+#   - a .ts page with a default export next to GET() stays an HTML page
+#   - a dynamic extensionless endpoint emits nothing
 #
 # Recorded from the "bun-build" adapter, but this file is not tied to it:
 # any runtime claiming pletivo rendering parity must reproduce it exactly.
@@ -13,9 +16,11 @@
 # Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=endpoints bun test tests/conformance
 
 --- pletivo:conformance emitted ---
+api
 data.json
 feed.xml
 index.html
+plain/index.html
 robots.txt
 
 --- pletivo:conformance data.json ---
@@ -39,6 +44,9 @@ robots.txt
 </head>
   <body data-astro-cid-[scope:1]>
     <h1 data-astro-cid-[scope:1]>Home Page</h1></body></html>
+
+--- pletivo:conformance plain/index.html ---
+<!DOCTYPE html><html><head><title>Plain</title></head><body><h1>Plain page</h1></body></html>
 
 --- pletivo:conformance robots.txt ---
 User-agent: *
