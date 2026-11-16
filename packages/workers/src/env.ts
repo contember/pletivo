@@ -13,11 +13,7 @@ export const ENV_BINDING = "PLETIVO_ENV";
  */
 export const IMPORT_META_ENV_BINDING = "PLETIVO_IMPORT_META_ENV";
 
-/**
- * The global the rewritten `import.meta.env` reads. A global, because no module can
- * assign to another module's `import.meta`.
- */
-export const IMPORT_META_ENV_GLOBAL = "__pletivoImportMetaEnv";
+export { IMPORT_META_ENV_GLOBAL } from "@pletivo/core/import-meta-env";
 
 /** The `import.meta.env` values, or `null` when the host supplied none. */
 export function importMetaEnvPayload(
