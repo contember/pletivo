@@ -44,23 +44,46 @@ export function configureMarkdown(options: MarkdownOptions): void {
   markdownOptions = options;
 }
 
+/** The keys of an Astro `markdown` config that pletivo renders with. */
+export interface AstroMarkdownSettings {
+  remarkPlugins?: PluggableList;
+  rehypePlugins?: PluggableList;
+  remarkRehype?: Record<string, unknown>;
+  gfm?: boolean;
+}
+
+export interface AstroMarkdownConfig extends AstroMarkdownSettings {
+  /** Astro 7: `unified({...})` from `@astrojs/markdown-remark` carries its settings in `options`. */
+  processor?: { name: string; options?: AstroMarkdownSettings };
+}
+
 /**
- * Extract the top-level `markdown` plugin config from an Astro config. `.md`
- * files mirror Astro: they get `markdown.remarkPlugins` / `markdown.rehypePlugins`
- * (the `mdx()` integration plugins are MDX-only, handled by resolveMdxOptions).
+ * What Astro 7 renders `.md`/`.mdx` with: a `unified()` processor's plugins, then the deprecated top-level ones,
+ * whose `remarkRehype` keys override the processor's. Under another processor Astro skips the top level;
+ * pletivo keeps rendering it, as it did before processors existed.
+ */
+export function astroMarkdownSettings(
+  astroConfig?: { markdown?: AstroMarkdownConfig; [key: string]: unknown } | null,
+): AstroMarkdownSettings | undefined {
+  const md = astroConfig?.markdown;
+  const unified = md?.processor?.name === "unified" ? md.processor.options : undefined;
+  if (!md || !unified) return md;
+  return {
+    remarkPlugins: [...(unified.remarkPlugins ?? []), ...(md.remarkPlugins ?? [])],
+    rehypePlugins: [...(unified.rehypePlugins ?? []), ...(md.rehypePlugins ?? [])],
+    remarkRehype: { ...unified.remarkRehype, ...md.remarkRehype },
+    gfm: unified.gfm ?? md.gfm,
+  };
+}
+
+/**
+ * Extract the `markdown` plugin config from an Astro config (see astroMarkdownSettings).
+ * The `mdx()` integration plugins are MDX-only, handled by resolveMdxOptions.
  */
 export function resolveMarkdownOptions(
-  astroConfig?: {
-    markdown?: {
-      remarkPlugins?: PluggableList;
-      rehypePlugins?: PluggableList;
-      remarkRehype?: Record<string, unknown>;
-      gfm?: boolean;
-    };
-    [key: string]: unknown;
-  } | null,
+  astroConfig?: { markdown?: AstroMarkdownConfig; [key: string]: unknown } | null,
 ): MarkdownOptions {
-  const md = astroConfig?.markdown;
+  const md = astroMarkdownSettings(astroConfig);
   return {
     remarkPlugins: md?.remarkPlugins ?? [],
     rehypePlugins: md?.rehypePlugins ?? [],

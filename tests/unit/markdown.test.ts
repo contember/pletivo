@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseMarkdown } from "@pletivo/core/content/markdown";
+import { astroMarkdownSettings, parseMarkdown } from "@pletivo/core/content/markdown";
 
 // `parseMarkdown` runs the unified/remark pipeline (remark-parse → remark-gfm →
 // remark-rehype → heading-id slugs → rehype-stringify) and is async. HTML is
@@ -334,5 +334,47 @@ describe("edge cases", () => {
   test("real heading still interrupts a preceding paragraph", async () => {
     const result = await parseMarkdown("some text\n# Heading");
     expect(result.html).toBe('<p>some text</p>\n<h1 id="heading">Heading</h1>');
+  });
+});
+
+describe("astroMarkdownSettings", () => {
+  const processorPlugin = () => {};
+  const legacyPlugin = () => {};
+
+  test("runs a unified() processor's plugins before the top-level ones, as Astro 7 does", () => {
+    const settings = astroMarkdownSettings({
+      markdown: {
+        remarkPlugins: [legacyPlugin],
+        remarkRehype: { allowDangerousHtml: true, footnoteLabel: "Notes" },
+        gfm: true,
+        processor: {
+          name: "unified",
+          options: {
+            remarkPlugins: [processorPlugin],
+            rehypePlugins: [processorPlugin],
+            remarkRehype: { footnoteLabel: "Footnotes" },
+            gfm: false,
+          },
+        },
+      },
+    });
+    expect(settings?.remarkPlugins).toEqual([processorPlugin, legacyPlugin]);
+    expect(settings?.rehypePlugins).toEqual([processorPlugin]);
+    expect(settings?.remarkRehype).toEqual({ allowDangerousHtml: true, footnoteLabel: "Notes" });
+    expect(settings?.gfm).toBe(false);
+  });
+
+  test("falls back to the top-level gfm when the processor leaves it unset", () => {
+    const settings = astroMarkdownSettings({
+      markdown: { gfm: false, processor: { name: "unified", options: { remarkPlugins: [], rehypePlugins: [] } } },
+    });
+    expect(settings?.gfm).toBe(false);
+  });
+
+  test("keeps the top-level settings without a unified() processor", () => {
+    const markdown = { remarkPlugins: [legacyPlugin], processor: { name: "satteri", options: { remarkPlugins: [processorPlugin] } } };
+    expect(astroMarkdownSettings({ markdown })?.remarkPlugins).toEqual([legacyPlugin]);
+    expect(astroMarkdownSettings({ markdown: { remarkPlugins: [legacyPlugin] } })?.remarkPlugins).toEqual([legacyPlugin]);
+    expect(astroMarkdownSettings(null)).toBeUndefined();
   });
 });

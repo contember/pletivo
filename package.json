@@ -11,7 +11,9 @@
   "devDependencies": {
     "@astrojs/compiler": "3.0.1",
     "@nuasite/agent-summary": "^0.36.0",
+    "@nuasite/cms": "0.67.4",
     "@nuasite/components": "^0.36.0",
+    "@nuasite/nua": "0.67.4",
     "@pletivo/astro-jsx-pages": "workspace:*",
     "@pletivo/core": "workspace:*",
     "@pletivo/runtime": "workspace:*",

@@ -18,6 +18,7 @@ import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
+import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
 import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
 import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
@@ -38,7 +39,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const projectConfig = await loadConfig(projectRoot);
   const srcDir = options.srcDir ?? projectConfig.srcDir;
   const host = await initAstroHost(projectRoot, "build");
-  const markdown = freezeMarkdown(host?.config.markdown);
+  const markdown = freezeMarkdown(astroMarkdownSettings(host?.config));
   const routing = freezeRouting(host?.config);
   const fatal = [
     ...unsupportedProjectSemantics(projectConfig),
