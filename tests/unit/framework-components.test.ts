@@ -84,8 +84,32 @@ describe("another framework's element reaching pletivo's renderer", () => {
     expect(() => Reflect.apply(jsx, undefined, [forwardRefComponent, {}])).toThrow(
       "pletivo cannot render React components: <Button> is a React component object (<Button>)",
     );
-    await expect(renderAstroPage(astroPageRendering({ src: "/logo.svg" }), {})).rejects.toThrow(
+    await expect(renderAstroPage(astroPageRendering({ label: "x" }), {})).rejects.toThrow(
       "pletivo cannot render <Counter>: a component must be a function, an .astro component or an element name, not a value of type object.",
+    );
+  });
+
+  test("says an image import is not a component, and what to write instead", async () => {
+    const logo = { src: "/_astro/logo.1a2b.svg", width: 24, height: 24, format: "svg" };
+    await expect(renderAstroPage(astroPageRendering(logo), {})).rejects.toThrow(
+      "pletivo cannot render <Counter>: it is an image import, which pletivo does not render as a component " +
+        "(Astro renders an imported SVG inline). Use <img src={Counter.src}> instead.",
+    );
+  });
+
+  test("names a JSX component that returns another framework's element", async () => {
+    function Badge() {
+      return reactElement;
+    }
+    async function AsyncBadge() {
+      return reactElement;
+    }
+    // Typed JSX cannot return a React element; compiled React JSX does, so call it untyped.
+    expect(() => Reflect.apply(jsx, undefined, [Badge, {}])).toThrow(
+      "pletivo cannot render React components: <Badge> returned a React element (<ReactCounter>)",
+    );
+    await expect(Reflect.apply(jsx, undefined, [AsyncBadge, {}])).rejects.toThrow(
+      "pletivo cannot render React components: <AsyncBadge> returned a React element (<ReactCounter>)",
     );
   });
 
@@ -98,14 +122,32 @@ describe("another framework's element reaching pletivo's renderer", () => {
   });
 });
 
+describe("a Promise component", () => {
+  test("is awaited, as Astro does", async () => {
+    const greeting = Promise.resolve(() => createHtml("<b>hi</b>"));
+    expect(await renderAstroPage(astroPageRendering(greeting), {})).toBe("<main><b>hi</b></main>");
+  });
+});
+
 describe("the @jsxImportSource pragma", () => {
-  test("is read from the leading comments", () => {
-    expect(jsxImportSourcePragma("/** @jsxImportSource react */\nexport {};")).toBe("react");
-    expect(jsxImportSourcePragma("// header\n\n// @jsxImportSource preact\nexport {};")).toBe("preact");
+  test("is read from the leading comments, the last one winning as in Bun", () => {
+    expect(jsxImportSourcePragma("/** @jsxImportSource react */\nexport {};")).toEqual({ kind: "leading", importSource: "react" });
+    expect(jsxImportSourcePragma("/* @jsxImportSource react */\n// @jsxImportSource pletivo\nexport {};")).toEqual({
+      kind: "leading",
+      importSource: "pletivo",
+    });
   });
 
-  test("is not read from code or from a comment after it", () => {
-    expect(jsxImportSourcePragma('export const s = "/** @jsxImportSource react */";')).toBeNull();
-    expect(jsxImportSourcePragma("import x from 'y';\n/** @jsxImportSource react */")).toBeNull();
+  test("is absent when no comment names one", () => {
+    expect(jsxImportSourcePragma("// header\nexport {};")).toEqual({ kind: "none" });
+  });
+
+  test("is unknown when the text occurs after the first statement, so the tsconfig does not decide", () => {
+    // Bun honours a pragma below the imports; the reader cannot tell it from a string.
+    expect(jsxImportSourcePragma("import x from 'y';\n/** @jsxImportSource pletivo */")).toEqual({ kind: "unknown" });
+    expect(jsxImportSourcePragma('export const s = "/** @jsxImportSource react */";')).toEqual({ kind: "unknown" });
+    expect(jsxImportSourcePragma("/** @jsxImportSource react */\nconst s = 1; /** @jsxImportSource preact */")).toEqual({
+      kind: "unknown",
+    });
   });
 });

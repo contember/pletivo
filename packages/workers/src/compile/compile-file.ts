@@ -239,10 +239,11 @@ function transpile(code: string, options: { file: string; jsx?: boolean }): stri
  */
 function assertPletivoJsx(source: string, file: string): void {
   const pragma = jsxImportSourcePragma(source);
-  const framework = pragma === null ? null : frameworkOfJsxImportSource(pragma);
-  if (pragma === null || framework === null) return;
+  if (pragma.kind !== "leading") return;
+  const framework = frameworkOfJsxImportSource(pragma.importSource);
+  if (framework === null) return;
   throw new UnsupportedFileError(
     file,
-    `${foreignJsxMessage(framework, file, pragma, "its @jsxImportSource pragma")}. ${FRAMEWORK_RENDERERS_UNSUPPORTED}`,
+    `${foreignJsxMessage(framework, file, pragma.importSource, "its @jsxImportSource pragma")}. ${FRAMEWORK_RENDERERS_UNSUPPORTED}`,
   );
 }

@@ -589,6 +589,8 @@ export async function renderComponent(
   props: Record<string, unknown> = {},
   slots: SlotsRecord = {},
 ): Promise<HtmlString> {
+  // Astro awaits a component given as a promise, e.g. `import("./G.astro").then((m) => m.default)`.
+  if (Component instanceof Promise) Component = await Component;
   if (Component == null) {
     return createHtml("");
   }

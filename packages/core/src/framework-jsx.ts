@@ -17,12 +17,23 @@ export function frameworkOfJsxImportSource(importSource: string): string | null 
   return FRAMEWORK_BY_JSX_IMPORT_SOURCE[importSource] ?? null;
 }
 
-/**
- * The `@jsxImportSource` pragma of a module, read from its leading comments only:
- * the same text in a string or after the first statement is not a pragma here.
- */
-export function jsxImportSourcePragma(source: string): string | null {
-  let rest = source.startsWith("﻿") ? source.slice(1) : source;
+/** What a module's `@jsxImportSource` pragmas tell, read without parsing it. */
+export type JsxImportSourcePragma =
+  /** No pragma: the tsconfig decides. */
+  | { kind: "none" }
+  /** Set by the module's leading comments, the last of them winning, as in Bun. */
+  | { kind: "leading"; importSource: string }
+  /**
+   * The text occurs after the first statement. Bun honours a pragma in any comment, the
+   * last one winning, and telling a comment from a string there needs a parser.
+   */
+  | { kind: "unknown" };
+
+const PRAGMA = /@jsxImportSource\s+([^\s*]+)/g;
+
+export function jsxImportSourcePragma(source: string): JsxImportSourcePragma {
+  let rest = source.startsWith("\uFEFF") ? source.slice(1) : source;
+  let importSource: string | null = null;
   for (;;) {
     rest = rest.trimStart();
     let comment: string;
@@ -32,15 +43,16 @@ export function jsxImportSourcePragma(source: string): string | null {
       rest = end === -1 ? "" : rest.slice(end);
     } else if (rest.startsWith("/*")) {
       const end = rest.indexOf("*/", 2);
-      if (end === -1) return null;
+      if (end === -1) return { kind: "unknown" };
       comment = rest.slice(0, end);
       rest = rest.slice(end + 2);
     } else {
-      return null;
+      break;
     }
-    const pragma = /@jsxImportSource\s+([^\s*]+)/.exec(comment);
-    if (pragma) return pragma[1];
+    for (const match of comment.matchAll(PRAGMA)) importSource = match[1];
   }
+  if (rest.includes("@jsxImportSource")) return { kind: "unknown" };
+  return importSource === null ? { kind: "none" } : { kind: "leading", importSource };
 }
 
 /** The refusal of `file`, compiled for `framework` by `importSource` as set by `origin`. */

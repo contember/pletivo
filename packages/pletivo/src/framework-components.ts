@@ -82,7 +82,9 @@ function frameworkComponent(file: string): string | null {
 
 function jsxImportSourceOf(file: string): JsxImportSource | null {
   const pragma = jsxImportSourcePragma(fs.readFileSync(file, "utf8"));
-  if (pragma !== null) return { value: pragma, origin: "its @jsxImportSource pragma" };
+  if (pragma.kind === "leading") return { value: pragma.importSource, origin: "its @jsxImportSource pragma" };
+  // A pragma further down may override the tsconfig; the runtime refuses what this misses.
+  if (pragma.kind === "unknown") return null;
   return nearestTsconfig(path.dirname(file));
 }
 

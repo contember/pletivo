@@ -136,6 +136,20 @@ describe("a .astro page importing a framework component", () => {
     expect(await renderAstroPage(mod.default, {})).toContain("<main><b>hi</b></main>");
   });
 
+  test("renders a pletivo pragma below a directive, which Bun honours, over a react tsconfig", async () => {
+    write(
+      "pragma-late/tsconfig.json",
+      JSON.stringify({ extends: path.join(import.meta.dir, "../../tsconfig.json"), compilerOptions: { jsxImportSource: "react" } }),
+    );
+    write(
+      "pragma-late/src/components/Greeting.tsx",
+      `"use client";\n/** @jsxImportSource pletivo */\nexport default function Greeting() { return <b>hi</b>; }\n`,
+    );
+    const file = write("pragma-late/src/pages/index.astro", `---\nimport Greeting from "../components/Greeting";\n---\n<main><Greeting /></main>\n`);
+    const mod = await import(file);
+    expect(await renderAstroPage(mod.default, {})).toContain("<main><b>hi</b></main>");
+  });
+
   test("leaves a package's component to the runtime", async () => {
     // Under node_modules the project's tsconfig does not apply; a package ships what it compiled.
     write("node_modules/ui-kit/Label.tsx", `/** @jsxImportSource react */\nexport default function Label() { return "label"; }\n`);

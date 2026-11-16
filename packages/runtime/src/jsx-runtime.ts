@@ -168,11 +168,14 @@ export function jsx(
     if (result instanceof Promise) {
       return result.then((resolved) => {
         if (typeof resolved === "string") return createHtml(escapeHtml(resolved));
+        if (!isHtmlString(resolved)) assertNotForeignElement(resolved, tag.name || undefined);
         return resolved;
       });
     }
 
     if (typeof result === "string") return createHtml(escapeHtml(result));
+    // A page's root element reaches no later sink: the host only checks it is HTML.
+    if (!isHtmlString(result)) assertNotForeignElement(result, tag.name || undefined);
     return result;
   }
 

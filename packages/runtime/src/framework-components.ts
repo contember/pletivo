@@ -76,9 +76,25 @@ export function unrenderableComponent(name: string | undefined, component: unkno
         `(${describeComponent(component)}). ${FRAMEWORK_RENDERERS_UNSUPPORTED}`,
     );
   }
+  if (isImageImport(component)) {
+    return new Error(
+      `pletivo cannot render ${label}: it is an image import, which pletivo does not render as a component ` +
+        `(Astro renders an imported SVG inline). Use <img src={${name ?? "image"}.src}> instead.`,
+    );
+  }
   return new Error(
     `pletivo cannot render ${label}: a component must be a function, an .astro component or an element name, ` +
       `not ${component === null ? "null" : `a value of type ${typeof component}`}.`,
+  );
+}
+
+/** What an image import evaluates to: `ImageMetadata`, `{ src, width, height, format }`. */
+function isImageImport(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof Reflect.get(value, "src") === "string" &&
+    typeof Reflect.get(value, "format") === "string"
   );
 }
 
