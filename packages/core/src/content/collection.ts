@@ -43,7 +43,7 @@ export interface Loader {
 export interface AstroLoader {
   name: string;
   load(context: LoaderContext): Promise<void>;
-  schema?: z.ZodType<Record<string, unknown>, unknown>;
+  schema?: ContentSchema<Record<string, unknown>>;
 }
 
 /** Entry shape for DataStore.set() */
@@ -112,56 +112,113 @@ export interface Reference {
   __pletivoReference: true;
 }
 
+// ── Schemas, independent of the Zod major ──
+//
+// An Astro project's schemas are built with the Zod its Astro ships (3 in Astro 5,
+// 4 from Astro 6), and a Zod 3 `z.object()` cannot hold a Zod 4 schema or the
+// reverse. So the content layer never assumes a major: it only calls the members
+// below, which both majors have, and builds `image()` / `reference()` with the
+// same Zod the schema around them uses.
+
+/** The outcome of `safeParseAsync`, in the shape Zod 3 and Zod 4 share. */
+export type ContentParseResult<Out> =
+  | { success: true; data: Out }
+  | {
+      success: false;
+      error: { issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }> };
+    };
+
+/** What the content layer calls on a schema. Any Zod 3 or Zod 4 schema is one. */
+export interface ContentSchema<Out> {
+  safeParseAsync(data: unknown): Promise<ContentParseResult<Out>>;
+}
+
+/** Reporting a validation issue from inside a transform, in both majors. */
+export interface IssueContext {
+  addIssue(issue: { code: "custom"; message: string }): void;
+}
+
+/** The part of a Zod namespace `image()` is built from. `I` is that Zod's schema type. */
+export interface ImageZod<I> {
+  string(): { transform(fn: (value: string, ctx: IssueContext) => Promise<ImageMetadata>): I };
+  NEVER: never;
+}
+
+/** The part of a Zod namespace `reference()` is built from. `R` is that Zod's schema type. */
+export interface ReferenceZod<R> {
+  unknown(): { transform(fn: (value: unknown, ctx: IssueContext) => Reference): R };
+  NEVER: never;
+}
+
+/** How a host turns an `image()` path into metadata. Throwing means it could not read the file. */
+export type ImageResolver = (entryDir: string, relativePath: string) => Promise<ImageMetadata>;
+
 /**
- * Astro-compatible `reference()`. Returns a Zod schema that accepts a string
- * id (or an object with `{ id, collection }`, or a legacy content entry's
- * `{ slug, collection }`) and stores it as a Reference marker. `getEntry(ref)`
- * resolves the marker to the target entry.
+ * Astro-compatible `reference()` built with `z`. Accepts a string id, an object
+ * with `{ id, collection }`, or a legacy content entry's `{ slug, collection }`,
+ * and stores it as a Reference marker. `getEntry(ref)` resolves the marker to
+ * the target entry.
  */
-export function reference(collectionName: string): z.ZodType<Reference> {
-  return z
-    .union([
-      z.string(),
-      z.object({ id: z.string(), collection: z.string() }),
-      z.object({ slug: z.string(), collection: z.string() }),
-    ])
-    .transform((value): Reference => {
-      if (typeof value === "string") {
-        return { collection: collectionName, id: value, __pletivoReference: true };
-      }
-      if ("id" in value) {
+export function referenceWith<R>(z: ReferenceZod<R>, collectionName: string): R {
+  return z.unknown().transform((value, ctx): Reference => {
+    if (typeof value === "string") {
+      return { collection: collectionName, id: value, __pletivoReference: true };
+    }
+    if (typeof value === "object" && value !== null && "collection" in value && typeof value.collection === "string") {
+      if ("id" in value && typeof value.id === "string") {
         return { collection: value.collection, id: value.id, __pletivoReference: true };
       }
       // A legacy content entry is looked up by its slug, which `getEntry` matches in place of the id.
-      return { collection: value.collection, id: value.slug, slug: value.slug, __pletivoReference: true };
+      if ("slug" in value && typeof value.slug === "string") {
+        return { collection: value.collection, id: value.slug, slug: value.slug, __pletivoReference: true };
+      }
+    }
+    ctx.addIssue({
+      code: "custom",
+      message: `Expected an entry id of collection "${collectionName}", { id, collection } or { slug, collection }`,
     });
+    return z.NEVER;
+  });
+}
+
+/** `reference()` for pletivo's own Zod. */
+export function reference(collectionName: string): z.ZodType<Reference> {
+  return referenceWith<z.ZodType<Reference>>(z, collectionName);
 }
 
 /**
- * The `image()` schema itself, which is the same on every host.
+ * The `image()` schema, built with `z`, which is the same on every host.
  *
  * What differs is only how a path becomes bytes: the Bun host opens the file, the
  * Workers host asks the content binding. Everything a *schema author* can get wrong —
  * a remote URL, a root-absolute path, an entry with no file behind it — is decided
  * here, so both hosts refuse the same frontmatter with the same words. `resolve`
  * throwing is the "could not read it" case; its message becomes the issue's.
+ * A null `resolve` is a host that cannot read image files at all.
  *
  * Accepted path forms:
  *  - Relative (`./logo.png`, `../assets/foo.png`) — against the entry file's directory.
  *  - Root-absolute (`/uploads/foo.png`) — rejected; use plain `z.string()`.
  *  - Remote URLs (`https://...`) — rejected; use `z.string().url()`.
  */
-export function imageSchemaFor(
+export function imageSchemaWith<I>(
+  z: ImageZod<I>,
   /** Null for an entry with no source file (a function loader): `image()` then fails. */
   entryDir: string | null,
-  resolve: (entryDir: string, relativePath: string) => Promise<ImageMetadata>,
-): z.ZodType<ImageMetadata, unknown> {
-  return z.string().transform(async (relPath: string, ctx: z.RefinementCtx) => {
+  resolve: ImageResolver | null,
+): I {
+  return z.string().transform(async (relPath, ctx) => {
     const fail = (message: string) => {
       ctx.addIssue({ code: "custom", message });
       return z.NEVER;
     };
 
+    if (!resolve) {
+      return fail(
+        "image() schemas need a host that can read image files, and this one cannot. " +
+          "Use plain z.string() for a URL you already know.",
+      );
+    }
     if (!entryDir) {
       return fail(
         "image() schema can only be used with file-backed entries (e.g. glob() loader)",
@@ -188,6 +245,14 @@ export function imageSchemaFor(
   });
 }
 
+/** `image()` for pletivo's own Zod. */
+export function imageSchemaFor(
+  entryDir: string | null,
+  resolve: ImageResolver,
+): z.ZodType<ImageMetadata, unknown> {
+  return imageSchemaWith<z.ZodType<ImageMetadata, unknown>>(z, entryDir, resolve);
+}
+
 /**
  * Schema-context helpers passed to the function form of `schema`. Mirrors
  * Astro's API: `schema: ({ image }) => z.object({ logo: image() })`.
@@ -202,7 +267,15 @@ export interface SchemaContext {
 
 export type SchemaFn = (
   ctx: SchemaContext,
-) => z.ZodType<Record<string, unknown>, unknown>;
+) => ContentSchema<Record<string, unknown>>;
+
+/**
+ * A schema function already bound to the Zod it was written against, so the
+ * content layer can hand it an `image()` of that Zod. Made by `defineCollectionFor`.
+ */
+export interface BoundSchemaFn {
+  bound(resolveImage: ImageResolver | null, entryDir: string | null): ContentSchema<Record<string, unknown>>;
+}
 
 export interface CollectionConfig {
   /**
@@ -220,7 +293,7 @@ export interface CollectionConfig {
    * function form `({ image }) => z.object({...})` that receives schema
    * helpers — match Astro's content-collection API. Absent: data is not validated.
    */
-  schema?: z.ZodType<Record<string, unknown>, unknown> | SchemaFn;
+  schema?: ContentSchema<Record<string, unknown>> | SchemaFn | BoundSchemaFn;
   /** Optional HTML transform applied after markdown rendering */
   transform?: (html: string, data: Record<string, unknown>) => string;
 }
@@ -321,6 +394,11 @@ export interface ContentHost {
   recordDep?(path: string): void;
   /** `image()` bound to an entry's directory. Absent: image() schemas fail with a clear message. */
   image?(entryDir: string | null): z.ZodType<ImageMetadata, unknown>;
+  /**
+   * How `image()` paths become metadata, for a schema built with another Zod than
+   * pletivo's (`defineCollectionFor`). Absent: those image() schemas fail with a clear message.
+   */
+  resolveImage?: ImageResolver;
   /** Render an `.mdx` entry's body to HTML. Absent: `.mdx` entries fail with a clear message. */
   renderMdx?(
     filePath: string,
@@ -632,6 +710,31 @@ export function defineCollection(config: CollectionConfig): CollectionConfig {
     config.loader = glob({ base: config.directory });
   }
   return config;
+}
+
+/** A collection config whose schema function receives an `image()` of the Zod `I` belongs to. */
+export interface ZodCollectionConfig<I> extends Omit<CollectionConfig, "schema"> {
+  schema:
+    | ContentSchema<Record<string, unknown>>
+    | ((ctx: { image: () => I }) => ContentSchema<Record<string, unknown>>);
+}
+
+/**
+ * `defineCollection` for schemas written with `z`, a Zod that need not be pletivo's:
+ * an Astro project's `astro:content` is backed by this with the Zod its Astro ships.
+ */
+export function defineCollectionFor<I>(z: ImageZod<I>): (config: ZodCollectionConfig<I>) => CollectionConfig {
+  return (config) => {
+    const schema = config.schema;
+    if (typeof schema !== "function") return defineCollection({ ...config, schema });
+    return defineCollection({
+      ...config,
+      schema: {
+        bound: (resolveImage, entryDir) =>
+          schema({ image: () => imageSchemaWith(z, entryDir, resolveImage) }),
+      },
+    });
+  };
 }
 
 // ── Runtime state ──
@@ -958,9 +1061,7 @@ async function loadFromAstroLoader(
       const schema = resolveForDir(entryDir);
       const result = await schema.safeParseAsync(data);
       if (!result.success) {
-        const errors = result.error instanceof z.ZodError
-          ? result.error.issues.map((i: z.ZodIssue) => `${i.path.join(".")}: ${i.message}`).join(", ")
-          : String(result.error);
+        const errors = result.error.issues.map((i) => `${i.path.map(String).join(".")}: ${i.message}`).join(", ");
         throw new Error(`Validation error in ${name}/${id}: ${errors}`);
       }
       return result.data;
@@ -1002,16 +1103,7 @@ function resolveImageFactory(
 ): () => z.ZodType<ImageMetadata, unknown> {
   const factory = host.image;
   if (!factory) {
-    return () =>
-      z.string().transform((_value: string, ctx: z.RefinementCtx) => {
-        ctx.addIssue({
-          code: "custom",
-          message:
-            "image() schemas need a host that can read image files, and this one cannot. " +
-            "Use plain z.string() for a URL you already know.",
-        });
-        return z.NEVER;
-      });
+    return () => imageSchemaWith<z.ZodType<ImageMetadata, unknown>>(z, entryDir, null);
   }
   return () => factory.call(host, entryDir);
 }
@@ -1023,22 +1115,25 @@ function resolveImageFactory(
  * produces M Zod schemas instead of N.
  */
 function makeSchemaResolver(
-  schema: z.ZodType<Record<string, unknown>, unknown> | SchemaFn | undefined,
+  schema: CollectionConfig["schema"],
   host: ContentHost,
-): (entryDir: string | null) => z.ZodType<Record<string, unknown>, unknown> {
+): (entryDir: string | null) => ContentSchema<Record<string, unknown>> {
   if (schema === undefined) {
     const passThrough = z.record(z.string(), z.unknown());
     return () => passThrough;
   }
-  if (typeof schema !== "function") {
+  if (typeof schema !== "function" && !("bound" in schema)) {
     return () => schema;
   }
-  const cache = new Map<string, z.ZodType<Record<string, unknown>, unknown>>();
+  const build = typeof schema === "function"
+    ? (entryDir: string | null) => schema({ image: resolveImageFactory(host, entryDir) })
+    : (entryDir: string | null) => schema.bound(host.resolveImage ?? null, entryDir);
+  const cache = new Map<string, ContentSchema<Record<string, unknown>>>();
   return (entryDir) => {
     const key = entryDir ?? "";
     let resolved = cache.get(key);
     if (!resolved) {
-      resolved = schema({ image: resolveImageFactory(host, entryDir) });
+      resolved = build(entryDir);
       cache.set(key, resolved);
     }
     return resolved;
@@ -1074,9 +1169,7 @@ async function buildEntries(
       const result = await schema.safeParseAsync(userData);
 
       if (!result.success) {
-        const errors = result.error instanceof z.ZodError
-          ? result.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n")
-          : String(result.error);
+        const errors = result.error.issues.map((i) => `  ${i.path.map(String).join(".")}: ${i.message}`).join("\n");
         return { kind: "fail", id: raw.id, errors };
       }
 

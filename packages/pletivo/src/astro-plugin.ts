@@ -337,7 +337,8 @@ export async function registerAstroPlugin(): Promise<void> {
   const contentPath = path.resolve(pletivoSrcDir, "content/index.ts");
   const i18nVirtualPath = path.resolve(pletivoSrcDir, "i18n/virtual-module.ts");
   const imagePath = path.resolve(pletivoSrcDir, "image.ts");
-  // Zod is a dep of pletivo; resolve from pletivo's package context.
+  // Zod is a dep of pletivo; resolve from pletivo's package context. The
+  // fallback for `astro/zod` when the project has no astro.
   const zodPath = require.resolve("zod", { paths: [pletivoSrcDir] });
 
   if (process.env.PLETIVO_DEBUG) console.log("[pletivo-astro] registering plugin, shim:", shimPath);
@@ -474,17 +475,33 @@ export async function registerAstroPlugin(): Promise<void> {
         ) => void;
       }).module;
 
+      // Under Astro every schema helper comes from one Zod: the one its Astro
+      // ships (3 in Astro 5, 4 from Astro 6), which integrations import as
+      // `astro/zod` and call with that major's API. Zod 3 and Zod 4 schemas do
+      // not nest in each other, so `z`, `defineCollection`'s `image()` and
+      // `reference()` are all built from that same Zod. Without astro installed
+      // it is pletivo's own.
+      let projectZod: string | undefined;
+      const projectZodPath = (): string => {
+        if (projectZod === undefined) {
+          try {
+            projectZod = Bun.resolveSync("astro/zod", process.cwd());
+          } catch {
+            projectZod = zodPath;
+          }
+        }
+        return projectZod;
+      };
+
       mod("astro:content", () => ({
         loader: "ts",
         contents: `
-          export {
-            getCollection,
-            getEntry,
-            defineCollection,
-            reference,
-            render,
-            z,
-          } from ${JSON.stringify(contentPath)};
+          import { z } from ${JSON.stringify(projectZodPath())};
+          import { defineCollectionFor, referenceWith } from ${JSON.stringify(contentPath)};
+          export { getCollection, getEntry, render } from ${JSON.stringify(contentPath)};
+          export { z };
+          export const defineCollection = defineCollectionFor(z);
+          export const reference = (collection) => referenceWith(z, collection);
         `,
       }));
 
@@ -495,7 +512,7 @@ export async function registerAstroPlugin(): Promise<void> {
 
       mod("astro/zod", () => ({
         loader: "ts",
-        contents: `export { z } from ${JSON.stringify(zodPath)}; export * from ${JSON.stringify(zodPath)};`,
+        contents: `export { z } from ${JSON.stringify(projectZodPath())}; export * from ${JSON.stringify(projectZodPath())};`,
       }));
 
       // `astro:components` — re-export the batch of .astro components
