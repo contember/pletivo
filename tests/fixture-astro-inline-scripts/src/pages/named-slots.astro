@@ -1,0 +1,10 @@
+---
+import Tabs from "../components/Tabs.astro";
+import Counter from "../components/Counter.astro";
+---
+<html>
+  <head><title>named-slots</title></head>
+  <body>
+    <Tabs><Counter slot="first" /><Counter slot="second" /></Tabs>
+  </body>
+</html>

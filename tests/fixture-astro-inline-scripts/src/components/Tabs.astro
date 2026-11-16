@@ -1,0 +1,5 @@
+---
+const first = await Astro.slots.render("first");
+const second = await Astro.slots.render("second");
+---
+<div class="tabs"><div set:html={first} /><div set:html={second} /></div>

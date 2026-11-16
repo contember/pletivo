@@ -58,9 +58,9 @@ export function runWithSlotArgs<T>(
     {
       renderedModules: current?.renderedModules,
       tsxStyles: current?.tsxStyles,
-      // A copy: the caller may discard `Astro.slots.render()` output, which must not
-      // suppress the script when the slot renders again. Astro claims only on write.
-      renderedScripts: current?.renderedScripts && new Set(current.renderedScripts),
+      // Shared, not copied: Astro's `Slots.render()` claims a slot's scripts at call
+      // time, so a discarded render drops them there too, and nothing is emitted twice.
+      renderedScripts: current?.renderedScripts,
       slotArgs,
     },
     fn,
