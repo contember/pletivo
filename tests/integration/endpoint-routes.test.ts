@@ -69,6 +69,17 @@ describe("endpoint routes in src/pages", () => {
     expect(parsed.site).toBe("https://example.com/");
   });
 
+  test("extensionless endpoint is emitted as a file named after the route", async () => {
+    const raw = await Bun.file(path.join(distDir, "api")).text();
+    expect(JSON.parse(raw)).toEqual({ foo: "bar" });
+    expect(await exists("api/index.html")).toBe(false);
+  });
+
+  test("a script page with a default export stays an HTML page", async () => {
+    const content = await Bun.file(path.join(distDir, "plain/index.html")).text();
+    expect(content).toContain("<h1>Plain page</h1>");
+  });
+
   test("XML endpoint keeps its declaration on the first byte", async () => {
     const raw = await Bun.file(path.join(distDir, "feed.xml")).text();
     expect(raw.startsWith("<?xml")).toBe(true);

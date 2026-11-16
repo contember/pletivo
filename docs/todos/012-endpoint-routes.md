@@ -33,6 +33,18 @@ had to live outside `src/pages/`.
 - **`dev.ts`** — `serveEndpoint()` returns the handler's own `Response`
   untouched, so status and `Content-Type` come from user code.
 
+### Extensionless endpoints (`api.ts` → `/api`)
+
+Astro makes every `.ts`/`.js` file in `src/pages` an endpoint and emits its
+route path verbatim, so `api.ts` becomes a file named `api`, not
+`api/index.html`. Pletivo also renders a script page's `default` export as
+HTML, so the filename alone cannot decide. `resolveScriptRoute()` settles it
+once the module is loaded: a `.ts`/`.js` route with a `GET()` and no default
+export function is an endpoint. Build and dev both go through it. A root
+`index.ts` endpoint has no path of its own and still writes `index.html`. A
+dynamic one (`[id].ts`) is still unsupported, like `[slug].json.ts` below. The
+Workers host renders no `.ts` pages and no endpoints, so it is unchanged.
+
 ### Bug fixed along the way
 
 Injected endpoints were pushed into `results` *and* written directly, so they
@@ -60,7 +72,9 @@ locale, which is probably right, but it is untested.
 
 ## Tests
 
-- `tests/unit/router.test.ts` — parsing, output paths, URL matching, negative cases
+- `tests/unit/router.test.ts` — parsing, output paths, URL matching, negative
+  cases, `resolveScriptRoute()`
 - `tests/integration/endpoint-routes.test.ts` + `tests/fixture-endpoint-routes/`
   — real build; asserts JSON parses, no `<style>` leaked in, XML keeps `<?xml`
-  on the first byte, and no `index.html` directory is created
+  on the first byte, no `index.html` directory is created, `api.ts` emits `api`,
+  and a script page with a default export stays HTML

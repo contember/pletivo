@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs";
 import { watch } from "fs";
 import { scanRoutes } from "./router";
-import { matchRoute, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { matchRoute, resolveScriptRoute, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
 import { getContentBaseDirs, initCollections, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
@@ -351,8 +351,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   async function renderPage(
     route: Route,
     params: RouteParams,
-    pathname: string = "/",
-    request?: Request,
+    pathname: string,
+    request: Request,
     localeOverride?: string,
     /** Set when this render is the target of an `Astro.rewrite`. */
     rewrittenFrom?: RewriteContext,
@@ -373,6 +373,10 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       // Non-.astro page modules don't hit the astro plugin's onLoad, so
       // collect their CSS side-effect imports here for /__styles.css.
       await collectPageModuleCss(fullPath, `page:${route.file}`);
+      if (resolveScriptRoute(route, mod).isEndpoint) {
+        const response = await serveEndpoint(route, params, pathname, request);
+        return response ? { ok: true, raw: response } : null;
+      }
       const component = mod.default;
 
       if (typeof component !== "function") return null;

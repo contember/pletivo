@@ -22,7 +22,8 @@ export interface Route {
   priority: number;
   /**
    * Non-HTML endpoint route — a script file carrying its own extension
-   * (`robots.txt.ts`, `eshop.json.ts`). Renders via an exported `GET()`
+   * (`robots.txt.ts`, `eshop.json.ts`), or an extensionless one whose module
+   * exports `GET()` and no default (see `resolveScriptRoute`). Renders via an exported `GET()`
    * returning a Response, and emits that path verbatim instead of an
    * `index.html` directory.
    */
@@ -73,6 +74,17 @@ export function parseRoute(file: string): Route {
   }
 
   return { file, segments, isDynamic, priority, isEndpoint };
+}
+
+/**
+ * Settle an extensionless `.ts`/`.js` route once its module is loaded. Astro
+ * makes every script page an endpoint (`api.ts` → `/api`), but pletivo also
+ * renders a script page's default export as HTML, so the exports decide.
+ */
+export function resolveScriptRoute(route: Route, mod: Record<string, unknown>): Route {
+  if (route.isEndpoint || !/\.(ts|js)$/.test(route.file)) return route;
+  if (typeof mod.default === "function" || typeof mod.GET !== "function") return route;
+  return { ...route, isEndpoint: true };
 }
 
 /**

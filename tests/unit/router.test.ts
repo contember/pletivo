@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseRoute, matchRoute, routeToOutputPath, findRoute } from "@pletivo/core/router";
+import { parseRoute, matchRoute, resolveScriptRoute, routeToOutputPath, findRoute } from "@pletivo/core/router";
 
 describe("parseRoute", () => {
   test("static index page", () => {
@@ -237,6 +237,20 @@ describe("endpoint routes", () => {
     expect(parseRoute("about.astro").isEndpoint).toBe(false);
     expect(parseRoute("blog/[slug].tsx").isEndpoint).toBe(false);
     expect(routeToOutputPath(parseRoute("about.tsx"), {})).toBe("about/index.html");
+  });
+
+  test("extensionless script route with GET() and no default export is an endpoint", () => {
+    const route = resolveScriptRoute(parseRoute("api.ts"), { GET: () => new Response("") });
+    expect(route.isEndpoint).toBe(true);
+    expect(routeToOutputPath(route, {})).toBe("api");
+    expect(routeToOutputPath(resolveScriptRoute(parseRoute("v1/users.js"), { GET: () => new Response("") }), {})).toBe("v1/users");
+  });
+
+  test("a default export keeps an extensionless script route an HTML page", () => {
+    const route = resolveScriptRoute(parseRoute("api.ts"), { default: () => "", GET: () => new Response("") });
+    expect(route.isEndpoint).toBe(false);
+    expect(routeToOutputPath(route, {})).toBe("api/index.html");
+    expect(resolveScriptRoute(parseRoute("about.tsx"), { GET: () => new Response("") }).isEndpoint).toBe(false);
   });
 
   test("template formats are never endpoints even with a dotted name", () => {

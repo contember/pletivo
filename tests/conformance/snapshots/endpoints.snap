@@ -13,9 +13,11 @@
 # Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=endpoints bun test tests/conformance
 
 --- pletivo:conformance emitted ---
+api
 data.json
 feed.xml
 index.html
+plain/index.html
 robots.txt
 
 --- pletivo:conformance data.json ---
@@ -39,6 +41,9 @@ robots.txt
 </head>
   <body data-astro-cid-[scope:1]>
     <h1 data-astro-cid-[scope:1]>Home Page</h1></body></html>
+
+--- pletivo:conformance plain/index.html ---
+<!DOCTYPE html><html><head><title>Plain</title></head><body><h1>Plain page</h1></body></html>
 
 --- pletivo:conformance robots.txt ---
 User-agent: *

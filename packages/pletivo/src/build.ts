@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import { scanRoutes } from "./router";
-import { matchRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { matchRoute, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
 import { initCollections, getValidationFailures, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry } from "@pletivo/runtime/island";
@@ -613,17 +613,19 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       registerCssPageEntry(fullPath);
       await collectPageModuleCss(fullPath, `page:${route.file}`);
 
-      // Endpoint routes (robots.txt.ts, rss.xml.ts) emit their GET() body
-      // verbatim. Not incrementally cached: the cache layer is HTML-shaped,
+      // Endpoint routes (robots.txt.ts, rss.xml.ts, api.ts) emit their GET()
+      // body verbatim. Not incrementally cached: the cache layer is HTML-shaped,
       // and endpoints are a handful of cheap routes per project.
-      if (route.isEndpoint) {
+      const servedRoute = resolveScriptRoute(route, mod);
+      if (servedRoute.isEndpoint) {
+        const endpointFile = routeToOutputPath(servedRoute, {});
         const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
-        const body = await renderEndpoint(mod, makeEndpointContext("/" + outFile, siteUrl));
+        const body = await renderEndpoint(mod, makeEndpointContext("/" + endpointFile, siteUrl));
         if (body === null) {
           console.warn(`  Skipping ${route.file}: endpoint route without an exported GET()`);
           return null;
         }
-        return { file: route.file, label: route.file, pageEntry: fullPath, outPath, html: body, raw: true };
+        return { file: route.file, label: route.file, pageEntry: fullPath, outPath: path.join(distDir, endpointFile), html: body, raw: true };
       }
 
       if (typeof mod.default !== "function") {
