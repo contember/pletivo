@@ -14,6 +14,7 @@ import {
   invalidScopedStyleStrategy,
   isScopedStyleStrategy,
   resolveScopedStyleStrategy,
+  type ScopedStyleStrategy,
 } from "@pletivo/core/astro-host/scoped-style";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
@@ -46,12 +47,13 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const host = await initAstroHost(projectRoot, "build");
   const markdown = freezeMarkdown(astroMarkdownSettings(host?.config));
   const routing = freezeRouting(host?.config);
+  const scopedStyle = freezeScopedStyle(host?.config);
   const fatal = [
     ...unsupportedProjectSemantics(projectConfig),
     ...unsupportedSemantics(host),
     ...markdown.diagnostics,
     ...routing.diagnostics,
-    ...scopedStyleDiagnostics(host?.config),
+    ...scopedStyle.diagnostics,
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
@@ -64,7 +66,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   return {
     artifact: {
       version: ARTIFACT_VERSION,
-      config: freezeConfig(host?.config, markdown.config, routing),
+      config: freezeConfig(host?.config, markdown.config, routing, scopedStyle.strategy),
       scripts: {
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: [...(host?.injectedPageScripts ?? [])],
@@ -164,16 +166,25 @@ function addProjectConfigDiagnostic(
   diagnostics.push({ source: "pletivo.config", hook, reason });
 }
 
-function scopedStyleDiagnostics(config: AstroConfig | undefined): PrepareDiagnostic[] {
+function freezeScopedStyle(config: AstroConfig | undefined): {
+  strategy: ScopedStyleStrategy | undefined;
+  diagnostics: PrepareDiagnostic[];
+} {
   const configured = config?.scopedStyleStrategy;
-  if (configured === undefined || isScopedStyleStrategy(configured)) return [];
-  return [{ source: "astro.config", hook: "scopedStyleStrategy", reason: invalidScopedStyleStrategy(configured) }];
+  if (configured !== undefined && !isScopedStyleStrategy(configured)) {
+    return {
+      strategy: undefined,
+      diagnostics: [{ source: "astro.config", hook: "scopedStyleStrategy", reason: invalidScopedStyleStrategy(configured) }],
+    };
+  }
+  return { strategy: resolveScopedStyleStrategy(config), diagnostics: [] };
 }
 
 function freezeConfig(
   config: AstroConfig | undefined,
   markdown: ArtifactMarkdownConfig | null,
   routing: FrozenRouting,
+  scopedStyleStrategy: ScopedStyleStrategy | undefined,
 ): ArtifactConfig {
   const frozen: ArtifactConfig = {};
   if (config?.site) frozen.site = config.site;
@@ -181,7 +192,6 @@ function freezeConfig(
   if (routing.i18n !== null) frozen.i18n = routing.i18n;
   if (routing.trailingSlash !== null) frozen.trailingSlash = routing.trailingSlash;
   if (routing.redirects.length > 0) frozen.redirects = routing.redirects;
-  const scopedStyleStrategy = resolveScopedStyleStrategy(config);
   if (scopedStyleStrategy !== undefined) frozen.scopedStyleStrategy = scopedStyleStrategy;
   return frozen;
 }

@@ -1469,7 +1469,7 @@ async function writeHtml(
 
   // Inject per-page CSS from <style> blocks in .astro components, in the
   // cascade order the page's import graph dictates. Scoped blocks are matched
-  // by astro scope class in the HTML (so unscoped rules inside a regular
+  // by scope id (class or `data-astro-cid-*`) in the HTML (so unscoped rules inside a regular
   // <style> — `:global()`, `body` — can't leak onto other pages), `is:global`
   // blocks by whether the component rendered.
   const combinedCss = await timeAsync("pageCss", async () => {

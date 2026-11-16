@@ -72,7 +72,7 @@ export interface AstroStyleBlock {
   css: string;
 }
 interface AstroCssEntry {
-  scope: string; // e.g. "jn3ixs4m" → class "astro-jn3ixs4m"
+  scope: string; // e.g. "jn3ixs4m" → `data-astro-cid-jn3ixs4m` or class "astro-jn3ixs4m"
   blocks: AstroStyleBlock[];
 }
 const astroCssMap = new Map<string, AstroCssEntry>();
