@@ -14,6 +14,7 @@
  */
 
 import { z } from "zod";
+import { slug as githubSlug } from "github-slugger";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { renderMarkdown, parseFrontmatter, parseYamlObject } from "./markdown";
 import type { ImageMetadata } from "../image-service";
@@ -24,6 +25,8 @@ export interface RawEntry {
   id: string;
   body: string;
   data: Record<string, unknown>;
+  /** Legacy content collections only: what `getEntry()` looks the entry up by. */
+  slug?: string;
 }
 
 /** Legacy pletivo loader — returns entries directly. */
@@ -191,16 +194,22 @@ export type SchemaFn = (
 ) => z.ZodType<Record<string, unknown>, unknown>;
 
 export interface CollectionConfig {
-  /** Loader that provides raw entries. Accepts glob(), Astro Content Layer loaders, or inline functions. */
+  /**
+   * Loader that provides raw entries. Accepts glob(), Astro Content Layer loaders, or inline functions.
+   * Without a loader (and without `directory`) the collection is an Astro legacy
+   * collection, read from `src/content/<name>/` — see `legacyCollectionLoader`.
+   */
   loader?: AnyLoader;
   /** Shorthand for loader: glob({ base: directory }) */
   directory?: string;
+  /** Astro legacy collections: `data` reads JSON/YAML entries, anything else reads content entries. */
+  type?: "content" | "data";
   /**
    * Zod schema for frontmatter validation. Either a static Zod schema, or a
    * function form `({ image }) => z.object({...})` that receives schema
-   * helpers — match Astro's content-collection API.
+   * helpers — match Astro's content-collection API. Absent: data is not validated.
    */
-  schema: z.ZodType<Record<string, unknown>, unknown> | SchemaFn;
+  schema?: z.ZodType<Record<string, unknown>, unknown> | SchemaFn;
   /** Optional HTML transform applied after markdown rendering */
   transform?: (html: string, data: Record<string, unknown>) => string;
 }
@@ -210,7 +219,10 @@ export interface RenderResult {
 }
 
 export interface CollectionEntry<T = Record<string, unknown>> {
+  /** In a legacy content collection, the file path relative to the collection, with its extension. */
   id: string;
+  /** Legacy content collections only (Astro's `entry.slug`); `getEntry()` matches it instead of `id`. */
+  slug?: string;
   data: T;
   body: string;
   /**
@@ -439,59 +451,105 @@ export function glob(options: GlobOptions): Loader {
       const entries: RawEntry[] = [];
 
       for (const { entry: file, path: fullPath } of scan.files) {
-        const content = await host.readFile(fullPath);
-        const ext = extensionOf(file);
-
-        // Per-extension parsing produces (data, body, extras) — extras
-        // hold internal hints (_filePath, _html, _mdxFilePath) that the
-        // schema strips before validation.
-        let data: Record<string, unknown>;
-        let body = "";
-        let extras: Record<string, unknown>;
-
-        if (ext === ".json") {
-          try {
-            data = JSON.parse(content);
-          } catch (e) {
-            console.error(`  JSON parse error in ${file}: ${errorMessage(e)}`);
-            continue;
-          }
-          extras = { _filePath: fullPath };
-        } else if (ext === ".yaml" || ext === ".yml") {
-          try {
-            data = parseYamlObject(content);
-          } catch (e) {
-            console.error(`  YAML parse error in ${file}: ${errorMessage(e)}`);
-            continue;
-          }
-          extras = { _filePath: fullPath };
-        } else if (ext === ".mdx") {
-          const parsed = frontmatterOf(host, content);
-          data = parsed.frontmatter;
-          body = parsed.body;
-          extras = { _filePath: fullPath, _mdxFilePath: fullPath };
-        } else {
-          // Parse frontmatter eagerly, but defer rendering the markdown body
-          // to HTML until `entry.render()` is called. Listing pages read only
-          // frontmatter, so rendering every entry's body up front is wasted
-          // work (dominant cost of loading a large collection).
-          const parsed = frontmatterOf(host, content);
-          data = parsed.frontmatter;
-          body = parsed.body;
-          extras = { _filePath: fullPath };
-        }
+        const parsed = await readContentFile(host, file, fullPath);
+        if (!parsed) continue;
 
         const id = options.generateId
-          ? options.generateId({ entry: file, base: scan.rootUrl, data })
+          ? options.generateId({ entry: file, base: scan.rootUrl, data: parsed.data })
           : file.replace(/\.(md|mdx|json|ya?ml)$/i, "");
 
-        entries.push({ id, body, data: { ...data, ...extras } });
+        entries.push({ id, body: parsed.body, data: { ...parsed.data, ...parsed.extras } });
       }
 
       return entries;
     },
   };
   return loader;
+}
+
+/**
+ * One content file's data and body, parsed by extension. `extras` hold internal
+ * hints (_filePath, _mdxFilePath) that `buildEntries` strips before validation.
+ * Null when the file does not parse; the reason is logged.
+ */
+async function readContentFile(
+  host: ContentHost,
+  file: string,
+  fullPath: string,
+): Promise<{ data: Record<string, unknown>; body: string; extras: Record<string, unknown> } | null> {
+  const content = await host.readFile(fullPath);
+  const ext = extensionOf(file);
+
+  if (ext === ".json") {
+    try {
+      return { data: JSON.parse(content), body: "", extras: { _filePath: fullPath } };
+    } catch (e) {
+      console.error(`  JSON parse error in ${file}: ${errorMessage(e)}`);
+      return null;
+    }
+  }
+  if (ext === ".yaml" || ext === ".yml") {
+    try {
+      return { data: parseYamlObject(content), body: "", extras: { _filePath: fullPath } };
+    } catch (e) {
+      console.error(`  YAML parse error in ${file}: ${errorMessage(e)}`);
+      return null;
+    }
+  }
+  // Parse frontmatter eagerly, but defer rendering the markdown body
+  // to HTML until `entry.render()` is called. Listing pages read only
+  // frontmatter, so rendering every entry's body up front is wasted
+  // work (dominant cost of loading a large collection).
+  const parsed = frontmatterOf(host, content);
+  const extras = ext === ".mdx" ? { _filePath: fullPath, _mdxFilePath: fullPath } : { _filePath: fullPath };
+  return { data: parsed.frontmatter, body: parsed.body, extras };
+}
+
+/** Astro's content entry extensions this layer can render: Markdown's spellings and MDX. */
+const LEGACY_CONTENT_PATTERN = "**/*.{md,markdown,mdown,mkdn,mkd,mdwn,mdx}";
+const LEGACY_DATA_PATTERN = "**/*.{json,yaml,yml}";
+
+/**
+ * Astro 5's stand-in for a collection defined without a loader: a glob over
+ * `src/content/<name>/` that skips any path segment starting with `_`.
+ *
+ * A data collection's id is its path without the extension. A content collection
+ * is emulated the way Astro emulates its legacy API: `id` is the path with its
+ * extension and `slug` (frontmatter `slug`, else the slugified path without the
+ * extension or a trailing `/index`) is what `getEntry()` finds it by.
+ */
+function legacyCollectionLoader(name: string, type: CollectionConfig["type"]): Loader {
+  const base = `src/content/${name}`;
+  const isData = type === "data";
+  return {
+    __globBase: base,
+    async load(projectRoot: string): Promise<RawEntry[]> {
+      const host = requireHost();
+      const scan = await host.scan(projectRoot, base, isData ? LEGACY_DATA_PATTERN : LEGACY_CONTENT_PATTERN);
+      collectionLoadStorage.getStore()?.add(scan.root);
+      const entries: RawEntry[] = [];
+
+      for (const { entry: file, path: fullPath } of scan.files) {
+        if (file.split("/").some((segment) => segment.startsWith("_"))) continue;
+        const parsed = await readContentFile(host, file, fullPath);
+        if (!parsed) continue;
+        const data = { ...parsed.data, ...parsed.extras };
+        const withoutExt = file.slice(0, file.length - extensionOf(file).length);
+
+        if (isData) {
+          entries.push({ id: withoutExt, body: parsed.body, data });
+          continue;
+        }
+        const frontmatterSlug = parsed.data.slug;
+        const slug = typeof frontmatterSlug === "string" && frontmatterSlug !== ""
+          ? frontmatterSlug
+          : withoutExt.split("/").map((segment) => githubSlug(segment)).join("/").replace(/\/index$/, "");
+        entries.push({ id: file, slug, body: parsed.body, data });
+      }
+
+      return entries;
+    },
+  };
 }
 
 /**
@@ -693,7 +751,7 @@ export async function getEntry<T = Record<string, unknown>>(
     entryId = nameOrRef.id;
   }
   const entries = await getCollection<T>(collectionName);
-  return entries.find((e) => e.id === entryId);
+  return entries.find((e) => (e.slug ?? e.id) === entryId);
 }
 
 // ── Internal ──
@@ -710,10 +768,7 @@ async function loadCollection(
   config: CollectionConfig,
   name: string,
 ): Promise<InternalCollectionEntry[]> {
-  const loader = config.loader;
-  if (!loader) {
-    throw new Error(`Collection "${name}" has no loader. Use glob() or set directory.`);
-  }
+  const loader = config.loader ?? legacyCollectionLoader(name, config.type);
 
   let rawEntries: RawEntry[];
 
@@ -885,9 +940,13 @@ function resolveImageFactory(
  * produces M Zod schemas instead of N.
  */
 function makeSchemaResolver(
-  schema: z.ZodType<Record<string, unknown>, unknown> | SchemaFn,
+  schema: z.ZodType<Record<string, unknown>, unknown> | SchemaFn | undefined,
   host: ContentHost,
 ): (entryDir: string | null) => z.ZodType<Record<string, unknown>, unknown> {
+  if (schema === undefined) {
+    const passThrough = z.record(z.string(), z.unknown());
+    return () => passThrough;
+  }
   if (typeof schema !== "function") {
     return () => schema;
   }
@@ -943,6 +1002,7 @@ async function buildEntries(
         const validatedData = result.data;
         const entry: InternalCollectionEntry = {
           id: raw.id,
+          ...(raw.slug !== undefined ? { slug: raw.slug } : {}),
           data: validatedData,
           body: raw.body,
           render: async (components) => {
@@ -976,6 +1036,7 @@ async function buildEntries(
       let renderedHtml: string | null = null;
       const entry: InternalCollectionEntry = {
         id: raw.id,
+        ...(raw.slug !== undefined ? { slug: raw.slug } : {}),
         data: validatedData,
         body: raw.body,
         render: async () => {
