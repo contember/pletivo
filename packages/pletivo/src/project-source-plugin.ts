@@ -19,12 +19,13 @@ import { substituteImportMetaEnv, type SourceLoader } from "./import-meta-env";
 
 const registeredScopes = new Set<string>();
 
+// `.js`/`.mjs` load as `jsx`: Bun's native loader accepts JSX in them too.
 const LOADER_FOR_EXT: Record<string, SourceLoader> = {
   ".ts": "ts",
   ".mts": "ts",
   ".tsx": "tsx",
-  ".js": "js",
-  ".mjs": "js",
+  ".js": "jsx",
+  ".mjs": "jsx",
   ".jsx": "jsx",
 };
 

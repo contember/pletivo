@@ -84,36 +84,59 @@ describe("import.meta.env in a pletivo-native project build", () => {
     await fs.rm(path.join(nativeFixture, "dist"), { recursive: true, force: true });
   });
 
-  test("BASE_URL comes from pletivo's base", () => {
-    expect(JSON.parse(textOf(index, "env"))).toEqual({ base: "/sub", mode: "production", dev: false });
+  test("BASE_URL comes from pletivo's base, in .ts and .mjs modules", () => {
+    expect(JSON.parse(textOf(index, "env"))).toEqual({
+      base: "/sub",
+      mode: "production",
+      dev: false,
+      modeFromMjs: "production",
+    });
+  });
+
+  test("a .js module with JSX builds", () => {
+    expect(index).toContain('<span id="badge">production</span>');
   });
 });
 
 describe("import.meta.env under pletivo dev", () => {
-  let server: ReturnType<typeof Bun.spawn> | undefined;
-  let index: string;
+  const servers: ReturnType<typeof Bun.spawn>[] = [];
+  let astroIndex: string;
+  let nativeIndex: string;
 
-  beforeAll(async () => {
+  async function devPage(cwd: string, pathname: string): Promise<string> {
     const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     const port = probe.port;
     probe.stop(true);
-    server = Bun.spawn(["bun", cli, "dev", "--host", "127.0.0.1", "--port", String(port), "--no-restart"], {
-      cwd: astroFixture,
-      stdout: "ignore",
-      stderr: "inherit",
-    });
-    index = await fetchWhenUp(`http://127.0.0.1:${port}/docs`);
+    servers.push(
+      Bun.spawn(["bun", cli, "dev", "--host", "127.0.0.1", "--port", String(port), "--no-restart"], {
+        cwd,
+        stdout: "ignore",
+        stderr: "inherit",
+      }),
+    );
+    return fetchWhenUp(`http://127.0.0.1:${port}${pathname}`);
+  }
+
+  beforeAll(async () => {
+    [astroIndex, nativeIndex] = await Promise.all([
+      devPage(astroFixture, "/docs"),
+      devPage(nativeFixture, "/"),
+    ]);
   }, 60_000);
 
   afterAll(async () => {
-    server?.kill();
-    await server?.exited;
+    for (const server of servers) server.kill();
+    await Promise.all(servers.map((server) => server.exited));
   });
 
   test("modules see the development built-ins", () => {
-    const fromModule = JSON.parse(textOf(index, "module"));
+    const fromModule = JSON.parse(textOf(astroIndex, "module"));
     expect(fromModule).toMatchObject({ base: "/docs", mode: "development", dev: true, prod: false });
-    expect(textOf(index, "astro")).toBe("/docs|development");
+    expect(textOf(astroIndex, "astro")).toBe("/docs|development");
+  });
+
+  test("a .js module with JSX loads", () => {
+    expect(nativeIndex).toContain('<span id="badge">development</span>');
   });
 });
 
