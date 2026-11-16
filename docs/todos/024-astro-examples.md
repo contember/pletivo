@@ -79,7 +79,7 @@ the build, naming the file (#51, #59). blog builds now.
 | basics | yes | 2/2 | 1/1 | **match** |
 | blog | yes | 14/14 | 0/8 | stylesheets under 4 kB: Astro inlines them, pletivo links them |
 | container-with-vitest | yes | 4/4 | 2/2 | **match** |
-| framework-alpine | yes | 2/2 | 0/1 | the page-script bundle: Astro links it (over 4096 B), pletivo inlines it |
+| framework-alpine | yes | 2/2 | 0/1 | the page-script bundle: Astro always links it, pletivo inlines it |
 | framework-multiple | no | | | fails by name: Preact, React, Solid, Svelte and Vue components |
 | framework-preact | no | | | fails by name: Preact component |
 | framework-react | no | | | fails by name: React component |
@@ -107,16 +107,20 @@ Ordered by how many examples each one blocked at baseline.
 3. **Scoped style strategy** (8 of 10). Fixed in #52: the compiler runs with the
    project's `scopedStyleStrategy`, `attribute` by default as in Astro 5.
 4. **Framework renderers** (preact, react, solid, svelte, vue, multiple,
-   with-mdx, with-nanostores). Not fixed. Since #51 a component pletivo cannot
-   render fails the build by file and framework, instead of a tag named by its
-   path or `[object Object]`. Real renderers (each integration's server
+   with-mdx, with-nanostores). Not fixed. Since #51 a framework component a
+   `.astro` file imports fails the build by file and framework, instead of a tag
+   named by its path or `[object Object]`. Outside that import the error names
+   the component but not the file, and some cases still fail inside the
+   framework: with-mdx's `Counter.jsx`, imported from `.mdx`, still crashes on
+   `react/jsx-dev-runtime`. Real renderers (each integration's server
    renderer, `<astro-island>` and Astro's client runtime, on both hosts) are
    the next piece of work and replace the error.
-5. **Small hoisted scripts linked, Astro inlines them** (portfolio,
-   framework-preact). Fixed in #54: a processed script whose bundle imports
-   nothing and fits `vite.build.assetsInlineLimit` (4096 B, a function
-   honoured) is inlined; each script is emitted once per page, deduped on the
-   written HTML. Stylesheets are not covered; see Left.
+5. **Small hoisted scripts and stylesheets linked, Astro inlines them**
+   (portfolio, framework-preact). Half fixed. Scripts in #54: a processed
+   script whose bundle imports nothing and fits `vite.build.assetsInlineLimit`
+   (4096 B, a function honoured) is inlined; each script is emitted once per
+   page, deduped on the written HTML. Stylesheets are open and are now blog's
+   first difference; see Left.
 6. One example each:
    - extensionless endpoint `src/pages/api.ts` (container-with-vitest):
      fixed in #50;
@@ -142,35 +146,56 @@ Ordered by how many examples each one blocked at baseline.
   compiles on both hosts and waits for its own decision.
 - **Page scripts inline** (#60). `injectScript("page")` scripts are bundled
   into one inline module; the artifact format stays unchanged. framework-alpine
-  keeps one differing line, because Astro links that bundle once it passes
-  4096 B.
+  keeps one differing line: Astro always links that bundle (its small-script
+  inlining covers only `<script>` blocks in `.astro` files).
 - **One Zod per build** (#57). `astro/zod`, `astro:content`'s `z` and the
   `image()` / `reference()` helpers come from the project's Astro when it is
   installed.
 
 ## Left
 
-Remaining differences in examples that build:
+Differences seen in the examples that build. The list is not exhaustive: the
+harness reports the first difference per example, and these come from reading
+the normalised outputs.
+
+blog:
 
 - Stylesheets under `assetsInlineLimit`: Astro inlines them
-  (`build.inlineStylesheets: "auto"`), pletivo links every one (blog). The CSS
-  chunk plan decides per page set, not per page, so this needs a change in how
-  build CSS is planned.
+  (`build.inlineStylesheets: "auto"`). pletivo links every stylesheet a module
+  imports (it always inlines `.astro` `<style>`). The CSS chunk plan decides
+  per set of pages, not per page, so this needs a change in how build CSS is
+  planned.
+- `rss.xml` lists its items in a different order: the order `getCollection`
+  returns differs.
+- `sitemap-0.xml`: pletivo also lists `rss.xml` and `rss.xml/`.
+- MDX headings get no `id` (`.md` headings match); `<br/>` vs `<br>`.
+- `<Image>`: Astro writes `alt` and `fetchpriority="auto"`, in a different
+  attribute order; pletivo writes `alt=""` and no `fetchpriority`, and its file
+  name keeps a second hash the normaliser does not erase.
+
+portfolio:
+
 - `style={{ … }}` on an element renders `[object Object]`; Astro serializes the
-  object to CSS text (portfolio).
-- A custom element's scope attribute: Astro writes `data-astro-cid-x="true"`,
-  pletivo a bare attribute (portfolio).
-- Inline `<style>` set and order differ (portfolio).
-- `Icon.astro` in portfolio builds an id from `Math.random()`, so its pages can
+  object to CSS text.
+- An attribute whose value is `true`: Astro writes `="true"` for everything
+  but HTML boolean attributes, pletivo writes a bare attribute
+  (`data-astro-cid-x` on a custom element here; blog too).
+- Inline `<style>` set and order differ.
+- Two of the inlined scripts differ in minifier spelling (esbuild `const`,
+  `s=>` vs Bun `let`, `(s)=>`); the normaliser compares script text as is.
+- Whitespace after a component's root element (`</svg> ` vs `</svg>`).
+- `Icon.astro` builds an id from `Math.random()`, so its pages can
   never compare equal without a normaliser rule for it.
-- The page-script bundle is inlined regardless of size (framework-alpine, see
-  Decisions).
+
+framework-alpine: the page-script bundle is inlined, Astro links it (see
+Decisions).
 
 Found on the way, not blocking an example:
 
 - Markdoc rendering; for legacy collections, `render()` headings,
   `remarkPluginFrontmatter` and a custom `srcDir`.
-- An `astro.config` that fails to load silently builds as a native project.
+- An `astro.config` that fails to load logs the error, then builds the project
+  as a native one.
 - `prepare` alone cannot load `astro/config` when `astro` is not installed.
 - Workers: no Astro env built-ins; `api.ts` is classified by file name.
 - A linked hoisted bundle's `public/` references are not rewritten where
