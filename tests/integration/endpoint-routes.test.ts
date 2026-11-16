@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, spyOn } from "bun:test";
 import path from "path";
 import fs from "fs/promises";
 import { build } from "../../packages/pletivo/src/build";
@@ -27,9 +27,18 @@ async function exists(rel: string): Promise<boolean> {
 }
 
 describe("endpoint routes in src/pages", () => {
+  const warnings: string[] = [];
+
   beforeAll(async () => {
     __resetForTests();
-    await build(fixtureRoot, config);
+    const warn = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.join(" "));
+    });
+    try {
+      await build(fixtureRoot, config);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   afterAll(async () => {
@@ -78,6 +87,11 @@ describe("endpoint routes in src/pages", () => {
   test("a script page with a default export stays an HTML page", async () => {
     const content = await Bun.file(path.join(distDir, "plain/index.html")).text();
     expect(content).toContain("<h1>Plain page</h1>");
+  });
+
+  test("a dynamic extensionless endpoint is skipped as an unsupported dynamic endpoint", async () => {
+    expect(warnings).toContain("  Skipping items/[id].ts: dynamic endpoint routes are not supported (only static ones like rss.xml.ts)");
+    expect(await exists("items/a")).toBe(false);
   });
 
   test("XML endpoint keeps its declaration on the first byte", async () => {

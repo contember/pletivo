@@ -114,6 +114,45 @@ describe("e2e incremental rebuild", () => {
 		}
 	});
 
+	// A script page with a default export writes `about/index.html`; with only
+	// GET() it is an endpoint and writes a file named `about`. dist/ survives an
+	// incremental build, so each switch finds the other kind at its path.
+	const aboutEndpoint = `
+		export function GET() {
+			return new Response(JSON.stringify({ about: "endpoint" }));
+		}
+	`;
+
+	it("replaces a page's output when the route becomes an endpoint", async () => {
+		expect(runBuild().status).toBe(0);
+
+		await write("src/pages/about.ts", aboutEndpoint);
+		const second = runBuild();
+		expect(second.stderr).not.toContain("EISDIR");
+		expect(second.status).toBe(0);
+
+		const raw = await fs.readFile(path.join(projectRoot, "dist", "about"), "utf8");
+		expect(JSON.parse(raw)).toEqual({ about: "endpoint" });
+	});
+
+	it("replaces an endpoint's output when the route becomes a page", async () => {
+		await write("src/pages/about.ts", aboutEndpoint);
+		expect(runBuild().status).toBe(0);
+
+		await write("src/pages/about.ts", `
+			import Layout from "../components/Layout";
+			export default function About() {
+				return Layout({ title: "About", body: "<h1>About v2</h1>" });
+			}
+		`);
+		const second = runBuild();
+		expect(second.stderr).not.toContain("EEXIST");
+		expect(second.status).toBe(0);
+
+		const html = await fs.readFile(path.join(projectRoot, "dist", "about", "index.html"), "utf8");
+		expect(html).toContain("About v2");
+	});
+
 	it("--clean wipes the cache and forces every page to re-render", async () => {
 		expect(runBuild().status).toBe(0);
 		expect(runBuild().stdout).toMatch(/2 cached/);

@@ -23,9 +23,9 @@ export interface Route {
   /**
    * Non-HTML endpoint route — a script file carrying its own extension
    * (`robots.txt.ts`, `eshop.json.ts`), or an extensionless one whose module
-   * exports `GET()` and no default (see `resolveScriptRoute`). Renders via an exported `GET()`
-   * returning a Response, and emits that path verbatim instead of an
-   * `index.html` directory.
+   * exports `GET()` and no default (see `resolveScriptRoute`). Renders via an
+   * exported `GET()` returning a Response, and emits that path verbatim
+   * instead of an `index.html` directory.
    */
   isEndpoint: boolean;
 }

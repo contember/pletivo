@@ -456,6 +456,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const dynamicMods = new Map<string, DynamicMod>();
   const dynamicStaticPathsCache = new Map<string, Promise<StaticPath[]>>();
   const dynamicRouteCacheable = new Map<string, () => Promise<void>>();
+  // Extensionless dynamic endpoints (`[id].ts` with GET()), known only once imported.
+  const dynamicScriptEndpoints = new Set<string>();
   async function importDynamicRouteModule(fullPath: string): Promise<{ default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }> {
     const mod = await import(fullPath);
     registerCssPageEntry(fullPath);
@@ -481,6 +483,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     const { value: sp, runtimeDeps } = await runWithRuntimeDepCapture(async () => {
       const mod = await importDynamicRouteModule(fullPath);
       dynamicMods.set(route.file, mod);
+      if (resolveScriptRoute(route, mod).isEndpoint) {
+        dynamicScriptEndpoints.add(route.file);
+        return null;
+      }
       if (typeof mod.default !== "function") return null;
       if (typeof mod.getStaticPaths !== "function") return null;
       const paginate = createPaginate(route, base || "/");
@@ -676,7 +682,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   for (const route of dynamicRoutes) {
     // Dynamic endpoints (`[slug].json.ts`) are not supported. Say so loudly —
     // silently emitting nothing is how a broken deploy ships green.
-    if (route.isEndpoint) {
+    if (route.isEndpoint || dynamicScriptEndpoints.has(route.file)) {
       console.warn(`  Skipping ${route.file}: dynamic endpoint routes are not supported (only static ones like rss.xml.ts)`);
       continue;
     }
@@ -980,6 +986,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)}) [cached]`);
         return;
       }
+      if (cache) await removeOtherKindOutput(result.outPath, result.raw === true);
       if (result.raw) {
         // Endpoint output — bytes as produced. writeHtml would rewrite asset
         // refs and, lacking a </head>, prepend the page <style> block.
@@ -1138,6 +1145,24 @@ async function collectDistFiles(distDir: string): Promise<Set<string>> {
     out.add(rel);
   });
   return out;
+}
+
+/**
+ * An incremental build keeps dist/, so a route switched between page and endpoint
+ * finds `api/index.html` where the file `api` goes, or the reverse. A directory
+ * holding more than that `index.html` is a real route conflict, and rmdir fails.
+ */
+async function removeOtherKindOutput(outPath: string, raw: boolean): Promise<void> {
+  if (raw) {
+    const stat = await fs.stat(outPath).catch(() => null);
+    if (!stat?.isDirectory()) return;
+    await fs.rm(path.join(outPath, "index.html"), { force: true });
+    await fs.rmdir(outPath);
+    return;
+  }
+  const dir = path.dirname(outPath);
+  const stat = await fs.stat(dir).catch(() => null);
+  if (stat?.isFile()) await fs.unlink(dir);
 }
 
 async function pruneOrphanPageFiles(distDir: string, distFiles: Set<string>, keep: Set<string>): Promise<void> {
