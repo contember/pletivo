@@ -15,7 +15,8 @@ import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/as
 import { registerProjectSourcePlugin } from "./project-source-plugin";
 import { installImportMetaEnv } from "./import-meta-env";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
-import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
+import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
+import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
@@ -328,8 +329,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       // main render loop makes.
       if (route.file.endsWith(".md")) {
         rewriteEntries.set(from, fullPath);
-        return htmlResponse(await renderMarkdownFile(fullPath));
+        return htmlResponse(await renderMarkdownFile(fullPath, projectRoot));
       }
+      await assertPageLayoutSupported(fullPath, projectRoot);
       const mod = await import(fullPath);
       if (typeof mod.default !== "function") continue;
       // A dynamic target still needs its getStaticPaths props, or the
@@ -464,6 +466,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // Extensionless dynamic endpoints (`[id].ts` with GET()), known only once imported.
   const dynamicScriptEndpoints = new Set<string>();
   async function importDynamicRouteModule(fullPath: string): Promise<{ default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }> {
+    await assertPageLayoutSupported(fullPath, projectRoot);
     const mod = await import(fullPath);
     registerCssPageEntry(fullPath);
     await collectPageModuleCss(fullPath, `page:${fullPath}`);
@@ -553,6 +556,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       if (!mod) {
         // Cast to the map's value type, not `typeof mod` — the latter is
         // `DynamicMod | undefined`, which infects the set() and every use below.
+        await assertPageLayoutSupported(fullPath, projectRoot);
         mod = (await import(fullPath)) as DynamicMod;
         dynamicMods.set(routeFile, mod);
       }
@@ -609,7 +613,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
           fragments,
           distFiles,
           doRender: async () => ({
-            html: await renderMarkdownFile(fullPath),
+            html: await renderMarkdownFile(fullPath, projectRoot),
             renderedModules: new Set<string>(),
             tsxStyles: [],
           }),
@@ -617,6 +621,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
       }
 
+      await assertPageLayoutSupported(fullPath, projectRoot);
       const mod = await import(fullPath);
       // Collect CSS side-effect imports from non-.astro page modules. Runs
       // unconditionally (even for cached pages) so the global stylesheet
@@ -855,6 +860,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     for (const injected of astroHost.injectedRoutes) {
       try {
         const entrypoint = await resolveEntrypoint(injected.entrypoint, projectRoot);
+        await assertPageLayoutSupported(entrypoint, projectRoot);
         const mod = await import(entrypoint);
         registerCssPageEntry(entrypoint);
         await collectPageModuleCss(entrypoint, `page:${entrypoint}`);
@@ -1438,9 +1444,9 @@ function htmlResponse(html: string): Response {
 
 /** Render a `.md` page. It has no module to import, so the main render loop and
  * `Astro.rewrite` both go through here. */
-async function renderMarkdownFile(fullPath: string): Promise<string> {
-  const source = await Bun.file(fullPath).text();
-  const { html: body, frontmatter } = await parseMarkdown(source);
+async function renderMarkdownFile(fullPath: string, projectRoot: string): Promise<string> {
+  const { frontmatter, body: markdown } = await readMarkdownPage(fullPath, projectRoot);
+  const body = await renderMarkdown(markdown);
   const title = (frontmatter.title as string) || "";
   return `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
 }

@@ -24,7 +24,7 @@ import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
-import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
+import { astroMarkdownSettings, markdownPageLayoutReason, parseFrontmatter } from "@pletivo/core/content/markdown";
 import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
 import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
@@ -58,6 +58,8 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   if (fatal.length > 0) throw new PrepareError(fatal);
 
   const sources = await readSources(projectRoot, srcDir);
+  const pageLayouts = markdownPageLayouts(projectRoot, srcDir, sources);
+  if (pageLayouts.length > 0) throw new PrepareError(pageLayouts);
   const pluginModules = markdown.config === null
     ? []
     : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
@@ -117,6 +119,23 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
     });
   }
   return sources.sort((left, right) => compareStrings(left.id, right.id));
+}
+
+/** `.md` pages carrying a `layout:` no host applies yet. Content entries live outside `pages/`. */
+function markdownPageLayouts(
+  root: string,
+  srcDir: string,
+  sources: readonly ProjectImportSource[],
+): PrepareDiagnostic[] {
+  const pagesDir = path.join(realpathSync(path.resolve(root, srcDir)), "pages") + path.sep;
+  const diagnostics: PrepareDiagnostic[] = [];
+  for (const { file, source } of sources) {
+    if (!file.startsWith(pagesDir) || !file.endsWith(".md")) continue;
+    const page = normalizePath(path.relative(root, file));
+    const reason = markdownPageLayoutReason(page, parseFrontmatter(source).frontmatter);
+    if (reason) diagnostics.push({ source: page, hook: "layout", reason });
+  }
+  return diagnostics;
 }
 
 function unsupportedProjectSemantics(config: PletivoConfig): PrepareDiagnostic[] {

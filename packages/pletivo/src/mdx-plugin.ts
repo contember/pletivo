@@ -23,7 +23,7 @@ import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-
 import type { PletivoConfig } from "./config";
 import { substituteImportMetaEnv } from "./import-meta-env";
 import type { AstroIntegration } from "@pletivo/core/astro-host/types";
-import { astroMarkdownSettings, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
+import { astroMarkdownSettings, splitFrontmatter, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
 
 // Resolve absolute path to pletivo's jsx-runtime so compiled MDX can
 // import it even when pletivo isn't installed as a node_modules dep
@@ -236,9 +236,8 @@ export async function registerMdxPlugin(): Promise<void> {
         const rel = path.relative(process.cwd(), cleanPath);
         const source = await Bun.file(cleanPath).text();
 
-        // Strip YAML frontmatter before MDX compilation
-        const fmMatch = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
-        const body = fmMatch ? fmMatch[2] : source;
+        // Strip YAML frontmatter before MDX compilation; the same split the page `layout:` check reads.
+        const { body } = splitFrontmatter(source);
 
         let code: string;
         try {

@@ -13,7 +13,8 @@ import { devCss } from "./css";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
-import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
+import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
+import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
 import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";
@@ -365,12 +366,13 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     try {
       // Markdown pages — render directly without module import
       if (route.file.endsWith(".md")) {
-        const source = await Bun.file(fullPath).text();
-        const { html: body, frontmatter } = await parseMarkdown(source);
+        const { frontmatter, body: markdown } = await readMarkdownPage(fullPath, projectRoot);
+        const body = await renderMarkdown(markdown);
         const title = (frontmatter.title as string) || "";
         return { ok: true, html: `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>` };
       }
 
+      await assertPageLayoutSupported(fullPath, projectRoot);
       const importPath = fullPath + `?v=${getDevVersion()}`;
       const mod = await import(importPath);
       // Non-.astro page modules don't hit the astro plugin's onLoad, so
@@ -1276,6 +1278,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
           if (cleanPathname !== injectedPath) continue;
           try {
             const entrypoint = resolveInjectedEntrypoint(injected.entrypoint, projectRoot);
+            await assertPageLayoutSupported(entrypoint, projectRoot);
             const importPath = entrypoint + `?v=${getDevVersion()}`;
             const mod = await import(importPath);
             if (typeof mod.GET === "function") {
