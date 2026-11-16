@@ -1278,6 +1278,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
           if (cleanPathname !== injectedPath) continue;
           try {
             const entrypoint = resolveInjectedEntrypoint(injected.entrypoint, projectRoot);
+            await assertPageLayoutSupported(entrypoint, projectRoot);
             const importPath = entrypoint + `?v=${getDevVersion()}`;
             const mod = await import(importPath);
             if (typeof mod.GET === "function") {

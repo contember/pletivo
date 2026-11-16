@@ -860,6 +860,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     for (const injected of astroHost.injectedRoutes) {
       try {
         const entrypoint = await resolveEntrypoint(injected.entrypoint, projectRoot);
+        await assertPageLayoutSupported(entrypoint, projectRoot);
         const mod = await import(entrypoint);
         registerCssPageEntry(entrypoint);
         await collectPageModuleCss(entrypoint, `page:${entrypoint}`);
