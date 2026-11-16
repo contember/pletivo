@@ -41,7 +41,8 @@ import {
   resolveDefaultLocaleRedirect,
 } from "@pletivo/core/i18n/fallback";
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
-import { registerDevTsPlugin } from "./dev-ts-plugin";
+import { registerProjectSourcePlugin } from "./project-source-plugin";
+import { installImportMetaEnv } from "./import-meta-env";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { clearCollectedCss, clearJsImportedCssImportCache, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, jsOutputFromBuild, recordBuildCssOutputs } from "./js-imported-css";
@@ -206,11 +207,13 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     registerMdxPlugin(),
     registerCssModulesPlugin(),
     registerScssPlugin(projectRoot),
-    registerDevTsPlugin(projectRoot, config.srcDir),
+    registerProjectSourcePlugin(projectRoot, config.srcDir),
   ]);
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });
+  // Before initCollections: content.config.ts is the first project module imported.
+  installImportMetaEnv({ mode: "dev", base: config.base, astroConfig: astroHost?.config });
 
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));

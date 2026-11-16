@@ -1,0 +1,9 @@
+---
+import { fromModule } from "../env";
+---
+<html>
+  <body>
+    <pre id="module">{JSON.stringify(fromModule)}</pre>
+    <pre id="astro">{import.meta.env.BASE_URL}|{import.meta.env.MODE}</pre>
+  </body>
+</html>

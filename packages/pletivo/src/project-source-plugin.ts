@@ -1,9 +1,11 @@
 /**
- * Dev-only Bun plugin running `applyDevCacheBust` on `.ts`/`.tsx`/`.js`/
- * `.jsx` project files. Bun has no transform hook for these extensions,
- * so without this plugin the cache-bust chain breaks one hop past
- * `.astro` pages — a `.astro` page's transitive `.ts` helper stays
- * cached and the JSON/etc. it closes over never reloads.
+ * Bun plugin for the project's own `.ts`/`.tsx`/`.js`/`.jsx` files. Bun has no
+ * transform hook for these extensions, so this `onLoad` is the only place to:
+ *
+ * - substitute `import.meta.env` with Astro's values, as `.astro` and `.mdx` get it;
+ * - run `applyDevCacheBust` in dev, so the cache-bust chain does not break one hop
+ *   past `.astro` pages — a page's transitive `.ts` helper would stay cached and
+ *   the JSON/etc. it closes over never reload. A no-op in build.
  *
  * Filter is scoped to `<projectRoot>/<srcDir>/…` so node_modules entries
  * stay on Bun's native loader; returning a pass-through for dependency
@@ -13,6 +15,7 @@
 import path from "path";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { escapeRegex } from "@pletivo/core/escape-regex";
+import { substituteImportMetaEnv } from "./import-meta-env";
 
 const registeredScopes = new Set<string>();
 
@@ -23,7 +26,7 @@ const LOADER_FOR_EXT: Record<string, "ts" | "tsx" | "js" | "jsx"> = {
   ".jsx": "jsx",
 };
 
-export async function registerDevTsPlugin(
+export async function registerProjectSourcePlugin(
   projectRoot: string,
   srcDir: string = "src",
 ): Promise<void> {
@@ -36,7 +39,7 @@ export async function registerDevTsPlugin(
   );
 
   await Bun.plugin({
-    name: `pletivo-dev-ts:${srcPath}`,
+    name: `pletivo-project-source:${srcPath}`,
     setup(build) {
       build.onLoad({ filter }, async (args) => {
         const cleanPath = stripQuery(args.path);
@@ -45,7 +48,7 @@ export async function registerDevTsPlugin(
         if (cleanPath.endsWith(".d.ts")) return { contents: "", loader: "ts" };
 
         const ext = path.extname(cleanPath).toLowerCase();
-        const source = await Bun.file(cleanPath).text();
+        const source = substituteImportMetaEnv(await Bun.file(cleanPath).text());
         return {
           contents: applyDevCacheBust(source, getDevVersion()),
           loader: LOADER_FOR_EXT[ext] ?? "ts",
