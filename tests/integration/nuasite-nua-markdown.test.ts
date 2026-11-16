@@ -19,6 +19,7 @@ describe("@nuasite/nua markdown on the unified() processor", () => {
   describe("dev", () => {
     let server: ReturnType<typeof Bun.spawn> | undefined;
     let html: string;
+    let mdxHtml: string;
 
     beforeAll(async () => {
       const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
@@ -30,6 +31,7 @@ describe("@nuasite/nua markdown on the unified() processor", () => {
         stderr: "inherit",
       });
       html = await fetchWhenUp(`http://127.0.0.1:${port}/`);
+      mdxHtml = await fetchWhenUp(`http://127.0.0.1:${port}/mdx-page`);
     }, 60_000);
 
     afterAll(async () => {
@@ -41,6 +43,11 @@ describe("@nuasite/nua markdown on the unified() processor", () => {
       expect(html).toContain('class="youtube-embed"');
       expect(html).toContain("youtube-nocookie.com/embed/dQw4w9WgXcQ");
       expect(html).not.toContain("::youtube");
+    });
+
+    test("renders the CMS youtube directive in .mdx", () => {
+      expect(mdxHtml).toContain("youtube-nocookie.com/embed/mdxVideo01");
+      expect(mdxHtml).not.toContain("::youtube");
     });
 
     test("marks the rendered markdown for the CMS editor", () => {

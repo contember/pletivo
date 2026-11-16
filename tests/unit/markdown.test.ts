@@ -364,6 +364,13 @@ describe("astroMarkdownSettings", () => {
     expect(settings?.gfm).toBe(false);
   });
 
+  test("falls back to the top-level gfm when the processor leaves it unset", () => {
+    const settings = astroMarkdownSettings({
+      markdown: { gfm: false, processor: { name: "unified", options: { remarkPlugins: [], rehypePlugins: [] } } },
+    });
+    expect(settings?.gfm).toBe(false);
+  });
+
   test("keeps the top-level settings without a unified() processor", () => {
     const markdown = { remarkPlugins: [legacyPlugin], processor: { name: "satteri", options: { remarkPlugins: [processorPlugin] } } };
     expect(astroMarkdownSettings({ markdown })?.remarkPlugins).toEqual([legacyPlugin]);

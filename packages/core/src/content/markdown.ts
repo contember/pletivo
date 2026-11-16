@@ -58,9 +58,9 @@ export interface AstroMarkdownConfig extends AstroMarkdownSettings {
 }
 
 /**
- * The markdown settings Astro renders `.md` and `.mdx` with. Since Astro 7 they belong on a
- * `unified()` processor; Astro appends the deprecated top-level plugins after the processor's,
- * and top-level `remarkRehype` keys override its own. Any other processor keeps the top level.
+ * What Astro 7 renders `.md`/`.mdx` with: a `unified()` processor's plugins, then the deprecated top-level ones,
+ * whose `remarkRehype` keys override the processor's. Under another processor Astro skips the top level;
+ * pletivo keeps rendering it, as it did before processors existed.
  */
 export function astroMarkdownSettings(
   astroConfig?: { markdown?: AstroMarkdownConfig; [key: string]: unknown } | null,
