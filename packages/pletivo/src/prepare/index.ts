@@ -131,8 +131,9 @@ function markdownPageLayouts(
   const diagnostics: PrepareDiagnostic[] = [];
   for (const { file, source } of sources) {
     if (!file.startsWith(pagesDir) || !file.endsWith(".md")) continue;
-    const reason = markdownPageLayoutReason(parseFrontmatter(source).frontmatter);
-    if (reason) diagnostics.push({ source: normalizePath(path.relative(root, file)), hook: "layout", reason });
+    const page = normalizePath(path.relative(root, file));
+    const reason = markdownPageLayoutReason(page, parseFrontmatter(source).frontmatter);
+    if (reason) diagnostics.push({ source: page, hook: "layout", reason });
   }
   return diagnostics;
 }

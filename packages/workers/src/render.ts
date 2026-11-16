@@ -483,7 +483,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
       throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
     }
     // `prepare` refuses this too, but a file map can change after it or skip it.
-    const unsupported = markdownPageLayoutReason(parseFrontmatter(source).frontmatter);
+    const unsupported = markdownPageLayoutReason(file, parseFrontmatter(source).frontmatter);
     if (unsupported) throw new UnsupportedRouteError(file, unsupported);
     const markdown = options.artifact?.prepared.artifact.config.markdown === undefined
       ? { html: await renderMarkdownPage(source), bundleId: "", logs: NO_LOGS }

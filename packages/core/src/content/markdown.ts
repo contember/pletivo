@@ -106,12 +106,18 @@ export function parseYamlObject(input: string): Record<string, unknown> {
     : {};
 }
 
-export function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
+/** Split off a YAML frontmatter block without parsing it. `yaml` is null when there is none. */
+export function splitFrontmatter(content: string): { yaml: string | null; body: string } {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (!match) {
-    return { frontmatter: {}, body: content };
+    return { yaml: null, body: content };
   }
-  return { frontmatter: parseYamlObject(match[1]), body: match[2] };
+  return { yaml: match[1], body: match[2] };
+}
+
+export function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
+  const { yaml, body } = splitFrontmatter(content);
+  return { frontmatter: yaml === null ? {} : parseYamlObject(yaml), body };
 }
 
 /**
@@ -199,14 +205,15 @@ export async function parseMarkdown(content: string): Promise<ParsedMarkdown> {
 }
 
 /**
- * Why a `.md` *page* cannot render, or null. No host applies `layout:` yet, and
- * rendering without it ships the page without its layout's `<head>` and shell.
+ * Why a `.md`/`.mdx` *page* at `file` cannot render, or null. No host applies `layout:`
+ * yet, and rendering without it ships the page without its layout's `<head>` and shell.
  * Content-collection entries never come through here: their `layout` is plain data.
  */
-export function markdownPageLayoutReason(frontmatter: Record<string, unknown>): string | null {
+export function markdownPageLayoutReason(file: string, frontmatter: Record<string, unknown>): string | null {
   if (!frontmatter.layout) return null;
+  const wrap = file.endsWith(".mdx") ? ", import the layout and wrap the content in it," : "";
   return (
     "`layout:` in frontmatter is not supported by pletivo yet; the page would render without its layout. " +
-    "Render the content from an .astro page that uses the layout, or remove `layout:`"
+    `Render the content from an .astro page that uses the layout${wrap} or remove \`layout:\``
   );
 }

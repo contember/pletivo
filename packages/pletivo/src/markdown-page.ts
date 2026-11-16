@@ -10,9 +10,16 @@ export async function readMarkdownPage(
   fullPath: string,
   projectRoot: string,
 ): Promise<{ frontmatter: Record<string, unknown>; body: string }> {
-  const page = parseFrontmatter(await Bun.file(fullPath).text());
-  const unsupported = markdownPageLayoutReason(page.frontmatter);
-  if (unsupported) throw new Error(`${path.relative(projectRoot, fullPath)}: ${unsupported}`);
+  const file = path.relative(projectRoot, fullPath);
+  let page: { frontmatter: Record<string, unknown>; body: string };
+  try {
+    page = parseFrontmatter(await Bun.file(fullPath).text());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${file}: invalid frontmatter: ${message}`, { cause: error });
+  }
+  const unsupported = markdownPageLayoutReason(file, page.frontmatter);
+  if (unsupported) throw new Error(`${file}: ${unsupported}`);
   return page;
 }
 
