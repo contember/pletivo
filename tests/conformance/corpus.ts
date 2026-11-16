@@ -94,7 +94,7 @@ export const corpus: CorpusEntry[] = [
     // Hard for a second runtime: hoisted scripts need a bundler pass, which a
     // request-time runtime has to do somewhere other than in the request.
     covers: [
-      "hoisted <script> bundled to _astro/hoisted-<hash>.js and referenced by src",
+      "hoisted <script> bundled, and inlined under 4096 B as Astro does",
       "TypeScript stripped from hoisted scripts",
       "integration injectScript('page') and injectScript('head-inline') placement",
     ],

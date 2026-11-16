@@ -103,6 +103,25 @@ export const HOISTED_URL_PATH = "/_astro/hoisted-";
 /** Capture group is the hex hash. Not anchored — works under any base prefix. */
 export const HOISTED_URL_RE = /\/_astro\/hoisted-([a-f0-9]+)\.js/g;
 
+/** A hoisted-script tag as the astro shim's `renderScript` writes it, under any base prefix. */
+const HOISTED_TAG_RE = /<script type="module" src="[^"]*\/_astro\/hoisted-([a-f0-9]+)\.js"><\/script>/g;
+
+/**
+ * Keeps the first tag per script, as Astro emits each once per page, and inlines those in
+ * `inlined` (an empty bundle drops its tag). Dedupes the written HTML, not render calls:
+ * pletivo also renders slot fallbacks and children it may discard.
+ */
+export function inlineHoistedScripts(html: string, inlined: ReadonlyMap<string, string>): string {
+  const emitted = new Set<string>();
+  return html.replace(HOISTED_TAG_RE, (tag, hash: string) => {
+    if (emitted.has(hash)) return "";
+    emitted.add(hash);
+    const code = inlined.get(hash);
+    if (code === undefined) return tag;
+    return code === "" ? "" : `<script type="module">${code}</script>`;
+  });
+}
+
 export function hoistedEntrypoint(hash: string): string {
   return HOISTED_PREFIX + hash;
 }

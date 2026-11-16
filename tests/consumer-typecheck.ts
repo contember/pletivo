@@ -147,9 +147,12 @@ async function assertAstroPageBuilt(project: string): Promise<void> {
   const html = await fs.readFile(page, "utf8");
   if (!html.includes("packaged astro")) throw new Error("astro page did not render its content");
 
-  const script = /<script type="module" src="([^"]+)"><\/script>/.exec(html);
+  // Bundled to well under 4096 B with no imports left, so the build inlines it, as Astro does.
+  const script = /<script type="module">([\s\S]*?)<\/script>/.exec(html);
   if (!script) throw new Error("astro hoisted script was not emitted");
-  await fs.access(path.join(project, "dist", script[1].replace(/^\//, "")));
+  if (!script[1].includes("hoisted-ok") || /\bimport\b/.test(script[1])) {
+    throw new Error(`astro hoisted script was not bundled: ${script[1]}`);
+  }
 
   if (!/<style>[^<]*:where\(\.astro-/.test(html)) {
     throw new Error("astro scoped style was not emitted");

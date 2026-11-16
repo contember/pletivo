@@ -19,7 +19,6 @@ const config: PletivoConfig = {
 
 describe("astro hoisted <script> with relative import", () => {
   let html: string;
-  let bundlePath: string;
   let bundle: string;
   let css: string;
 
@@ -27,10 +26,10 @@ describe("astro hoisted <script> with relative import", () => {
     __resetForTests();
     await build(fixtureRoot, config);
     html = await Bun.file(path.join(distDir, "index.html")).text();
-    const m = html.match(/\/_astro\/hoisted-([a-f0-9]+)\.js/);
-    expect(m).not.toBeNull();
-    bundlePath = path.join(distDir, "_astro", `hoisted-${m![1]}.js`);
-    bundle = await Bun.file(bundlePath).text();
+    // Small and import-free once bundled, so the page inlines it, as Astro does.
+    const inline = [...html.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    expect(inline).toHaveLength(1);
+    bundle = inline[0];
     // The page links the shared sheet plus every CSS group it reaches;
     // read all of them so the assertions cover the page's whole cascade.
     const cssHrefs = [...html.matchAll(/href="([^"]*\/assets\/styles\.(?:[a-z0-9-]+\.)?[a-f0-9]{8}\.css)"/g)];
@@ -47,8 +46,8 @@ describe("astro hoisted <script> with relative import", () => {
     await fs.rm(distDir, { recursive: true, force: true });
   });
 
-  test("page references the bundled hoisted script via src=", () => {
-    expect(html).toMatch(/<script type="module" src="\/_astro\/hoisted-[a-f0-9]+\.js"><\/script>/);
+  test("page inlines the bundled hoisted script", () => {
+    expect(html).not.toMatch(/<script type="module" src="\/_astro\/hoisted-/);
   });
 
   test("relative import is resolved into the bundle", async () => {

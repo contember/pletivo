@@ -25,12 +25,13 @@ describe("astro <script> blocks (TypeScript stripped)", () => {
     __resetForTests();
     await build(fixtureRoot, config);
     html = await Bun.file(path.join(distDir, "index.html")).text();
-    // Hoisted <script> blocks now bundle into /_astro/hoisted-<hash>.js
-    // and are referenced from the page via <script src="…">. Locate the
-    // emitted bundle by its hash (extracted from the page) and read it.
-    const m = html.match(/\/_astro\/hoisted-([a-f0-9]+)\.js/);
-    expect(m).not.toBeNull();
-    hoistedJs = await Bun.file(path.join(distDir, "_astro", `hoisted-${m![1]}.js`)).text();
+    // The hoisted <script> bundles to under 4096 B and imports nothing, so,
+    // as in Astro, the page carries the bundle inline rather than linking it.
+    const inline = [...html.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)]
+      .map((m) => m[1])
+      .filter((code) => code.includes("hoisted-widget"));
+    expect(inline).toHaveLength(1);
+    hoistedJs = inline[0];
   });
 
   afterAll(async () => {
@@ -39,10 +40,9 @@ describe("astro <script> blocks (TypeScript stripped)", () => {
   });
 
   describe("hoisted <script>", () => {
-    test("page references the bundled script via src=, not inline", () => {
-      expect(html).toMatch(/<script type="module" src="\/_astro\/hoisted-[a-f0-9]+\.js"><\/script>/);
-      expect(html).not.toContain("HoistedWidget");
-      expect(html).not.toContain("fieldInteractions");
+    test("page inlines the bundled script, not its source", () => {
+      expect(html).not.toMatch(/<script type="module" src="\/_astro\/hoisted-/);
+      expect(html).not.toContain("class HoistedWidget");
     });
 
     test("strips `private` modifier and type annotations", () => {

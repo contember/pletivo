@@ -1,0 +1,5 @@
+---
+// Outputs its slot through Astro.slots.render(), as a wrapper that post-processes slot HTML does.
+const html = await Astro.slots.render("default");
+---
+<div class="panel" set:html={html} />

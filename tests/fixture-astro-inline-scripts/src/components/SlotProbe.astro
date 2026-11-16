@@ -1,0 +1,5 @@
+---
+// Renders the slot once to probe it and discards the result, then renders it again.
+const probe = await Astro.slots.render("default");
+---
+<div data-probe={probe.length > 0 ? "filled" : "empty"}><slot /></div>
