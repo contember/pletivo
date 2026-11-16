@@ -17,23 +17,26 @@ diff -r $TMPDIR/pletivo-astro-examples/<example>/normalized/{astro,pletivo}
 ```
 
 An example **matches** when both emit the same route list (every file outside
-the bundle directories: pages, endpoint output, `public/` copies) and every page
-is equal after normalisation. The normaliser erases only what two correct builds
+the bundle directories: pages, endpoint output, `public/` copies) and every route
+is equal. Other text routes (`.xml`, `.txt`, `.json`) are compared as written;
+pages are compared after a normaliser that erases only what two correct builds
 may disagree on:
 
 - whitespace a browser does not render: runs collapse to one space, and none is
-  kept next to a block-level tag; `<pre>`, `<textarea>` and `<script>` content
-  is compared byte for byte;
+  kept next to a block-level tag. A space next to an inline element (islands and
+  `<picture>` included) stays; `<pre>`, `<textarea>`, `<script>` and `<style>`
+  content is compared as is;
 - the `<meta name="generator">` value;
-- bundled asset URLs: directory and hash always, and the chunk name of CSS and
-  JS (`/_astro/index.Dm8K3lV8.css`, `/assets/styles.1b689b39.css`); an image or
-  font keeps its name;
+- bundled asset URLs, each side's own only (Astro's `_astro/`; pletivo's
+  `_astro/`, `_islands/` and `assets/*.css`): directory and hash always, and the
+  chunk name of CSS and JS. An image or font keeps its name. Every distinct URL
+  gets an ordinal, so two chunks or two `srcset` widths stay distinct;
 - scope-id hash values, as ordinals, so the element ↔ selector link still counts;
 - CSS minifier spelling: both sides' `<style>` text goes through the esbuild
-  Astro minified with.
+  Astro's Vite minified with.
 
-Bundled CSS and JS contents are not compared. Astro's output is cached per
-example, keyed by the example's files.
+Bundled CSS and JS contents are not compared. A successful Astro build is cached
+per example, keyed by the example's files.
 
 ## Baseline (main at 50f78dc)
 

@@ -73,7 +73,7 @@ async function resolveExamples(): Promise<ExamplesSource> {
   if (checkout) {
     const root = path.resolve(checkout);
     const astroPackage: unknown = JSON.parse(fs.readFileSync(path.join(root, "packages/astro/package.json"), "utf8"));
-    const version = typeof astroPackage === "object" && astroPackage !== null ? Reflect.get(astroPackage, "version") : undefined;
+    const version = typeof astroPackage === "object" && astroPackage !== null && "version" in astroPackage ? astroPackage.version : undefined;
     if (typeof version !== "string") throw new Error(`${root}/packages/astro/package.json has no version`);
     if (`astro@${version}` !== ASTRO_REF) {
       process.stderr.write(`warning: ${root} is at astro@${version}, the harness pins ${ASTRO_REF}\n`);
@@ -104,11 +104,11 @@ function pinDependencies(pkg: Record<string, unknown>): Record<string, unknown> 
   return pinned;
 }
 
-/** Files of the example as copied, skipping what a build or install writes. */
+/** Files of the example as copied, skipping what a build or install writes (the lockfile: the install marker covers it). */
 function sourceFiles(dir: string, rel = ""): string[] {
   const out: string[] = [];
   for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
-    if (rel === "" && (entry.name === "node_modules" || entry.name.startsWith("dist") || entry.name === "normalized" || entry.name === ".astro")) continue;
+    if (rel === "" && (entry.name === "node_modules" || entry.name.startsWith("dist") || entry.name === "normalized" || entry.name === ".astro" || entry.name === "bun.lock")) continue;
     const child = rel ? `${rel}/${entry.name}` : entry.name;
     if (entry.isDirectory()) out.push(...sourceFiles(dir, child));
     else out.push(child);
@@ -157,19 +157,25 @@ async function prepareExample(sourceDir: string, exampleDir: string): Promise<vo
 }
 
 /**
- * Astro minifies CSS with Vite's esbuild; the example's own copy is the canonical
- * spelling both sides are compared in, so Astro's output is a fixed point.
+ * Astro minifies CSS with Vite's esbuild; that copy, resolved through the example's
+ * astro and vite, is the canonical spelling both sides are compared in, so Astro's
+ * output is a fixed point.
  */
 async function exampleCssCanonicalizer(exampleDir: string): Promise<CssCanonicalizer> {
-  const esbuildPath = createRequire(path.join(exampleDir, "package.json")).resolve("esbuild");
+  const astroPath = createRequire(path.join(exampleDir, "package.json")).resolve("astro/package.json");
+  const vitePath = createRequire(astroPath).resolve("vite/package.json");
+  const esbuildPath = createRequire(vitePath).resolve("esbuild");
   const esbuild: unknown = await import(esbuildPath);
-  const transform = typeof esbuild === "object" && esbuild !== null ? Reflect.get(esbuild, "transform") : undefined;
-  if (typeof transform !== "function") throw new Error(`${esbuildPath} exports no transform()`);
+  if (typeof esbuild !== "object" || esbuild === null || !("transform" in esbuild) || typeof esbuild.transform !== "function") {
+    throw new Error(`${esbuildPath} exports no transform()`);
+  }
+  const transform = esbuild.transform;
   return async (css) => {
-    const result: unknown = await Reflect.apply(transform, esbuild, [css, { loader: "css", minify: true }]);
-    const code = typeof result === "object" && result !== null ? Reflect.get(result, "code") : undefined;
-    if (typeof code !== "string") throw new Error("esbuild transform() returned no code");
-    return code.trimEnd();
+    const result: unknown = await transform(css, { loader: "css", minify: true });
+    if (typeof result !== "object" || result === null || !("code" in result) || typeof result.code !== "string") {
+      throw new Error("esbuild transform() returned no code");
+    }
+    return result.code.trimEnd();
   };
 }
 
@@ -182,15 +188,13 @@ interface AstroRecord {
 function readAstroRecord(file: string, key: string, outDir: string): BuildResult | null {
   if (!fs.existsSync(file)) return null;
   const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const result: unknown = Reflect.get(parsed, "result");
-  if (Reflect.get(parsed, "key") !== key || typeof result !== "object" || result === null) return null;
-  const ok = Reflect.get(result, "ok");
-  const ms = Reflect.get(result, "ms");
-  const error = Reflect.get(result, "error");
-  if (typeof ok !== "boolean" || typeof ms !== "number") return null;
-  if (ok && !fs.existsSync(outDir)) return null;
-  return typeof error === "string" ? { ok, ms, error } : { ok, ms };
+  if (typeof parsed !== "object" || parsed === null || !("key" in parsed) || parsed.key !== key) return null;
+  if (!("result" in parsed) || typeof parsed.result !== "object" || parsed.result === null) return null;
+  const result = parsed.result;
+  if (!("ms" in result) || typeof result.ms !== "number") return null;
+  // Only a successful build is reused: a failure may have been transient (a timeout).
+  if (!("ok" in result) || result.ok !== true || !fs.existsSync(outDir)) return null;
+  return { ok: true, ms: result.ms };
 }
 
 /** The first line that names an error, then the last lines of the output. */
