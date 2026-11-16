@@ -13,7 +13,7 @@ import { devCss } from "./css";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
-import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
+import { parseMarkdown, configureMarkdown, markdownPageLayoutReason, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
 import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";
@@ -367,6 +367,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       if (route.file.endsWith(".md")) {
         const source = await Bun.file(fullPath).text();
         const { html: body, frontmatter } = await parseMarkdown(source);
+        const unsupported = markdownPageLayoutReason(frontmatter);
+        if (unsupported) throw new Error(`${path.relative(projectRoot, fullPath)}: ${unsupported}`);
         const title = (frontmatter.title as string) || "";
         return { ok: true, html: `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>` };
       }

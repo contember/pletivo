@@ -15,7 +15,7 @@ import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/as
 import { registerProjectSourcePlugin } from "./project-source-plugin";
 import { installImportMetaEnv } from "./import-meta-env";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
-import { parseMarkdown, configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
+import { parseMarkdown, configureMarkdown, markdownPageLayoutReason, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
@@ -328,7 +328,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       // main render loop makes.
       if (route.file.endsWith(".md")) {
         rewriteEntries.set(from, fullPath);
-        return htmlResponse(await renderMarkdownFile(fullPath));
+        return htmlResponse(await renderMarkdownFile(fullPath, path.relative(projectRoot, fullPath)));
       }
       const mod = await import(fullPath);
       if (typeof mod.default !== "function") continue;
@@ -609,7 +609,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
           fragments,
           distFiles,
           doRender: async () => ({
-            html: await renderMarkdownFile(fullPath),
+            html: await renderMarkdownFile(fullPath, path.relative(projectRoot, fullPath)),
             renderedModules: new Set<string>(),
             tsxStyles: [],
           }),
@@ -1437,10 +1437,12 @@ function htmlResponse(html: string): Response {
 }
 
 /** Render a `.md` page. It has no module to import, so the main render loop and
- * `Astro.rewrite` both go through here. */
-async function renderMarkdownFile(fullPath: string): Promise<string> {
+ * `Astro.rewrite` both go through here. `file` names the page in errors. */
+async function renderMarkdownFile(fullPath: string, file: string): Promise<string> {
   const source = await Bun.file(fullPath).text();
   const { html: body, frontmatter } = await parseMarkdown(source);
+  const unsupported = markdownPageLayoutReason(frontmatter);
+  if (unsupported) throw new Error(`${file}: ${unsupported}`);
   const title = (frontmatter.title as string) || "";
   return `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
 }

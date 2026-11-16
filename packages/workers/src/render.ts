@@ -15,7 +15,7 @@ import {
   type Route,
   type RouteParams,
 } from "@pletivo/core/router";
-import { parseMarkdown } from "@pletivo/core/content/markdown";
+import { markdownPageLayoutReason, parseFrontmatter, parseMarkdown } from "@pletivo/core/content/markdown";
 import type { ResolvedI18nConfig } from "@pletivo/core/i18n/config";
 import { resolveFallbackRoute } from "@pletivo/core/i18n/fallback";
 import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
@@ -482,6 +482,9 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     if (match.route.isDynamic) {
       throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
     }
+    // `prepare` refuses this too, but a file map can change after it or skip it.
+    const unsupported = markdownPageLayoutReason(parseFrontmatter(source).frontmatter);
+    if (unsupported) throw new UnsupportedRouteError(file, unsupported);
     const markdown = options.artifact?.prepared.artifact.config.markdown === undefined
       ? { html: await renderMarkdownPage(source), bundleId: "", logs: NO_LOGS }
       : await isolateMarkdownPage(file, source, options);

@@ -1,0 +1,12 @@
+---
+import { getCollection, render } from "astro:content";
+
+const [post] = await getCollection("posts");
+const { Content } = await render(post);
+---
+<html>
+  <head><title>{post.data.title}</title></head>
+  <body>
+    <article data-layout={post.data.layout}><Content /></article>
+  </body>
+</html>

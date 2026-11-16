@@ -753,6 +753,16 @@ describe("renderPage, refusals", () => {
     expect(String(error)).toContain("endpoint routes are not implemented");
   });
 
+  test("refuses a .md page with a layout: it cannot apply, naming the page", async () => {
+    const files = new Map([
+      ["src/pages/about.md", "---\ntitle: About\nlayout: ../layouts/Base.astro\n---\n\ntext\n"],
+    ]);
+    const error = await rejection(renderPage({ files, pathname: "/about", loader, compiler }));
+    expect(error).toBeInstanceOf(UnsupportedRouteError);
+    expect(String(error)).toContain('"src/pages/about.md"');
+    expect(String(error)).toContain("`layout:` in frontmatter is not supported by pletivo yet");
+  });
+
   test("404s a dynamic route that never said what its paths are", async () => {
     // `blog/[slug].astro` declares neither getStaticPaths nor the on-demand opt-out.
     const error = await rejection(render("/blog/hello"));
