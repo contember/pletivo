@@ -11,45 +11,55 @@ sites (`hackernews`, `ssr`: SSR with the node adapter; `component`,
 `integration`, `toolbar-app`: packages). That leaves 18.
 
 ```bash
-cpu-lease run -n 2 -- bun tests/astro-examples/run.ts --astro ~/path/to/astro-checkout
+bun tests/astro-examples/run.ts --astro ~/path/to/astro-checkout
 bun tests/astro-examples/run.ts --compare-only     # re-compare the last outputs
 diff -r $TMPDIR/pletivo-astro-examples/<example>/normalized/{astro,pletivo}
 ```
 
 An example **matches** when both emit the same route list (every file outside
-`_astro/` and pletivo's hashed bundles: pages, endpoint output, `public/` copies)
-and every page is equal after normalisation. The normaliser erases only what two
-correct builds may disagree on: whitespace between tags, the
-`<meta name="generator">` value, bundled asset URLs (`/_astro/x.Dm8K3lV8.css`,
-`/assets/styles.1b689b39.css`), scope-id hash values (kept as ordinals, so the
-element ↔ selector link still counts), and CSS minifier spelling (both sides'
-`<style>` text goes through the same minifier). Bundled CSS and JS contents are
-not compared.
+the bundle directories: pages, endpoint output, `public/` copies) and every page
+is equal after normalisation. The normaliser erases only what two correct builds
+may disagree on:
+
+- whitespace a browser does not render: runs collapse to one space, and none is
+  kept next to a block-level tag; `<pre>`, `<textarea>` and `<script>` content
+  is compared byte for byte;
+- the `<meta name="generator">` value;
+- bundled asset URLs: directory and hash always, and the chunk name of CSS and
+  JS (`/_astro/index.Dm8K3lV8.css`, `/assets/styles.1b689b39.css`); an image or
+  font keeps its name;
+- scope-id hash values, as ordinals, so the element ↔ selector link still counts;
+- CSS minifier spelling: both sides' `<style>` text goes through the esbuild
+  Astro minified with.
+
+Bundled CSS and JS contents are not compared. Astro's output is cached per
+example, keyed by the example's files.
 
 ## Baseline (main at 50f78dc)
 
-10 of 18 examples build with pletivo, **0 of 18 match**.
+10 of 18 examples build with pletivo, **0 of 18 match**. Routes are common/Astro's,
+`+n` the routes only pletivo emits (a hashed `public/` file counts there).
 
-| example | pletivo builds | routes (common/astro +extra) | pages equal | first difference |
+| example | pletivo builds | routes | pages equal | first difference |
 |---|---|---|---|---|
-| basics | yes | 1/2 +1 | 0/1 | scope strategy: `data-astro-cid-*` vs `class="astro-*"` |
+| basics | yes | 1/2 +2 | 0/1 | scope strategy: `data-astro-cid-*` vs `class="astro-*"` |
 | blog | no | | | `@astrojs/rss`: `z.function().returns is not a function` (`astro/zod` is zod 4) |
-| container-with-vitest | yes | 2/4 +1 | 0/2 | missing `api` (extensionless endpoint), `favicon.svg` |
-| framework-alpine | yes | 1/2 +1 | 0/1 | injected page script emitted raw, bare `import "alpinejs"` |
+| container-with-vitest | yes | 2/4 +2 | 0/2 | missing `api` (extensionless endpoint), `favicon.svg` |
+| framework-alpine | yes | 1/2 +2 | 0/1 | injected page script emitted raw, bare `import "alpinejs"` |
 | framework-multiple | no | | | `solid-js` has no `jsxDEV` (no Solid renderer) |
-| framework-preact | yes | 1/2 +1 | 0/1 | `<pletivo-island>` vs `<astro-island>` |
+| framework-preact | yes | 1/2 +2 | 0/1 | Preact component rendered as `[object Object]` |
 | framework-react | no | | | `dispatcher.useState` of null (no React renderer) |
 | framework-solid | no | | | `solid-js` has no `jsxDEV` (no Solid renderer) |
-| framework-svelte | yes | 1/2 +1 | 0/1 | Svelte component emitted as a tag named by its absolute path |
-| framework-vue | yes | 1/2 +1 | 0/1 | Vue component emitted as a tag named by its absolute path |
-| minimal | yes | 1/2 +1 | 0/1 | `public/favicon.svg` hashed |
-| portfolio | yes | 8/34 +1 | 0/8 | 26 `public/` files hashed; small scripts linked, Astro inlines them |
+| framework-svelte | yes | 1/2 +2 | 0/1 | Svelte component emitted as a tag named by its absolute path |
+| framework-vue | yes | 1/2 +2 | 0/1 | Vue component emitted as a tag named by its absolute path |
+| minimal | yes | 1/2 +2 | 0/1 | `public/favicon.svg` hashed |
+| portfolio | yes | 8/34 +27 | 0/8 | 26 `public/` files hashed; small scripts linked, Astro inlines them |
 | starlog | no | | | `astro:transitions` missing ([011](011-view-transitions.md)) |
 | with-markdoc | no | | | `defineCollection({})` with no loader (Astro 5 falls back to `src/content/<name>`) |
 | with-mdx | no | | | `Counter.jsx` compiled with React's JSX runtime, not Preact's |
 | with-nanostores | no | | | `import.meta.env.BASE_URL` undefined in a `.ts` module |
-| with-tailwindcss | yes | 2/3 +1 | 0/2 | `.md` page layout loses `<html lang>` and `<meta viewport>` |
-| with-vitest | yes | 1/2 +1 | 0/1 | `public/favicon.svg` hashed |
+| with-tailwindcss | yes | 2/3 +2 | 0/2 | `.md` page layout loses `<html lang>` and `<meta viewport>` |
+| with-vitest | yes | 1/2 +2 | 0/1 | `public/favicon.svg` hashed |
 
 ## Gaps, by how many examples they block
 
@@ -67,10 +77,10 @@ fixed.
    difference, not only a markup one.
 4. **Framework renderers** (7: preact, react, solid, svelte, vue, multiple,
    with-mdx; with-nanostores after its own fix). `addRenderer()` is a no-op;
-   pletivo renders JSX components itself and wraps them in `<pletivo-island>`.
-   A Svelte or Vue component comes out as a tag named by its absolute file path
-   (`</abs/src/components/Counter.svelte client:visible …>`), silently; React
-   and Solid crash.
+   pletivo renders JSX components itself. A Svelte or Vue component comes out
+   as a tag named by its absolute file path
+   (`</abs/src/components/Counter.svelte client:visible …>`), a Preact one as
+   `[object Object]`, both silently; React and Solid crash.
 5. **Small hoisted scripts and stylesheets are linked, Astro inlines them**
    (portfolio, framework-preact).
 6. One example each: extensionless endpoint (container-with-vitest),

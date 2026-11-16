@@ -18,7 +18,7 @@ bun test tests/unit/                     # Test directory
 bun test packages/workers/test           # Workers host (its own CI step)
 
 # Astro's official examples: build with Astro and pletivo, compare (docs/todos/024)
-cpu-lease run -n 2 -- bun tests/astro-examples/run.ts [--astro <checkout>] [--only basics,blog]
+bun tests/astro-examples/run.ts [--astro <checkout>] [--only basics,blog]
 
 # Benchmark (pletivo vs native Astro build)
 scripts/benchmark.sh                     # 5 runs (default)

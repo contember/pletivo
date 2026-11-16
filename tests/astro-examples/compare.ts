@@ -3,8 +3,9 @@
  *
  * A *route* is every emitted file that is not a bundled asset: pages, endpoint
  * output (rss.xml, sitemap) and files copied from `public/`. Bundled assets
- * (`_astro/`) carry content hashes whose algorithm is an implementation detail,
- * so they are compared only through the pages that reference them.
+ * carry content hashes whose algorithm is an implementation detail, so they are
+ * compared only through the URLs pages reference them by; their contents are not
+ * compared.
  *
  * HTML is normalised before the comparison. Each rule erases something two
  * correct builds are free to disagree on; anything else is a difference.
@@ -12,7 +13,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { minifyCss } from "../../packages/pletivo/src/css-minify";
 
 export interface Comparison {
   routes: {
@@ -42,14 +42,26 @@ function walk(root: string, dir = root, out: string[] = []): string[] {
   return out;
 }
 
-/** Bundled assets: Astro's `_astro/` dir, and pletivo's hashed files next to it. */
-function isBundledAsset(file: string): boolean {
-  return file.startsWith("_astro/") || /\.[0-9a-f]{8}\.\w+$/i.test(file) || /(^|\/)hoisted-[0-9a-f]{16}\.js$/.test(file);
+/** Astro writes every bundled asset under `_astro/`. */
+function isAstroBundle(file: string): boolean {
+  return file.startsWith("_astro/");
+}
+
+/**
+ * pletivo writes images and scripts under `_astro/`, islands under `_islands/`
+ * and stylesheets as `assets/<name>.<hash>.css`. A hashed `public/` file stays a
+ * route, so it shows up as a difference.
+ */
+function isPletivoBundle(file: string): boolean {
+  return file.startsWith("_astro/") || file.startsWith("_islands/") || /^assets\/[\w-]+\.[0-9a-f]{8}\.css$/.test(file);
 }
 
 const TEXT_ROUTE = /\.(html?|xml|txt|json|svg|webmanifest|css|js)$/i;
 
-export function createHtmlNormalizer(): (html: string) => Promise<string> {
+/** Rewrites a stylesheet into one canonical spelling. */
+export type CssCanonicalizer = (css: string) => Promise<string>;
+
+export function createHtmlNormalizer(canonicalCss: CssCanonicalizer): (html: string) => Promise<string> {
   const ordinals = new Map<string, string>();
   const ordinal = (kind: string, value: string) => {
     const key = `${kind}:${value}`;
@@ -66,23 +78,57 @@ export function createHtmlNormalizer(): (html: string) => Promise<string> {
     let text = html.replace(/\r\n/g, "\n");
     // Names the tool that built the page.
     text = text.replace(/(<meta name="generator" content=")[^"]*"/g, '$1[generator]"');
-    // Bundled asset URLs: the directory, name and hash are bundler output.
-    text = text.replace(BUNDLED_ASSET_URL, (_m, ext: string) => `/[asset].${ext}`);
+    // Bundled asset URLs: the directory and hash are bundler output, and so is the
+    // name of a CSS or JS chunk. An image or font keeps its name.
+    text = text.replace(BUNDLED_ASSET_URL, (_m, name: string, ext: string) =>
+      /^(css|m?js)$/.test(ext) ? `/[bundle].${ext}` : `/[asset]/${name}.${ext}`);
     // Scope ids hash the component path and the compiler version; ordinals keep
     // the element ↔ selector link checkable.
     text = text.replace(/data-astro-cid-([a-z0-9]{8})/g, (_m, id: string) => `data-astro-cid-${ordinal("cid", id)}`);
     text = text.replace(/\bastro-([a-z0-9]{8})\b/g, (_m, id: string) => `astro-${ordinal("scope", id)}`);
     // Minifiers spell equal CSS differently (`0.25em` / `.25em`, `white` / `#fff`):
     // both sides go through the same one.
-    text = await replaceAsync(text, /(<style[^>]*>)([\s\S]*?)(<\/style>)/g, async (open, css, close) => `${open}${await minifyCss(css)}${close}`);
-    // Whitespace between tags and runs of whitespace are not rendered.
-    text = text.replace(/>\s+</g, "><").replace(/\s+/g, " ").trim();
+    text = await replaceAsync(text, /(<style[^>]*>)([\s\S]*?)(<\/style>)/g, async (open, css, close) => `${open}${await canonicalCss(css)}${close}`);
+    text = collapseWhitespace(text);
     return text;
   };
 }
 
-/** `/_astro/name.Dm8K3lV8.svg` (Astro), `/_astro/name.d26c3520.svg` and `/assets/styles.1b689b39.css` (pletivo). */
-const BUNDLED_ASSET_URL = /\/(?:_astro|assets)\/(?:[\w-]+\/)*[\w.-]+?\.[\w-]{8}\.(css|js|mjs|png|jpe?g|webp|avif|gif|svg|woff2?)\b/g;
+/**
+ * `/_astro/name.Dm8K3lV8.svg` and `/_astro/name.Dm8K3lV8_Z1abc.webp` (Astro, the second
+ * a processed image), `/_astro/name.d26c3520.svg` and `/assets/styles.1b689b39.css` (pletivo).
+ */
+const BUNDLED_ASSET_URL =
+  /\/(?:_astro|assets)\/(?:[\w-]+\/)*([\w.-]+?)\.[\w-]{8}(?:_[\w-]+)?\.(css|js|mjs|png|jpe?g|webp|avif|gif|svg|woff2?|ttf|otf)\b/g;
+
+/** Elements whose content is kept byte for byte: whitespace there renders or runs. */
+const RAW_TEXT = /(<(pre|textarea|script)\b[^>]*>[\s\S]*?<\/\2\s*>)/gi;
+
+/** Tags whitespace next to does not render: block-level and non-rendered elements. */
+const BLOCK_TAG =
+  /\s*(<\/?(?:html|head|body|meta|link|title|style|base|noscript|template|div|p|section|main|article|aside|header|footer|nav|ul|ol|li|dl|dt|dd|h[1-6]|table|thead|tbody|tfoot|tr|td|th|caption|form|fieldset|legend|hr|br|figure|figcaption|blockquote|address|details|summary|dialog|picture|source|astro-island|astro-slot|pletivo-island)\b[^>]*>|<!--[\s\S]*?-->|<!doctype[^>]*>)\s*/gi;
+
+/**
+ * Whitespace runs collapse to one space, and disappear next to a block-level tag,
+ * as a browser renders them. `<pre>`, `<textarea>` and `<script>` keep theirs, and
+ * a space between two inline elements stays: it renders.
+ */
+function collapseWhitespace(html: string): string {
+  const parts = html.split(RAW_TEXT);
+  return parts
+    .map((part, i) => {
+      // `split` with two capture groups yields [text, raw, tagName, text, …].
+      if (i % 3 === 1) return part;
+      if (i % 3 === 2) return "";
+      let text = part.replace(/\s+/g, " ").replace(BLOCK_TAG, "$1");
+      // A raw-text element is block-level or not rendered: no space next to it renders either.
+      if (i > 0) text = text.trimStart();
+      if (i < parts.length - 1) text = text.trimEnd();
+      return text;
+    })
+    .join("")
+    .trim();
+}
 
 async function replaceAsync(
   text: string,
@@ -102,16 +148,22 @@ async function replaceAsync(
 
 /** Split normalised HTML at tag boundaries so a diff points at an element. */
 function lines(text: string): string[] {
-  return text.replace(/></g, ">\n<").split("\n");
+  return text.replace(/> ?</g, (m) => `${m.slice(0, -1)}\n<`).split("\n");
 }
 
+/** The first differing line pair, each cut to start a little before the first differing character. */
 function firstDifference(a: string, b: string): { astro: string; pletivo: string } {
   const la = lines(a);
   const lb = lines(b);
   for (let i = 0; i < Math.max(la.length, lb.length); i++) {
-    if (la[i] !== lb[i]) {
-      return { astro: (la[i] ?? "<end>").slice(0, 160), pletivo: (lb[i] ?? "<end>").slice(0, 160) };
-    }
+    const x = la[i] ?? "<end>";
+    const y = lb[i] ?? "<end>";
+    if (x === y) continue;
+    let at = 0;
+    while (at < x.length && x[at] === y[at]) at++;
+    const from = Math.max(0, at - 30);
+    const cut = (line: string) => `${from > 0 ? "…" : ""}${line.slice(from, from + 120)}`;
+    return { astro: cut(x), pletivo: cut(y) };
   }
   return { astro: "", pletivo: "" };
 }
@@ -120,10 +172,15 @@ function firstDifference(a: string, b: string): { astro: string; pletivo: string
  * `dumpDir` receives the normalised text of every differing route, one line per
  * element, under `astro/` and `pletivo/`, for `diff -r`.
  */
-export async function compareOutputs(astroDir: string, pletivoDir: string, dumpDir?: string): Promise<Comparison> {
+export async function compareOutputs(
+  astroDir: string,
+  pletivoDir: string,
+  canonicalCss: CssCanonicalizer,
+  dumpDir?: string,
+): Promise<Comparison> {
   if (dumpDir) fs.rmSync(dumpDir, { recursive: true, force: true });
-  const astroRoutes = walk(astroDir).filter((f) => !isBundledAsset(f)).sort();
-  const pletivoRoutes = walk(pletivoDir).filter((f) => !isBundledAsset(f)).sort();
+  const astroRoutes = walk(astroDir).filter((f) => !isAstroBundle(f)).sort();
+  const pletivoRoutes = walk(pletivoDir).filter((f) => !isPletivoBundle(f)).sort();
   const pletivoSet = new Set(pletivoRoutes);
   const astroSet = new Set(astroRoutes);
   const common = astroRoutes.filter((r) => pletivoSet.has(r));
@@ -131,8 +188,8 @@ export async function compareOutputs(astroDir: string, pletivoDir: string, dumpD
   const extra = pletivoRoutes.filter((r) => !astroSet.has(r));
   const astroPages = astroRoutes.filter((r) => r.endsWith(".html"));
 
-  const normalizeAstro = createHtmlNormalizer();
-  const normalizePletivo = createHtmlNormalizer();
+  const normalizeAstro = createHtmlNormalizer(canonicalCss);
+  const normalizePletivo = createHtmlNormalizer(canonicalCss);
   const matchingPages: string[] = [];
   const diffs: Comparison["diffs"] = [];
   for (const route of common) {
@@ -164,7 +221,7 @@ export async function compareOutputs(astroDir: string, pletivoDir: string, dumpD
   if (extra.length) parts.push(`extra ${extra.slice(0, 3).join(", ")}${extra.length > 3 ? ` (+${extra.length - 3})` : ""}`);
   if (diffs.length) {
     const d = diffs[0];
-    parts.push(`${d.route}: \`${d.astro.slice(0, 70)}\` vs \`${d.pletivo.slice(0, 70)}\``);
+    parts.push(`${d.route}: \`${d.astro.slice(0, 80)}\` vs \`${d.pletivo.slice(0, 80)}\``);
   }
   return {
     routes: { astro: astroRoutes, astroPages, common, missing, extra },
