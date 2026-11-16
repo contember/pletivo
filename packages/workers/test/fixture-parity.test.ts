@@ -73,6 +73,18 @@ describe("byte parity with pletivo build", () => {
   );
 
   test(
+    "the page-scripts fixture carries the build's bundled injectScript('page') module",
+    async () => {
+      const { ok, output } = await localParity("tests/fixture-astro-page-scripts");
+      // The Workers host emits `scripts.page` from the artifact; `prepare` froze the
+      // module the build inlines (`tests/integration/astro-page-scripts.test.ts`).
+      expect(output).toContain("2/2 byte-identical");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test(
     "the vendor fixture renders a page whose components come from npm",
     async () => {
       const { ok, output } = await localParity("packages/workers/test/fixture-vendor");

@@ -77,9 +77,9 @@ describe("astro <script> blocks (TypeScript stripped)", () => {
 
   describe("integration injectScript", () => {
     test("strips TS from `page` stage", () => {
+      // Bundled and minified, so the local name is gone; what it did is not.
       expect(html).not.toMatch(/injectedPageValue\s*:\s*number/);
-      expect(html).toContain("injectedPageValue");
-      expect(html).toContain("42");
+      expect(html).toMatch(/dataset\.injectedPage\s*=\s*String\(42\)/);
     });
 
     test("strips TS from `head-inline` stage", () => {

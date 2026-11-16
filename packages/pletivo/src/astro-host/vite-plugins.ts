@@ -19,7 +19,7 @@ import { createHash } from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { pathToFileURL } from "url";
-import type { Loader } from "bun";
+import type { BunPlugin, Loader } from "bun";
 import type { ServerShim } from "@pletivo/core/astro-host/server-shim";
 import type { LoadResult, ResolveIdResult, ViteLikePlugin } from "@pletivo/core/astro-host/types";
 
@@ -40,8 +40,15 @@ export function configureVitePluginHost(projectRoot: string): void {
 export async function ensureBunPlugin(): Promise<void> {
   if (bunPluginRegistered) return;
   bunPluginRegistered = true;
+  await Bun.plugin(viteVirtualModulesPlugin());
+}
 
-  await Bun.plugin({
+/**
+ * Collected plugins' `resolveId` → `load` as a Bun plugin: the runtime loader registers it,
+ * and a `Bun.build` that bundles code importing a Vite virtual module passes it.
+ */
+export function viteVirtualModulesPlugin(): BunPlugin {
+  return {
     name: "pletivo-vite-plugin-host",
     setup(build) {
       // onResolve: walk Vite plugins' resolveId hooks. First plugin to
@@ -82,7 +89,7 @@ export async function ensureBunPlugin(): Promise<void> {
         },
       );
     },
-  });
+  };
 }
 
 /**

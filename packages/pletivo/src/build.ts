@@ -19,6 +19,7 @@ import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@plet
 import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
+import { bundlePageScripts } from "./astro-host/page-scripts";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
 import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
 import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
@@ -206,6 +207,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       }
     }
   }
+  // One inline module on every page, the same one `pletivo prepare` freezes for Workers.
+  const pageScript = astroHost ? await bundlePageScripts(astroHost.injectedPageScripts, projectRoot) : null;
 
   // Persistent dist when incremental is on: we leave whatever the
   // previous build produced in place, and each route's writeHtml call
@@ -1006,7 +1009,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
         return;
       }
-      const size = await writeHtml(result.outPath, result.html, base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, result.renderedModules, result.tsxStyles, result.entryFile);
+      const size = await writeHtml(result.outPath, result.html, base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
       totalSize += size;
       renderedCount++;
       // Now that we know the final byte count, patch it onto the
@@ -1486,6 +1489,7 @@ async function writeHtml(
   base: string,
   cssHrefs: string[],
   publicManifest: Map<string, string>,
+  pageScript: string | null,
   renderedModules?: Set<string>,
   tsxStyles?: string[],
   entryFile?: string,
@@ -1548,7 +1552,7 @@ async function writeHtml(
   if (host) {
     const injected = [
       ...host.injectedHeadScripts.map((s) => `<script>${s}</script>`),
-      ...host.injectedPageScripts.map((s) => `<script type="module">${s}</script>`),
+      ...(pageScript === null ? [] : [`<script type="module">${pageScript}</script>`]),
     ].join("\n");
     if (injected && html.includes("</head>")) {
       html = html.replace("</head>", injected + "\n</head>");
