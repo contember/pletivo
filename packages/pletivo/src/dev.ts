@@ -13,6 +13,7 @@ import { devCss } from "./css";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
+import { bundlePageScripts } from "./astro-host/page-scripts";
 import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
@@ -481,17 +482,18 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         ? (beforeHydration ? "\n" + beforeHydration : "") + "\n" + hydrationScript()
         : "";
       const scripts = hmrClientScript() + hydrationBlock;
+      const pageScript = await devPageScript();
       const integrationScripts = astroHost
         ? [
             ...astroHost.injectedHeadScripts.map((s) => `<script>${s}</script>`),
-            ...astroHost.injectedPageScripts.map((s) => `<script type="module">${s}</script>`),
+            ...(pageScript === null ? [] : [`<script type="module">${pageScript}</script>`]),
           ].join("\n")
         : "";
       const headInjection = styleLink + "\n" + scopedStyleTag + "\n" + scripts + (integrationScripts ? "\n" + integrationScripts : "");
       if (html.includes("</head>")) {
-        html = html.replace("</head>", headInjection + "\n</head>");
+        html = html.replace("</head>", () => headInjection + "\n</head>");
       } else if (html.includes("</body>")) {
-        html = html.replace("</body>", headInjection + "\n</body>");
+        html = html.replace("</body>", () => headInjection + "\n</body>");
       } else {
         html += headInjection;
       }
@@ -542,6 +544,17 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   function seesRawErrors(req: Request): boolean {
     if (!shieldingActive) return true;
     return req.headers.get(debugHeaderName) !== null;
+  }
+
+  // The build's page-script bundle, rebuilt after a source change or a setup retry.
+  let pageScriptBundle: { key: string; code: Promise<string | null> } | null = null;
+  function devPageScript(): Promise<string | null> {
+    const scripts = astroHost?.injectedPageScripts ?? [];
+    const key = `${getDevVersion()}\0${scripts.join("\0")}`;
+    if (pageScriptBundle?.key !== key) {
+      pageScriptBundle = { key, code: bundlePageScripts(scripts, projectRoot) };
+    }
+    return pageScriptBundle.code;
   }
 
   async function buildDevHoistedScript(hash: string) {
@@ -619,9 +632,9 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     const styleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
     const headInjection = `${styleLink}\n${styleTag}\n${hmrClientScript()}`;
     if (html.includes("</head>")) {
-      html = html.replace("</head>", headInjection + "\n</head>");
+      html = html.replace("</head>", () => headInjection + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", headInjection + "\n</body>");
+      html = html.replace("</body>", () => headInjection + "\n</body>");
     } else {
       html += headInjection;
     }

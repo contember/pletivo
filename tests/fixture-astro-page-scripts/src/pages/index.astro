@@ -1,0 +1,17 @@
+---
+const title = "Page Scripts";
+---
+<html>
+  <head><title>{title}</title></head>
+  <body>
+    <h1>Page Scripts</h1>
+    <p class="dollar">patterns</p>
+  </body>
+</html>
+
+<style>
+  /* `String.replace` reads these as substitution patterns in a string replacement. */
+  .dollar::after {
+    content: "$$|$&|$'";
+  }
+</style>

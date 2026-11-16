@@ -133,7 +133,7 @@ function injectHydrationScripts(html: string, directives: Set<string>, result: A
   }
 
   if (prescripts) {
-    return html.replace(/(<astro-island\s)/, prescripts + '$1');
+    return html.replace(/(<astro-island\s)/, (island) => prescripts + island);
   }
   return html;
 }

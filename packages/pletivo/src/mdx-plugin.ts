@@ -265,7 +265,7 @@ export async function registerMdxPlugin(): Promise<void> {
         // import resolves even when pletivo is run from source.
         code = code.replace(
           /(from\s+["'])pletivo\/jsx-runtime(["'])/g,
-          `$1${jsxRuntimePath}$2`,
+          (_match, open: string, close: string) => open + jsxRuntimePath + close,
         );
 
         // In dev mode, append version query to .astro and .json imports for

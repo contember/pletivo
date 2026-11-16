@@ -17,6 +17,7 @@ import {
   type ScopedStyleStrategy,
 } from "@pletivo/core/astro-host/scoped-style";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
+import { bundlePageScripts } from "../astro-host/page-scripts";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
@@ -64,6 +65,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
     ? []
     : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
   const graph = await prepareModuleGraph(projectRoot, sources, freezeViteVirtualModule, pluginModules);
+  const pageScript = await freezePageScripts(host, projectRoot);
 
   return {
     artifact: {
@@ -71,7 +73,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
       config: freezeConfig(host?.config, markdown.config, routing, scopedStyle.strategy),
       scripts: {
         headInline: [...(host?.injectedHeadScripts ?? [])],
-        page: [...(host?.injectedPageScripts ?? [])],
+        page: pageScript === null ? [] : [pageScript],
       },
       modules: graph.modules,
       resolutions: graph.resolutions,
@@ -79,6 +81,16 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
     },
     inputs,
   };
+}
+
+/** Bundled here, on Bun, because the Worker cannot resolve a package or a Vite plugin. */
+async function freezePageScripts(host: AstroHost | null, projectRoot: string): Promise<string | null> {
+  if (!host) return null;
+  try {
+    return await bundlePageScripts(host.injectedPageScripts, projectRoot);
+  } catch (error) {
+    throw prepareFailure("astro.config", "injectScript", error instanceof Error ? error.message : String(error));
+  }
 }
 
 async function readSources(root: string, srcDir: string): Promise<ProjectImportSource[]> {

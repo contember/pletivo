@@ -19,6 +19,7 @@ import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@plet
 import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
+import { bundlePageScripts } from "./astro-host/page-scripts";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
 import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
 import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
@@ -175,22 +176,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   await initCollections(projectRoot);
   phase("initCollections", tColl);
 
-  // Cache + snapshot restore. `configHash` includes the pletivo config
-  // and (if present) the user's astro config file content + lockfile —
-  // any of those changing busts the entire route cache.
-  const tCacheLoad = performance.now();
-  const configHash = await computeProjectConfigHash(projectRoot, config);
-  // Incremental is opt-in: a plain build is a full rebuild. `clean`
-  // implies incremental — you only wipe the cache to rebuild it fresh.
-  const incremental = options.incremental || options.clean;
-  const cache: CacheStore | null = !incremental
-    ? null
-    : options.clean
-      ? await CacheStore.forceClean(projectRoot, configHash)
-      : await CacheStore.load(projectRoot, configHash);
-  const fragments: FragmentsHelper | null = await resolveFragmentsHelper(projectRoot);
-  phase("cache load + fragments resolve", tCacheLoad);
-
+  // Before the cache load: neither hook reads the cache, and `astro:build:setup` may
+  // add the Vite plugin that serves a page script.
   const tAstroStart = performance.now();
   if (astroHost) {
     await astroHost.runBuildStart();
@@ -206,6 +193,27 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       }
     }
   }
+  phase("astroHost runBuildStart+Setup", tAstroStart);
+
+  // One inline module on every page, the same one `pletivo prepare` freezes for Workers.
+  // It is part of every cached page, so it is part of the config hash.
+  const pageScript = astroHost ? await bundlePageScripts(astroHost.injectedPageScripts, projectRoot) : null;
+
+  // Cache + snapshot restore. `configHash` includes the pletivo config
+  // and (if present) the user's astro config file content + lockfile —
+  // any of those changing busts the entire route cache.
+  const tCacheLoad = performance.now();
+  const configHash = await computeProjectConfigHash(projectRoot, config, pageScript);
+  // Incremental is opt-in: a plain build is a full rebuild. `clean`
+  // implies incremental — you only wipe the cache to rebuild it fresh.
+  const incremental = options.incremental || options.clean;
+  const cache: CacheStore | null = !incremental
+    ? null
+    : options.clean
+      ? await CacheStore.forceClean(projectRoot, configHash)
+      : await CacheStore.load(projectRoot, configHash);
+  const fragments: FragmentsHelper | null = await resolveFragmentsHelper(projectRoot);
+  phase("cache load + fragments resolve", tCacheLoad);
 
   // Persistent dist when incremental is on: we leave whatever the
   // previous build produced in place, and each route's writeHtml call
@@ -217,7 +225,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // With caching off we still wipe — that path matches the historical
   // pletivo behavior exactly so tooling that diffs dist/ across runs
   // keeps working.
-  phase("astroHost runBuildStart+Setup", tAstroStart);
   const tDistWipe = performance.now();
   if (!cache) {
     await fs.rm(distDir, { recursive: true, force: true });
@@ -1006,7 +1013,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
         return;
       }
-      const size = await writeHtml(result.outPath, result.html, base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, result.renderedModules, result.tsxStyles, result.entryFile);
+      const size = await writeHtml(result.outPath, result.html, base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
       totalSize += size;
       renderedCount++;
       // Now that we know the final byte count, patch it onto the
@@ -1234,7 +1241,11 @@ async function canReuseDeps(deps: Record<string, import("./incremental/cache").D
  *     when the bundle's filename changes, cached pages would otherwise
  *     ship a <link> to a file that no longer exists).
  */
-async function computeProjectConfigHash(projectRoot: string, config: PletivoConfig): Promise<string> {
+async function computeProjectConfigHash(
+  projectRoot: string,
+  config: PletivoConfig,
+  pageScript: string | null,
+): Promise<string> {
   const parts: Array<string | Buffer> = [];
   parts.push(JSON.stringify({
     base: config.base,
@@ -1269,6 +1280,7 @@ async function computeProjectConfigHash(projectRoot: string, config: PletivoConf
   if (lock !== "__missing__") parts.push(`bun.lock=${lock}`);
   const cssParts = await hashSrcCssFiles(path.join(projectRoot, config.srcDir));
   for (const p of cssParts) parts.push(p);
+  if (pageScript !== null) parts.push(`pageScript=${pageScript}`);
   return await computeConfigHash(parts);
 }
 
@@ -1486,6 +1498,7 @@ async function writeHtml(
   base: string,
   cssHrefs: string[],
   publicManifest: Map<string, string>,
+  pageScript: string | null,
   renderedModules?: Set<string>,
   tsxStyles?: string[],
   entryFile?: string,
@@ -1500,7 +1513,7 @@ async function writeHtml(
   html = timeSync("rewriteRefs", () => rewriteRefs(html, publicManifest));
 
   if (cssHrefs.length > 0 && html.includes("</head>")) {
-    html = html.replace("</head>", `${stylesheetLinks(base, cssHrefs)}</head>`);
+    html = html.replace("</head>", () => `${stylesheetLinks(base, cssHrefs)}</head>`);
   }
 
   // Inject per-page CSS from <style> blocks in .astro components, in the
@@ -1520,9 +1533,9 @@ async function writeHtml(
   if (combinedCss) {
     const styleTag = `<style>${combinedCss}</style>`;
     if (html.includes("</head>")) {
-      html = html.replace("</head>", styleTag + "\n</head>");
+      html = html.replace("</head>", () => styleTag + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", styleTag + "\n</body>");
+      html = html.replace("</body>", () => styleTag + "\n</body>");
     } else {
       html = styleTag + "\n" + html;
     }
@@ -1533,9 +1546,9 @@ async function writeHtml(
   if (cssModulesOutput) {
     const moduleStyleTag = `<style>${cssModulesOutput}</style>`;
     if (html.includes("</head>")) {
-      html = html.replace("</head>", moduleStyleTag + "\n</head>");
+      html = html.replace("</head>", () => moduleStyleTag + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", moduleStyleTag + "\n</body>");
+      html = html.replace("</body>", () => moduleStyleTag + "\n</body>");
     } else {
       html = moduleStyleTag + "\n" + html;
     }
@@ -1548,10 +1561,10 @@ async function writeHtml(
   if (host) {
     const injected = [
       ...host.injectedHeadScripts.map((s) => `<script>${s}</script>`),
-      ...host.injectedPageScripts.map((s) => `<script type="module">${s}</script>`),
+      ...(pageScript === null ? [] : [`<script type="module">${pageScript}</script>`]),
     ].join("\n");
     if (injected && html.includes("</head>")) {
-      html = html.replace("</head>", injected + "\n</head>");
+      html = html.replace("</head>", () => injected + "\n</head>");
     }
   }
 
@@ -1562,9 +1575,9 @@ async function writeHtml(
       .join("\n") ?? "";
     const hydrationBlock = (beforeHydration ? beforeHydration + "\n" : "") + hydrationScript();
     if (html.includes("</head>")) {
-      html = html.replace("</head>", hydrationBlock + "\n</head>");
+      html = html.replace("</head>", () => hydrationBlock + "\n</head>");
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", hydrationBlock + "\n</body>");
+      html = html.replace("</body>", () => hydrationBlock + "\n</body>");
     } else {
       html += hydrationBlock;
     }
@@ -1615,7 +1628,7 @@ async function refreshCachedHtmlCssLink(
   });
 
   if (cssHrefs.length > 0 && !replaced && html.includes("</head>")) {
-    next = html.replace("</head>", nextLinks + "</head>");
+    next = html.replace("</head>", () => nextLinks + "</head>");
   }
 
   if (next !== html) {

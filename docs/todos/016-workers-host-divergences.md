@@ -85,6 +85,18 @@ These contracts landed after the measurements below. They are the current baseli
   - Tailwind always compiles against the host-embedded release, not the project's
     vendored one.
   - `Astro.preferredLocale` stays unset: the isolate does not see request headers.
+- `injectScript("page")` scripts reach the host already bundled. `pletivo prepare` bundles
+  them on Bun into one browser module, packages and Vite virtual modules included, and
+  stores it in `scripts.page`. The Workers host and `pletivo build` both write that module
+  inline on every page, so the two agree byte for byte. The bundle is frozen at prepare
+  time. If a page script reaches a project file, the artifact's `inputs` do not record
+  that file, so an edit to it neither shows in the bundle nor marks the artifact stale
+  until `prepare` runs again. A project file is reached by a relative import, or by a Vite
+  plugin whose `load()` returns one. Example: `@astrojs/alpinejs` with an `entrypoint`
+  option. That integration cannot reach this limit yet: pletivo calls no plugin's
+  `configResolved`, so its `entrypoint` is never set. Recording the files after the
+  bundle reads them would leave a window in which a racing edit reads as current, which
+  is the race `inputs` are digested before loading to avoid.
 - `example-playground/` is the sole live-workspace reference: the Durable Object owns
   the workspace, `ContentFiles`, and DO-self content binding. `example/` is an
   intentionally request-scoped, content-free preview.
