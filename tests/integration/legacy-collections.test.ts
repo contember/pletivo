@@ -1,16 +1,34 @@
-import { describe, test, expect, beforeAll } from "bun:test";
+import { describe, test, expect, beforeAll, beforeEach, spyOn } from "bun:test";
 import path from "path";
 import {
   initCollections,
   getCollection,
   getEntry,
   runWithBunContentRuntime,
+  type Reference,
 } from "../../packages/pletivo/src/content/collection";
+import { registerMdxPlugin } from "../../packages/pletivo/src/mdx-plugin";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-legacy-collections");
 
+/** The messages `console.warn` received while `fn` ran. */
+async function warningsOf(fn: () => Promise<unknown>): Promise<string[]> {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await fn();
+    return warn.mock.calls.map((args) => args.map(String).join(" "));
+  } finally {
+    warn.mockRestore();
+  }
+}
+
 describe("collections defined without a loader (Astro 5 legacy collections)", () => {
   beforeAll(async () => {
+    await registerMdxPlugin();
+  });
+
+  // A fresh generation per test, so a collection's load (and its warnings) belongs to the test.
+  beforeEach(async () => {
     await runWithBunContentRuntime(() => initCollections(fixtureRoot));
   });
 
@@ -21,6 +39,9 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
       { id: "Guides/index.md", slug: "guides" },
       { id: "custom.md", slug: "renamed" },
       { id: "intro.md", slug: "intro" },
+      { id: "notes.mdoc", slug: "notes" },
+      { id: "other.markdown", slug: "other" },
+      { id: "page.mdx", slug: "page" },
     ]);
   });
 
@@ -32,11 +53,87 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
     expect(await runWithBunContentRuntime(() => getEntry("docs", "intro.md"))).toBeUndefined();
   });
 
+  test("getEntry takes a { collection, slug } lookup", async () => {
+    const entry = await runWithBunContentRuntime(() => getEntry({ collection: "docs", slug: "renamed" }));
+    expect(entry?.id).toBe("custom.md");
+  });
+
+  test("reference() accepts { slug, collection }, and getEntry resolves it", async () => {
+    const [refs] = await runWithBunContentRuntime(() => getCollection<{ doc: Reference }>("refs"));
+    const doc = await runWithBunContentRuntime(() => getEntry(refs?.data.doc));
+    expect(doc?.id).toBe("custom.md");
+  });
+
+  test("the frontmatter slug is not part of data, so a strict schema accepts it", async () => {
+    const custom = await runWithBunContentRuntime(() => getEntry("docs", "renamed"));
+    expect(custom?.data).toEqual({ title: "Custom" });
+    const strict = await runWithBunContentRuntime(() => getCollection("strict"));
+    expect(strict.map((e) => ({ slug: e.slug, data: e.data }))).toEqual([
+      { slug: "strictly", data: { title: "Strict" } },
+    ]);
+  });
+
   test("an entry of a collection without a schema keeps its frontmatter and renders", async () => {
     const intro = await runWithBunContentRuntime(() => getEntry("docs", "intro"));
     expect(intro?.data).toEqual({ title: "Intro" });
     const rendered = await intro?.render();
     expect(rendered?.html).toContain("Welcome</h1>");
+  });
+
+  test("render() also returns Astro's Content, headings and remarkPluginFrontmatter", async () => {
+    const intro = await runWithBunContentRuntime(() => getEntry("docs", "intro"));
+    const rendered = await intro?.render();
+    expect(rendered?.headings).toEqual([]);
+    expect(rendered?.remarkPluginFrontmatter).toEqual({});
+    const content = await rendered?.Content?.();
+    expect(content?.__html).toContain("Welcome</h1>");
+  });
+
+  test("a non-.md Markdown spelling is a content entry", async () => {
+    const other = await runWithBunContentRuntime(() => getEntry("docs", "other"));
+    expect(other?.id).toBe("other.markdown");
+    expect((await other?.render())?.html).toContain("<code>.markdown</code>");
+  });
+
+  test("an .mdx entry renders through the MDX pipeline", async () => {
+    const page = await runWithBunContentRuntime(() => getEntry("docs", "page"));
+    expect(page?.data).toEqual({ title: "MDX page" });
+    const rendered = await page?.render();
+    expect(rendered?.html).toContain("From MDX</h1>");
+    expect(rendered?.html).toContain("Two is 2.");
+    const content = await rendered?.Content?.();
+    expect(content?.__html).toContain("Two is 2.");
+  });
+
+  test("a Markdoc entry has its data, but rendering it fails by name", async () => {
+    const notes = await runWithBunContentRuntime(() => getEntry("docs", "notes"));
+    expect(notes?.data).toEqual({ title: "Notes" });
+    await expect(notes?.render()).rejects.toThrow(/notes\.mdoc: pletivo has no Markdoc renderer/);
+  });
+
+  test("a collection whose directory does not exist is empty and warns", async () => {
+    let entries: unknown[] = [];
+    const warnings = await warningsOf(async () => {
+      entries = await runWithBunContentRuntime(() => getCollection("missing"));
+    });
+    expect(entries).toEqual([]);
+    expect(warnings).toEqual([
+      'No files found matching "**/*.{md,markdown,mdown,mkdn,mkd,mdwn,mdx,mdoc}" in directory ' +
+        '"src/content/missing". Collection "missing" has no loader, so it is read from there.',
+    ]);
+  });
+
+  test("a repeated slug warns and the later file replaces the earlier one", async () => {
+    let entries: Array<{ id: string; slug?: string; data: Record<string, unknown> }> = [];
+    const warnings = await warningsOf(async () => {
+      entries = await runWithBunContentRuntime(() => getCollection("dup"));
+    });
+    expect(entries.map((e) => ({ id: e.id, slug: e.slug, title: e.data.title }))).toEqual([
+      { id: "b.md", slug: "same", title: "Second" },
+    ]);
+    expect(warnings).toEqual([
+      'Duplicate id "same" found in src/content/dup/b.md. Later items with the same id will overwrite earlier ones.',
+    ]);
   });
 
   test("a data collection reads JSON and YAML, with ids that keep their path", async () => {

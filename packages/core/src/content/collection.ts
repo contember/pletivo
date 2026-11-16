@@ -112,17 +112,24 @@ export interface Reference {
 
 /**
  * Astro-compatible `reference()`. Returns a Zod schema that accepts a string
- * id (or an object with `{ id, collection }`) and stores it as a Reference
- * marker. `getEntry(ref)` resolves the marker to the target entry.
+ * id (or an object with `{ id, collection }`, or a legacy content entry's
+ * `{ slug, collection }`) and stores it as a Reference marker. `getEntry(ref)`
+ * resolves the marker to the target entry.
  */
 export function reference(collectionName: string): z.ZodType<Reference> {
   return z
-    .union([z.string(), z.object({ id: z.string(), collection: z.string() })])
+    .union([
+      z.string(),
+      z.object({ id: z.string(), collection: z.string() }),
+      z.object({ slug: z.string(), collection: z.string() }),
+    ])
     .transform((value): Reference => {
       if (typeof value === "string") {
         return { collection: collectionName, id: value, __pletivoReference: true };
       }
-      return { collection: value.collection, id: value.id, __pletivoReference: true };
+      // A legacy content entry is looked up by its slug, which `getEntry` matches in place of the id.
+      const id = "id" in value ? value.id : value.slug;
+      return { collection: value.collection, id, __pletivoReference: true };
     });
 }
 
@@ -214,7 +221,17 @@ export interface CollectionConfig {
   transform?: (html: string, data: Record<string, unknown>) => string;
 }
 
-export interface RenderResult {
+/** What Astro's `render(entry)` returns. pletivo collects no headings, so `headings` is empty. */
+export interface AstroRenderResult {
+  Content: (props?: { components?: Record<string, unknown> }) =>
+    | { __html: string }
+    | Promise<{ __html: string }>;
+  headings: unknown[];
+  remarkPluginFrontmatter: Record<string, unknown>;
+}
+
+/** `entry.render()`. A legacy content entry (one with a `slug`) also returns Astro's fields. */
+export interface RenderResult extends Partial<AstroRenderResult> {
   html: string;
 }
 
@@ -505,8 +522,11 @@ async function readContentFile(
   return { data: parsed.frontmatter, body: parsed.body, extras };
 }
 
-/** Astro's content entry extensions this layer can render: Markdown's spellings and MDX. */
-const LEGACY_CONTENT_PATTERN = "**/*.{md,markdown,mdown,mkdn,mkd,mdwn,mdx}";
+/**
+ * Astro's content entry extensions: Markdown's spellings, MDX and Markdoc. Markdoc
+ * is read so its entries' data is there, but `render()` refuses it by name.
+ */
+const LEGACY_CONTENT_PATTERN = "**/*.{md,markdown,mdown,mkdn,mkd,mdwn,mdx,mdoc}";
 const LEGACY_DATA_PATTERN = "**/*.{json,yaml,yml}";
 
 /**
@@ -516,38 +536,60 @@ const LEGACY_DATA_PATTERN = "**/*.{json,yaml,yml}";
  * A data collection's id is its path without the extension. A content collection
  * is emulated the way Astro emulates its legacy API: `id` is the path with its
  * extension and `slug` (frontmatter `slug`, else the slugified path without the
- * extension or a trailing `/index`) is what `getEntry()` finds it by.
+ * extension or a trailing `/index`) is what `getEntry()` finds it by. The
+ * frontmatter `slug` is not part of `data`, as in Astro.
+ *
+ * Entries are keyed like Astro's store (slug, or a data entry's id): a repeated
+ * key warns and the later file replaces the earlier one in its place.
  */
 function legacyCollectionLoader(name: string, type: CollectionConfig["type"]): Loader {
+  // Astro resolves this from `srcDir`; pletivo finds the content config under `src/` too.
   const base = `src/content/${name}`;
   const isData = type === "data";
+  const pattern = isData ? LEGACY_DATA_PATTERN : LEGACY_CONTENT_PATTERN;
   return {
     __globBase: base,
     async load(projectRoot: string): Promise<RawEntry[]> {
       const host = requireHost();
-      const scan = await host.scan(projectRoot, base, isData ? LEGACY_DATA_PATTERN : LEGACY_CONTENT_PATTERN);
+      const scan = await host.scan(projectRoot, base, pattern);
       collectionLoadStorage.getStore()?.add(scan.root);
-      const entries: RawEntry[] = [];
-
-      for (const { entry: file, path: fullPath } of scan.files) {
-        if (file.split("/").some((segment) => segment.startsWith("_"))) continue;
-        const parsed = await readContentFile(host, file, fullPath);
-        if (!parsed) continue;
-        const data = { ...parsed.data, ...parsed.extras };
-        const withoutExt = file.slice(0, file.length - extensionOf(file).length);
-
-        if (isData) {
-          entries.push({ id: withoutExt, body: parsed.body, data });
-          continue;
-        }
-        const frontmatterSlug = parsed.data.slug;
-        const slug = typeof frontmatterSlug === "string" && frontmatterSlug !== ""
-          ? frontmatterSlug
-          : withoutExt.split("/").map((segment) => githubSlug(segment)).join("/").replace(/\/index$/, "");
-        entries.push({ id: file, slug, body: parsed.body, data });
+      const files = scan.files.filter(({ entry }) => !entry.split("/").some((segment) => segment.startsWith("_")));
+      if (files.length === 0) {
+        // A host cannot always tell a missing directory from an empty one, so one warning covers both.
+        console.warn(
+          `No files found matching "${pattern}" in directory "${base}". ` +
+            `Collection "${name}" has no loader, so it is read from there.`,
+        );
+        return [];
       }
 
-      return entries;
+      const entries = new Map<string, RawEntry>();
+      for (const { entry: file, path: fullPath } of files) {
+        const parsed = await readContentFile(host, file, fullPath);
+        if (!parsed) continue;
+        const withoutExt = file.slice(0, file.length - extensionOf(file).length);
+
+        let entry: RawEntry;
+        if (isData) {
+          entry = { id: withoutExt, body: parsed.body, data: { ...parsed.data, ...parsed.extras } };
+        } else {
+          const { slug: frontmatterSlug, ...data } = parsed.data;
+          const slug = typeof frontmatterSlug === "string" && frontmatterSlug !== ""
+            ? frontmatterSlug
+            : withoutExt.split("/").map((segment) => githubSlug(segment)).join("/").replace(/\/index$/, "");
+          entry = { id: file, slug, body: parsed.body, data: { ...data, ...parsed.extras } };
+        }
+
+        const key = entry.slug ?? entry.id;
+        if (entries.has(key)) {
+          console.warn(
+            `Duplicate id "${key}" found in ${base}/${file}. Later items with the same id will overwrite earlier ones.`,
+          );
+        }
+        entries.set(key, entry);
+      }
+
+      return [...entries.values()];
     },
   };
 }
@@ -719,24 +761,35 @@ function republishCollectionDeps(
  * imports in the body (JSX and .astro components) plus any passed components
  * are resolved at render time.
  */
-export async function render(
-  entry: CollectionEntry | null | undefined,
-): Promise<{
-  Content: (props?: { components?: Record<string, unknown> }) =>
-    | { __html: string }
-    | Promise<{ __html: string }>;
-  headings: unknown[];
-  remarkPluginFrontmatter: Record<string, unknown>;
-}> {
+export async function render(entry: CollectionEntry | null | undefined): Promise<AstroRenderResult> {
+  return astroRenderResult(entry ? (components) => entry.render(components) : null);
+}
+
+function astroRenderResult(renderHtml: CollectionEntry["render"] | null): AstroRenderResult {
   const Content = (props?: { components?: Record<string, unknown> }) => {
-    if (!entry) return { __html: "" };
-    return entry.render(props?.components).then((result) => ({ __html: result.html }));
+    if (!renderHtml) return { __html: "" };
+    return renderHtml(props?.components).then((result) => ({ __html: result.html }));
   };
   return { Content, headings: [], remarkPluginFrontmatter: {} };
 }
 
+/** Astro's legacy `entry.render()` returns what `render(entry)` does; `html` stays for pletivo's callers. */
+function withLegacyRender(entry: InternalCollectionEntry): void {
+  const renderHtml = entry.render;
+  entry.render = async (components) => ({
+    ...astroRenderResult(renderHtml),
+    ...(await renderHtml(components)),
+  });
+}
+
 export async function getEntry<T = Record<string, unknown>>(
-  nameOrRef: string | Reference | { collection: string; id: string } | undefined | null,
+  nameOrRef:
+    | string
+    | Reference
+    | { collection: string; id: string }
+    | { collection: string; slug: string }
+    | undefined
+    | null,
   id?: string,
 ): Promise<CollectionEntry<T> | undefined> {
   if (nameOrRef == null) return undefined;
@@ -748,7 +801,7 @@ export async function getEntry<T = Record<string, unknown>>(
     entryId = id;
   } else {
     collectionName = nameOrRef.collection;
-    entryId = nameOrRef.id;
+    entryId = "id" in nameOrRef ? nameOrRef.id : nameOrRef.slug;
   }
   const entries = await getCollection<T>(collectionName);
   return entries.find((e) => (e.slug ?? e.id) === entryId);
@@ -1024,6 +1077,7 @@ async function buildEntries(
           },
         };
         attachSourcePath(entry, _filePath, _mdxFilePath);
+        if (raw.slug !== undefined) withLegacyRender(entry);
         return { kind: "ok", entry };
       }
 
@@ -1033,6 +1087,11 @@ async function buildEntries(
       // body lazily on first `render()`. Either way the result is memoized so
       // repeated renders don't re-run the markdown pipeline.
       const preRendered = typeof _html === "string" ? _html : undefined;
+      // A Markdoc body is not Markdown: rendering it as such would print its tags as text.
+      const markdocPath =
+        preRendered === undefined && typeof _filePath === "string" && extensionOf(_filePath) === ".mdoc"
+          ? _filePath
+          : null;
       let renderedHtml: string | null = null;
       const entry: InternalCollectionEntry = {
         id: raw.id,
@@ -1040,6 +1099,9 @@ async function buildEntries(
         data: validatedData,
         body: raw.body,
         render: async () => {
+          if (markdocPath !== null) {
+            throw new Error(`Cannot render ${markdocPath}: pletivo has no Markdoc renderer for .mdoc entries.`);
+          }
           if (renderedHtml === null) {
             let html = preRendered ?? (await renderMarkdown(raw.body));
             if (config.transform) html = config.transform(html, validatedData);
@@ -1049,6 +1111,7 @@ async function buildEntries(
         },
       };
       attachSourcePath(entry, _filePath, _mdxFilePath);
+      if (raw.slug !== undefined) withLegacyRender(entry);
       return { kind: "ok", entry };
     }),
   );
