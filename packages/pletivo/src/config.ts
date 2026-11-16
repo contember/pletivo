@@ -71,10 +71,11 @@ export interface PletivoConfig {
   publicDir: string;
   /**
    * Hash public assets (images/fonts/css/js) with a content hash and rewrite
-   * references in rendered HTML. Default: true. Set to false to keep original
-   * asset paths — needed when assets are referenced from places the build
-   * can't rewrite (e.g. hardcoded paths inside island JS bundles, or url()s in
-   * a Tailwind-generated CSS bundle). (default: true)
+   * references in rendered HTML. Set to false to keep original asset paths —
+   * needed when assets are referenced from places the build can't rewrite
+   * (e.g. hardcoded paths inside island JS bundles, or url()s in a
+   * Tailwind-generated CSS bundle). Default: false in a project with an Astro
+   * config, which copies `public/` verbatim as Astro does; true otherwise.
    */
   hashAssets?: boolean;
   /** Image output service (default: "sharp"). */
@@ -101,7 +102,6 @@ const defaults: PletivoConfig = {
   base: "/",
   srcDir: "src",
   publicDir: "public",
-  hashAssets: true,
 };
 
 let configVersion = 0;

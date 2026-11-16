@@ -41,7 +41,7 @@ Pletivo compiles `.astro` files using `@astrojs/compiler` and renders them with 
 - Tailwind CSS v4 pipeline
 - Astro integrations via Vite host shim
 - Dev server with HMR (CSS hot swap + morphdom DOM patching)
-- Public asset hashing and sitemap generation
+- `public/` copied verbatim, as Astro does (pletivo-native projects: content-hashed, plus a generated `sitemap.xml`)
 
 ## Performance
 

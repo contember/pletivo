@@ -17,7 +17,6 @@
 hreflang-demo/index.html
 index.html
 pt/about/index.html
-sitemap.xml
 spanish/about/index.html
 
 --- pletivo:conformance hreflang-demo/index.html ---
@@ -53,24 +52,6 @@ spanish/about/index.html
 <h1>Sobre</h1>
 <p data-test="current-locale">pt</p>
 </body></html>
-
---- pletivo:conformance sitemap.xml ---
-<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>/</loc>
-  </url>
-  <url>
-    <loc>/hreflang-demo</loc>
-  </url>
-  <url>
-    <loc>/pt/about</loc>
-  </url>
-  <url>
-    <loc>/spanish/about</loc>
-  </url>
-</urlset>
-
 
 --- pletivo:conformance spanish/about/index.html ---
 <!DOCTYPE html>

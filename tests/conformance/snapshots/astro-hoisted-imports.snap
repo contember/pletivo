@@ -17,7 +17,6 @@ _astro/hoisted-[bundle:1].js
 assets/styles.[hash:1].css
 assets/styles.pages.[hash:2].css
 index.html
-sitemap.xml
 
 --- pletivo:conformance index.html ---
 <!DOCTYPE html>
@@ -28,12 +27,3 @@ sitemap.xml
   <body>
     <h1>Hoisted Imports</h1>
   <script type="module" src="/_astro/hoisted-[bundle:1].js"></script></body></html>
-
---- pletivo:conformance sitemap.xml ---
-<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>/</loc>
-  </url>
-</urlset>
-
