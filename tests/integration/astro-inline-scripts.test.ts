@@ -89,21 +89,24 @@ describe("astro <script> inlining", () => {
     expect(withMarker(scripts().linked, "counter-script-marker")).toHaveLength(0);
   });
 
-  // Counts match `astro build` (5.18.1): Astro.slots.render() claims the slot's scripts
-  // when it is called, in the page's one set.
+  // Counts match `astro build` (5.18.1).
   test.each([
     ["a slot wrapper used twice", "slot-twice/index.html"],
     ["two named slots", "named-slots/index.html"],
     ["a slot wrapper and a sibling", "slot-then-sibling/index.html"],
+    ["a slot fallback the page overrides", "fallback-override/index.html"],
+    ["a component that drops its children, and a sibling", "dropped-children/index.html"],
   ])("%s emits a component's script once", async (_name, page) => {
     const { inline, linked } = await readScripts(distDir, page);
     expect(withMarker(inline, "counter-script-marker")).toHaveLength(1);
     expect(linked).toHaveLength(0);
   });
 
-  test("a slot probed with Astro.slots.render() and then rendered by <slot /> loses its script, as in Astro", async () => {
+  // Deliberate divergence: Astro emits 0 here, because the discarded probe claimed the
+  // script. pletivo dedupes the written HTML, so the rendered slot keeps it.
+  test("a slot probed with Astro.slots.render() and then rendered by <slot /> keeps its script", async () => {
     const { inline, linked } = await readScripts(distDir, "slot-probe/index.html");
-    expect(inline).toHaveLength(0);
+    expect(withMarker(inline, "slot-probe-marker")).toHaveLength(1);
     expect(linked).toHaveLength(0);
   });
 
