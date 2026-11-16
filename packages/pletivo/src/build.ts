@@ -14,7 +14,7 @@ import { generateSitemap } from "./sitemap";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { registerProjectSourcePlugin } from "./project-source-plugin";
 import { installImportMetaEnv } from "./import-meta-env";
-import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, HOISTED_URL_RE } from "./astro-plugin";
+import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, inlineHoistedScripts, HOISTED_URL_RE } from "./astro-plugin";
 import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
@@ -959,9 +959,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     for (const hash of extractAll(result.html, HOISTED_URL_RE)) referencedHashes.add(hash);
   }
 
+  let inlinedScripts = new Map<string, string>();
   if (referencedHashes.size > 0) {
     const tHoisted = performance.now();
-    await bundleHoistedScripts(referencedHashes, distDir);
+    inlinedScripts = await bundleHoistedScripts(referencedHashes, distDir);
     phase("hoisted bundling", tHoisted);
   }
 
@@ -1013,7 +1014,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
         return;
       }
-      const size = await writeHtml(result.outPath, result.html, base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
+      const size = await writeHtml(result.outPath, inlineHoistedScripts(result.html, inlinedScripts), base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
       totalSize += size;
       renderedCount++;
       // Now that we know the final byte count, patch it onto the
@@ -1664,12 +1665,29 @@ async function render404Page(
   return null;
 }
 
+/** Vite's `build.assetsInlineLimit` default, which Astro applies to processed scripts too. */
+const SCRIPT_INLINE_LIMIT = 4096;
+const scriptScanner = new Bun.Transpiler({ loader: "js" });
+
+/**
+ * Astro inlines a processed script whose bundle imports nothing and is under the limit
+ * (`plugin-scripts.ts`). Also kept external: code that resolves against its own URL,
+ * which an inline module would resolve against the page, and code holding `</script`.
+ */
+function inlinableScript(code: string): boolean {
+  if (Buffer.byteLength(code) >= SCRIPT_INLINE_LIMIT) return false;
+  if (/<\/script/i.test(code) || code.includes("import.meta")) return false;
+  return scriptScanner.scanImports(code).length === 0;
+}
+
+/** Bundles the referenced hoisted scripts; returns hash → code for those to inline. */
 async function bundleHoistedScripts(
   referencedHashes: Set<string>,
   distDir: string,
-) {
+): Promise<Map<string, string>> {
+  const inlined = new Map<string, string>();
   const entries = getAllHoistedScripts().filter((e) => referencedHashes.has(e.hash));
-  if (entries.length === 0) return;
+  if (entries.length === 0) return inlined;
 
   const astroOutDir = path.join(distDir, "_astro");
   await fs.mkdir(astroOutDir, { recursive: true });
@@ -1713,10 +1731,18 @@ async function bundleHoistedScripts(
     if (!m) continue;
     const hash = m[1];
     const size = output.size;
+    const code = (await output.text()).trim();
+    if (inlinableScript(code)) {
+      inlined.set(hash, code);
+      await fs.rm(output.path, { force: true });
+      console.log(`  hoisted-${hash} inlined (${formatSize(size)})`);
+      continue;
+    }
     const finalPath = path.join(astroOutDir, `hoisted-${hash}.js`);
     await fs.rename(output.path, finalPath);
     console.log(`  _astro/hoisted-${hash}.js (${formatSize(size)})`);
   }
+  return inlined;
 }
 
 async function bundleIslands(

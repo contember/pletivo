@@ -2,7 +2,7 @@
 # case:    astro-hoisted-scripts
 # project: tests/fixture-astro-scripts
 # covers:
-#   - hoisted <script> bundled to _astro/hoisted-<hash>.js and referenced by src
+#   - hoisted <script> bundled, and inlined under 4096 B as Astro does
 #   - TypeScript stripped from hoisted scripts
 #   - integration injectScript('page') and injectScript('head-inline') placement
 #
@@ -14,7 +14,6 @@
 # Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=astro-hoisted-scripts bun test tests/conformance
 
 --- pletivo:conformance emitted ---
-_astro/hoisted-[bundle:1].js
 index.html
 
 --- pletivo:conformance index.html ---
@@ -28,4 +27,4 @@ document.documentElement.dataset.injectedHead = injectedHeadValue;
   <body>
     <h1>Scripts Test</h1>
     <button id="hoisted-btn">Click</button>
-  <script type="module" src="/_astro/hoisted-[bundle:1].js"></script></body></html>
+  <script type="module">class t extends HTMLElement{fieldInteractions=new Set;items=[];connectedCallback(){let e=document.getElementById("hoisted-btn");if(!e)return;e.addEventListener("click",(n)=>{this.fieldInteractions.add(String(n.timeStamp)),this.items.push({src:"x",alt:"y"})})}}customElements.define("hoisted-widget",t);</script></body></html>

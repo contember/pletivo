@@ -103,6 +103,22 @@ export const HOISTED_URL_PATH = "/_astro/hoisted-";
 /** Capture group is the hex hash. Not anchored — works under any base prefix. */
 export const HOISTED_URL_RE = /\/_astro\/hoisted-([a-f0-9]+)\.js/g;
 
+/** A hoisted-script tag as the astro shim's `renderScript` writes it, under any base prefix. */
+const HOISTED_TAG_RE = /<script type="module" src="[^"]*\/_astro\/hoisted-([a-f0-9]+)\.js"><\/script>/g;
+
+/**
+ * Replace each tag whose hash is in `inlined` with its bundled code inline, as Astro
+ * renders an inlined script; an empty bundle drops the tag, as Astro does.
+ */
+export function inlineHoistedScripts(html: string, inlined: ReadonlyMap<string, string>): string {
+  if (inlined.size === 0) return html;
+  return html.replace(HOISTED_TAG_RE, (tag, hash: string) => {
+    const code = inlined.get(hash);
+    if (code === undefined) return tag;
+    return code === "" ? "" : `<script type="module">${code}</script>`;
+  });
+}
+
 export function hoistedEntrypoint(hash: string): string {
   return HOISTED_PREFIX + hash;
 }

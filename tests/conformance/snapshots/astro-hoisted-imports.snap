@@ -13,7 +13,6 @@
 # Just this case:  UPDATE_SNAPSHOTS=1 CONFORMANCE_CASE=astro-hoisted-imports bun test tests/conformance
 
 --- pletivo:conformance emitted ---
-_astro/hoisted-[bundle:1].js
 assets/styles.[hash:1].css
 assets/styles.pages.[hash:2].css
 index.html
@@ -26,4 +25,4 @@ index.html
 </head>
   <body>
     <h1>Hoisted Imports</h1>
-  <script type="module" src="/_astro/hoisted-[bundle:1].js"></script></body></html>
+  <script type="module">var e="external-marker-from-disk";document.documentElement.dataset.externalLoaded=e;</script></body></html>

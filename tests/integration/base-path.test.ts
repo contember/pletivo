@@ -37,6 +37,10 @@ describe("base path: build under base: '/sub-app'", () => {
     expect(html).not.toMatch(/src="\/_astro\/hoisted-/);
   });
 
+  test("a small hoisted <script> is inlined under base too", () => {
+    expect(html).toMatch(/<script type="module">[^<]*external-marker-from-disk[^<]*<\/script>/);
+  });
+
   test("hoisted bundle is written to dist/_astro/ (filesystem path, no base prefix)", async () => {
     const m = html.match(/\/sub-app\/_astro\/hoisted-([a-f0-9]+)\.js/);
     expect(m).not.toBeNull();
