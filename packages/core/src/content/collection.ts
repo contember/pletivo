@@ -107,6 +107,8 @@ export type AnyLoader = Loader | AstroLoader | FunctionLoader;
 export interface Reference {
   collection: string;
   id: string;
+  /** Set when the reference was given as `{ slug, collection }`, as Astro keeps it. */
+  slug?: string;
   __pletivoReference: true;
 }
 
@@ -127,9 +129,11 @@ export function reference(collectionName: string): z.ZodType<Reference> {
       if (typeof value === "string") {
         return { collection: collectionName, id: value, __pletivoReference: true };
       }
+      if ("id" in value) {
+        return { collection: value.collection, id: value.id, __pletivoReference: true };
+      }
       // A legacy content entry is looked up by its slug, which `getEntry` matches in place of the id.
-      const id = "id" in value ? value.id : value.slug;
-      return { collection: value.collection, id, __pletivoReference: true };
+      return { collection: value.collection, id: value.slug, slug: value.slug, __pletivoReference: true };
     });
 }
 
@@ -773,13 +777,39 @@ function astroRenderResult(renderHtml: CollectionEntry["render"] | null): AstroR
   return { Content, headings: [], remarkPluginFrontmatter: {} };
 }
 
-/** Astro's legacy `entry.render()` returns what `render(entry)` does; `html` stays for pletivo's callers. */
-function withLegacyRender(entry: InternalCollectionEntry): void {
+type SettledRender = { ok: true; result: RenderResult } | { ok: false; error: unknown };
+
+/**
+ * Astro's legacy `entry.render()` returns what `render(entry)` does; `html` stays for pletivo's callers.
+ *
+ * `html` is a string, so the body is rendered here. An MDX body may use a component that only
+ * `<Content components={…} />` supplies: its render error is kept for whoever reads `html`, and
+ * `Content` renders again with its components. `Content` without components reuses this render.
+ */
+function withLegacyRender(entry: InternalCollectionEntry, isMdx: boolean): void {
   const renderHtml = entry.render;
-  entry.render = async (components) => ({
-    ...astroRenderResult(renderHtml),
-    ...(await renderHtml(components)),
-  });
+  entry.render = async (components) => {
+    if (!isMdx) {
+      const result = await renderHtml(components);
+      return { ...astroRenderResult(renderHtml), ...result };
+    }
+    const settled: SettledRender = await renderHtml(components).then(
+      (result): SettledRender => ({ ok: true, result }),
+      (error: unknown): SettledRender => ({ ok: false, error }),
+    );
+    const html = (): string => {
+      if (!settled.ok) throw settled.error;
+      return settled.result.html;
+    };
+    const rendered = astroRenderResult(renderHtml);
+    return {
+      ...rendered,
+      Content: (props) => (props?.components === undefined ? { __html: html() } : rendered.Content(props)),
+      get html() {
+        return html();
+      },
+    };
+  };
 }
 
 export async function getEntry<T = Record<string, unknown>>(
@@ -1077,7 +1107,7 @@ async function buildEntries(
           },
         };
         attachSourcePath(entry, _filePath, _mdxFilePath);
-        if (raw.slug !== undefined) withLegacyRender(entry);
+        if (raw.slug !== undefined) withLegacyRender(entry, true);
         return { kind: "ok", entry };
       }
 
@@ -1100,7 +1130,10 @@ async function buildEntries(
         body: raw.body,
         render: async () => {
           if (markdocPath !== null) {
-            throw new Error(`Cannot render ${markdocPath}: pletivo has no Markdoc renderer for .mdoc entries.`);
+            throw new Error(
+              `Cannot render ${markdocPath}: pletivo has no Markdoc renderer for .mdoc entries. ` +
+                "Rename it to .md if it is plain Markdown, or keep .mdoc files out of the collection.",
+            );
           }
           if (renderedHtml === null) {
             let html = preRendered ?? (await renderMarkdown(raw.body));
@@ -1111,7 +1144,7 @@ async function buildEntries(
         },
       };
       attachSourcePath(entry, _filePath, _mdxFilePath);
-      if (raw.slug !== undefined) withLegacyRender(entry);
+      if (raw.slug !== undefined) withLegacyRender(entry, false);
       return { kind: "ok", entry };
     }),
   );

@@ -8,6 +8,7 @@ import {
   type Reference,
 } from "../../packages/pletivo/src/content/collection";
 import { registerMdxPlugin } from "../../packages/pletivo/src/mdx-plugin";
+import { jsx } from "../../packages/pletivo/src/runtime/jsx-runtime";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-legacy-collections");
 
@@ -37,6 +38,7 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
     expect(entries.map((e) => ({ id: e.id, slug: e.slug }))).toEqual([
       { id: "Guides/Getting Started.md", slug: "guides/getting-started" },
       { id: "Guides/index.md", slug: "guides" },
+      { id: "callout.mdx", slug: "callout" },
       { id: "custom.md", slug: "renamed" },
       { id: "intro.md", slug: "intro" },
       { id: "notes.mdoc", slug: "notes" },
@@ -60,6 +62,7 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
 
   test("reference() accepts { slug, collection }, and getEntry resolves it", async () => {
     const [refs] = await runWithBunContentRuntime(() => getCollection<{ doc: Reference }>("refs"));
+    expect(refs?.data.doc.slug).toBe("renamed");
     const doc = await runWithBunContentRuntime(() => getEntry(refs?.data.doc));
     expect(doc?.id).toBe("custom.md");
   });
@@ -105,10 +108,36 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
     expect(content?.__html).toContain("Two is 2.");
   });
 
+  test("an .mdx entry's Content takes a component the body does not import", async () => {
+    const Callout = (props: { children?: unknown }) => jsx("aside", { children: props.children });
+    const entry = await runWithBunContentRuntime(() => getEntry("docs", "callout"));
+    const rendered = await entry?.render();
+    const content = await rendered?.Content?.({ components: { Callout } });
+    expect(content?.__html).toContain("<aside>inside</aside>");
+    // Without the component the body cannot render, and `html` says so.
+    expect(() => rendered?.html).toThrow(/Callout/);
+  });
+
+  test("an .mdx entry's Content without components reuses render()'s output", async () => {
+    let calls = 0;
+    const Callout = (props: { children?: unknown }) => {
+      calls++;
+      return jsx("aside", { children: props.children });
+    };
+    const entry = await runWithBunContentRuntime(() => getEntry("docs", "callout"));
+    const rendered = await entry?.render({ Callout });
+    expect(rendered?.html).toContain("<aside>inside</aside>");
+    const content = await rendered?.Content?.();
+    expect(content?.__html).toBe(rendered?.html ?? "");
+    expect(calls).toBe(1);
+  });
+
   test("a Markdoc entry has its data, but rendering it fails by name", async () => {
     const notes = await runWithBunContentRuntime(() => getEntry("docs", "notes"));
     expect(notes?.data).toEqual({ title: "Notes" });
-    await expect(notes?.render()).rejects.toThrow(/notes\.mdoc: pletivo has no Markdoc renderer/);
+    await expect(notes?.render()).rejects.toThrow(
+      /notes\.mdoc: pletivo has no Markdoc renderer for \.mdoc entries\. Rename it to \.md if it is plain Markdown/,
+    );
   });
 
   test("a collection whose directory does not exist is empty and warns", async () => {
