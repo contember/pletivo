@@ -230,14 +230,17 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const distFiles = cache ? await collectDistFiles(distDir) : new Set<string>();
   phase("dist prep", tDistWipe);
 
-  // Copy public/ into dist/, hashing assets on the way.
+  // Copy public/ into dist/, hashing assets on the way unless this is an
+  // Astro project: Astro copies public/ verbatim, and user code builds
+  // absolute URLs to those files that no rewrite can reach.
   // Returns a manifest of original → hashed paths, used below to rewrite
   // references inside rendered HTML.
   const tPublic = performance.now();
-  const publicManifest = config.hashAssets === false
-    ? await copyPublicAssets(publicDir, distDir)
-    : await hashPublicAssets(publicDir, distDir);
-  phase("hashPublicAssets", tPublic);
+  const hashAssets = config.hashAssets ?? astroHost === null;
+  const publicManifest = hashAssets
+    ? await hashPublicAssets(publicDir, distDir)
+    : await copyPublicAssets(publicDir, distDir);
+  phase("public assets", tPublic);
 
   // Scan routes
   const tScan = performance.now();
@@ -1033,12 +1036,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   phase("islands bundling", tBundle);
   clearHoistedScripts();
 
-  // Generate sitemap — skip if the user's Astro config includes a
-  // sitemap integration. Both can technically coexist (different
-  // filenames), but users who opted into the Astro one explicitly
-  // probably don't also want pletivo's simpler fallback.
-  const hasAstroSitemap = astroHost?.hasIntegration("@astrojs/sitemap") ?? false;
-  if (!hasAstroSitemap) {
+  // pletivo's own sitemap is for pletivo-native projects. An Astro project
+  // gets one only from an integration (@astrojs/sitemap), as under Astro.
+  if (!astroHost) {
     await generateSitemap(distDir, base);
   }
 

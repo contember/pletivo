@@ -16,7 +16,6 @@
 --- pletivo:conformance emitted ---
 _astro/hoisted-[bundle:1].js
 index.html
-sitemap.xml
 
 --- pletivo:conformance index.html ---
 <!DOCTYPE html>
@@ -32,12 +31,3 @@ document.documentElement.dataset.injectedPage = String(injectedPageValue);
     <h1>Scripts Test</h1>
     <button id="hoisted-btn">Click</button>
   <script type="module" src="/_astro/hoisted-[bundle:1].js"></script></body></html>
-
---- pletivo:conformance sitemap.xml ---
-<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>/</loc>
-  </url>
-</urlset>
-

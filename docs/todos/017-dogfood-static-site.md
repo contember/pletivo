@@ -58,6 +58,12 @@ user code cannot be rewritten, so the two decisions are in conflict.
 hashed public assets 404, taking both custom webfonts with them. Two unrelated
 sites, one decision. This is the first thing to reconsider.
 
+**Resolved for Astro projects:** a project with an Astro config now copies
+`public/` verbatim, as Astro does; `hashAssets: true` in `pletivo.config` opts
+back in. pletivo-native projects still hash. The Workers host already served
+`public/` verbatim (`public-files.ts`), so for an Astro project both hosts now
+agree.
+
 ## 3. Responsive images are silently dropped
 
 1873 `srcset` attributes in Astro's output, **0** in pletivo's.

@@ -17,7 +17,6 @@ data.json
 feed.xml
 index.html
 robots.txt
-sitemap.xml
 
 --- pletivo:conformance data.json ---
 {
@@ -44,13 +43,4 @@ sitemap.xml
 --- pletivo:conformance robots.txt ---
 User-agent: *
 Allow: /
-
-
---- pletivo:conformance sitemap.xml ---
-<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>/</loc>
-  </url>
-</urlset>
 

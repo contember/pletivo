@@ -16,7 +16,6 @@ en/index.html
 en/start/index.html
 index.html
 pt/index.html
-sitemap.xml
 start/index.html
 
 --- pletivo:conformance en/index.html ---
@@ -48,27 +47,6 @@ start/index.html
 <h1>Home PT</h1>
 <p data-test="current-locale">pt</p>
 </body></html>
-
---- pletivo:conformance sitemap.xml ---
-<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>/</loc>
-  </url>
-  <url>
-    <loc>/en</loc>
-  </url>
-  <url>
-    <loc>/en/start</loc>
-  </url>
-  <url>
-    <loc>/pt</loc>
-  </url>
-  <url>
-    <loc>/start</loc>
-  </url>
-</urlset>
-
 
 --- pletivo:conformance start/index.html ---
 <!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/new-site/en/start"><link rel="canonical" href="/new-site/en/start"></head><body></body></html>

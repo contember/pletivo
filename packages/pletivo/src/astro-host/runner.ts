@@ -97,8 +97,6 @@ export interface AstroHost {
    * first one's result instead of starting a competing pass.
    */
   retryFailedSetup(): Promise<string[]>;
-  /** Returns true if an integration with the given name is active after overrides */
-  hasIntegration(name: string): boolean;
   runRoutesResolved(routes: AstroRoute[]): Promise<void>;
   runBuildStart(): Promise<void>;
   runBuildSetup(): Promise<void>;
@@ -171,7 +169,6 @@ export async function initAstroHost(
     ready: Promise.resolve(),
     setupErrors,
     retryFailedSetup: async () => [],
-    hasIntegration: (name) => config.integrations.some((i) => i?.name === name),
     runRoutesResolved: async () => {},
     runBuildStart: async () => {},
     runBuildSetup: async () => {},

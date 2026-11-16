@@ -69,6 +69,9 @@ verbatim and cannot produce this class of breakage at all.
 Hashing `public/` is a pletivo choice, and it is in conflict with every reference
 that pletivo does not itself rewrite. That is the item to reconsider first.
 
+**Resolved for Astro projects** together with 017 item 2: `public/` is copied
+verbatim unless `pletivo.config` sets `hashAssets: true`.
+
 ## 4. The adapter is silently dropped
 
 `config-loader.ts` reads only `userConfig.integrations`, so `@astrojs/cloudflare`'s

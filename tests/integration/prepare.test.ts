@@ -401,6 +401,7 @@ describe("pletivo prepare", () => {
 
   test("rejects Worker-relevant pletivo config and source directories outside the root", async () => {
     await expectPrepareError(path.join(fixtures, "fatal-pletivo-routing"), "base");
+    await expectPrepareError(path.join(fixtures, "fatal-hash-assets"), "hashAssets");
     await expectPrepareError(project, "source directory", { srcDir: ".." });
     await expectPrepareError(project, "source directory", { srcDir: path.resolve(fixtures) });
   });
