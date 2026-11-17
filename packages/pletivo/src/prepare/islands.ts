@@ -405,16 +405,18 @@ function builtinPlugin(projectRoot: string, refuse: (source: string, reason: str
         if (!NODE_BUILTINS.has(args.path.replace(/^node:/, ""))) return undefined;
         const importer = displayPath(projectRoot, args.importer);
         const builtin = JSON.stringify(args.path);
+        const bareAllowed = ARTIFACT_BUILTIN_EXTERNALS.has(`node:${args.path}`);
+        // Checked first: a require() cannot follow the bare-name advice below.
+        if (args.kind === "require-call" && (bareAllowed || ARTIFACT_BUILTIN_EXTERNALS.has(args.path))) {
+          return refuse(importer, `requires the Node built-in ${builtin}; on the Workers host it must be imported, as a module has no require()`);
+        }
         if (!ARTIFACT_BUILTIN_EXTERNALS.has(args.path)) {
-          const named = ARTIFACT_BUILTIN_EXTERNALS.has(`node:${args.path}`) ? `; import it as "node:${args.path}"` : "";
+          const named = bareAllowed ? `; import it as "node:${args.path}"` : "";
           return refuse(
             importer,
             `imports the Node built-in ${builtin}, which the Workers host does not give framework components and ` +
               `renderers (only ${allowed}, by those names)${named}`,
           );
-        }
-        if (args.kind === "require-call") {
-          return refuse(importer, `requires the Node built-in ${builtin}; on the Workers host it must be imported, as a module has no require()`);
         }
         return { path: args.path, external: true };
       });

@@ -122,6 +122,13 @@ describe("pletivo prepare, framework islands", () => {
     expect(await prepareError(required)).toContain(
       'src/components/Counter.jsx (islands): requires the Node built-in "node:crypto"',
     );
+    const requiredBare = await reactProject({
+      "src/components/Counter.jsx":
+        'const crypto = require("crypto");\nexport function Counter() { return <b>{typeof crypto}</b>; }\n',
+    });
+    expect(await prepareError(requiredBare)).toContain(
+      'src/components/Counter.jsx (islands): requires the Node built-in "crypto"',
+    );
   });
 
   test("keeps node:async_hooks and node:crypto as imports the bundle runs with", async () => {
