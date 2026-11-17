@@ -24,7 +24,21 @@ import type { PletivoConfig } from "./config";
 import { substituteImportMetaEnv } from "./import-meta-env";
 import type { AstroIntegration } from "@pletivo/core/astro-host/types";
 import { astroMarkdownSettings, splitFrontmatter, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
+import { rehypeMdxHeadingIds } from "@pletivo/core/content/mdx-heading-ids";
 import { rehypeAstroIslandMetadata } from "./mdx-island-metadata";
+import { rehypeMdxPageCharset } from "./mdx-page-charset";
+import {
+  astroHighlightPlugins,
+  parseMdxShikiConfig,
+  parseMdxSyntaxHighlight,
+  parseShikiConfig,
+  parseSyntaxHighlight,
+  rehypeMdxMetaString,
+  SYNTAX_HIGHLIGHT_DEFAULT,
+  type AstroHighlight,
+  type ShikiConfig,
+  type SyntaxHighlight,
+} from "./mdx-syntax-highlight";
 
 // Resolve absolute path to pletivo's jsx-runtime so compiled MDX can
 // import it even when pletivo isn't installed as a node_modules dep
@@ -43,6 +57,17 @@ export interface MdxOptions {
   rehypePlugins?: PluggableList;
   /** GitHub Flavored Markdown — on by default, matching Astro/@astrojs/mdx. */
   gfm?: boolean;
+  /** Set in an Astro project only: its MDX gets `@astrojs/mdx`'s heading ids, `components` export and page charset. */
+  astro?: AstroMdxSettings;
+}
+
+export interface AstroMdxSettings {
+  /** The project's `src/pages`, absolute. */
+  pagesDir: string;
+  /** Astro's `experimental.headingIdCompat`. */
+  experimentalHeadingIdCompat: boolean;
+  /** `syntaxHighlight` and `shikiConfig`, from `mdx({...})` or else Astro's `markdown`. */
+  highlight: AstroHighlight;
 }
 
 /**
@@ -55,6 +80,10 @@ export interface CapturedMdxIntegrationOptions {
   rehypePlugins: PluggableList;
   /** `mdx({ gfm })` override, if the user set one (else undefined). */
   gfm?: boolean;
+  /** `mdx({ syntaxHighlight })`, `mdx({ shikiConfig })` and `mdx({ extendMarkdownConfig })`, if set. */
+  syntaxHighlight?: SyntaxHighlight;
+  shikiConfig?: ShikiConfig;
+  extendMarkdownConfig?: boolean;
   unsupportedKeys: string[];
 }
 
@@ -62,7 +91,16 @@ export interface CapturedMdxIntegrationOptions {
 export const MDX_INTEGRATION_OPTIONS_KEY = "__pletivoMdxIntegrationOptions";
 
 /** `mdx({...})` options that map onto pletivo's native compiler. */
-const HONORED_MDX_OPTION_KEYS = new Set(["remarkPlugins", "rehypePlugins", "gfm"]);
+const HONORED_MDX_OPTION_KEYS = new Set([
+  "remarkPlugins",
+  "rehypePlugins",
+  "gfm",
+  "syntaxHighlight",
+  "shikiConfig",
+  "extendMarkdownConfig",
+]);
+
+const MDX_OPTIONS_SOURCE = "astro config: mdx({...})";
 
 // Matches any file inside an installed @astrojs/mdx package. The trailing
 // separator means it won't match siblings like `@astrojs/mdx-*`.
@@ -85,11 +123,8 @@ export function configureMdx(options: MdxOptions): void {
 }
 
 /**
- * Read the remark/rehype plugins (and `gfm` flag) a user passed to `mdx({...})`
- * in their astro config off the (stubbed) integration object. Returns null when
- * the integration carries no recognizable options. Any keys pletivo's native
- * MDX compiler can't honor (e.g. `optimize`, `recmaPlugins`, `syntaxHighlight`)
- * are reported in `unsupportedKeys` so the caller can warn about them.
+ * Parse the options of a user's `mdx({...})` off the stubbed integration, or null without any.
+ * Keys pletivo's native MDX can't honor (`optimize`, `recmaPlugins`) land in `unsupportedKeys`.
  */
 export function captureMdxIntegrationOptions(
   integration: AstroIntegration,
@@ -100,10 +135,24 @@ export function captureMdxIntegrationOptions(
   const remarkPlugins = Array.isArray(record.remarkPlugins) ? (record.remarkPlugins as PluggableList) : [];
   const rehypePlugins = Array.isArray(record.rehypePlugins) ? (record.rehypePlugins as PluggableList) : [];
   const gfm = typeof record.gfm === "boolean" ? record.gfm : undefined;
+  const { extendMarkdownConfig } = record;
+  if (extendMarkdownConfig != null && typeof extendMarkdownConfig !== "boolean") {
+    throw new Error(
+      `${MDX_OPTIONS_SOURCE}.extendMarkdownConfig must be a boolean, got ${JSON.stringify(extendMarkdownConfig)}`,
+    );
+  }
   const unsupportedKeys = Object.keys(record).filter(
     (k) => !HONORED_MDX_OPTION_KEYS.has(k) && record[k] != null,
   );
-  return { remarkPlugins, rehypePlugins, gfm, unsupportedKeys };
+  return {
+    remarkPlugins,
+    rehypePlugins,
+    gfm,
+    syntaxHighlight: parseMdxSyntaxHighlight(record.syntaxHighlight, MDX_OPTIONS_SOURCE),
+    shikiConfig: parseMdxShikiConfig(record.shikiConfig, MDX_OPTIONS_SOURCE),
+    extendMarkdownConfig: extendMarkdownConfig ?? undefined,
+    unsupportedKeys,
+  };
 }
 
 /**
@@ -121,12 +170,12 @@ export function captureMdxIntegrationOptions(
  */
 export function resolveMdxOptions(
   pletivoConfig: PletivoConfig,
-  astroConfig?: { markdown?: AstroMarkdownConfig; [key: string]: unknown } | null,
+  astroConfig?: { markdown?: AstroMarkdownConfig; root?: URL; srcDir?: URL; [key: string]: unknown } | null,
 ): MdxOptions {
-  const astroMarkdown = astroMarkdownSettings(astroConfig);
-  const mdxIntegration = astroConfig?.[MDX_INTEGRATION_OPTIONS_KEY] as
-    | { remarkPlugins?: PluggableList; rehypePlugins?: PluggableList; gfm?: boolean }
-    | undefined;
+  const mdxIntegration = astroConfig?.[MDX_INTEGRATION_OPTIONS_KEY] as RecordedMdxIntegrationOptions | undefined;
+  // As @astrojs/mdx: `mdx({ extendMarkdownConfig: false })` drops the `markdown` config.
+  const extendMarkdownConfig = mdxIntegration?.extendMarkdownConfig ?? true;
+  const astroMarkdown = extendMarkdownConfig ? astroMarkdownSettings(astroConfig) : undefined;
   const remarkPlugins = dedupePlugins([
     ...(astroMarkdown?.remarkPlugins ?? []),
     ...(mdxIntegration?.remarkPlugins ?? []),
@@ -143,6 +192,34 @@ export function resolveMdxOptions(
     gfm: mdxIntegration?.gfm ?? astroMarkdown?.gfm ?? true,
     ...(remarkPlugins.length ? { remarkPlugins } : {}),
     ...(rehypePlugins.length ? { rehypePlugins } : {}),
+    ...(astroConfig?.srcDir ? { astro: astroMdxSettings(astroConfig, mdxIntegration, extendMarkdownConfig) } : {}),
+  };
+}
+
+/** What `recordMdxIntegrationOptions` (astro-host) stashes under `MDX_INTEGRATION_OPTIONS_KEY`. */
+export type RecordedMdxIntegrationOptions = Partial<Omit<CapturedMdxIntegrationOptions, "unsupportedKeys">>;
+
+function astroMdxSettings(
+  astroConfig: { markdown?: AstroMarkdownConfig; root?: URL; srcDir?: URL; experimental?: unknown },
+  mdxIntegration: RecordedMdxIntegrationOptions | undefined,
+  extendMarkdownConfig: boolean,
+): AstroMdxSettings {
+  const { root, srcDir, experimental, markdown } = astroConfig;
+  if (!root || !srcDir) throw new Error("astro config: root and srcDir must be set");
+  const headingIdCompat = experimental && typeof experimental === "object" ? Reflect.get(experimental, "headingIdCompat") : undefined;
+  if (headingIdCompat !== undefined && typeof headingIdCompat !== "boolean") {
+    throw new Error(`astro config: experimental.headingIdCompat must be a boolean, got ${JSON.stringify(headingIdCompat)}`);
+  }
+  const syntaxHighlight = parseSyntaxHighlight(markdown?.syntaxHighlight, "astro config: markdown");
+  const shikiConfig = parseShikiConfig(markdown?.shikiConfig, "astro config: markdown");
+  return {
+    pagesDir: path.join(fileURLToPath(srcDir), "pages"),
+    experimentalHeadingIdCompat: headingIdCompat ?? false,
+    highlight: {
+      projectRoot: fileURLToPath(root),
+      syntaxHighlight: mdxIntegration?.syntaxHighlight ?? (extendMarkdownConfig ? syntaxHighlight : SYNTAX_HIGHLIGHT_DEFAULT),
+      shikiConfig: mdxIntegration?.shikiConfig ?? (extendMarkdownConfig ? shikiConfig : {}),
+    },
   };
 }
 
@@ -205,9 +282,9 @@ function isRehypeRaw(entry: unknown): boolean {
  * append the user's rehype plugins with any bare `rehype-raw` stripped (it
  * can't run on MDX and our managed copy supersedes it).
  */
-export function buildRehypePlugins(userRehype: PluggableList | undefined): PluggableList {
+export function buildRehypePlugins(userRehype: PluggableList | undefined, highlight: PluggableList = []): PluggableList {
   const user = (userRehype ?? []).filter((p) => !isRehypeRaw(p));
-  return [[rehypeRaw, { passThrough: nodeTypes }], ...user];
+  return [[rehypeRaw, { passThrough: nodeTypes }], ...highlight, ...user];
 }
 
 export async function registerMdxPlugin(): Promise<void> {
@@ -257,6 +334,8 @@ export async function compileMdx(source: string, filePath: string): Promise<stri
     const compileOptions: CompileOptions = {
       jsxImportSource: "pletivo",
       development: false,
+      // As @astrojs/mdx: hast attributes keep their HTML names (`class`, `tabindex`).
+      ...(userOptions.astro ? { elementAttributeNameCase: "html" } : {}),
     };
     // Mirror @astrojs/mdx: GFM on by default (remark-gfm prepended),
     // then the user's remark plugins.
@@ -264,9 +343,22 @@ export async function compileMdx(source: string, filePath: string): Promise<stri
       userOptions.remarkPlugins,
       userOptions.gfm !== false,
     );
-    // A managed `rehype-raw` (passing MDX nodes through) always runs, with the user's
-    // rehype plugins after it; the island metadata runs last, as in @astrojs/mdx.
-    compileOptions.rehypePlugins = [...buildRehypePlugins(userOptions.rehypePlugins), rehypeAstroIslandMetadata];
+    // @astrojs/mdx's order: fence meta, rehype-raw, highlighter, user plugins, heading ids, charset,
+    // island metadata. Outside an Astro project only rehype-raw, user plugins and island metadata run.
+    const astro = userOptions.astro;
+    const highlight = astro ? await astroHighlightPlugins(astro.highlight) : [];
+    const astroPlugins: PluggableList = astro
+      ? [
+          [rehypeMdxHeadingIds, { experimentalHeadingIdCompat: astro.experimentalHeadingIdCompat }],
+          [rehypeMdxPageCharset, { pagesDir: astro.pagesDir }],
+        ]
+      : [];
+    compileOptions.rehypePlugins = [
+      ...(astro ? [rehypeMdxMetaString] : []),
+      ...buildRehypePlugins(userOptions.rehypePlugins, highlight),
+      ...astroPlugins,
+      rehypeAstroIslandMetadata,
+    ];
     // The path lets the island metadata resolve relative imports, as Astro's does.
     const result = await compile({ value: body, path: filePath }, compileOptions);
     code = String(result);
@@ -290,6 +382,14 @@ export async function compileMdx(source: string, filePath: string): Promise<stri
   const exported = "export default function MDXContent(";
   if (!code.includes(exported)) throw new Error(`MDX compilation of ${rel} produced no default MDXContent export`);
   code = code.replace(exported, "function MDXContent(");
-  code += `\nimport { mdxContent as __pletivoMdxContent } from ${JSON.stringify(mdxContentPath)};\nexport default __pletivoMdxContent(MDXContent);\n`;
+  code += `\nimport { mdxContent as __pletivoMdxContent } from ${JSON.stringify(mdxContentPath)};\n`;
+  if (userOptions.astro) {
+    // As @astrojs/mdx's `Content`: `Fragment` and the module's `components` export, under the caller's.
+    const exportsComponents = new Bun.Transpiler({ loader: "js" }).scan(code).exports.includes("components");
+    code += `import { Fragment as __pletivoFragment } from ${JSON.stringify(jsxRuntimePath)};\n`;
+    code += `export default __pletivoMdxContent(MDXContent, { Fragment: __pletivoFragment${exportsComponents ? ", ...components" : ""} });\n`;
+  } else {
+    code += "export default __pletivoMdxContent(MDXContent);\n";
+  }
   return code;
 }

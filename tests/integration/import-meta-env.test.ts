@@ -66,7 +66,9 @@ describe("import.meta.env in an Astro project build", () => {
     expect(textOf(index, "astro-text")).toBe("Read import.meta.env.BASE_URL in a component.");
     expect(textOf(index, "module-text")).toBe("import.meta.env.BASE_URL");
     expect(notes).toContain("<code>import.meta.env.BASE_URL</code>");
-    expect(notes).toContain("const base = import.meta.env.BASE_URL;");
+    // The code block is highlighted, as Astro's is: its text is split across spans.
+    const codeBlock = notes.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)?.[1] ?? "";
+    expect(codeBlock.replace(/<[^>]+>/g, "")).toBe("const base = import.meta.env.BASE_URL;");
   });
 });
 

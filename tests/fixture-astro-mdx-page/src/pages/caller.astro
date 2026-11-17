@@ -1,0 +1,10 @@
+---
+import Snippet from "../snippets/Snippet.mdx";
+import Underscored from "./_snippet.mdx";
+import Override from "../components/Override.astro";
+---
+<html><head><title>Caller</title></head><body>
+<section id="own"><Snippet /></section>
+<section id="given"><Snippet components={{ h2: Override }} /></section>
+<section id="underscored"><Underscored /></section>
+</body></html>

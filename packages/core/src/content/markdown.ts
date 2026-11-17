@@ -56,6 +56,9 @@ export interface AstroMarkdownSettings {
 export interface AstroMarkdownConfig extends AstroMarkdownSettings {
   /** Astro 7: `unified({...})` from `@astrojs/markdown-remark` carries its settings in `options`. */
   processor?: { name: string; options?: AstroMarkdownSettings };
+  /** Unparsed: MDX parses them as Astro's schema does (`mdx-syntax-highlight.ts`). */
+  syntaxHighlight?: unknown;
+  shikiConfig?: unknown;
 }
 
 /**

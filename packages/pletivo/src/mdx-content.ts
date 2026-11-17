@@ -13,9 +13,23 @@ function hoisted(rendered: unknown): unknown {
   return isHtmlString(rendered) ? createHtml(hoistIslandScripts(rendered.__html)) : rendered;
 }
 
-export function mdxContent(render: MdxContent): (props?: Record<string, unknown>) => unknown {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * `defaultComponents`, set in an Astro project, go to `MDXContent` under the caller's
+ * `components`, as `@astrojs/mdx`'s `Content` passes them.
+ */
+export function mdxContent(
+  render: MdxContent,
+  defaultComponents?: Record<string, unknown>,
+): (props?: Record<string, unknown>) => unknown {
   return markNativeComponent(function MDXContent(props?: Record<string, unknown>): unknown {
-    const rendered = render(props);
+    const given = props?.components;
+    const rendered = defaultComponents
+      ? render({ ...props, components: { ...defaultComponents, ...(isRecord(given) ? given : {}) } })
+      : render(props);
     return rendered instanceof Promise ? rendered.then(hoisted) : hoisted(rendered);
   });
 }

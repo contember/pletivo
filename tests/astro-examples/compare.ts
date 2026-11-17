@@ -111,9 +111,182 @@ export function createHtmlNormalizer(canonicalCss: CssCanonicalizer, isBundle: B
     // Minifiers spell equal CSS differently (`0.25em` / `.25em`, `white` / `#fff`):
     // both sides go through the same one.
     text = await replaceAsync(text, /(<style[^>]*>)([\s\S]*?)(<\/style>)/g, async (open, css, close) => `${open}${await canonicalCss(css)}${close}`);
+    text = normalizeVoidElements(text);
+    text = normalizeAttributeSpelling(text);
     text = collapseWhitespace(text);
     return text;
   };
+}
+
+/** The HTML spec's void elements: a trailing `/` on their start tag is ignored by the parser. */
+const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+/** Elements the whitespace step leaves as written, plus `<title>`; so does the void-element step. */
+const RAW_TEXT_ELEMENTS = new Set(["pre", "textarea", "script", "style", "title"]);
+/**
+ * Elements whose content is text, not markup: what looks like a tag there is not one. `<noscript>`
+ * is not among them: its content renders only with scripting off, where the parser reads markup.
+ */
+const TEXT_CONTENT_ELEMENTS = new Set(["textarea", "script", "style", "title"]);
+/** Foreign content: a `/` there self-closes any element, so it is kept. */
+const FOREIGN_ELEMENTS = new Set(["svg", "math"]);
+
+interface Attribute {
+  /** Where the name ends. */
+  nameEnd: number;
+  /** The value's span, inside its quotes; absent for a bare attribute. */
+  value?: { start: number; end: number; quoted: boolean };
+}
+
+interface StartTag {
+  name: string;
+  /** Where the tag's `<` is. */
+  start: number;
+  /** Where the tag's `>` is. */
+  end: number;
+  /** Where the self-closing `/` and the whitespace before it start, or -1. */
+  selfClosingAt: number;
+  attributes: Attribute[];
+  /** Inside `<svg>` or `<math>`, or one of them. */
+  foreign: boolean;
+}
+
+const isSpace = (c: string | undefined) => c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
+
+/** Read a start tag whose name starts at `at`, as the HTML tokenizer does: quoted values may hold `/` and `>`. */
+function readStartTag(html: string, at: number): Omit<StartTag, "foreign"> | null {
+  let i = at;
+  while (i < html.length && !isSpace(html[i]) && html[i] !== "/" && html[i] !== ">") i++;
+  const name = html.slice(at, i).toLowerCase();
+  let selfClosingAt = -1;
+  const attributes: Attribute[] = [];
+  while (i < html.length) {
+    const c = html[i];
+    if (c === ">") return { name, start: at - 1, end: i, selfClosingAt, attributes };
+    if (isSpace(c)) {
+      i++;
+      continue;
+    }
+    if (c === "/") {
+      let start = i;
+      while (start > at && isSpace(html[start - 1])) start--;
+      selfClosingAt = html[i + 1] === ">" ? start : -1;
+      i++;
+      continue;
+    }
+    selfClosingAt = -1;
+    // An attribute name, then an optional `=` and value.
+    while (i < html.length && !isSpace(html[i]) && html[i] !== "/" && html[i] !== ">" && html[i] !== "=") i++;
+    const attribute: Attribute = { nameEnd: i };
+    attributes.push(attribute);
+    let j = i;
+    while (isSpace(html[j])) j++;
+    if (html[j] !== "=") continue;
+    j++;
+    while (isSpace(html[j])) j++;
+    const quote = html[j];
+    if (quote === '"' || quote === "'") {
+      const close = html.indexOf(quote, j + 1);
+      if (close === -1) return null;
+      attribute.value = { start: j + 1, end: close, quoted: true };
+      i = close + 1;
+    } else {
+      // An unquoted value ends at whitespace or `>`: a `/` in it is part of the value.
+      i = j;
+      while (i < html.length && !isSpace(html[i]) && html[i] !== ">") i++;
+      attribute.value = { start: j, end: i, quoted: false };
+    }
+  }
+  return null;
+}
+
+/**
+ * Replace start tags, `<` to `>`, by what `rewrite` returns for them (null keeps one as written).
+ * Comments, the doctype and end tags are kept; so is the content of `skipContent` elements
+ * outside `<svg>` and `<math>`.
+ */
+function rewriteStartTags(html: string, skipContent: ReadonlySet<string>, rewrite: (tag: StartTag) => string | null): string {
+  let out = "";
+  let copied = 0;
+  let foreignDepth = 0;
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) break;
+    if (html.startsWith("<!--", lt)) {
+      const close = html.indexOf("-->", lt + 4);
+      i = close === -1 ? html.length : close + 3;
+      continue;
+    }
+    if (html[lt + 1] === "!" || html[lt + 1] === "?") {
+      const close = html.indexOf(">", lt);
+      i = close === -1 ? html.length : close + 1;
+      continue;
+    }
+    if (html[lt + 1] === "/") {
+      const name = /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(lt, lt + 64))?.[1]?.toLowerCase();
+      if (name && FOREIGN_ELEMENTS.has(name) && foreignDepth > 0) foreignDepth--;
+      const close = html.indexOf(">", lt);
+      i = close === -1 ? html.length : close + 1;
+      continue;
+    }
+    if (!/[a-zA-Z]/.test(html[lt + 1] ?? "")) {
+      i = lt + 1;
+      continue;
+    }
+    const read = readStartTag(html, lt + 1);
+    if (!read) break;
+    i = read.end + 1;
+    const opensForeign = FOREIGN_ELEMENTS.has(read.name) && read.selfClosingAt === -1;
+    const tag: StartTag = { ...read, foreign: foreignDepth > 0 || FOREIGN_ELEMENTS.has(read.name) };
+    const replacement = rewrite(tag);
+    if (replacement !== null) {
+      out += html.slice(copied, tag.start) + replacement;
+      copied = tag.end + 1;
+    }
+    if (opensForeign) {
+      foreignDepth++;
+      continue;
+    }
+    if (foreignDepth === 0 && skipContent.has(tag.name)) {
+      const close = new RegExp(`</${tag.name}\\s*>`, "i").exec(html.slice(i));
+      i = close ? i + close.index + close[0].length : html.length;
+    }
+  }
+  return out + html.slice(copied);
+}
+
+/**
+ * Drop the parser-ignored trailing `/` of a void element's start tag (`<meta charset="utf-8"/>`).
+ * Kept inside `<svg>` and `<math>`, where it self-closes, and in `RAW_TEXT_ELEMENTS`.
+ */
+export function normalizeVoidElements(html: string): string {
+  return rewriteStartTags(html, RAW_TEXT_ELEMENTS, (tag) =>
+    !tag.foreign && tag.selfClosingAt !== -1 && VOID_ELEMENTS.has(tag.name) ? html.slice(tag.start, tag.selfClosingAt) + ">" : null,
+  );
+}
+
+/**
+ * Spell attribute values one way where the parser reads them alike: an empty value as a bare
+ * attribute (`data-seen=""`), and `&#34;` as `&quot;`. `TEXT_CONTENT_ELEMENTS` keep their content.
+ */
+export function normalizeAttributeSpelling(html: string): string {
+  return rewriteStartTags(html, TEXT_CONTENT_ELEMENTS, (tag) => {
+    let out = "";
+    let copied = tag.start;
+    for (const { nameEnd, value } of tag.attributes) {
+      if (!value) continue;
+      if (value.quoted && value.start === value.end) {
+        // `title=""href` is two attributes; `titlehref` would be one.
+        const next = html[value.end + 1];
+        out += html.slice(copied, nameEnd) + (isSpace(next) || next === "/" || next === ">" ? "" : " ");
+        copied = value.end + 1;
+      } else if (html.slice(value.start, value.end).includes("&#34;")) {
+        out += html.slice(copied, value.start) + html.slice(value.start, value.end).replaceAll("&#34;", "&quot;");
+        copied = value.end;
+      }
+    }
+    return copied === tag.start ? null : out + html.slice(copied, tag.end + 1);
+  });
 }
 
 /** Elements whose content is kept byte for byte: whitespace there renders, runs or is CSS. */

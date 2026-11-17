@@ -33,7 +33,15 @@ may disagree on:
   gets an ordinal, so two chunks or two `srcset` widths stay distinct;
 - scope-id hash values, as ordinals, so the element ↔ selector link still counts;
 - CSS minifier spelling: both sides' `<style>` text goes through the esbuild
-  Astro's Vite minified with.
+  Astro's Vite minified with;
+- a trailing `/` on a void element's start tag (`<meta charset="utf-8"/>`):
+  the HTML parser ignores it, so the DOM is the same. Only the spec's void
+  elements, outside `<svg>` and `<math>`, where the `/` self-closes;
+- an empty attribute value (`data-seen=""` vs bare `data-seen`): the parser
+  gives both an empty value, so the DOM is the same;
+- a quote character reference in an attribute value (`&#34;` vs `&quot;`): both
+  decode to `"`, so the DOM is the same. Both attribute rules read start tags
+  only; `<textarea>`, `<script>` and `<style>` content is text and is kept.
 
 Bundled CSS and JS contents are not compared. A successful Astro build is cached
 per example, keyed by the example's files.
