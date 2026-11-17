@@ -253,7 +253,7 @@ describe("an MDX page", () => {
     expect(html).toContain('<div class="message"><astro-slot>This is a <strong>counter</strong>!</astro-slot></div>');
     expectScriptsOnceBeforeFirstIsland(html, ["idle"]);
     // Astro writes the content's island scripts ahead of its first element.
-    expect(html.indexOf(ISLAND_SCRIPT)).toBeLessThan(html.indexOf("<h1>Hello MDX</h1>"));
+    expect(html.indexOf(ISLAND_SCRIPT)).toBeLessThan(html.indexOf('<h1 id="hello-mdx">Hello MDX</h1>'));
     await expectBundles("mdx", html);
   });
 });
