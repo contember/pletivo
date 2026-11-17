@@ -192,7 +192,7 @@ export function resolveMdxOptions(
     gfm: mdxIntegration?.gfm ?? astroMarkdown?.gfm ?? true,
     ...(remarkPlugins.length ? { remarkPlugins } : {}),
     ...(rehypePlugins.length ? { rehypePlugins } : {}),
-    ...(astroConfig?.srcDir ? { astro: astroMdxSettings(astroConfig, mdxIntegration) } : {}),
+    ...(astroConfig?.srcDir ? { astro: astroMdxSettings(astroConfig, mdxIntegration, extendMarkdownConfig) } : {}),
   };
 }
 
@@ -202,6 +202,7 @@ export type RecordedMdxIntegrationOptions = Partial<Omit<CapturedMdxIntegrationO
 function astroMdxSettings(
   astroConfig: { markdown?: AstroMarkdownConfig; root?: URL; srcDir?: URL; experimental?: unknown },
   mdxIntegration: RecordedMdxIntegrationOptions | undefined,
+  extendMarkdownConfig: boolean,
 ): AstroMdxSettings {
   const { root, srcDir, experimental, markdown } = astroConfig;
   if (!root || !srcDir) throw new Error("astro config: root and srcDir must be set");
@@ -211,14 +212,13 @@ function astroMdxSettings(
   }
   const syntaxHighlight = parseSyntaxHighlight(markdown?.syntaxHighlight, "astro config: markdown");
   const shikiConfig = parseShikiConfig(markdown?.shikiConfig, "astro config: markdown");
-  const extend = mdxIntegration?.extendMarkdownConfig ?? true;
   return {
     pagesDir: path.join(fileURLToPath(srcDir), "pages"),
     experimentalHeadingIdCompat: headingIdCompat ?? false,
     highlight: {
       projectRoot: fileURLToPath(root),
-      syntaxHighlight: mdxIntegration?.syntaxHighlight ?? (extend ? syntaxHighlight : SYNTAX_HIGHLIGHT_DEFAULT),
-      shikiConfig: mdxIntegration?.shikiConfig ?? (extend ? shikiConfig : {}),
+      syntaxHighlight: mdxIntegration?.syntaxHighlight ?? (extendMarkdownConfig ? syntaxHighlight : SYNTAX_HIGHLIGHT_DEFAULT),
+      shikiConfig: mdxIntegration?.shikiConfig ?? (extendMarkdownConfig ? shikiConfig : {}),
     },
   };
 }

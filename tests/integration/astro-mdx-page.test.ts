@@ -8,7 +8,6 @@ import path from "path";
 import { pathToFileURL } from "url";
 import { resolveMdxOptions } from "../../packages/pletivo/src/mdx-plugin";
 import {
-  astroHighlightPlugins,
   parseMdxShikiConfig,
   parseMdxSyntaxHighlight,
   parseShikiConfig,
@@ -160,19 +159,6 @@ describe("a code block in an Astro project's MDX", () => {
     );
   });
 
-  test("fails naming astro when the project's astro cannot be resolved", async () => {
-    // Outside the repo, whose node_modules would resolve astro.
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-highlight-"));
-    try {
-      await fs.mkdir(path.join(root, "node_modules"), { recursive: true });
-      await expect(astroHighlightPlugins({ projectRoot: root, syntaxHighlight: { type: "shiki" }, shikiConfig: {} })).rejects.toThrow(
-        "MDX syntax highlighting uses the project's astro package, which cannot be resolved",
-      );
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
   test("syntaxHighlight and shikiConfig are parsed as Astro's schema does", () => {
     expect(parseSyntaxHighlight(undefined, "m")).toEqual({ type: "shiki", excludeLangs: ["math"] });
     expect(parseSyntaxHighlight(false, "m")).toBe(false);
@@ -219,18 +205,18 @@ describe("a code block in an Astro project's MDX", () => {
 });
 
 /**
- * A project outside the repo: its own `@astrojs/mdx` (pletivo stubs it) and the repo's astro, or with
- * `bareAstro` an astro without dependencies, as Astro 7 without the optional `@astrojs/markdown-remark`.
+ * A project outside the repo with its own `@astrojs/mdx` (pletivo stubs it) and the repo's astro; a
+ * `bare` astro lacks `@astrojs/markdown-remark`, as Astro 7 may, and `none` has no astro at all.
  */
 async function buildProject(
   files: Record<string, string>,
-  { bareAstro = false } = {},
+  astro: "repo" | "bare" | "none" = "repo",
 ): Promise<{ root: string; exitCode: number; output: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-mdx-"));
   await fs.mkdir(path.join(root, "node_modules/@astrojs/mdx"), { recursive: true });
-  if (bareAstro) {
+  if (astro === "bare") {
     await Bun.write(path.join(root, "node_modules/astro/package.json"), '{"name":"astro","version":"7.4.2"}');
-  } else {
+  } else if (astro === "repo") {
     await fs.symlink(path.resolve(import.meta.dir, "../../node_modules/astro"), path.join(root, "node_modules/astro"));
   }
   await Bun.write(
@@ -308,18 +294,26 @@ export default {
     expect(await Bun.file(path.join(result.root, "dist/page-11/index.html")).text()).toContain('<pre class="astro-code github-dark"');
   });
 
-  test("without @astrojs/markdown-remark, MDX builds unhighlighted and the build warns once", async () => {
-    const files: Record<string, string> = { "astro.config.mjs": "export default {};" };
-    for (let i = 0; i < 3; i++) files[`src/pages/page-${i}.mdx`] = CODE_PAGE;
-    const result = await buildProject(files, { bareAstro: true });
-    roots.push(result.root);
-    expect(result.exitCode).toBe(0);
-    expect(result.output.split("MDX code blocks are not highlighted: @astrojs/markdown-remark cannot be resolved")).toHaveLength(2);
-    expect(result.output).toContain(
-      "Install `@astrojs/markdown-remark`, or set `markdown.syntaxHighlight: false` to silence this warning.",
-    );
-    expect(same(await Bun.file(path.join(result.root, "dist/page-2/index.html")).text())).toBe(
-      same('<meta charset="utf-8"/><pre><code class="language-js">const answer = 42;\n</code></pre>\n' + math),
-    );
-  });
+  for (const [astro, missing] of [
+    ["bare", "@astrojs/markdown-remark"],
+    ["none", "astro"],
+  ] as const) {
+    test(`without ${missing}, MDX builds unhighlighted and the build warns once`, async () => {
+      const files: Record<string, string> = { "astro.config.mjs": "export default {};", "src/pages/plain.mdx": "# Plain\n" };
+      for (let i = 0; i < 3; i++) files[`src/pages/page-${i}.mdx`] = CODE_PAGE;
+      const result = await buildProject(files, astro);
+      roots.push(result.root);
+      expect(result.exitCode).toBe(0);
+      expect(result.output.split(`MDX code blocks are not highlighted: \`${missing}\` cannot be resolved`)).toHaveLength(2);
+      expect(result.output).toContain(
+        `Install \`${missing}\`, or set \`syntaxHighlight: false\` in \`markdown\` or in \`mdx()\` to silence this warning.`,
+      );
+      expect(same(await Bun.file(path.join(result.root, "dist/page-2/index.html")).text())).toBe(
+        same('<meta charset="utf-8"/><pre><code class="language-js">const answer = 42;\n</code></pre>\n' + math),
+      );
+      expect(same(await Bun.file(path.join(result.root, "dist/plain/index.html")).text())).toBe(
+        same('<meta charset="utf-8"/><h1 id="plain">Plain</h1>'),
+      );
+    });
+  }
 });

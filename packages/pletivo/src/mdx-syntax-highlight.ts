@@ -126,17 +126,15 @@ function isTransformer(value: unknown): value is Transformer {
   return typeof value === "function";
 }
 
-let warnedUnhighlighted = false;
-
-/** Before this module MDX built unhighlighted; a missing optional package (Astro 7) keeps it so. */
-function warnUnhighlighted(reason: string): null {
-  if (!warnedUnhighlighted) {
-    warnedUnhighlighted = true;
-    console.warn(
-      `MDX code blocks are not highlighted: ${reason}. ` +
-        "Install `@astrojs/markdown-remark`, or set `markdown.syntaxHighlight: false` to silence this warning.",
-    );
-  }
+/**
+ * Without `astro` (pletivo's own `astro/config` stands in) or Astro 7's optional
+ * `@astrojs/markdown-remark`, MDX builds unhighlighted, as before Astro's highlighters were used.
+ */
+function warnUnhighlighted(missing: "astro" | "@astrojs/markdown-remark", reason: string): null {
+  console.warn(
+    `MDX code blocks are not highlighted: ${reason}. ` +
+      `Install \`${missing}\`, or set \`syntaxHighlight: false\` in \`markdown\` or in \`mdx()\` to silence this warning.`,
+  );
   return null;
 }
 
@@ -144,21 +142,24 @@ async function loadAstroHighlighter(projectRoot: string, name: "rehypeShiki" | "
   let astroDir: string;
   try {
     astroDir = path.dirname(Bun.resolveSync("astro/package.json", projectRoot));
-  } catch (error) {
-    throw new Error(`MDX syntax highlighting uses the project's astro package, which cannot be resolved from ${projectRoot}`, {
-      cause: error,
-    });
+  } catch {
+    return warnUnhighlighted("astro", `\`astro\` cannot be resolved from ${projectRoot}`);
   }
   // From astro's own directory: an isolated install does not hoist astro's dependencies.
   let entry: string;
   try {
     entry = Bun.resolveSync("@astrojs/markdown-remark", astroDir);
   } catch {
-    return warnUnhighlighted(`@astrojs/markdown-remark cannot be resolved from the project's astro at ${astroDir}`);
+    return warnUnhighlighted(
+      "@astrojs/markdown-remark",
+      `\`@astrojs/markdown-remark\` cannot be resolved from the project's astro at ${astroDir}`,
+    );
   }
   const mod: unknown = await import(entry);
   const attacher = isRecord(mod) ? mod[name] : undefined;
-  if (!isFunction(attacher)) return warnUnhighlighted(`@astrojs/markdown-remark at ${entry} does not export ${name}`);
+  if (!isFunction(attacher)) {
+    return warnUnhighlighted("@astrojs/markdown-remark", `\`@astrojs/markdown-remark\` at ${entry} does not export ${name}`);
+  }
   return attacher;
 }
 
