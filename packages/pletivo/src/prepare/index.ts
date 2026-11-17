@@ -33,7 +33,7 @@ import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
 import { markdownLayoutOf } from "@pletivo/core/content/markdown-module";
 import { isRouteFile } from "@pletivo/core/router";
 import { isInsideRoot, normalizePath } from "./paths";
-import { processedScripts } from "./scripts";
+import { astroSourceFacts } from "./scripts";
 import { prepareModuleGraph, type MarkdownLayoutImport, type PreparedGraph, type ProjectImportSource } from "./vendor";
 import { classifySpecifier } from "./scan";
 
@@ -197,13 +197,14 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
     const projectPath = path.posix.join(physicalRelative, rel);
     const file = path.join(physicalBase, rel);
     const source = await Bun.file(file).text();
-    const scripts = rel.endsWith(".astro") ? await processedScripts(file, source) : [];
+    const facts = rel.endsWith(".astro") ? await astroSourceFacts(file, source) : null;
     const markdownLayout = markdownLayoutImport(rel, source);
     sources.push({
       id: `project:${projectPath}`,
       file,
       source,
-      ...(scripts.length > 0 ? { scripts } : {}),
+      ...(facts !== null && facts.scripts.length > 0 ? { scripts: facts.scripts } : {}),
+      ...(facts !== null && facts.hydrated.length > 0 ? { hydrated: facts.hydrated } : {}),
       ...(markdownLayout === null ? {} : { markdownLayout }),
     });
   }

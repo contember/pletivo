@@ -146,7 +146,7 @@ export async function bundleRenderedIslands(
 }
 
 /** The integrations' virtual modules, from the same Vite plugins that serve the server render. */
-async function loadViteVirtualModule(specifier: string, importer: string): Promise<VirtualModuleSource | null> {
+export async function loadViteVirtualModule(specifier: string, importer: string): Promise<VirtualModuleSource | null> {
   const id = (await resolveViteId(specifier, importer)) ?? specifier;
   return (await tryLoadViteId(id)).loaded;
 }

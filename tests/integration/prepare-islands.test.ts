@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ISLANDS_BUNDLE_MODULE_PREFIX, parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
+import { createIslandClientUrls } from "@pletivo/core/island-urls";
 
 /**
  * `pletivo prepare` for a project with a framework renderer: what the islands bundle may import,
@@ -169,6 +170,28 @@ describe("pletivo prepare, framework islands", () => {
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(JSON.parse(stdout)).toEqual([createHash("sha256").update("x").digest("hex"), 2, "object", "function"]);
+  });
+
+  test("carries client modules for each component an .astro hydrates, and none for a claimed one it does not", async () => {
+    const root = await reactProject({
+      "src/components/Counter.jsx": "export function Counter({ start }) { return <b>{start}</b>; }\n",
+      "src/components/Other.jsx": "export default function Other() { return <i>other</i>; }\n",
+    });
+    const site = await prepare(root);
+    const islands = site.artifact.islands;
+    if (islands === undefined) throw new Error("no islands");
+    // As the page spells the import: without the extension.
+    const counter = createIslandClientUrls({ projectRoot: islands.projectRoot, base: "/" }).component(
+      `${islands.projectRoot}/src/components/Counter`,
+      "Counter",
+    );
+    const urls = islands.clients.map((client) => client.url);
+    expect(urls).toContain(counter);
+    expect(urls.filter((url) => url.startsWith("/_astro/Other."))).toEqual([]);
+    expect(islands.components.map((component) => component.file).sort()).toEqual(["src/components/Counter.jsx", "src/components/Other.jsx"]);
+    expect(islands.clients.find((client) => client.url === counter)?.sources).toEqual(["src/components/Counter.jsx"]);
+    const paths = (site.inputs ?? []).map((input) => input.path);
+    expect(new Set(paths).size).toBe(paths.length);
   });
 
   test("records a file the project and the bundle both read once", async () => {

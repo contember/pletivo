@@ -391,14 +391,26 @@ describe("site artifact islands", () => {
     scripts: { island: "island()", directives: { visible: "v()", load: "l()" } },
     components: [{ file: "src/components/Counter.vue", module: "islands-bundle:0f/Counter.js" }],
     stylesheets: [{ file: "src/components/Counter.vue.pletivo-style.css", source: ".a{}" }],
+    clients: [
+      {
+        url: "/_astro/Counter.AbC-12_x.js",
+        source: 'import{a}from"./chunk-k1.js";export{a as default};',
+        imports: ["/_astro/chunk-k1.js"],
+        sources: ["src/components/Counter.vue"],
+      },
+      { url: "/_astro/chunk-k1.js", source: "export const a=1;", imports: [], sources: [] },
+      { url: "/_astro/client.svelte.Zz9.js", source: "export default 1;", imports: [], sources: [] },
+    ],
   };
+  const [COUNTER_CLIENT, CHUNK_CLIENT] = ISLANDS.clients;
 
   function withIslands(islands: unknown): unknown {
     return artifactWith({ modules: BUNDLE, islands });
   }
 
-  test("round-trips, keeping renderer order and sorting directives", () => {
-    const parsed = parsePreparedSite(JSON.parse(serializePreparedSite(withIslands(ISLANDS))));
+  test("round-trips, keeping renderer order and sorting directives and client modules", () => {
+    const shuffled = { ...ISLANDS, clients: [...ISLANDS.clients].reverse() };
+    const parsed = parsePreparedSite(JSON.parse(serializePreparedSite(withIslands(shuffled))));
     expect(parsed.artifact.islands).toEqual(ISLANDS);
     expect(parsed.artifact.islands?.renderers.map((renderer) => renderer.name)).toEqual(["@astrojs/vue", "@astrojs/react"]);
     expect(Object.keys(parsed.artifact.islands?.scripts.directives ?? {})).toEqual(["load", "visible"]);
@@ -439,6 +451,42 @@ describe("site artifact islands", () => {
       name: "a stylesheet at a component's path",
       islands: { ...ISLANDS, stylesheets: [{ file: "src/components/Counter.vue", source: "" }] },
       path: "$.artifact.islands.stylesheets[0].file",
+    },
+    { name: "no client modules", islands: { ...ISLANDS, clients: undefined }, path: "$.artifact.islands.clients" },
+    {
+      name: "a client module outside /_astro/",
+      islands: { ...ISLANDS, clients: [{ ...CHUNK_CLIENT, url: "/assets/chunk-k1.js" }] },
+      path: "$.artifact.islands.clients[0].url",
+    },
+    {
+      name: "a client module in a subdirectory",
+      islands: { ...ISLANDS, clients: [{ ...CHUNK_CLIENT, url: "/_astro/../chunk-k1.js" }] },
+      path: "$.artifact.islands.clients[0].url",
+    },
+    {
+      name: "a client module that is not JavaScript",
+      islands: { ...ISLANDS, clients: [{ ...CHUNK_CLIENT, url: "/_astro/chunk-k1.css" }] },
+      path: "$.artifact.islands.clients[0].url",
+    },
+    {
+      name: "a duplicate client module",
+      islands: { ...ISLANDS, clients: [CHUNK_CLIENT, CHUNK_CLIENT] },
+      path: "$.artifact.islands.clients[1].url",
+    },
+    {
+      name: "a client module that imports one the artifact does not carry",
+      islands: { ...ISLANDS, clients: [COUNTER_CLIENT] },
+      path: "$.artifact.islands.clients[0].imports[0]",
+    },
+    {
+      name: "a client source outside the project",
+      islands: { ...ISLANDS, clients: [{ ...CHUNK_CLIENT, sources: ["../secret.js"] }] },
+      path: "$.artifact.islands.clients[0].sources[0]",
+    },
+    {
+      name: "a client module with an unknown field",
+      islands: { ...ISLANDS, clients: [{ ...CHUNK_CLIENT, kind: "chunk" }] },
+      path: "$.artifact.islands.clients[0].kind",
     },
     {
       name: "a directive that is not a string",

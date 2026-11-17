@@ -149,16 +149,35 @@ function preactPlugin(projectRoot: string): BunPlugin {
   };
 }
 
+/** Calls `beforeRead` for each file on disk, then leaves loading it to the plugins after it. */
+function readTracker(beforeRead: (file: string) => Promise<void>, inMemory: (file: string) => boolean): BunPlugin {
+  return {
+    name: "pletivo-astro-islands-read-tracker",
+    setup(build) {
+      build.onLoad({ filter: /.*/, namespace: "file" }, async (args) => {
+        if (!inMemory(args.path)) await beforeRead(args.path);
+        return undefined;
+      });
+    },
+  };
+}
+
 /** One module of the islands' client bundle. */
 export interface AstroIslandFile {
   /** Root-absolute, under the base's `_astro/`: an island's `component-url` or `renderer-url`, or a chunk they import. */
   url: string;
   code: string;
-  /** Absolute paths of the files on disk whose code it holds; not the in-memory entries or virtual modules. */
+  /**
+   * What Bun's metafile lists as its inputs, resolved against the working directory, less the
+   * in-memory entries and virtual modules. Bun's own browser polyfills are among them.
+   */
   inputs: string[];
 }
 
-export type BuildAstroIslandsOptions = Omit<BundleAstroIslandsOptions, "distDir">;
+export interface BuildAstroIslandsOptions extends Omit<BundleAstroIslandsOptions, "distDir"> {
+  /** Called with each file on disk before the bundle reads it: what prepare digests as its inputs. */
+  beforeRead?(file: string): Promise<void>;
+}
 
 /** Writes a module at every URL `createIslandClientUrls` returns for the given components, renderers and scripts. */
 export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Promise<void> {
@@ -214,6 +233,7 @@ export async function buildAstroIslands(options: BuildAstroIslandsOptions): Prom
   }
   if (entrypoints.length === 0) return [];
   const virtualDir = path.join(options.projectRoot, VIRTUAL_DIR) + path.sep;
+  const inMemory = (file: string) => modules.has(file) || file.startsWith(virtualDir);
 
   const result = await Bun.build({
     entrypoints,
@@ -228,6 +248,7 @@ export async function buildAstroIslands(options: BuildAstroIslandsOptions): Prom
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     throw: false,
     plugins: [
+      ...(options.beforeRead === undefined ? [] : [readTracker(options.beforeRead, inMemory)]),
       inMemoryPlugin(options.projectRoot, modules, options.virtualModule, labels),
       preactPlugin(options.projectRoot),
       frameworkCompilePlugin({
@@ -247,7 +268,7 @@ export async function buildAstroIslands(options: BuildAstroIslandsOptions): Prom
     const name = output.path.replace(/^\.\//, "");
     const inputs = Object.keys(result.metafile?.outputs[output.path]?.inputs ?? {})
       .map((input) => path.resolve(input))
-      .filter((input) => !modules.has(input) && !input.startsWith(virtualDir));
+      .filter((input) => !inMemory(input));
     files.push({ url: prefix + name, code: await output.text(), inputs });
   }
   return files;

@@ -7,6 +7,10 @@
  *
  * A component's stylesheet imports stay imports of project files (`ISLAND_STYLESHEET_PREFIX`),
  * so CSS stays live; editing a component needs a new prepare.
+ *
+ * The browser half is `pletivo build`'s own island bundler, for each component an `.astro` source
+ * hydrates, spelled as it imports it: the island URL hashes that spelling. A later `.astro` edit
+ * that hydrates another component, export or spelling fails its render until the next prepare.
  */
 
 import { existsSync } from "node:fs";
@@ -16,9 +20,11 @@ import path from "node:path";
 import {
   ARTIFACT_BUILTIN_EXTERNALS,
   ISLAND_STYLESHEET_PREFIX,
+  ISLAND_CLIENT_URL_PREFIX,
   ISLANDS_BUNDLE_MODULE_PREFIX,
   digestArtifactInput,
   type ArtifactInput,
+  type ArtifactIslandClient,
   type ArtifactIslands,
   type ArtifactModule,
   type ArtifactResolution,
@@ -33,7 +39,8 @@ import {
   type FrameworkCompiler,
 } from "@pletivo/core/framework-compile/types";
 import type { BunPlugin, Loader } from "bun";
-import { readIslandScripts } from "../astro-renderers";
+import { buildAstroIslands, type AstroIslandComponent, type AstroIslandFile } from "../astro-islands-bundle";
+import { loadViteVirtualModule, readIslandScripts } from "../astro-renderers";
 import { resolveViteId, tryLoadViteId } from "../astro-host/vite-plugins";
 import { frameworkCompilePlugin, loadFrameworkCompilers } from "../framework-compile";
 import { prepareFailure, PrepareError } from "./error";
@@ -144,6 +151,7 @@ export async function prepareIslands(
 
   const { files, loaded } = await build(projectRoot, entries, bundling);
   const bundledFiles = new Set(loaded.keys());
+  const clients = await clientModules(projectRoot, renderers, compilers, hydratedComponents(sources), loaded);
   const reached = bundleImports(files);
   const names = [...reached.keys()].sort(compareStrings);
   const digest = new Bun.CryptoHasher("sha256");
@@ -177,6 +185,7 @@ export async function prepareIslands(
         module: idOf(fileOf(name)),
       })),
       stylesheets: [...stylesheets].map(([file, source]) => ({ file, source })),
+      clients,
     },
     modules: names.map((name) => ({ id: idOf(name), kind: "js", source: files.get(name) ?? "" })),
     resolutions,
@@ -184,6 +193,61 @@ export async function prepareIslands(
     bundledFiles,
     inputs: [...loaded].map(([file, digest]) => ({ path: normalizePath(path.relative(projectRoot, file)), digest })),
   };
+}
+
+/** Every component an `.astro` source hydrates, once each, as the Bun host's compile spells it. */
+function hydratedComponents(sources: readonly ProjectImportSource[]): AstroIslandComponent[] {
+  const hydrated = new Map<string, AstroIslandComponent>();
+  for (const source of sources) {
+    for (const component of source.hydrated ?? []) hydrated.set(`${component.componentPath}\0${component.exportName}`, component);
+  }
+  return [...hydrated.values()];
+}
+
+/**
+ * The browser modules `pletivo build` writes for these components, with the same bundler, compilers
+ * (the client target, uncached: the server outputs are cached by file) and Vite plugins. None when
+ * nothing is hydrated, as there. The project files it reads join `loaded`.
+ */
+async function clientModules(
+  projectRoot: string,
+  renderers: readonly AstroRendererEntry[],
+  compilers: readonly FrameworkCompiler[],
+  components: readonly AstroIslandComponent[],
+  loaded: Map<string, string>,
+): Promise<ArtifactIslandClient[]> {
+  if (components.length === 0) return [];
+  let files: AstroIslandFile[];
+  try {
+    files = await buildAstroIslands({
+      projectRoot,
+      base: "/",
+      beforeHydrationScripts: [],
+      components,
+      renderers,
+      compilers,
+      virtualModule: loadViteVirtualModule,
+      beforeRead: (file) => recordInput(projectRoot, loaded, file),
+    });
+  } catch (error) {
+    throw prepareFailure(SOURCE, HOOK, `the islands' client bundle failed: ${message(error)}`);
+  }
+  const urls = new Set(files.map((file) => file.url));
+  return files.map((file): ArtifactIslandClient => {
+    const imports = new Set<string>();
+    for (const { path: specifier } of BUNDLE_SCANNER.scanImports(file.code)) {
+      const url = specifier.startsWith("./") ? ISLAND_CLIENT_URL_PREFIX + specifier.slice(2) : null;
+      if (url === null || !urls.has(url)) {
+        throw prepareFailure(SOURCE, HOOK, `the client module ${file.url} imports ${JSON.stringify(specifier)}, which is not a module of the client bundle`);
+      }
+      imports.add(url);
+    }
+    // A project file a bundle read is recorded; Bun's polyfills are listed and never read.
+    const sources = file.inputs
+      .filter((input) => loaded.has(input))
+      .map((input) => normalizePath(path.relative(projectRoot, input)));
+    return { url: file.url, source: file.code, imports: [...imports], sources: [...new Set(sources)] };
+  });
 }
 
 async function islandScripts(projectRoot: string): Promise<ArtifactIslands["scripts"]> {
@@ -350,13 +414,18 @@ function loadTracker(projectRoot: string, loaded: Map<string, string>): BunPlugi
     name: "pletivo-islands-load-tracker",
     setup(build) {
       build.onLoad({ filter: /.*/, namespace: "file" }, async (args) => {
-        if (isProjectFile(projectRoot, args.path) && !loaded.has(args.path)) {
-          loaded.set(args.path, await digestArtifactInput(await fs.readFile(args.path)));
-        }
+        await recordInput(projectRoot, loaded, args.path);
         return undefined;
       });
     },
   };
+}
+
+/** A project file's digest, once per path, taken before a bundle reads it: an edit racing prepare reads as stale. */
+async function recordInput(projectRoot: string, loaded: Map<string, string>, file: string): Promise<void> {
+  if (isProjectFile(projectRoot, file) && !loaded.has(file)) {
+    loaded.set(file, await digestArtifactInput(await fs.readFile(file)));
+  }
 }
 
 /** Every file's imports, checked to end inside the bundle, at a project stylesheet or at a host built-in. */
