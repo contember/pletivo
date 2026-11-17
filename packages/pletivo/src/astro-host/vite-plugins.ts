@@ -21,7 +21,14 @@ import path from "path";
 import { pathToFileURL } from "url";
 import type { Loader } from "bun";
 import type { ServerShim } from "@pletivo/core/astro-host/server-shim";
-import type { LoadResult, ResolveIdResult, ViteLikePlugin } from "@pletivo/core/astro-host/types";
+import type {
+  HookIdFilter,
+  HookIdPattern,
+  LoadResult,
+  ObjectHook,
+  ResolveIdResult,
+  ViteLikePlugin,
+} from "@pletivo/core/astro-host/types";
 
 let bunPluginRegistered = false;
 const collectedPlugins: ViteLikePlugin[] = [];
@@ -252,15 +259,60 @@ export async function freezeViteVirtualModule(
 
 export async function resolveViteId(specifier: string, importer?: string): Promise<string | null> {
   for (const p of collectedPlugins) {
-    if (typeof p.resolveId !== "function") continue;
     try {
-      const resolved = normalizeResolvedId(await p.resolveId(specifier, importer));
+      const resolved = await pluginResolveId(p, specifier, importer);
       if (resolved) return resolved;
     } catch {
       // fall through to next plugin
     }
   }
   return null;
+}
+
+/** One plugin's `resolveId` for `id`: `null` when it has none, its filter skips the id, or it resolves nothing. */
+export async function pluginResolveId(plugin: ViteLikePlugin, id: string, importer?: string): Promise<string | null> {
+  const handler = hookHandler(plugin.resolveId, id);
+  return handler === null ? null : normalizeResolvedId(await handler.call(plugin, id, importer));
+}
+
+/** One plugin's `load` for `id`: `null` when it has none, its filter skips the id, or it loads nothing. */
+export async function pluginLoad(plugin: ViteLikePlugin, id: string): Promise<LoadResult | null> {
+  const handler = hookHandler(plugin.load, id);
+  return handler === null ? null : ((await handler.call(plugin, id)) ?? null);
+}
+
+/** The function a hook runs for `id`, as Vite picks it: an object hook's `handler`, unless its `filter.id` skips the id. */
+function hookHandler<Handler extends (id: string, ...rest: never[]) => unknown>(
+  hook: Handler | ObjectHook<Handler> | undefined,
+  id: string,
+): Handler | null {
+  // Integration plugins reach the host unchecked; a `null` hook is skipped, as before.
+  if (hook == null) return null;
+  if (typeof hook === "function") return hook;
+  const filter = hook.filter?.id;
+  return filter === undefined || matchesIdFilter(filter, id) ? hook.handler : null;
+}
+
+/** Vite's `createIdFilter`: an excluded id never matches; with includes, an id must match one. */
+function matchesIdFilter(filter: HookIdFilter, id: string): boolean {
+  const { include, exclude } =
+    typeof filter === "string" || filter instanceof RegExp || Array.isArray(filter) ? { include: filter, exclude: undefined } : filter;
+  const normalized = id.replaceAll("\\", "/");
+  const matchesAny = (patterns: HookIdPattern | HookIdPattern[]) =>
+    (Array.isArray(patterns) ? patterns : [patterns]).some((pattern) => matchesIdPattern(pattern, normalized));
+  if (exclude !== undefined && matchesAny(exclude)) return false;
+  if (include === undefined || (Array.isArray(include) && include.length === 0)) return true;
+  return matchesAny(include);
+}
+
+function matchesIdPattern(pattern: HookIdPattern, id: string): boolean {
+  if (pattern instanceof RegExp) {
+    const matched = pattern.test(id);
+    pattern.lastIndex = 0;
+    return matched;
+  }
+  const glob = pattern.startsWith("**") || path.isAbsolute(pattern) ? pattern : path.join(process.cwd(), pattern);
+  return new Bun.Glob(glob.replaceAll("\\", "/")).match(id);
 }
 
 function normalizeResolvedId(result: ResolveIdResult): string | null {
@@ -281,10 +333,9 @@ export async function tryLoadViteId(
 ): Promise<{ loaded: { code: string; loader: Loader } | null; errors: Error[] }> {
   const errors: Error[] = [];
   for (const p of collectedPlugins) {
-    if (typeof p.load !== "function") continue;
     try {
-      const result = await p.load(id);
-      if (result == null) continue;
+      const result = await pluginLoad(p, id);
+      if (result === null) continue;
       return { loaded: { code: codeFromLoadResult(result), loader: loaderForVirtualId(id) }, errors };
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -294,7 +345,7 @@ export async function tryLoadViteId(
   return { loaded: null, errors };
 }
 
-function codeFromLoadResult(result: LoadResult): string {
+export function codeFromLoadResult(result: LoadResult): string {
   return typeof result === "string" ? result : result.code;
 }
 
