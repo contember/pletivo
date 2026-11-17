@@ -13,6 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { canonicalPageCss } from "./css";
 
 export interface Comparison {
   routes: {
@@ -76,7 +77,109 @@ export const pletivoBundle: BundleRule = (dir, ext) => dir === "_astro" || dir =
 const HASHED_URL =
   /\/(_astro|_islands|assets)\/(?:[\w-]+\/)*([\w.-]+?)\.[\w-]{8}(?:_[\w-]+)?\.(css|js|mjs|png|jpe?g|webp|avif|gif|svg|woff2?|ttf|otf)\b/g;
 
-export function createHtmlNormalizer(canonicalCss: CssCanonicalizer, isBundle: BundleRule): (html: string) => Promise<string> {
+/** A bundled file's text by its URL path (`/_astro/x.css`), or null when this side has none. */
+export type BundleReader = (urlPath: string) => string | null;
+
+/** Elements whose content is markup whose CSS does not apply to the page (scripting on). */
+const INERT = new Set(["template", "noscript"]);
+
+/** Stands for CSS left in the markup, so page CSS keeps its order against it. */
+const PINNED_CSS = "@pinned-in-markup;";
+
+/** A `url()`, `image-set()` or `@import` target resolved against the sheet's URL: inlining would change it. */
+const RELATIVE_REFERENCE =
+  /url\(\s*(['"]?)(?![/#]|data:|[a-z][\w+.-]*:)[^)'"\s]|image-set\((?:[^()]|\([^()]*\))*?(['"])(?![/#]|data:|[a-z][\w+.-]*:)|@import\s*(['"])(?!\/|[a-z][\w+.-]*:)/i;
+
+/** A start tag's attributes by lowercased name; the first of a repeated name counts, as in HTML. */
+function attributeValues(html: string, tag: StartTag): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const { nameStart, nameEnd, value } of tag.attributes) {
+    const name = html.slice(nameStart, nameEnd).toLowerCase();
+    if (!values.has(name)) values.set(name, value ? html.slice(value.start, value.end) : "");
+  }
+  return values;
+}
+
+/**
+ * What a `<link>` is to page CSS: nothing, a plain stylesheet the page loads unconditionally
+ * (`rel="stylesheet"` alone, CSS type, no `media`, `title` or `disabled`), or another one.
+ */
+function linkKind(attributes: Map<string, string>): "none" | "plain" | "other" {
+  const rel = (attributes.get("rel") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const preloadsStyle = rel.includes("preload") && attributes.get("as")?.toLowerCase() === "style";
+  if (!rel.includes("stylesheet") && !preloadsStyle) return "none";
+  const type = attributes.get("type")?.toLowerCase();
+  const plain =
+    rel.length === 1 &&
+    (type === undefined || type === "text/css") &&
+    !attributes.has("media") &&
+    !attributes.has("title") &&
+    !attributes.has("disabled");
+  return plain ? "plain" : "other";
+}
+
+function bundledSheetPath(attributes: Map<string, string>, isBundle: BundleRule): string | null {
+  const url = attributes.get("href");
+  if (!url?.startsWith("/")) return null;
+  const dir = /^\/(_astro|_islands|assets)\/.*\.css$/.exec(url)?.[1];
+  return dir !== undefined && isBundle(dir, "css") ? url : null;
+}
+
+/**
+ * Takes the page's CSS out of the markup in document order: every bare `<style>` (Astro and
+ * pletivo write page CSS without attributes) and every plain link to a bundled sheet whose text
+ * can be read and has no relative reference. CSS that stays in the markup (any other stylesheet
+ * link or `<style>`, or one in `<svg>`) is a null entry, so page CSS keeps its order against it.
+ * CSS inside `<template>` or `<noscript>`, or in text content, does not apply.
+ */
+function takePageCss(html: string, isBundle: BundleRule, readBundle: BundleReader): { text: string; sheets: Array<string | null> } {
+  const sheets: Array<string | null> = [];
+  let text = "";
+  let copied = 0;
+  let inert = 0;
+  for (const token of htmlTags(html, PAGE_TEXT_CONTENT)) {
+    if (token.kind === "end") {
+      if (INERT.has(token.name) && inert > 0) inert--;
+      continue;
+    }
+    const { tag, content } = token;
+    if (INERT.has(tag.name) && !tag.foreign) {
+      inert++;
+      continue;
+    }
+    if (inert > 0) continue;
+    if (tag.name === "style") {
+      if (content !== null && tag.attributes.length === 0) {
+        sheets.push(html.slice(content.start, content.end));
+        text += html.slice(copied, tag.start);
+        copied = content.after;
+      } else {
+        sheets.push(null);
+      }
+      continue;
+    }
+    if (tag.name !== "link") continue;
+    const attributes = attributeValues(html, tag);
+    const kind = linkKind(attributes);
+    if (kind === "none") continue;
+    const url = kind === "plain" ? bundledSheetPath(attributes, isBundle) : null;
+    const css = url === null ? null : readBundle(url);
+    if (css === null || RELATIVE_REFERENCE.test(css)) {
+      sheets.push(null);
+      continue;
+    }
+    sheets.push(css);
+    text += html.slice(copied, tag.start);
+    copied = tag.end + 1;
+  }
+  return { text: text + html.slice(copied), sheets };
+}
+
+export function createHtmlNormalizer(
+  canonicalCss: CssCanonicalizer,
+  isBundle: BundleRule,
+  readBundle: BundleReader = () => null,
+): (html: string) => Promise<string> {
   // Per side and across all its pages: the n-th distinct value of a kind becomes n.
   const ordinals = new Map<string, number>();
   const counts = new Map<string, number>();
@@ -93,27 +196,44 @@ export function createHtmlNormalizer(canonicalCss: CssCanonicalizer, isBundle: B
 
   return async (html) => {
     let text = html.replace(/\r\n/g, "\n");
+    // Page CSS is compared as one sheet, after the markup: where a `<style>` sits, how the
+    // CSS is split into sheets, and whether a bundled sheet is linked or inlined (a size
+    // threshold) do not change the cascade. CSS that stays in the markup leaves a barrier
+    // in its place. Taken out first, so the ordinals below number the markup's values
+    // before the CSS's, whose rule order differs.
+    const taken = takePageCss(text, isBundle, readBundle);
+    text = taken.text;
+    const sheets = taken.sheets;
     // Names the tool that built the page.
     text = text.replace(/(<meta name="generator" content=")[^"]*"/g, '$1[generator]"');
-    // Bundled asset URLs: the directory and hash are bundler output, and so is the
-    // name of a CSS or JS chunk. An image or font keeps its name. Ordinals keep
-    // distinct files distinct (srcset widths, two chunks).
-    text = text.replace(HASHED_URL, (url: string, dir: string, name: string, ext: string) => {
-      if (!isBundle(dir, ext)) return url;
-      return /^(css|m?js)$/.test(ext)
-        ? `/[bundle]/${ordinal(ext, url)}.${ext}`
-        : `/[asset]/${name}~${ordinal(`${name}.${ext}`, url)}.${ext}`;
-    });
-    // Scope ids hash the component path and the compiler version; ordinals keep
-    // the element ↔ selector link checkable. `data-astro-template` is not one.
-    text = text.replace(/data-astro-cid-([a-z0-9]{8})/g, (_m, id: string) => `data-astro-cid-c${ordinal("cid", id)}`);
-    text = text.replace(/(?<![\w-])astro-([a-z0-9]{8})(?![\w-])/g, (_m, id: string) => `astro-s${ordinal("scope", id)}`);
-    // Minifiers spell equal CSS differently (`0.25em` / `.25em`, `white` / `#fff`):
-    // both sides go through the same one.
+    const numberValues = (part: string): string =>
+      part
+        // Bundled asset URLs: the directory and hash are bundler output, and so is the
+        // name of a CSS or JS chunk. An image or font keeps its name. Ordinals keep
+        // distinct files distinct (srcset widths, two chunks).
+        .replace(HASHED_URL, (url: string, dir: string, name: string, ext: string) => {
+          if (!isBundle(dir, ext)) return url;
+          return /^(css|m?js)$/.test(ext)
+            ? `/[bundle]/${ordinal(ext, url)}.${ext}`
+            : `/[asset]/${name}~${ordinal(`${name}.${ext}`, url)}.${ext}`;
+        })
+        // Scope ids hash the component path and the compiler version; ordinals keep
+        // the element ↔ selector link checkable. `data-astro-template` is not one.
+        .replace(/data-astro-cid-([a-z0-9]{8})/g, (_m, id: string) => `data-astro-cid-c${ordinal("cid", id)}`)
+        .replace(/(?<![\w-])astro-([a-z0-9]{8})(?![\w-])/g, (_m, id: string) => `astro-s${ordinal("scope", id)}`);
+    text = numberValues(text);
+    const pageCss = sheets.map((css) => (css === null ? null : numberValues(css)));
+    // A `<style>` with attributes is not page CSS this rule knows; it stays, minified, in place.
     text = await replaceAsync(text, /(<style[^>]*>)([\s\S]*?)(<\/style>)/g, async (open, css, close) => `${open}${await canonicalCss(css)}${close}`);
     text = normalizeVoidElements(text);
     text = normalizeAttributeSpelling(text);
     text = collapseWhitespace(text);
+    if (pageCss.some((css) => css !== null)) {
+      // Minifiers spell equal CSS differently (`0.25em` / `.25em`, `white` / `#fff`): every
+      // sheet goes through the same one, then `canonicalPageCss` (see css.ts).
+      const minified = await Promise.all(pageCss.map((css) => (css === null ? PINNED_CSS : canonicalCss(css))));
+      text += `\n<style>\n${canonicalPageCss(minified).join("\n")}\n</style>`;
+    }
     return text;
   };
 }
@@ -127,10 +247,14 @@ const RAW_TEXT_ELEMENTS = new Set(["pre", "textarea", "script", "style", "title"
  * is not among them: its content renders only with scripting off, where the parser reads markup.
  */
 const TEXT_CONTENT_ELEMENTS = new Set(["textarea", "script", "style", "title"]);
+/** Elements whose content is text, for page CSS: what looks like a `<style>` there is none. */
+const PAGE_TEXT_CONTENT = new Set([...TEXT_CONTENT_ELEMENTS, "iframe", "noembed", "noframes", "xmp", "plaintext"]);
 /** Foreign content: a `/` there self-closes any element, so it is kept. */
 const FOREIGN_ELEMENTS = new Set(["svg", "math"]);
 
 interface Attribute {
+  /** Where the name starts. */
+  nameStart: number;
   /** Where the name ends. */
   nameEnd: number;
   /** The value's span, inside its quotes; absent for a bare attribute. */
@@ -174,9 +298,11 @@ function readStartTag(html: string, at: number): Omit<StartTag, "foreign"> | nul
       continue;
     }
     selfClosingAt = -1;
-    // An attribute name, then an optional `=` and value.
+    // An attribute name, then an optional `=` and value. A leading `=` belongs to the name.
+    const nameStart = i;
+    i++;
     while (i < html.length && !isSpace(html[i]) && html[i] !== "/" && html[i] !== ">" && html[i] !== "=") i++;
-    const attribute: Attribute = { nameEnd: i };
+    const attribute: Attribute = { nameStart, nameEnd: i };
     attributes.push(attribute);
     let j = i;
     while (isSpace(html[j])) j++;
@@ -199,21 +325,25 @@ function readStartTag(html: string, at: number): Omit<StartTag, "foreign"> | nul
   return null;
 }
 
+type HtmlTag =
+  | { kind: "start"; tag: StartTag; content: { start: number; end: number; after: number } | null }
+  | { kind: "end"; name: string };
+
 /**
- * Replace start tags, `<` to `>`, by what `rewrite` returns for them (null keeps one as written).
- * Comments, the doctype and end tags are kept; so is the content of `skipContent` elements
- * outside `<svg>` and `<math>`.
+ * Start and end tags in document order, as the HTML tokenizer finds them: comments, the doctype
+ * and the content of `textContent` elements outside `<svg>` and `<math>` hold none. Such an
+ * element's start tag carries its content's span and where its end tag ends.
  */
-function rewriteStartTags(html: string, skipContent: ReadonlySet<string>, rewrite: (tag: StartTag) => string | null): string {
-  let out = "";
-  let copied = 0;
+function* htmlTags(html: string, textContent: ReadonlySet<string>): Generator<HtmlTag> {
   let foreignDepth = 0;
   let i = 0;
   while (i < html.length) {
     const lt = html.indexOf("<", i);
-    if (lt === -1) break;
+    if (lt === -1) return;
     if (html.startsWith("<!--", lt)) {
-      const close = html.indexOf("-->", lt + 4);
+      // `<!-->` and `<!--->` are whole comments.
+      const abrupt = html.startsWith("<!-->", lt) ? 5 : html.startsWith("<!--->", lt) ? 6 : 0;
+      const close = abrupt > 0 ? lt + abrupt - 3 : html.indexOf("-->", lt + 4);
       i = close === -1 ? html.length : close + 3;
       continue;
     }
@@ -225,6 +355,7 @@ function rewriteStartTags(html: string, skipContent: ReadonlySet<string>, rewrit
     if (html[lt + 1] === "/") {
       const name = /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(lt, lt + 64))?.[1]?.toLowerCase();
       if (name && FOREIGN_ELEMENTS.has(name) && foreignDepth > 0) foreignDepth--;
+      if (name) yield { kind: "end", name };
       const close = html.indexOf(">", lt);
       i = close === -1 ? html.length : close + 1;
       continue;
@@ -234,22 +365,47 @@ function rewriteStartTags(html: string, skipContent: ReadonlySet<string>, rewrit
       continue;
     }
     const read = readStartTag(html, lt + 1);
-    if (!read) break;
+    if (!read) return;
     i = read.end + 1;
     const opensForeign = FOREIGN_ELEMENTS.has(read.name) && read.selfClosingAt === -1;
     const tag: StartTag = { ...read, foreign: foreignDepth > 0 || FOREIGN_ELEMENTS.has(read.name) };
-    const replacement = rewrite(tag);
-    if (replacement !== null) {
-      out += html.slice(copied, tag.start) + replacement;
-      copied = tag.end + 1;
-    }
-    if (opensForeign) {
-      foreignDepth++;
+    if (opensForeign) foreignDepth++;
+    if (opensForeign || foreignDepth > 0 || !textContent.has(tag.name)) {
+      yield { kind: "start", tag, content: null };
       continue;
     }
-    if (foreignDepth === 0 && skipContent.has(tag.name)) {
-      const close = new RegExp(`</${tag.name}\\s*>`, "i").exec(html.slice(i));
-      i = close ? i + close.index + close[0].length : html.length;
+    // The content runs to an end tag of the same name followed by whitespace, `/` or `>`.
+    const endTag = tag.name === "plaintext" ? null : new RegExp(`</${tag.name}(?=[\\s/>])`, "gi");
+    let contentEnd = html.length;
+    let after = html.length;
+    if (endTag !== null) {
+      endTag.lastIndex = i;
+      const found = endTag.exec(html);
+      if (found !== null) {
+        contentEnd = found.index;
+        const close = html.indexOf(">", found.index);
+        after = close === -1 ? html.length : close + 1;
+      }
+    }
+    yield { kind: "start", tag, content: { start: i, end: contentEnd, after } };
+    i = after;
+  }
+}
+
+/**
+ * Replace start tags, `<` to `>`, by what `rewrite` returns for them (null keeps one as written).
+ * Comments, the doctype and end tags are kept; so is the content of `skipContent` elements
+ * outside `<svg>` and `<math>`.
+ */
+function rewriteStartTags(html: string, skipContent: ReadonlySet<string>, rewrite: (tag: StartTag) => string | null): string {
+  let out = "";
+  let copied = 0;
+  for (const token of htmlTags(html, skipContent)) {
+    if (token.kind !== "start") continue;
+    const replacement = rewrite(token.tag);
+    if (replacement !== null) {
+      out += html.slice(copied, token.tag.start) + replacement;
+      copied = token.tag.end + 1;
     }
   }
   return out + html.slice(copied);
@@ -379,8 +535,12 @@ export async function compareOutputs(
   const extra = pletivoRoutes.filter((r) => !astroSet.has(r));
   const astroPages = astroRoutes.filter((r) => r.endsWith(".html"));
 
-  const normalizeAstro = createHtmlNormalizer(canonicalCss, astroBundle);
-  const normalizePletivo = createHtmlNormalizer(canonicalCss, pletivoBundle);
+  const reader = (dir: string): BundleReader => (url) => {
+    const file = path.join(dir, url);
+    return file.startsWith(dir + path.sep) && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+  };
+  const normalizeAstro = createHtmlNormalizer(canonicalCss, astroBundle, reader(astroDir));
+  const normalizePletivo = createHtmlNormalizer(canonicalCss, pletivoBundle, reader(pletivoDir));
   const matchingPages: string[] = [];
   const diffs: Comparison["diffs"] = [];
   for (const route of common) {
