@@ -120,10 +120,13 @@ export function createHtmlNormalizer(canonicalCss: CssCanonicalizer, isBundle: B
 
 /** The HTML spec's void elements: a trailing `/` on their start tag is ignored by the parser. */
 const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
-/** Raw-text elements the whitespace step leaves as written; so does the void-element step. */
-const RAW_TEXT_ELEMENTS = new Set(["pre", "textarea", "script", "style"]);
-/** Elements whose content is text, not markup: what looks like a tag there is not one. */
-const TEXT_CONTENT_ELEMENTS = new Set(["textarea", "script", "style"]);
+/** Elements the whitespace step leaves as written, plus `<title>`; so does the void-element step. */
+const RAW_TEXT_ELEMENTS = new Set(["pre", "textarea", "script", "style", "title"]);
+/**
+ * Elements whose content is text, not markup: what looks like a tag there is not one. `<noscript>`
+ * is not among them: its content renders only with scripting off, where the parser reads markup.
+ */
+const TEXT_CONTENT_ELEMENTS = new Set(["textarea", "script", "style", "title"]);
 /** Foreign content: a `/` there self-closes any element, so it is kept. */
 const FOREIGN_ELEMENTS = new Set(["svg", "math"]);
 
@@ -253,10 +256,8 @@ function rewriteStartTags(html: string, skipContent: ReadonlySet<string>, rewrit
 }
 
 /**
- * Drop the trailing `/` of a void element's start tag (`<meta charset="utf-8"/>` →
- * `<meta charset="utf-8">`): the HTML parser ignores it, so the DOM is the same. Inside
- * `<svg>` and `<math>`, the `/` self-closes, so it is kept there; raw-text elements are
- * left as written, as the whitespace step leaves them.
+ * Drop the parser-ignored trailing `/` of a void element's start tag (`<meta charset="utf-8"/>`).
+ * Kept inside `<svg>` and `<math>`, where it self-closes, and in `RAW_TEXT_ELEMENTS`.
  */
 export function normalizeVoidElements(html: string): string {
   return rewriteStartTags(html, RAW_TEXT_ELEMENTS, (tag) =>
@@ -265,10 +266,8 @@ export function normalizeVoidElements(html: string): string {
 }
 
 /**
- * Spell attribute values one way where the parser reads them alike, so the DOM is the same:
- * an empty value as a bare attribute (`data-seen=""` → `data-seen`), and a quote character
- * reference as `&quot;` (`&#34;`). Only start tags; the content of `<textarea>`, `<script>`
- * and `<style>` is text, and is left as written.
+ * Spell attribute values one way where the parser reads them alike: an empty value as a bare
+ * attribute (`data-seen=""`), and `&#34;` as `&quot;`. `TEXT_CONTENT_ELEMENTS` keep their content.
  */
 export function normalizeAttributeSpelling(html: string): string {
   return rewriteStartTags(html, TEXT_CONTENT_ELEMENTS, (tag) => {
@@ -277,7 +276,9 @@ export function normalizeAttributeSpelling(html: string): string {
     for (const { nameEnd, value } of tag.attributes) {
       if (!value) continue;
       if (value.quoted && value.start === value.end) {
-        out += html.slice(copied, nameEnd);
+        // `title=""href` is two attributes; `titlehref` would be one.
+        const next = html[value.end + 1];
+        out += html.slice(copied, nameEnd) + (isSpace(next) || next === "/" || next === ">" ? "" : " ");
         copied = value.end + 1;
       } else if (html.slice(value.start, value.end).includes("&#34;")) {
         out += html.slice(copied, value.start) + html.slice(value.start, value.end).replaceAll("&#34;", "&quot;");

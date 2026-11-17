@@ -45,10 +45,8 @@ const UNITLESS_CSS_PROPS = new Set([
 ]);
 
 /**
- * Serialize `style={{ color: "red", fontSize: 12 }}` into a CSS declaration
- * string. camelCase → kebab-case; numeric values for length-like properties
- * get a `px` suffix; custom properties (`--foo`) pass through as-is.
- * Declarations are joined by `;` with none after the last, as Astro writes them.
+ * Serialize `style={{ color: "red", fontSize: 12 }}` as Astro writes it: kebab-case names (custom
+ * properties as-is), `px` on numeric lengths, `;` between declarations and none after the last.
  */
 function serializeStyleObject(style: Record<string, unknown>): string {
   const declarations: string[] = [];

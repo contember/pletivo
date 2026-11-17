@@ -46,7 +46,7 @@ import { loadAstroConfig } from "./config-loader";
 import {
   captureMdxIntegrationOptions,
   type CapturedMdxIntegrationOptions,
-  type PluggableList,
+  type RecordedMdxIntegrationOptions,
   MDX_INTEGRATION_OPTIONS_KEY,
 } from "../mdx-plugin";
 import { createServerShim, type ServerShim, type HmrBroadcast } from "@pletivo/core/astro-host/server-shim";
@@ -618,17 +618,13 @@ function filterOverrides(
       if (integration.name === "@astrojs/mdx") {
         const captured = captureMdxIntegrationOptions(integration);
         if (captured) {
-          const { remarkPlugins, rehypePlugins, gfm, unsupportedKeys } = captured;
+          const { remarkPlugins, rehypePlugins, unsupportedKeys } = captured;
           if (remarkPlugins.length || rehypePlugins.length) {
             log.push(
               `  ↳ forwarded ${remarkPlugins.length} remark + ${rehypePlugins.length} rehype plugin(s) from @astrojs/mdx options`,
             );
           }
-          // Record whenever there's anything to carry — plugins or an explicit
-          // gfm override (which has no plugins of its own).
-          if (remarkPlugins.length || rehypePlugins.length || gfm !== undefined) {
-            onMdxOptions?.(captured);
-          }
+          onMdxOptions?.(captured);
           if (unsupportedKeys.length) {
             log.push(
               `  ⚠ @astrojs/mdx option(s) not supported by pletivo's native MDX, ignored: ${unsupportedKeys.join(", ")}`,
@@ -644,22 +640,23 @@ function filterOverrides(
 }
 
 /**
- * Merge remark/rehype plugins extracted from a `mdx({...})` call into the
- * loaded config so `resolveMdxOptions` can forward them to the native MDX
- * compiler. Accumulates across multiple `@astrojs/mdx` integrations.
+ * Stash the options of a `mdx({...})` call on the loaded config for `resolveMdxOptions`. Plugins
+ * accumulate across `@astrojs/mdx` integrations; for the other options the last one set wins.
  */
 function recordMdxIntegrationOptions(
   config: AstroConfig,
   captured: CapturedMdxIntegrationOptions,
 ): void {
-  const existing = config[MDX_INTEGRATION_OPTIONS_KEY] as
-    | { remarkPlugins: PluggableList; rehypePlugins: PluggableList; gfm?: boolean }
-    | undefined;
-  config[MDX_INTEGRATION_OPTIONS_KEY] = {
+  const existing = config[MDX_INTEGRATION_OPTIONS_KEY] as RecordedMdxIntegrationOptions | undefined;
+  const recorded: RecordedMdxIntegrationOptions = {
     remarkPlugins: [...(existing?.remarkPlugins ?? []), ...captured.remarkPlugins],
     rehypePlugins: [...(existing?.rehypePlugins ?? []), ...captured.rehypePlugins],
     gfm: captured.gfm ?? existing?.gfm,
+    syntaxHighlight: captured.syntaxHighlight ?? existing?.syntaxHighlight,
+    shikiConfig: captured.shikiConfig ?? existing?.shikiConfig,
+    extendMarkdownConfig: captured.extendMarkdownConfig ?? existing?.extendMarkdownConfig,
   };
+  config[MDX_INTEGRATION_OPTIONS_KEY] = recorded;
 }
 
 function mergeDeep<T extends Record<string, unknown>>(a: T, b: Record<string, unknown>): T {

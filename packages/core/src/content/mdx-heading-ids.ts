@@ -1,11 +1,6 @@
-/**
- * Port of Astro's `rehypeHeadingIds` (`@astrojs/markdown-remark`, `rehype-collect-headings.ts`)
- * for MDX: a heading without a string `id` gets a github-slugger slug of its text, unique per
- * document. It runs after the user's rehype plugins, so an id one of them set is kept.
- *
- * Not ported: a `{frontmatter.x}` heading expression resolves to its value in Astro; pletivo's
- * MDX has no `frontmatter` binding, so the expression's source is slugged.
- */
+// Port of Astro's `rehypeHeadingIds` for MDX: a heading without a string `id` gets a unique
+// github-slugger slug of its text. Unlike Astro, a `{frontmatter.x}` heading slugs the expression's
+// source: pletivo's MDX has no `frontmatter` binding.
 import Slugger from "github-slugger";
 import type { Transformer } from "unified";
 

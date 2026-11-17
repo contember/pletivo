@@ -41,6 +41,21 @@ describe("captureMdxIntegrationOptions", () => {
     expect(captured?.unsupportedKeys).toEqual(["optimize"]);
   });
 
+  test("honours syntaxHighlight, shikiConfig and extendMarkdownConfig, refusing values Astro's types do not allow", () => {
+    const capture = (options: Record<string, unknown>) => {
+      const stub = { name: "@astrojs/mdx", hooks: {}, __pletivoMdxOptions: options };
+      return captureMdxIntegrationOptions(stub);
+    };
+    const captured = capture({ syntaxHighlight: "prism", shikiConfig: { theme: "nord" }, extendMarkdownConfig: false });
+    expect(captured?.syntaxHighlight).toEqual({ type: "prism" });
+    expect(captured?.shikiConfig).toEqual({ theme: "nord" });
+    expect(captured?.extendMarkdownConfig).toBe(false);
+    expect(captured?.unsupportedKeys).toEqual([]);
+    expect(() => capture({ extendMarkdownConfig: "no" })).toThrow('mdx({...}).extendMarkdownConfig must be a boolean, got "no"');
+    expect(() => capture({ syntaxHighlight: true })).toThrow("mdx({...}).syntaxHighlight must be");
+    expect(() => capture({ shikiConfig: { wrap: "yes" } })).toThrow("mdx({...}).shikiConfig.wrap must be a boolean or null");
+  });
+
   test("ignores nullish unsupported options", () => {
     const integration = {
       name: "@astrojs/mdx",
@@ -90,6 +105,36 @@ describe("resolveMdxOptions", () => {
     const resolved = resolveMdxOptions(emptyPletivoConfig, astroConfig);
     // remarkA appears in both sources but only once in the result, order kept.
     expect(resolved.remarkPlugins).toEqual([remarkA, remarkB]);
+  });
+
+  test("mdx({ extendMarkdownConfig: false }) drops the markdown config, as @astrojs/mdx does", () => {
+    const astroConfig = {
+      markdown: { remarkPlugins: [remarkA], rehypePlugins: [rehypeA], gfm: false },
+      [MDX_INTEGRATION_OPTIONS_KEY]: { remarkPlugins: [remarkB], rehypePlugins: [], extendMarkdownConfig: false },
+    };
+    const resolved = resolveMdxOptions(emptyPletivoConfig, astroConfig);
+    expect(resolved.remarkPlugins).toEqual([remarkB]);
+    expect(resolved.rehypePlugins).toBeUndefined();
+    expect(resolved.gfm).toBe(true);
+  });
+
+  test("mdx({ syntaxHighlight, shikiConfig }) win over markdown's; extendMarkdownConfig: false falls back to Astro's defaults", () => {
+    const root = new URL("file:///project/");
+    const srcDir = new URL("file:///project/src/");
+    const markdown = { syntaxHighlight: "prism", shikiConfig: { theme: "nord" } };
+    const highlight = (mdx: Record<string, unknown>) =>
+      resolveMdxOptions(emptyPletivoConfig, { root, srcDir, markdown, [MDX_INTEGRATION_OPTIONS_KEY]: mdx }).astro?.highlight;
+    expect(highlight({})).toEqual({ projectRoot: "/project/", syntaxHighlight: { type: "prism" }, shikiConfig: { theme: "nord" } });
+    expect(highlight({ syntaxHighlight: false, shikiConfig: { wrap: true } })).toEqual({
+      projectRoot: "/project/",
+      syntaxHighlight: false,
+      shikiConfig: { wrap: true },
+    });
+    expect(highlight({ extendMarkdownConfig: false })).toEqual({
+      projectRoot: "/project/",
+      syntaxHighlight: { type: "shiki", excludeLangs: ["math"] },
+      shikiConfig: {},
+    });
   });
 
   test("gfm defaults on, follows markdown.gfm, and mdx() overrides it", () => {

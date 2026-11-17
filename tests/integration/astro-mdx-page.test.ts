@@ -1,18 +1,19 @@
-/**
- * An MDX page in an Astro project renders as with `@astrojs/mdx`: heading ids, the module's
- * `components` export, a `<meta charset>` ahead of a page's content, and code blocks through
- * Astro's own highlighter, per `markdown.syntaxHighlight` and `markdown.shikiConfig`. The expected HTML is
- * what Astro 5.16.11 with `@astrojs/mdx` 4.3.13 builds from the same fixtures. A project
- * without an Astro config keeps pletivo's plain MDX. Each fixture builds in its own process:
- * the MDX options are set once per process.
- */
+// MDX in an Astro project renders as Astro 5.16.11 with `@astrojs/mdx` 4.3.13 builds the same
+// fixtures; without an Astro config pletivo's plain MDX stays. Each fixture builds in its own
+// process, since the MDX options are set once per process.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
 import { resolveMdxOptions } from "../../packages/pletivo/src/mdx-plugin";
-import { astroHighlightPlugins, parseShikiConfig, parseSyntaxHighlight } from "../../packages/pletivo/src/mdx-syntax-highlight";
+import {
+  astroHighlightPlugins,
+  parseMdxShikiConfig,
+  parseMdxSyntaxHighlight,
+  parseShikiConfig,
+  parseSyntaxHighlight,
+} from "../../packages/pletivo/src/mdx-syntax-highlight";
 import type { PletivoConfig } from "../../packages/pletivo/src/config";
 import { normalizeAttributeSpelling, normalizeVoidElements } from "../astro-examples/compare";
 
@@ -63,12 +64,14 @@ describe("an MDX page in an Astro project", () => {
     expect(await normalizedPage("astro", "index.html")).toStartWith('<meta charset="utf-8">\n<h1 ');
   });
 
-  test("gets no <meta charset> when partial or led by a layout component, nor does MDX outside src/pages", async () => {
+  test("gets no <meta charset> when partial, led by a layout component, outside src/pages or _-prefixed", async () => {
     expect(await page("astro", "partial/index.html")).toBe('<h1 id="partial">Partial</h1>');
     expect(await page("astro", "wrapped/index.html")).toBe(
       '<!DOCTYPE html>\n<html><head><title>Layout</title></head><body><h1 id="wrapped">Wrapped</h1></body></html>',
     );
-    expect(await page("astro", "caller/index.html")).not.toContain("charset");
+    const caller = await page("astro", "caller/index.html");
+    expect(caller).not.toContain("charset");
+    expect(caller).toContain('<section id="underscored"><h2 id="underscored">Underscored</h2>');
   });
 
   test("renders its elements through its components export, with Fragment provided, and ids on its headings", async () => {
@@ -109,8 +112,11 @@ describe("an MDX page in an Astro project", () => {
 });
 
 describe("an MDX page in a project without an Astro config", () => {
-  test("keeps plain MDX: no charset, no heading ids, no components export, no highlighting", async () => {
-    expect(await page("native", "index.html")).toBe('<h1>Hello world!</h1>\n<pre><code class="language-js">const answer = 42;\n</code></pre>');
+  test("keeps plain MDX: no charset, ids, components export, highlighting or HTML attribute names", async () => {
+    // The fixture's rehype plugin sets `tabIndex`, which an Astro project would write as `tabindex`.
+    expect(await page("native", "index.html")).toBe(
+      '<h1>Hello world!</h1>\n<pre tabIndex="0"><code class="language-js">const answer = 42;\n</code></pre>',
+    );
   });
 });
 
@@ -154,18 +160,13 @@ describe("a code block in an Astro project's MDX", () => {
     );
   });
 
-  test("fails naming the package when astro or @astrojs/markdown-remark cannot be resolved", async () => {
+  test("fails naming astro when the project's astro cannot be resolved", async () => {
     // Outside the repo, whose node_modules would resolve astro.
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-highlight-"));
     try {
-      await fs.mkdir(path.join(root, "none/node_modules"), { recursive: true });
-      await fs.mkdir(path.join(root, "bare/node_modules/astro"), { recursive: true });
-      await Bun.write(path.join(root, "bare/node_modules/astro/package.json"), '{"name":"astro","version":"0.0.0"}');
-      await expect(astroHighlightPlugins(path.join(root, "none"), { type: "shiki" }, {})).rejects.toThrow(
+      await fs.mkdir(path.join(root, "node_modules"), { recursive: true });
+      await expect(astroHighlightPlugins({ projectRoot: root, syntaxHighlight: { type: "shiki" }, shikiConfig: {} })).rejects.toThrow(
         "MDX syntax highlighting uses the project's astro package, which cannot be resolved",
-      );
-      await expect(astroHighlightPlugins(path.join(root, "bare"), { type: "shiki" }, {})).rejects.toThrow(
-        "MDX syntax highlighting uses @astrojs/markdown-remark, which cannot be resolved from the project's astro",
       );
     } finally {
       await fs.rm(root, { recursive: true, force: true });
@@ -179,6 +180,146 @@ describe("a code block in an Astro project's MDX", () => {
     expect(parseSyntaxHighlight({ excludeLangs: ["sh"] }, "m")).toEqual({ type: "shiki", excludeLangs: ["sh"] });
     expect(() => parseSyntaxHighlight("highlightjs", "m")).toThrow('m.syntaxHighlight must be false, "shiki", "prism"');
     expect(() => parseSyntaxHighlight({ type: "shiki", excludeLangs: "sh" }, "m")).toThrow("m.syntaxHighlight must be");
+    expect(() => parseSyntaxHighlight({ type: null }, "m")).toThrow("m.syntaxHighlight must be");
+    expect(() => parseSyntaxHighlight({ excludeLangs: null }, "m")).toThrow("m.syntaxHighlight must be");
+    expect(() => parseSyntaxHighlight(true, "m")).toThrow("m.syntaxHighlight must be");
+
+    expect(parseShikiConfig(undefined, "m")).toEqual({});
+    expect(parseShikiConfig({ theme: "nord", wrap: null, defaultColor: false }, "m")).toEqual({
+      theme: "nord",
+      wrap: null,
+      defaultColor: false,
+    });
+    // Shiki 1 compat: `id` becomes `name`, `grammar` is merged into the language.
+    const grammar = { scopeName: "source.x", patterns: [] };
+    expect(parseShikiConfig({ langs: ["js", { id: "x", grammar }] }, "m").langs).toEqual([
+      "js",
+      { id: "x", grammar, name: "x", scopeName: "source.x", patterns: [] },
+    ]);
     expect(() => parseShikiConfig("nord", "m")).toThrow('m.shikiConfig must be an object, got "nord"');
+    expect(() => parseShikiConfig({ wrap: "yes" }, "m")).toThrow('m.shikiConfig.wrap must be a boolean or null, got "yes"');
+    expect(() => parseShikiConfig({ langs: "js" }, "m")).toThrow("m.shikiConfig.langs must be an array");
+    expect(() => parseShikiConfig({ langAlias: { a: 1 } }, "m")).toThrow("m.shikiConfig.langAlias must be an object of strings");
+    expect(() => parseShikiConfig({ themes: ["nord"] }, "m")).toThrow("m.shikiConfig.themes must be an object");
+    expect(() => parseShikiConfig({ defaultColor: true }, "m")).toThrow("m.shikiConfig.defaultColor must be a string or false");
+    expect(() => parseShikiConfig({ transformers: {} }, "m")).toThrow("m.shikiConfig.transformers must be an array");
+  });
+
+  test("mdx({ syntaxHighlight, shikiConfig }) are checked the same, but taken as given, as @astrojs/mdx does", () => {
+    expect(parseMdxSyntaxHighlight(undefined, "m")).toBeUndefined();
+    expect(parseMdxSyntaxHighlight(false, "m")).toBe(false);
+    expect(parseMdxSyntaxHighlight({ type: "prism" }, "m")).toEqual({ type: "prism" });
+    expect(() => parseMdxSyntaxHighlight({ excludeLangs: ["sh"] }, "m")).toThrow("m.syntaxHighlight must be");
+    expect(() => parseMdxSyntaxHighlight("highlightjs", "m")).toThrow("m.syntaxHighlight must be");
+
+    expect(parseMdxShikiConfig(undefined, "m")).toBeUndefined();
+    expect(parseMdxShikiConfig({ langs: [{ id: "x" }] }, "m")).toEqual({ langs: [{ id: "x" }] });
+    expect(() => parseMdxShikiConfig({ wrap: 1 }, "m")).toThrow("m.shikiConfig.wrap must be a boolean or null");
+  });
+});
+
+/**
+ * A project outside the repo: its own `@astrojs/mdx` (pletivo stubs it) and the repo's astro, or with
+ * `bareAstro` an astro without dependencies, as Astro 7 without the optional `@astrojs/markdown-remark`.
+ */
+async function buildProject(
+  files: Record<string, string>,
+  { bareAstro = false } = {},
+): Promise<{ root: string; exitCode: number; output: string }> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-mdx-"));
+  await fs.mkdir(path.join(root, "node_modules/@astrojs/mdx"), { recursive: true });
+  if (bareAstro) {
+    await Bun.write(path.join(root, "node_modules/astro/package.json"), '{"name":"astro","version":"7.4.2"}');
+  } else {
+    await fs.symlink(path.resolve(import.meta.dir, "../../node_modules/astro"), path.join(root, "node_modules/astro"));
+  }
+  await Bun.write(
+    path.join(root, "node_modules/@astrojs/mdx/package.json"),
+    '{"name":"@astrojs/mdx","version":"4.3.13","type":"module","main":"index.js"}',
+  );
+  await Bun.write(path.join(root, "node_modules/@astrojs/mdx/index.js"), 'export default () => { throw new Error("not stubbed"); };');
+  for (const [file, content] of Object.entries(files)) await Bun.write(path.join(root, file), content);
+  const child = Bun.spawn(["bun", cli, "build"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  return { root, exitCode: await child.exited, output: stdout + stderr };
+}
+
+const CODE_PAGE = "```js\nconst answer = 42;\n```\n\n```math\nx^2\n```\n";
+
+describe("mdx({...}) highlighting options", () => {
+  const roots: string[] = [];
+  afterAll(async () => {
+    for (const root of roots) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  async function built(config: string): Promise<string> {
+    const result = await buildProject({ "astro.config.mjs": config, "src/pages/index.mdx": CODE_PAGE });
+    roots.push(result.root);
+    if (result.exitCode !== 0) throw new Error(result.output);
+    return Bun.file(path.join(result.root, "dist/index.html")).text();
+  }
+
+  const same = (html: string) => normalizeAttributeSpelling(normalizeVoidElements(html));
+  const math = '<pre><code class="language-math">x^2\n</code></pre>';
+
+  test("extendMarkdownConfig: false drops markdown's highlighting and plugins; shikiConfig replaces markdown's", async () => {
+    const html = await built(`import mdx from "@astrojs/mdx";
+function rehypeMarkSeen() {
+  const visit = (node) => {
+    if (node.type === "element" && node.tagName === "pre") node.properties.dataSeen = "";
+    node.children?.forEach(visit);
+  };
+  return visit;
+}
+export default {
+  markdown: { syntaxHighlight: "prism", rehypePlugins: [rehypeMarkSeen] },
+  integrations: [mdx({ extendMarkdownConfig: false, shikiConfig: { theme: "nord" } })],
+};`);
+    expect(same(html)).toBe(
+      same(
+        '<meta charset="utf-8"/><pre class="astro-code nord" style="background-color:#2e3440ff;color:#d8dee9ff;overflow-x:auto" tabindex="0" data-language="js"><code><span class="line"><span style="color:#81A1C1">const</span><span style="color:#D8DEE9"> answer</span><span style="color:#81A1C1"> =</span><span style="color:#B48EAD"> 42</span><span style="color:#81A1C1">;</span></span></code></pre>\n' +
+          math,
+      ),
+    );
+  });
+
+  test("syntaxHighlight replaces markdown.syntaxHighlight", async () => {
+    const html = await built(`import mdx from "@astrojs/mdx";
+export default {
+  markdown: { shikiConfig: { theme: "nord" } },
+  integrations: [mdx({ syntaxHighlight: { type: "prism" } })],
+};`);
+    expect(same(html)).toBe(
+      same(
+        '<meta charset="utf-8"/><pre class="language-js" data-language="js"><code is:raw class="language-js"><span class="token keyword">const</span> answer <span class="token operator">=</span> <span class="token number">42</span><span class="token punctuation">;</span>\n</code></pre>\n' +
+          math,
+      ),
+    );
+  });
+
+  test("a project's MDX files share one Shiki highlighter", async () => {
+    // Shiki warns at its 10th live highlighter; one per file would cross it.
+    const files: Record<string, string> = { "astro.config.mjs": "export default {};" };
+    for (let i = 0; i < 12; i++) files[`src/pages/page-${i}.mdx`] = CODE_PAGE;
+    const result = await buildProject(files);
+    roots.push(result.root);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).not.toContain("instances have been created");
+    expect(await Bun.file(path.join(result.root, "dist/page-11/index.html")).text()).toContain('<pre class="astro-code github-dark"');
+  });
+
+  test("without @astrojs/markdown-remark, MDX builds unhighlighted and the build warns once", async () => {
+    const files: Record<string, string> = { "astro.config.mjs": "export default {};" };
+    for (let i = 0; i < 3; i++) files[`src/pages/page-${i}.mdx`] = CODE_PAGE;
+    const result = await buildProject(files, { bareAstro: true });
+    roots.push(result.root);
+    expect(result.exitCode).toBe(0);
+    expect(result.output.split("MDX code blocks are not highlighted: @astrojs/markdown-remark cannot be resolved")).toHaveLength(2);
+    expect(result.output).toContain(
+      "Install `@astrojs/markdown-remark`, or set `markdown.syntaxHighlight: false` to silence this warning.",
+    );
+    expect(same(await Bun.file(path.join(result.root, "dist/page-2/index.html")).text())).toBe(
+      same('<meta charset="utf-8"/><pre><code class="language-js">const answer = 42;\n</code></pre>\n' + math),
+    );
   });
 });

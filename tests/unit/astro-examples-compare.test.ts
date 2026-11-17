@@ -48,11 +48,17 @@ describe("normalizeVoidElements", () => {
       "<textarea><img/></textarea>",
       '<script>const s = "<br/>";</script>',
       "<style>a::after{content:'<hr/>'}</style>",
+      "<title>a<br/>b</title>",
       "<!-- a > b <br/> -->",
       "<!DOCTYPE html>",
     ].join("");
     expect(normalizeVoidElements(raw)).toBe(raw);
     expect(normalizeVoidElements("<pre><br/></pre><br/>")).toBe("<pre><br/></pre><br>");
+    expect(normalizeVoidElements("<title><br/></title><br/>")).toBe("<title><br/></title><br>");
+  });
+
+  test("rewrites tags inside <noscript>: with scripting off, where it renders, they are markup", () => {
+    expect(normalizeVoidElements('<noscript><img src="x"/></noscript>')).toBe('<noscript><img src="x"></noscript>');
   });
 
   test("leaves text with a bare < alone", () => {
@@ -73,6 +79,11 @@ describe("normalizeAttributeSpelling", () => {
     expect(normalizeAttributeSpelling('<img alt=""/>')).toBe("<img alt/>");
     expect(normalizeAttributeSpelling("<pre data-seen>x</pre>")).toBe("<pre data-seen>x</pre>");
     expect(normalizeAttributeSpelling('<a download title="" data-x="" href="/">x</a>')).toBe('<a download title data-x href="/">x</a>');
+  });
+
+  test("keeps a dropped empty value's attribute apart from an attribute written right after it", () => {
+    expect(normalizeAttributeSpelling('<a title=""href="x">t</a>')).toBe('<a title href="x">t</a>');
+    expect(normalizeAttributeSpelling("<a title=''data-x=''>t</a>")).toBe("<a title data-x>t</a>");
   });
 
   test("leaves a non-empty value, and a value that only looks empty, as written", () => {
@@ -101,6 +112,7 @@ describe("normalizeAttributeSpelling", () => {
       '<script>const a = "<b data-x=\\"\\">&#34;";</script>',
       '<style>a[title=""]::after{content:"&#34;"}</style>',
       '<textarea><b title=""></b></textarea>',
+      '<title><b title=""></b>&#34;</title>',
     ].join("");
     expect(normalizeAttributeSpelling(text)).toBe(text);
     expect(normalizeAttributeSpelling('<script data-x="">a=""</script><b title="">')).toBe('<script data-x>a=""</script><b title>');
@@ -110,6 +122,7 @@ describe("normalizeAttributeSpelling", () => {
     expect(normalizeAttributeSpelling('<pre><code is:raw="" title="&#34;">x=""</code></pre>')).toBe(
       '<pre><code is:raw title="&quot;">x=""</code></pre>',
     );
+    expect(normalizeAttributeSpelling('<noscript><img alt=""></noscript>')).toBe("<noscript><img alt></noscript>");
   });
 
   test("is part of the page normaliser", async () => {
