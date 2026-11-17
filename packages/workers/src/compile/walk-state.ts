@@ -179,26 +179,25 @@ export class CompileWalk {
     const islands = this.#islands;
     const from = this.#rootRelative(importer);
     if (islands === null || from === null || !specifier.startsWith(".")) return specifier;
-    const rootDepth = islands.projectRoot.split("/").filter((segment) => segment !== "").length;
-    const segments = [...islands.projectRoot.split("/"), ...from.split("/").slice(0, -1)].filter((segment) => segment !== "");
-    let depth = rootDepth;
+    const root = islands.projectRoot.split("/").filter((segment) => segment !== "");
+    const segments = [...root, ...from.split("/").slice(0, -1)];
     for (const segment of specifier.split("/")) {
       if (segment === "" || segment === ".") continue;
-      if (segment === "..") {
-        segments.pop();
-        depth = Math.min(depth, segments.length);
-      } else segments.push(segment);
+      if (segment === "..") segments.pop();
+      else segments.push(segment);
     }
-    // Bun's own fallback, which only a file inside the project can take.
-    if (depth === rootDepth && segments.at(-1)?.endsWith(".jsx")) {
-      const relative = segments.slice(rootDepth).join("/");
+    // Bun's own fallback. Only a file inside the project is in `files`, wherever the specifier went on the way.
+    const inside = segments.length > root.length && root.every((segment, index) => segments[index] === segment);
+    if (inside && segments[segments.length - 1].endsWith(".jsx")) {
+      const relative = segments.slice(root.length).join("/");
       const tsx = `${relative.slice(0, -4)}.tsx`;
       if (!this.#projectFiles.has(this.#fileKey(relative)) && this.#projectFiles.has(this.#fileKey(tsx))) {
         segments[segments.length - 1] = `${segments[segments.length - 1].slice(0, -4)}.tsx`;
       }
     }
-    // A Windows root (`C:/site`) has no leading separator.
-    return `${islands.projectRoot.startsWith("/") ? "/" : ""}${segments.join("/")}`;
+    // Keeps a POSIX root's `/`, a UNC root's `//` and a Windows drive root's none.
+    const prefix = /^\/*/.exec(islands.projectRoot)?.[0] ?? "";
+    return `${prefix}${segments.join("/")}`;
   }
 
   /** A file key as a path relative to the project root, or `null` outside it. */

@@ -526,7 +526,21 @@ import { helper } from "../lib/util";
       expect(walk.componentPath(page, "../A.jsx")).toBe("/srv/site/src/A.tsx");
       expect(walk.componentPath(page, "../B.jsx")).toBe("/srv/site/src/B.jsx");
       expect(walk.componentPath(page, "./../../../shared/C.jsx")).toBe("/srv/shared/C.jsx");
+      // Out of the root and back in: Bun falls back to `.tsx` all the same.
+      expect(walk.componentPath(page, "../../../site/src/A.jsx")).toBe("/srv/site/src/A.tsx");
       expect(walk.componentPath(page, "some-package/C.vue")).toBe("some-package/C.vue");
+    });
+
+    test("keeps a UNC or drive root as Bun spells it on Windows", () => {
+      const { islands } = artifact;
+      if (islands === null) throw new Error("the fixture artifact carries islands");
+      const files = new Map([["src/A.tsx", ""]]);
+      const islandsAt = (projectRoot: string) =>
+        new CompileWalk(files, EMPTY_ARTIFACT_RESOLVER, undefined, { ...islands, projectRoot });
+      expect(islandsAt("//server/share/site").componentPath("src/pages/index.astro", "../A.jsx")).toBe(
+        "//server/share/site/src/A.tsx",
+      );
+      expect(islandsAt("C:/work/site").componentPath("src/pages/index.astro", "../A.jsx")).toBe("C:/work/site/src/A.tsx");
     });
 
     test("still refuses, by name, a component no prepared integration compiled", async () => {
