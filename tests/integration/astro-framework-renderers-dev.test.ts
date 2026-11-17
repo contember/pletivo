@@ -2,7 +2,7 @@
  * `pletivo dev` renders framework components as islands and serves their client bundles at
  * the URLs the page references, built on request; edits reach the next render without a
  * restart. The server runs on a copy of the fixture inside `tests/` (so the repo's
- * `node_modules` resolve), which the tests edit.
+ * `node_modules` resolve), which the tests edit; the copy gets its own library package.
  */
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import fs from "fs/promises";
@@ -23,6 +23,7 @@ const directiveScript = (directive: string) => `(self.Astro||(self.Astro={})).${
 beforeAll(async () => {
   root = await fs.mkdtemp(path.join(import.meta.dir, "../.renderers-dev-"));
   await fs.cp(template, root, { recursive: true });
+  await writeLibrary(path.join(root, "node_modules/fake-vue-lib"));
   const child = Bun.spawn(["bun", cli, "dev", String(PORT), "--no-restart", "--error-page=src/errors/Error.astro"], {
     cwd: root,
     stdout: "pipe",
@@ -51,6 +52,20 @@ afterAll(async () => {
   await server?.exited;
   if (root) await fs.rm(root, { recursive: true, force: true });
 });
+
+/** A library whose component reads a store that its consumer also imports, by the package's name. */
+async function writeLibrary(dir: string): Promise<void> {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "fake-vue-lib", version: "1.0.0", type: "module" }));
+  await fs.writeFile(
+    path.join(dir, "store.js"),
+    'export const state = { label: "default" };\nexport function setLabel(label) {\n  state.label = label;\n}\n',
+  );
+  await fs.writeFile(
+    path.join(dir, "Button.vue"),
+    '<template>\n  <span class="lib-label">{{ state.label }}</span>\n</template>\n\n<script setup>\nimport { state } from "./store.js";\n</script>\n',
+  );
+}
 
 async function page(pathname: string): Promise<{ status: number; html: string }> {
   const response = await fetch(`${BASE}${pathname}`);
@@ -131,6 +146,31 @@ test("edits to the files a compiled component imports show without a restart", a
   const html = await pageUntil("/", (text) => text.includes("child v2") && text.includes("label v2"));
   expect(html).toContain("child v2");
   expect(html).toContain("label v2");
+}, 30_000);
+
+test("islands rendered by an endpoint through the container API are served", async () => {
+  const { status, html } = await page("/widget.html");
+  expect({ status, html }).toMatchObject({ status: 200, html: expect.stringContaining("tally 7</button>") });
+  expect(html).toContain("tally 8</button>");
+  await expectModules(islandUrls(html));
+}, 60_000);
+
+test("a library component shares its store with the page after an edit, as one module instance", async () => {
+  // Created now, so the dev version has moved on before the page first renders.
+  await fs.writeFile(
+    path.join(root, "src/pages/lib.astro"),
+    [
+      "---",
+      'import Button from "fake-vue-lib/Button.vue";',
+      'import { setLabel } from "fake-vue-lib/store.js";',
+      'setLabel("set-by-page");',
+      "---",
+      "<html><body><Button /></body></html>",
+      "",
+    ].join("\n"),
+  );
+  const html = await pageUntil("/lib", (text) => text.includes("lib-label"));
+  expect(html.match(/<span class="lib-label">[^<]*<\/span>/)?.[0]).toBe('<span class="lib-label">set-by-page</span>');
 }, 30_000);
 
 test("the 404 page and the error page render their islands, scripts settled", async () => {

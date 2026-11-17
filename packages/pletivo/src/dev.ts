@@ -229,9 +229,12 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   // Rewired after a failed astro:config:setup recovers, which may register renderers.
   let astroRenderers: AstroRenderers | null = null;
   let wiredRenderers = "";
+  function rendererNames(): string {
+    return (astroHost?.renderers ?? []).map((renderer) => renderer.name).join(", ");
+  }
   async function wireAstroRenderers(): Promise<void> {
     const renderers = astroHost?.renderers ?? [];
-    const names = renderers.map((renderer) => renderer.name).join(", ");
+    const names = rendererNames();
     if (astroRenderers !== null && names === wiredRenderers) return;
     astroRenderers = await setupAstroRenderers({
       projectRoot,
@@ -274,11 +277,22 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     if (recovered.length === 0) return;
     console.log(`  astro:config:setup recovered → ${recovered.join(", ")}`);
     // A recovered hook may have registered a renderer. A process wires one set (its compilers are
-    // Bun plugins), so a set that changes once wired fails here, by name, and needs a restart.
-    try {
-      await wireAstroRenderers();
-    } catch (error) {
-      console.error(`  ${error instanceof Error ? error.message : String(error)}`);
+    // Bun plugins), so changing a wired set takes a new process, as a config change does.
+    const names = rendererNames();
+    if (wiredRenderers !== "" && names !== wiredRenderers) {
+      const change = `framework renderers changed (${wiredRenderers} → ${names || "none"})`;
+      if (isSupervisedChild()) {
+        console.log(`\n  ${change} → restarting dev server\n`);
+        void shutdown(RESTART_EXIT_CODE);
+        return;
+      }
+      console.error(`  ${change}; restart \`pletivo dev\` to apply them`);
+    } else {
+      try {
+        await wireAstroRenderers();
+      } catch (error) {
+        console.error(`  ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     // Whatever the hook (re)generated is a module some page already tried to
     // import. Bust the cache so the next render picks it up, and push the
@@ -485,7 +499,6 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       }
       // Each Astro island carries its scripts; the page keeps the first of each, in document order.
       html = finalizeIslandScripts(html);
-      recordPageIslands(`page:${pathname}`, html);
 
       // Inject dev stylesheet link + HMR / hydration scripts + any
       // integration-injected scripts (`injectScript('page', code)` from
@@ -651,7 +664,6 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
     else return null;
     html = finalizeIslandScripts(html);
-    recordPageIslands(`component:${fullPath}`, html);
 
     const astroCss = await getAstroCssForPage({
       entryFile: fullPath,
@@ -1117,15 +1129,12 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     });
   }
 
-  // Astro island bundles, rebuilt on request once a page hydrated a new component or a file changed.
+  // Astro island bundles, rebuilt on request once a component was hydrated or a file changed.
   const devIslandsDir = path.join(projectRoot, "node_modules", ".pletivo", "dev-islands");
   /** What an extensionless component import may resolve to, in Bun's order. */
   const SCRIPT_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"];
-  /** The components each page hydrated when it last rendered, by page: what the island bundles cover. */
-  const pageIslands = new Map<string, AstroIslandComponent[]>();
-  function recordPageIslands(page: string, html: string): void {
-    if (astroRenderers !== null) pageIslands.set(page, astroRenderers.componentsIn(html));
-  }
+  /** The hydrated components still on disk, as of a dev version and a count of hydrated ones. */
+  let bundledIslands: { version: number; hydrated: number; components: AstroIslandComponent[] } | null = null;
   let islandBundle: { key: string; done: Promise<void> } | null = null;
 
   /**
@@ -1146,18 +1155,26 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     return candidates.some((candidate) => fs.statSync(candidate, { throwIfNoEntry: false })?.isFile() === true);
   }
 
-  async function serveAstroIslandBundle(renderers: AstroRenderers, pathname: string): Promise<Response | null> {
-    // A deleted or renamed component leaves records behind until its pages render again; it can no
-    // longer be bundled, and must not take the other islands down with it.
-    const components = new Map<string, AstroIslandComponent>();
-    for (const islands of pageIslands.values()) {
-      for (const island of islands) {
-        if (componentResolves(island.componentPath)) components.set(`${island.componentPath}\0${island.exportName}`, island);
-      }
+  /**
+   * Every component hydrated since start, by a page, an endpoint or the container API, that is
+   * still on disk: a deleted or renamed one cannot be bundled and must not break the others.
+   */
+  function islandComponents(renderers: AstroRenderers): AstroIslandComponent[] {
+    const hydrated = renderers.hydratedComponents();
+    const version = getDevVersion();
+    if (bundledIslands?.version !== version || bundledIslands.hydrated !== hydrated.length) {
+      const components = hydrated.filter((component) => componentResolves(component.componentPath));
+      bundledIslands = { version, hydrated: hydrated.length, components };
     }
-    const key = `${getDevVersion()}\0${[...components.keys()].sort().join("\0")}`;
+    return bundledIslands.components;
+  }
+
+  async function serveAstroIslandBundle(renderers: AstroRenderers, pathname: string): Promise<Response | null> {
+    const components = islandComponents(renderers);
+    const ids = components.map((component) => `${component.componentPath}\0${component.exportName}`);
+    const key = `${getDevVersion()}\0${ids.sort().join("\0")}`;
     if (islandBundle?.key !== key) {
-      islandBundle = { key, done: bundleRenderedIslands(renderers, devIslandsDir, [...components.values()]) };
+      islandBundle = { key, done: bundleRenderedIslands(renderers, devIslandsDir, components) };
     }
     try {
       await islandBundle.done;

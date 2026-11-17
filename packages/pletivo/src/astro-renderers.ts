@@ -196,11 +196,9 @@ function isJsxCompiler(compiler: FrameworkCompiler): boolean {
 }
 
 /**
- * A server compiler whose module links its CSS the way Vite's `?vue&type=style` import does.
- * The CSS is an in-memory stylesheet beside the component, never written, so its relative
- * `url()` and `@import` resolve from the component's directory. The JS-imported-CSS graph
- * gets the compiled code with an import of it, and links it to every page that reaches the
- * module; the module Bun runs has no such import, since the file does not exist.
+ * A server compiler that links its CSS as Vite's `?vue&type=style` import does: an in-memory
+ * stylesheet beside the component, so relative `url()`/`@import` resolve from there. Only the
+ * CSS graph sees the import; the module Bun runs has none, as the file does not exist.
  */
 function registeringItsCss(compiler: FrameworkCompiler): FrameworkCompiler {
   return {

@@ -22,6 +22,19 @@ import { substituteImportMetaEnv, type SourceLoader } from "./import-meta-env";
 
 const registeredScopes = new Set<string>();
 
+/** What a path under a `<projectRoot>/<srcDir>` scope starts with. */
+function scopePrefix(srcPath: string): string {
+  return srcPath + path.sep;
+}
+
+/** Whether `file` lies in a registered `<projectRoot>/<srcDir>`: the project's own source, which dev cache-busts. */
+export function isProjectSourceFile(file: string): boolean {
+  for (const srcPath of registeredScopes) {
+    if (file.startsWith(scopePrefix(srcPath))) return true;
+  }
+  return false;
+}
+
 /** The server compilers for project files; empty leaves every file to Bun's loader as written. */
 let projectCompilers: readonly FrameworkCompiler[] = [];
 
@@ -65,7 +78,7 @@ export async function registerProjectSourcePlugin(
   registeredScopes.add(srcPath);
 
   const filter = new RegExp(
-    `^${escapeRegex(srcPath + path.sep)}.*\\.(tsx?|jsx?|mts|mjs)(?:\\?.*)?$`,
+    `^${escapeRegex(scopePrefix(srcPath))}.*\\.(tsx?|jsx?|mts|mjs)(?:\\?.*)?$`,
   );
 
   await Bun.plugin({
