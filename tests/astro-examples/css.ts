@@ -36,7 +36,7 @@ export function parseCss(css: string): CssNode[] {
   const parseList = (): CssNode[] => {
     const nodes: CssNode[] = [];
     while (at < css.length) {
-      while (at < css.length && (css[at] === ";" || /\s/.test(css[at]!))) at++;
+      while (at < css.length && (css[at] === ";" || /\s/.test(css.charAt(at)))) at++;
       if (at >= css.length) break;
       if (css[at] === "}") {
         at++;
@@ -68,7 +68,7 @@ export function parseCss(css: string): CssNode[] {
 function scanTo(text: string, from: number, stops: string): number {
   let depth = 0;
   for (let i = from; i < text.length; i++) {
-    const c = text[i]!;
+    const c = text.charAt(i);
     if (c === '"' || c === "'") {
       i = skipString(text, i);
     } else if (c === "\\") {
@@ -125,7 +125,8 @@ export function propertyFamilies(property: string): string[] {
   if (name.startsWith("--")) return [name];
   if (name === "all") return [ALL];
   const unprefixed = name.replace(/^-(webkit|moz|ms|o)-/, "");
-  const first = unprefixed.split("-")[0]!;
+  const dash = unprefixed.indexOf("-");
+  const first = dash === -1 ? unprefixed : unprefixed.slice(0, dash);
   return [...new Set([first, ...(GROUP_FAMILIES[first] ?? []), ...(SHORTHAND_FAMILIES[unprefixed] ?? [])])];
 }
 
@@ -136,7 +137,7 @@ export function normalizeValue(property: string, value: string): string {
   const name = property.toLowerCase();
   let out = "";
   for (let i = 0; i < value.length; i++) {
-    const c = value[i]!;
+    const c = value.charAt(i);
     if (c === '"' || c === "'") {
       const end = skipString(value, i);
       out += value.slice(i, end + 1);
@@ -145,7 +146,7 @@ export function normalizeValue(property: string, value: string): string {
     }
     if (/\s/.test(c)) {
       let j = i;
-      while (j + 1 < value.length && /\s/.test(value[j + 1]!)) j++;
+      while (j + 1 < value.length && /\s/.test(value.charAt(j + 1))) j++;
       const next = value[j + 1];
       const prev = out[out.length - 1];
       const dropped = next === "," || prev === "," || (prev === ")" && next !== undefined && !"+-*/".includes(next));
@@ -262,7 +263,7 @@ function selectorSpecificity(selector: string): Specificity | null {
     total[2] += s[2];
   };
   while (i < selector.length) {
-    const c = selector[i]!;
+    const c = selector.charAt(i);
     if (c === "\\") return null;
     if (c === "#" || c === ".") {
       add(c === "#" ? [1, 0, 0] : [0, 1, 0]);
@@ -284,9 +285,13 @@ function selectorSpecificity(selector: string): Specificity | null {
         if (name === "where") {
           // Zero, whatever its arguments.
         } else if (name === "is" || name === "not" || name === "has" || name === "matches") {
-          const scores = splitTopLevel(args, ",").map((part) => selectorSpecificity(part.trim()));
-          if (scores.some((score) => score === null)) return null;
-          add(scores.reduce((max, score) => (compareSpecificity(score!, max) > 0 ? score! : max), [0, 0, 0] as Specificity));
+          let max: Specificity = [0, 0, 0];
+          for (const part of splitTopLevel(args, ",")) {
+            const score = selectorSpecificity(part.trim());
+            if (score === null) return null;
+            if (compareSpecificity(score, max) > 0) max = score;
+          }
+          add(max);
         } else if (/\bof\b/.test(args)) {
           return null;
         } else {
@@ -312,7 +317,7 @@ function selectorSpecificity(selector: string): Specificity | null {
 
 function readName(text: string, from: number): number {
   let i = from;
-  while (i < text.length && /[\w-]/.test(text[i]!)) i++;
+  while (i < text.length && /[\w-]/.test(text.charAt(i))) i++;
   return i;
 }
 
@@ -337,23 +342,22 @@ function splitTopLevel(text: string, separator: string): string[] {
  * Two lists that differ only by swaps of non-conflicting neighbours get the same order.
  */
 function canonicalOrder(nodes: Canonical[]): string[] {
-  const emitted = new Array<boolean>(nodes.length).fill(false);
+  const pending = [...nodes];
   const out: string[] = [];
-  for (let n = 0; n < nodes.length; n++) {
+  while (pending.length > 0) {
     let pick = -1;
-    for (let i = 0; i < nodes.length; i++) {
-      if (emitted[i]) continue;
-      let ready = true;
-      for (let j = 0; j < i; j++) {
-        if (!emitted[j] && conflicts(nodes[j]!, nodes[i]!)) {
-          ready = false;
-          break;
-        }
+    let best: Canonical | null = null;
+    for (const [at, node] of pending.entries()) {
+      if (pending.slice(0, at).some((earlier) => conflicts(earlier, node))) continue;
+      if (best === null || node.text < best.text) {
+        best = node;
+        pick = at;
       }
-      if (ready && (pick === -1 || nodes[i]!.text < nodes[pick]!.text)) pick = i;
     }
-    emitted[pick] = true;
-    out.push(nodes[pick]!.text);
+    // The first pending entry has nothing before it, so it is always ready.
+    if (best === null) throw new Error("canonicalOrder: no entry is ready");
+    out.push(best.text);
+    pending.splice(pick, 1);
   }
   return out;
 }

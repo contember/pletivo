@@ -90,8 +90,8 @@ function linkedSheetPath(tag: string, isBundle: BundleRule): string | null {
   const href = attribute("href");
   const url = href?.[1] ?? href?.[2] ?? href?.[3];
   if (!url?.startsWith("/")) return null;
-  const match = /^\/(_astro|_islands|assets)\/.*\.(css)$/.exec(url);
-  return match && isBundle(match[1]!, match[2]!) ? url : null;
+  const dir = /^\/(_astro|_islands|assets)\/.*\.css$/.exec(url)?.[1];
+  return dir !== undefined && isBundle(dir, "css") ? url : null;
 }
 
 /** A bare `<style>`: Astro and pletivo write page CSS without attributes. */
