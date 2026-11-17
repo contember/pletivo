@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { runWithRuntimeDepCapture } from "./dep-tracker";
 import { collectStaticDeps, isWalkableSourceFile } from "./import-graph";
-import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
+import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
 
 /**
  * Loaded handle to @nuasite/astro-fragments — resolved once per build
@@ -130,6 +130,8 @@ export interface RenderOutcome {
 	 * it needs the target's CSS groups.
 	 */
 	cssEntry?: string;
+	/** The stylesheet markup the cached HTML carries; only on the `cached` path. */
+	cssHead?: CachedCssHead;
 	/**
 	 * Byte size of the output file. Cached path returns the persisted
 	 * value (no stat); rendered path returns the freshly-emitted size
@@ -165,6 +167,7 @@ export async function runIncrementalRender(req: RenderRequest): Promise<RenderOu
 				hoistedHashes: cached.hoistedHashes ?? [],
 				astroIslands: cached.astroIslands,
 				cssEntry: cached.cssEntry,
+				cssHead: cached.cssHead,
 				size: cached.size ?? 0,
 			};
 		}
@@ -234,7 +237,8 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			astroIslands,
 			cssEntry: value.cssEntry,
 			// Populated downstream after writeHtml — we don't know the
-			// final byte length yet (CSS/script injection happens there).
+			// final byte length or CSS markup yet (injection happens there).
+			cssHead: { fragment: "", pageCss: "" },
 			size: 0,
 		};
 		req.cache.setRoute(req.routeKey, entry);
@@ -258,15 +262,15 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 }
 
 /**
- * Patch the freshly-rendered size onto an existing cache entry. Build
- * pipeline calls this after `writeHtml` returns the actual byte count
- * — cheaper than re-stat'ing every cached file on the next warm build.
+ * Patch what `writeHtml` (or the cached-page CSS refresh) produced onto an
+ * existing cache entry: the byte size, so the next warm build needn't stat
+ * every cached file, and the stylesheet markup, so it can swap it.
  */
-export function recordRenderedSize(cache: CacheStore, routeKey: string, size: number): void {
+export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: number, cssHead: CachedCssHead): void {
 	const entry = cache.getRoute(routeKey);
 	if (!entry) return;
-	if (entry.size === size) return;
-	cache.setRoute(routeKey, { ...entry, size });
+	if (entry.size === size && entry.cssHead.fragment === cssHead.fragment && entry.cssHead.pageCss === cssHead.pageCss) return;
+	cache.setRoute(routeKey, { ...entry, size, cssHead });
 }
 
 async function fileExists(p: string): Promise<boolean> {

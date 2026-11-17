@@ -87,15 +87,15 @@ the build, naming the file (#51, #59). blog builds now.
 | example | pletivo builds | routes | pages equal | first difference |
 |---|---|---|---|---|
 | basics | yes | 2/2 | 1/1 | **match** |
-| blog | yes | 14/14 | 0/8 | stylesheets under 4 kB: Astro inlines them, pletivo links them |
+| blog | yes | 14/14 | 0/8 | inlined CSS text: Bun's CSS pipeline rewrites it |
 | container-with-vitest | yes | 4/4 | 2/2 | **match** |
 | framework-alpine | yes | 2/2 | 0/1 | the page-script bundle: Astro always links it, pletivo inlines it |
-| framework-multiple | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
-| framework-preact | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
-| framework-react | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
-| framework-solid | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
-| framework-svelte | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
-| framework-vue | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
+| framework-multiple | yes | 2/2 | 0/1 | inlined CSS text (Bun's CSS pipeline); island `uid`s |
+| framework-preact | yes | 2/2 | 0/1 | inlined CSS text (Bun's CSS pipeline); island `uid`s |
+| framework-react | yes | 2/2 | 0/1 | inlined CSS text (Bun's CSS pipeline); island `uid`s |
+| framework-solid | yes | 2/2 | 0/1 | inlined CSS text (Bun's CSS pipeline); island `uid`s |
+| framework-svelte | yes | 2/2 | 0/1 | inlined CSS text (Bun's CSS pipeline); island `uid`s |
+| framework-vue | yes | 2/2 | 0/1 | inlined CSS text (Bun's CSS pipeline); island `uid`s |
 | minimal | yes | 2/2 | 1/1 | **match** |
 | portfolio | yes | 34/34 | 0/8 | `<style>` set and order; `style={{…}}` as `[object Object]`; a random id |
 | starlog | no | | | `astro:transitions` missing ([011](011-view-transitions.md)) |
@@ -133,8 +133,11 @@ Ordered by how many examples each one blocked at baseline.
    (portfolio, framework-preact). Half fixed. Scripts in #54: a processed
    script whose bundle imports nothing and fits `vite.build.assetsInlineLimit`
    (4096 B, a function honoured) is inlined; each script is emitted once per
-   page, deduped on the written HTML. Stylesheets are open and are now blog's
-   first difference; see Left.
+   page, deduped on the written HTML. Stylesheets follow Astro's
+   `build.inlineStylesheets` rule: a built sheet strictly under the limit is
+   inlined on every page that gets it and not written, and adjacent inline CSS,
+   the page's own `.astro` `<style>` included, merges into one `<style>`. The
+   inlined text is what pletivo would have linked, which is not Astro's; see Left.
 6. One example each:
    - extensionless endpoint `src/pages/api.ts` (container-with-vitest):
      fixed in #50;
@@ -174,11 +177,12 @@ the normalised outputs.
 
 blog:
 
-- Stylesheets under `assetsInlineLimit`: Astro inlines them
-  (`build.inlineStylesheets: "auto"`). pletivo links every stylesheet a module
-  imports (it always inlines `.astro` `<style>`). The CSS chunk plan decides
-  per set of pages, not per page, so this needs a change in how build CSS is
-  planned.
+- Inlined CSS text: both sides inline the global sheet, but Bun's CSS
+  pipeline rewrites what pletivo emits, so the normaliser's esbuild pass cannot
+  make the two equal. It strips the whitespace in custom property values
+  (`--accent: #2337ff` → `--accent:#2337ff`), reorders declarations within a
+  rule and expands `font-family: system-ui` into a fallback stack. This happens
+  in `Bun.build` itself, minified or not.
 - `rss.xml` lists its items in a different order: the order `getCollection`
   returns differs.
 - `sitemap-0.xml`: pletivo also lists `rss.xml` and `rss.xml/`.
@@ -194,7 +198,9 @@ portfolio:
 - An attribute whose value is `true`: Astro writes `="true"` for everything
   but HTML boolean attributes, pletivo writes a bare attribute
   (`data-astro-cid-x` on a custom element here; blog too).
-- Inline `<style>` set and order differ.
+- Inline `<style>` set and order differ. pletivo's global sheet (3,973 B) is
+  inlined; Astro links its chunk (13 kB), which also carries the components'
+  `.astro` styles that pletivo always inlines per page.
 - Two of the inlined scripts differ in minifier spelling (esbuild `const`,
   `s=>` vs Bun `let`, `(s)=>`); the normaliser compares script text as is.
 - Whitespace after a component's root element (`</svg> ` vs `</svg>`).
@@ -206,8 +212,11 @@ Decisions).
 
 framework-preact, -react, -solid, -svelte, -vue, -multiple:
 
-- Stylesheets under `assetsInlineLimit`: the components' CSS reaches the page
-  as a linked stylesheet, Astro inlines it (as in blog).
+- Inlined CSS text, as in blog: Bun's CSS pipeline reorders `.counter`'s
+  declarations, and in -multiple expands `system-ui`. In framework-preact the
+  order differs too: Astro puts the lazily imported `Message.css` after the
+  page's own `<style>`, while pletivo emits all of `src/`'s CSS as one sheet
+  ahead of it.
 - Island `uid`: it hashes the island's slot HTML, which differs in two ways.
   `.astro` is compiled without `compact` (Astro's `compressHTML`), so
   whitespace stays, and without `normalizedFilename`, so the

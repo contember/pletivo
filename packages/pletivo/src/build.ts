@@ -8,7 +8,8 @@ import { resetIslandRegistry } from "@pletivo/runtime/island";
 import { runInPage, runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
 import { finalizeIslandScripts } from "@pletivo/runtime/astro-islands/index";
-import { bundleCss, cssHrefsForPage, type CssBundle } from "./css";
+import { bundleCss, stylesheetsForPage, type CssBundle, type Stylesheet } from "./css";
+import { readAssetsInlineLimit, readInlineStylesheets, shouldInlineAsset, stylesheetInliner, type AssetsInlineLimit } from "./assets-inline";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { generateSitemap } from "./sitemap";
@@ -35,13 +36,12 @@ import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, 
 import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-assets";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
-import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, paramsToKey, type CachedAstroIsland } from "./incremental/cache";
+import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, paramsToKey, type CachedAstroIsland, type CachedCssHead } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
-import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
+import { recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
-import type { ViteUserConfig } from "@pletivo/core/astro-host/types";
 
 /** Shape a dynamic page module is used through: its default export + getStaticPaths. */
 interface DynamicMod {
@@ -116,9 +116,11 @@ interface PageResult {
    * Persisted byte size, populated only for cached pages (where the
    * orchestrator pulls it from the cache entry — no stat needed).
    * Fresh renders learn their size during writeHtml and record it
-   * back via `recordRenderedSize`.
+   * back via `recordWrittenOutput`.
    */
   cachedSize?: number;
+  /** The stylesheet markup a cached page's HTML carries, from the cache entry. */
+  cachedCssHead?: CachedCssHead;
   /**
    * Emit `html` byte-for-byte, skipping writeHtml's HTML pipeline.
    * Endpoint routes and injected endpoints produce JSON/XML/text, which
@@ -244,6 +246,11 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     await fs.rm(distDir, { recursive: true, force: true });
   }
   await fs.mkdir(distDir, { recursive: true });
+  const assetsInlineLimit = readAssetsInlineLimit(astroHost?.config.vite);
+  // Only Astro projects inline stylesheets; a pletivo project links every sheet.
+  const inlineStylesheets = astroHost
+    ? stylesheetInliner(readInlineStylesheets(astroHost.config.build), assetsInlineLimit)
+    : null;
   // Extract `url()` targets from CSS into files rather than letting Bun
   // inline them as base64. Configured after the wipe and before the
   // first CSS-producing build (hoisted scripts), which runs well ahead
@@ -251,6 +258,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   configureCssAssets({
     outDir: path.join(distDir, "assets"),
     publicPath: `${base}/assets/`,
+    inlineLimit: assetsInlineLimit,
   });
   // Snapshot the current dist filesystem once — runIncrementalRender
   // queries this Set instead of doing per-slug fs.access calls when
@@ -640,7 +648,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
             tsxStyles: [],
           }),
         });
-        return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size };
+        return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
       }
 
       await assertPageLayoutSupported(fullPath, projectRoot);
@@ -695,7 +703,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         return null;
       }
       const cssEntry = outcome.cssEntry ?? fullPath;
-      return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size };
+      return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
     }),
   );
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
@@ -800,7 +808,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
       const cssEntry = outcome.cssEntry ?? fullPath;
-      results.push({ file: route.file, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size });
+      results.push({ file: route.file, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead });
     }
   }
   phase("dynamic routes", tDynamic);
@@ -984,8 +992,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   let inlinedScripts = new Map<string, string>();
   if (referencedHashes.size > 0) {
     const tHoisted = performance.now();
-    const inlineLimit = readScriptInlineLimit(astroHost?.config.vite);
-    inlinedScripts = await bundleHoistedScripts(referencedHashes, rawHashes, inlineLimit, distDir);
+    inlinedScripts = await bundleHoistedScripts(referencedHashes, rawHashes, assetsInlineLimit, distDir);
     phase("hoisted bundling", tHoisted);
   }
 
@@ -994,8 +1001,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // during page rendering, and hoisted-script CSS imports are collected
   // above, so the bundle needs to be computed here to include them.
   const tCss = performance.now();
-  const cssBundle = await bundleCss(projectRoot, config.srcDir, distDir);
-  const cssSheetCount = (cssBundle.shared ? 1 : 0) + cssBundle.groups.length;
+  const cssBundle = await bundleCss(projectRoot, config.srcDir, distDir, inlineStylesheets);
+  const cssSheets = [cssBundle.shared, ...cssBundle.groups.map((group) => group.sheet)];
+  const cssSheetCount = cssSheets.filter((sheet) => sheet?.type === "external").length;
+  const cssInlinedCount = cssSheets.filter((sheet) => sheet?.type === "inline").length;
   phase("bundleCss", tCss);
 
   // Write all pages (including 404) — parallel.
@@ -1016,11 +1025,12 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   await Promise.all(
     dedupedResults.map(async (result) => {
       if (result.source === "cached") {
-        const size = await refreshCachedHtmlCssLink(result.outPath, base, cssHrefsForPage(cssBundle, result.pageEntry));
+        if (!result.cachedCssHead) throw new Error(`${result.label}: cached page has no stylesheet markup in the cache`);
+        const { size, cssHead } = await refreshCachedCssHead(result.outPath, result.cachedCssHead, base, stylesheetsForPage(cssBundle, result.pageEntry));
         totalSize += size;
         cachedCount++;
         if (cache && result.routeKey) {
-          recordRenderedSize(cache, result.routeKey, size);
+          recordWrittenOutput(cache, result.routeKey, size, cssHead);
         }
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)}) [cached]`);
         return;
@@ -1037,13 +1047,14 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
         return;
       }
-      const size = await writeHtml(result.outPath, inlineHoistedScripts(result.html, inlinedScripts), base, cssHrefsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
+      const { size, cssHead } = await writeHtml(result.outPath, inlineHoistedScripts(result.html, inlinedScripts), base, stylesheetsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
       totalSize += size;
       renderedCount++;
-      // Now that we know the final byte count, patch it onto the
-      // route's cache entry so the next warm build can skip the stat.
+      // Now that we know the final byte count and CSS markup, patch them onto
+      // the route's cache entry: the next warm build skips the stat and can
+      // swap the markup.
       if (cache && result.routeKey) {
-        recordRenderedSize(cache, result.routeKey, size);
+        recordWrittenOutput(cache, result.routeKey, size, cssHead);
       }
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
     }),
@@ -1122,7 +1133,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const cssAssetSummary = cssAssets.length > 0
     ? `, ${cssAssets.length} CSS asset${cssAssets.length === 1 ? "" : "s"} (${formatSize(cssAssets.reduce((sum, a) => sum + a.bytes, 0))})`
     : "";
-  console.log(`\nBuilt ${results.length} pages${incrementalSummary}${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssSheetCount > 0 ? `, ${cssSheetCount} CSS bundle${cssSheetCount === 1 ? "" : "s"}` : ""}${cssAssetSummary} (${formatSize(totalSize)} total)`);
+  console.log(`\nBuilt ${results.length} pages${incrementalSummary}${imageCount > 0 ? `, ${imageCount} images` : ""}${islandNames.size > 0 ? `, ${islandNames.size} islands` : ""}${cssSheetCount > 0 ? `, ${cssSheetCount} CSS bundle${cssSheetCount === 1 ? "" : "s"}` : ""}${cssInlinedCount > 0 ? `, ${cssInlinedCount} inlined stylesheet${cssInlinedCount === 1 ? "" : "s"}` : ""}${cssAssetSummary} (${formatSize(totalSize)} total)`);
 
   // Refuse to ship a build that silently dropped entries.
   // Individual errors were already logged at validation time.
@@ -1523,13 +1534,13 @@ async function writeHtml(
   outPath: string,
   html: string,
   base: string,
-  cssHrefs: string[],
+  stylesheets: Stylesheet[],
   publicManifest: Map<string, string>,
   pageScript: string | null,
   renderedModules?: Set<string>,
   tsxStyles?: string[],
   entryFile?: string,
-): Promise<number> {
+): Promise<{ size: number; cssHead: CachedCssHead }> {
   // Each Astro island carries its scripts; the page keeps the first of each, in document order.
   html = finalizeIslandScripts(html);
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
@@ -1541,16 +1552,13 @@ async function writeHtml(
   // paths from bundleCss) are not double-rewritten.
   html = timeSync("rewriteRefs", () => rewriteRefs(html, publicManifest));
 
-  if (cssHrefs.length > 0 && html.includes("</head>")) {
-    html = html.replace("</head>", () => `${stylesheetLinks(base, cssHrefs)}</head>`);
-  }
-
-  // Inject per-page CSS from <style> blocks in .astro components, in the
+  // Per-page CSS from <style> blocks in .astro components, in the
   // cascade order the page's import graph dictates. Scoped blocks are matched
   // by scope id (class or `data-astro-cid-*`) in the HTML (so unscoped rules inside a regular
   // <style> — `:global()`, `body` — can't leak onto other pages), `is:global`
-  // blocks by whether the component rendered.
-  const combinedCss = await timeAsync("pageCss", async () => {
+  // blocks by whether the component rendered. Read before any stylesheet is
+  // inlined: inlined CSS carries scope ids of components this page may not render.
+  const pageCss = await timeAsync("pageCss", async () => {
     const pageAstroCss = await getAstroCssForPage({
       entryFile,
       astroScopes: extractAstroScopes(html),
@@ -1559,11 +1567,13 @@ async function writeHtml(
     const pageTsxCss = tsxStyles && tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
     return [pageAstroCss, pageTsxCss].filter(Boolean).join("\n");
   });
-  if (combinedCss) {
-    const styleTag = `<style>${combinedCss}</style>`;
-    if (html.includes("</head>")) {
-      html = html.replace("</head>", () => styleTag + "\n</head>");
-    } else if (html.includes("</body>")) {
+  let cssHead = "";
+  if (html.includes("</head>")) {
+    cssHead = renderCssHead(base, stylesheets, pageCss);
+    html = html.replace("</head>", () => cssHead + "</head>");
+  } else if (pageCss) {
+    const styleTag = `<style>${pageCss}</style>`;
+    if (html.includes("</body>")) {
       html = html.replace("</body>", () => styleTag + "\n</body>");
     } else {
       html = styleTag + "\n" + html;
@@ -1617,54 +1627,77 @@ async function writeHtml(
     await fs.mkdir(path.dirname(outPath), { recursive: true });
     await fs.writeFile(outPath, html);
   });
-  return bytes;
+  return { size: bytes, cssHead: { fragment: cssHead, pageCss } };
 }
 
-/** `<link>` tags for a page's stylesheets, de-duplicated by href. */
-function stylesheetLinks(base: string, hrefs: string[]): string {
-  const seen = new Set<string>();
+/**
+ * The stylesheet markup before `</head>`: the page's sheets in cascade order,
+ * then its own `.astro`/TSX CSS. Adjacent inline sheets merge into one `<style>`,
+ * as Astro's `mergeInlineCss` does; Astro dedupes a sheet by href or content.
+ */
+function renderCssHead(base: string, stylesheets: Stylesheet[], pageCss: string): string {
+  const sheets: Stylesheet[] = [];
+  for (const sheet of stylesheets) {
+    const duplicate = sheets.some((s) =>
+      s.type === "external" && sheet.type === "external" ? s.href === sheet.href
+        : s.type === "inline" && sheet.type === "inline" ? s.content === sheet.content
+          : false,
+    );
+    if (!duplicate) sheets.push(sheet);
+  }
+  if (pageCss) sheets.push({ type: "inline", content: pageCss });
+
+  const merged: Stylesheet[] = [];
+  for (const sheet of sheets) {
+    const last = merged.at(-1);
+    if (last?.type === "inline" && sheet.type === "inline") {
+      merged[merged.length - 1] = { type: "inline", content: last.content + sheet.content };
+    } else {
+      merged.push(sheet);
+    }
+  }
+
   let out = "";
-  for (const href of hrefs) {
-    if (seen.has(href)) continue;
-    seen.add(href);
-    out += `<link rel="stylesheet" href="${base}${href}">\n`;
+  for (const sheet of merged) {
+    out += sheet.type === "external"
+      ? `<link rel="stylesheet" href="${base}${sheet.href}">\n`
+      : `<style>${sheet.content}</style>\n`;
   }
   return out;
 }
 
-async function refreshCachedHtmlCssLink(
+/**
+ * Swap a cached page's stylesheet markup for this build's: the sheets' hashes
+ * or contents may have changed, and an inlined sheet carries its contents.
+ */
+async function refreshCachedCssHead(
   outPath: string,
+  previous: CachedCssHead,
   base: string,
-  cssHrefs: string[],
-): Promise<number> {
+  stylesheets: Stylesheet[],
+): Promise<{ size: number; cssHead: CachedCssHead }> {
   let html: string;
   try {
     html = await fs.readFile(outPath, "utf8");
   } catch {
-    return 0;
+    return { size: 0, cssHead: previous };
   }
 
-  // A page can now carry several pletivo stylesheets. Replace the whole
-  // run with the fresh list at the position of the first one, and drop
-  // the rest — appending per-match would multiply the links.
-  const stylesheetRe = /<link rel="stylesheet" href="[^"]*\/assets\/styles\.(?:[a-z0-9-]+\.)?[a-f0-9]{8}\.css">\n?/g;
-  const nextLinks = stylesheetLinks(base, cssHrefs);
-  let replaced = false;
-  let next = html.replace(stylesheetRe, () => {
-    if (replaced) return "";
-    replaced = true;
-    return nextLinks;
-  });
+  const headEnd = html.indexOf("</head>");
+  // writeHtml puts the markup only into a page with a `</head>`.
+  if (headEnd === -1) return { size: Buffer.byteLength(html, "utf-8"), cssHead: previous };
+  const fragment = renderCssHead(base, stylesheets, previous.pageCss);
+  const cssHead = { fragment, pageCss: previous.pageCss };
+  if (fragment === previous.fragment) return { size: Buffer.byteLength(html, "utf-8"), cssHead };
 
-  if (cssHrefs.length > 0 && !replaced && html.includes("</head>")) {
-    next = html.replace("</head>", () => nextLinks + "</head>");
+  // Later head injections (CSS modules, scripts) land after the markup, still before `</head>`.
+  const at = previous.fragment === "" ? headEnd : html.lastIndexOf(previous.fragment, headEnd - previous.fragment.length);
+  if (at === -1) {
+    throw new Error(`${outPath}: the stylesheet markup recorded in the incremental cache is not in the page; rebuild with --incremental --clean`);
   }
-
-  if (next !== html) {
-    await fs.writeFile(outPath, next);
-  }
-
-  return Buffer.byteLength(next, "utf-8");
+  const next = html.slice(0, at) + fragment + html.slice(at + previous.fragment.length);
+  await fs.writeFile(outPath, next);
+  return { size: Buffer.byteLength(next, "utf-8"), cssHead };
 }
 
 async function render404Page(
@@ -1693,38 +1726,7 @@ async function render404Page(
   return null;
 }
 
-/** Vite's `build.assetsInlineLimit`: a byte limit, or a per-file verdict where `undefined` defers to the default. */
-type ScriptInlineLimit = number | ((filePath: string, content: Buffer) => boolean | undefined);
-
-/** Vite's default, which Astro applies to processed scripts too. */
-const DEFAULT_SCRIPT_INLINE_LIMIT = 4096;
 const scriptScanner = new Bun.Transpiler({ loader: "js" });
-
-/** Reads `vite.build.assetsInlineLimit` from the Astro config; projects without one get Vite's default. */
-function readScriptInlineLimit(vite: ViteUserConfig | undefined): ScriptInlineLimit {
-  const viteBuild = vite?.build;
-  if (typeof viteBuild !== "object" || viteBuild === null || !("assetsInlineLimit" in viteBuild)) {
-    return DEFAULT_SCRIPT_INLINE_LIMIT;
-  }
-  const limit = viteBuild.assetsInlineLimit;
-  if (limit === undefined) return DEFAULT_SCRIPT_INLINE_LIMIT;
-  if (typeof limit === "number") return limit;
-  if (typeof limit === "function") {
-    return (filePath, content) => {
-      const verdict: unknown = limit(filePath, content);
-      return typeof verdict === "boolean" ? verdict : undefined;
-    };
-  }
-  throw new Error(`vite.build.assetsInlineLimit must be a number or a function, got ${typeof limit}`);
-}
-
-/** Astro's `shouldInlineAsset` (`core/build/plugins/util.ts`). */
-function shouldInlineAsset(code: string, filePath: string, limit: ScriptInlineLimit): boolean {
-  if (typeof limit === "function") {
-    return limit(filePath, Buffer.from(code)) ?? Buffer.byteLength(code) < DEFAULT_SCRIPT_INLINE_LIMIT;
-  }
-  return Buffer.byteLength(code) < limit;
-}
 
 /**
  * Astro inlines a processed script whose bundle imports nothing and passes the inline
@@ -1732,7 +1734,7 @@ function shouldInlineAsset(code: string, filePath: string, limit: ScriptInlineLi
  * URL, which an inline module would resolve against the page, and code holding
  * `</script` or `<!--`, which could end the tag early or swallow its end.
  */
-function inlinableScript(code: string, filePath: string, limit: ScriptInlineLimit): boolean {
+function inlinableScript(code: string, filePath: string, limit: AssetsInlineLimit): boolean {
   if (scriptScanner.scanImports(code).length > 0) return false;
   if (!shouldInlineAsset(code, filePath, limit)) return false;
   return !/<\/script|<!--/i.test(code) && !code.includes("import.meta");
@@ -1745,7 +1747,7 @@ function inlinableScript(code: string, filePath: string, limit: ScriptInlineLimi
 async function bundleHoistedScripts(
   referencedHashes: Set<string>,
   rawHashes: Set<string>,
-  inlineLimit: ScriptInlineLimit,
+  inlineLimit: AssetsInlineLimit,
   distDir: string,
 ): Promise<Map<string, string>> {
   const inlined = new Map<string, string>();
