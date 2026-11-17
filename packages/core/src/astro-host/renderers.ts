@@ -13,7 +13,7 @@ export interface AstroRendererEntry {
 /** Astro accepts a string or a `URL` for both entrypoints. */
 function entrypoint(value: unknown): string | null {
   if (typeof value === "string" && value !== "") return value;
-  if (value instanceof URL) return value.protocol === "file:" ? fileURLToPath(value) : value.href;
+  if (value instanceof URL) return value.protocol === "file:" ? fileURLToPath(value.href) : value.href;
   return null;
 }
 
