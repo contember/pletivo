@@ -50,8 +50,17 @@ export function Badge() {
 }
 `,
   "src/components/Other.jsx": "export default function Other() {\n  return <em>other</em>;\n}\n",
-  "src/pages/index.astro": page(`${COUNTER_IMPORT}\nimport Other from "../components/Other";`, "<Counter client:load /><Other />"),
+  // Named like Bun's chunks, but an entry: its URL keeps its name across prepares.
+  "src/components/chunk-list.jsx": "export default function ChunkList() {\n  return <ul />;\n}\n",
+  "src/components/Footer.jsx": "export default function Footer() {\n  return <footer>footer</footer>;\n}\n",
+  // Outside `srcDir`: prepare reads its hydrations all the same.
+  "layouts/Base.astro": '---\nimport Footer from "../src/components/Footer";\n---\n<html lang="en"><head><title>Layout</title></head><body><slot /><Footer client:idle /></body></html>\n',
+  "src/pages/index.astro": page(
+    `${COUNTER_IMPORT}\nimport Other from "../components/Other";\nimport ChunkList from "../components/chunk-list";`,
+    "<Counter client:load /><Other /><ChunkList client:idle />",
+  ),
   "src/pages/plain.astro": page("", "<p>plain</p>"),
+  "src/pages/layout.astro": '---\nimport Base from "../../layouts/Base.astro";\n---\n<Base><p>in a layout</p></Base>\n',
 };
 
 let root = "";
@@ -137,11 +146,18 @@ describe("island client modules fixed at prepare", () => {
     expect(loaded.map((client) => client.url)).toContain(componentUrl("../components/Counter", "Counter"));
   }, 60_000);
 
+  test("a layout outside srcDir hydrates a component prepare built", async () => {
+    const rendered = await render("/layout/");
+    const url = componentUrl("../components/Footer", "default");
+    expect(rendered.html).toContain(`component-url="${url}"`);
+    expect(artifact.islands?.clients.has(url)).toBe(true);
+  }, 60_000);
+
   test("the host serves each client module as JavaScript, caching only a content-named chunk", async () => {
     const host = createProjectHost({ store: createMapProjectStore(files), artifact: artifactValue, loader, compiler, pagesDir: "src/pages" });
     const clients = [...(artifact.islands?.clients.values() ?? [])];
     const entry = clients.find((client) => client.url === componentUrl("../components/Counter", "Counter"));
-    const chunk = clients.find((client) => client.url.startsWith("/_astro/chunk-"));
+    const chunk = clients.find((client) => client.chunk);
     if (entry === undefined || chunk === undefined) throw new Error("no entry or no chunk");
     const served = await host.fetch(new Request(`http://localhost${entry.url}`));
     expect(served.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
@@ -149,7 +165,33 @@ describe("island client modules fixed at prepare", () => {
     expect(await served.text()).toBe(entry.source);
     const cached = await host.fetch(new Request(`http://localhost${chunk.url}`, { method: "HEAD" }));
     expect(cached.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    expect(cached.headers.get("etag")).toBeNull();
     expect(await cached.text()).toBe("");
+  }, 60_000);
+
+  test("a component named like a chunk is revalidated, not cached as one", async () => {
+    const host = createProjectHost({ store: createMapProjectStore(files), artifact: artifactValue, loader, compiler, pagesDir: "src/pages" });
+    const url = componentUrl("../components/chunk-list", "default");
+    expect(url.startsWith("/_astro/chunk-list.")).toBe(true);
+    const served = await host.fetch(new Request(`http://localhost${url}`));
+    expect(served.status).toBe(200);
+    expect(served.headers.get("cache-control")).toBe("no-cache");
+  }, 60_000);
+
+  test("an unchanged client module revalidates with 304", async () => {
+    const host = createProjectHost({ store: createMapProjectStore(files), artifact: artifactValue, loader, compiler, pagesDir: "src/pages" });
+    const url = componentUrl("../components/Counter", "Counter");
+    const etag = (await host.fetch(new Request(`http://localhost${url}`))).headers.get("etag");
+    if (etag === null) throw new Error("no ETag");
+    expect(etag).toMatch(/^"[A-Za-z0-9_-]+"$/);
+    for (const ifNoneMatch of [etag, `W/${etag}`, `"other", ${etag}`]) {
+      const revalidated = await host.fetch(new Request(`http://localhost${url}`, { headers: { "if-none-match": ifNoneMatch } }));
+      expect(revalidated.status).toBe(304);
+      expect(revalidated.headers.get("etag")).toBe(etag);
+      expect(await revalidated.text()).toBe("");
+    }
+    const changed = await host.fetch(new Request(`http://localhost${url}`, { headers: { "if-none-match": '"other"' } }));
+    expect(changed.status).toBe(200);
   }, 60_000);
 
   test("moving a hydrated island to another page stays live", async () => {

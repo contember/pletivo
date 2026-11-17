@@ -395,11 +395,12 @@ describe("site artifact islands", () => {
       {
         url: "/_astro/Counter.AbC-12_x.js",
         source: 'import{a}from"./chunk-k1.js";export{a as default};',
+        chunk: false,
         imports: ["/_astro/chunk-k1.js"],
         sources: ["src/components/Counter.vue"],
       },
-      { url: "/_astro/chunk-k1.js", source: "export const a=1;", imports: [], sources: [] },
-      { url: "/_astro/client.svelte.Zz9.js", source: "export default 1;", imports: [], sources: [] },
+      { url: "/_astro/chunk-k1.js", source: "export const a=1;", chunk: true, imports: [], sources: [] },
+      { url: "/_astro/client.svelte.Zz9.js", source: "export default 1;", chunk: false, imports: [], sources: [] },
     ],
   };
   const [COUNTER_CLIENT, CHUNK_CLIENT] = ISLANDS.clients;
@@ -482,6 +483,11 @@ describe("site artifact islands", () => {
       name: "a client source outside the project",
       islands: { ...ISLANDS, clients: [{ ...CHUNK_CLIENT, sources: ["../secret.js"] }] },
       path: "$.artifact.islands.clients[0].sources[0]",
+    },
+    {
+      name: "a client module that does not say whether it is a chunk",
+      islands: { ...ISLANDS, clients: [{ ...CHUNK_CLIENT, chunk: "yes" }] },
+      path: "$.artifact.islands.clients[0].chunk",
     },
     {
       name: "a client module with an unknown field",

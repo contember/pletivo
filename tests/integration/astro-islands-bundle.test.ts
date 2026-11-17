@@ -309,3 +309,36 @@ describe("bundleAstroIslands failures", () => {
     await expect(bundle).rejects.toThrow("virtual:@astrojs/vue/app");
   });
 });
+
+describe("bundleAstroIslands, a binary file an island imports", () => {
+  let project: string;
+
+  beforeAll(async () => {
+    project = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-astro-islands-bundle-asset-"));
+  });
+
+  afterAll(async () => {
+    await fs.rm(project, { recursive: true, force: true });
+  });
+
+  test("is written byte for byte", async () => {
+    // Not valid UTF-8, so a text round trip would change it.
+    const font = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0x00, 0xff, 0xfe, 0x80, 0x81, 0x00]);
+    await fs.mkdir(path.join(project, "src"));
+    await fs.writeFile(path.join(project, "src/font.woff2"), font);
+    await fs.writeFile(path.join(project, "src/Logo.js"), 'import font from "./font.woff2";\nexport default () => font;\n');
+    const distDir = path.join(project, "dist");
+    await bundleAstroIslands({
+      projectRoot: project,
+      distDir,
+      base: "/",
+      components: [{ componentPath: path.join(project, "src/Logo.js"), exportName: "default" }],
+      renderers: [],
+      compilers: [],
+      virtualModule: noVirtualModules,
+    });
+    const written = (await fs.readdir(path.join(distDir, "_astro"))).filter((file) => file.endsWith(".woff2"));
+    expect(written).toHaveLength(1);
+    expect(new Uint8Array(await fs.readFile(path.join(distDir, "_astro", written[0] ?? "")))).toEqual(font);
+  });
+});

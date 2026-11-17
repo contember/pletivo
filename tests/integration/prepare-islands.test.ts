@@ -194,6 +194,47 @@ describe("pletivo prepare, framework islands", () => {
     expect(new Set(paths).size).toBe(paths.length);
   });
 
+  test("refuses a component file the bundles would emit as an asset, naming the component and the file", async () => {
+    const font = "wOF2\u0000binary";
+    const direct = await reactProject({
+      "src/components/Counter.jsx":
+        'import font from "./font.woff2";\nexport function Counter() { return <b>{String(font)}</b>; }\n',
+      "src/components/font.woff2": font,
+    });
+    expect(await prepareError(direct)).toMatch(
+      /src\/components\/Counter\.jsx \(islands\): bundling wrote font-[a-z0-9]{8}\.woff2 \(asset\) from src\/components\/font\.woff2/,
+    );
+    // Only the client bundle reads the file: the server one resolves the `worker` condition.
+    const clientOnly = await reactProject({
+      "package.json": JSON.stringify({ name: "site", imports: { "#font": { worker: "./src/empty.js", default: "./src/font.woff2" } } }),
+      "src/empty.js": "export default null;\n",
+      "src/font.woff2": font,
+      "src/components/Counter.jsx":
+        'import font from "#font";\nexport function Counter() { return <b>{String(font)}</b>; }\n',
+    });
+    expect(await prepareError(clientOnly)).toMatch(
+      /src\/components\/Counter\.jsx \(islands\): imports src\/font\.woff2, which the islands' client bundle emits as the file \/_astro\/font-[a-z0-9]{8}\.woff2/,
+    );
+  });
+
+  test("names the .astro file whose hydration the client bundle cannot build", async () => {
+    const root = await reactProject({
+      "src/components/Counter.jsx": "export function Counter({ start }) { return <b>{start}</b>; }\n",
+      "src/pages/broken.astro": '---\nimport { Nope } from "../components/Counter";\n---\n<Nope client:load />\n',
+    });
+    expect(await prepareError(root)).toContain('export "Nope" of src/components/Counter, hydrated in src/pages/broken.astro');
+  });
+
+  test("refuses a hydrated component whose island module name would start with a dot, naming the .astro file", async () => {
+    const root = await reactProject({
+      "src/components/.Counter.jsx": "export function Counter({ start }) { return <b>{start}</b>; }\n",
+      "src/pages/index.astro": '---\nimport { Counter } from "../components/.Counter.jsx";\n---\n<Counter client:only="react" />\n',
+    });
+    const output = await prepareError(root);
+    expect(output).toContain('src/pages/index.astro (islands): hydrates export "Counter" of src/components/.Counter');
+    expect(output).toContain('serves no client module whose file name starts with "."');
+  });
+
   test("records a file the project and the bundle both read once", async () => {
     const root = await reactProject({
       "package.json": '{ "name": "site", "version": "1.2.3" }\n',

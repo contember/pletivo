@@ -4,13 +4,33 @@
  */
 
 import type { ArtifactIslandClient } from "@pletivo/core/artifact";
+import { base64url, sha256 } from "@pletivo/core/sha256";
 import type { ProjectIslands } from "./artifact.ts";
 import { attributeValue, htmlTags } from "./html-tags.ts";
 import type { ProjectFiles } from "./project-store.ts";
 
-/** Bun names a shared chunk by its content; every other client module by its path (docs/todos/025). */
-const CONTENT_HASHED = /^\/_astro\/chunk-[^/]+\.js$/;
 const IMMUTABLE = "public, max-age=31536000, immutable";
+
+/** Per client module of a loaded artifact, so a module is digested once, on its first request. */
+const etags = new WeakMap<ArtifactIslandClient, string>();
+
+function etagOf(client: ArtifactIslandClient): string {
+  let etag = etags.get(client);
+  if (etag === undefined) {
+    etag = `"${base64url(sha256(client.source))}"`;
+    etags.set(client, etag);
+  }
+  return etag;
+}
+
+/** `If-None-Match` names this entity: `*`, or one of its listed tags, weak or strong. */
+function matches(ifNoneMatch: string | null, etag: string): boolean {
+  if (ifNoneMatch === null) return false;
+  return ifNoneMatch.split(",").some((tag) => {
+    const trimmed = tag.trim();
+    return trimmed === "*" || trimmed === etag || trimmed === `W/${etag}`;
+  });
+}
 
 /** A render hydrates an island whose client module the artifact does not carry. */
 export class MissingIslandClientError extends Error {
@@ -28,13 +48,17 @@ export function islandClientResponse(request: Request, pathname: string, islands
   if (request.method !== "GET" && request.method !== "HEAD") return null;
   const client = islands?.clients.get(pathname);
   if (client === undefined) return null;
-  return new Response(request.method === "HEAD" ? null : client.source, {
-    headers: {
-      "content-type": "text/javascript; charset=utf-8",
-      // A path-named module changes under its URL with the next prepare.
-      "cache-control": CONTENT_HASHED.test(client.url) ? IMMUTABLE : "no-cache",
-    },
-  });
+  const headers = new Headers({ "content-type": "text/javascript; charset=utf-8" });
+  if (client.chunk) {
+    headers.set("cache-control", IMMUTABLE);
+  } else {
+    // A path-named module changes under its URL with the next prepare; revalidating it is cheap.
+    const etag = etagOf(client);
+    headers.set("cache-control", "no-cache");
+    headers.set("etag", etag);
+    if (matches(request.headers.get("if-none-match"), etag)) return new Response(null, { status: 304, headers });
+  }
+  return new Response(request.method === "HEAD" ? null : client.source, { headers });
 }
 
 /**
