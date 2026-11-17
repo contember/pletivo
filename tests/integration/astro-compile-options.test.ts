@@ -6,7 +6,7 @@ import { transform } from "@astrojs/compiler";
 import { build } from "../../packages/pletivo/src/build";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import type { PletivoConfig } from "../../packages/pletivo/src/config";
-import { normalizeFilename, resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
+import { normalizeFilename, normalizeRootRelativeFilename, resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import type { AstroConfig } from "@pletivo/core/astro-host/types";
 
 // An Astro project compiles `.astro` with the options Astro passes: `compact`
@@ -108,8 +108,18 @@ describe("normalizeFilename", () => {
     expect(normalizeFilename("/projects/site/src/../src/a.astro", root)).toBe("/src/a.astro");
   });
 
-  test("is the normalized absolute path outside the root", () => {
-    expect(normalizeFilename("/projects/shared/./Card.astro", root)).toBe("/projects/shared/Card.astro");
+  test("is root-relative from `../` outside the root, unlike Astro's absolute path", () => {
+    expect(normalizeFilename("/projects/shared/./Card.astro", root)).toBe("../shared/Card.astro");
+    expect(normalizeFilename("/projects/node_modules/ui/Card.astro", root)).toBe("../node_modules/ui/Card.astro");
+    // A sibling whose name only starts with the root's is outside it.
+    expect(normalizeFilename("/projects/site-ui/Card.astro", root)).toBe("../site-ui/Card.astro");
+  });
+
+  test("equals what the Workers host derives from the root-relative compile path", () => {
+    for (const file of ["/projects/site/src/pages/index.astro", "/projects/node_modules/ui/Card.astro"]) {
+      const compilePath = path.relative("/projects/site", file);
+      expect(normalizeFilename(file, root)).toBe(normalizeRootRelativeFilename(compilePath));
+    }
   });
 });
 
@@ -140,7 +150,7 @@ describe("resolveCompressHTML", () => {
     expect(resolveCompressHTML(astroConfig({ compressHTML: false }))).toBe(false);
   });
 
-  test("rejects a value that is not a boolean", () => {
-    expect(() => resolveCompressHTML(astroConfig({ compressHTML: "yes" }))).toThrow('compressHTML "yes" is not a boolean');
+  test("rejects a value that is not a boolean, naming the config", () => {
+    expect(() => resolveCompressHTML(astroConfig({ compressHTML: "yes" }))).toThrow('astro.config: compressHTML "yes" is not a boolean');
   });
 });
