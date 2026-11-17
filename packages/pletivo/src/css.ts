@@ -4,6 +4,16 @@ import { Glob } from "bun";
 import { getScssOutput } from "./scss";
 import { planJsImportedCss } from "./js-imported-css";
 import { minifyCss } from "./css-minify";
+import type { StylesheetInliner } from "./assets-inline";
+
+/**
+ * One built stylesheet as a page gets it: linked from `dist/`, or inlined as
+ * `<style>` (Astro's `build.inlineStylesheets`). The choice is made once per
+ * sheet, so every page that uses a sheet gets it the same way.
+ */
+export type Stylesheet =
+  | { type: "external"; href: string }
+  | { type: "inline"; content: string };
 
 /**
  * The stylesheets a build emits. `shared` carries everything that cannot
@@ -12,25 +22,25 @@ import { minifyCss } from "./css-minify";
  * the same set of page entries.
  */
 export interface CssBundle {
-  shared: string | null;
-  groups: Array<{ href: string; pages: Set<string> }>;
+  shared: Stylesheet | null;
+  groups: Array<{ sheet: Stylesheet; pages: Set<string> }>;
   /**
    * Page entries whose CSS reach is known. Anything outside this set —
-   * a page restored from the incremental cache, an injected route — links
+   * a page restored from the incremental cache, an injected route — gets
    * every group, which is what the single-bundle build did for everyone.
    */
   knownPages: Set<string>;
 }
 
-/** Stylesheet hrefs for one page, in cascade order. */
-export function cssHrefsForPage(bundle: CssBundle, pageEntry: string | undefined): string[] {
-  const hrefs: string[] = [];
-  if (bundle.shared) hrefs.push(bundle.shared);
+/** Stylesheets for one page, in cascade order. */
+export function stylesheetsForPage(bundle: CssBundle, pageEntry: string | undefined): Stylesheet[] {
+  const sheets: Stylesheet[] = [];
+  if (bundle.shared) sheets.push(bundle.shared);
   const known = pageEntry !== undefined && bundle.knownPages.has(pageEntry);
   for (const group of bundle.groups) {
-    if (!known || group.pages.has(pageEntry)) hrefs.push(group.href);
+    if (!known || group.pages.has(pageEntry)) sheets.push(group.sheet);
   }
-  return hrefs;
+  return sheets;
 }
 
 /**
@@ -42,18 +52,22 @@ export function cssHrefsForPage(bundle: CssBundle, pageEntry: string | undefined
  *     through the Tailwind compile pipeline (imports, @source scanning,
  *     candidate extraction via @tailwindcss/oxide, build()).
  *  2. Fallback — concatenate all `.css` files from src/, no processing.
+ *
+ * `inline` decides, on each finished sheet, whether pages inline it; an inlined
+ * sheet is not written to `dist/`. `null` links every sheet.
  */
 export async function bundleCss(
   projectRoot: string,
   srcDir: string,
   distDir: string,
+  inline: StylesheetInliner | null,
 ): Promise<CssBundle> {
   const base = await buildCss(projectRoot, srcDir);
   const scss = getScssOutput();
   const plan = await planJsImportedCss({ consumedSourceCss: base.consumedSourceCss });
 
   const assetsDir = path.join(distDir, "assets");
-  const write = async (source: string, name: string): Promise<string> => {
+  const emit = async (source: string, name: string): Promise<Stylesheet | null> => {
     // Minify last, on the finished sheet: the pieces arrive from three
     // pipelines (Tailwind, raw source CSS, Bun-bundled JS imports) and
     // only one of them has a bundler in front of it.
@@ -61,18 +75,24 @@ export async function bundleCss(
     const hasher = new Bun.CryptoHasher("md5");
     hasher.update(css);
     const hash = hasher.digest("hex").slice(0, 8);
-    await fs.mkdir(assetsDir, { recursive: true });
     const outFile = name ? `styles.${name}.${hash}.css` : `styles.${hash}.css`;
+    // Astro decides on the emitted chunk: minified, `url()`s already rewritten.
+    if (inline?.(css, `assets/${outFile}`)) {
+      // An empty sheet would only add an empty `<style>`.
+      return css ? { type: "inline", content: css } : null;
+    }
+    await fs.mkdir(assetsDir, { recursive: true });
     await fs.writeFile(path.join(assetsDir, outFile), css);
-    return `/assets/${outFile}`;
+    return { type: "external", href: `/assets/${outFile}` };
   };
 
   const sharedCss = [base.css, scss, plan.shared].filter(Boolean).join("\n\n");
-  const shared = sharedCss ? await write(sharedCss, "") : null;
+  const shared = sharedCss ? await emit(sharedCss, "") : null;
 
   const groups: CssBundle["groups"] = [];
   for (const group of plan.groups) {
-    groups.push({ href: await write(group.css, group.name), pages: new Set(group.pages) });
+    const sheet = await emit(group.css, group.name);
+    if (sheet) groups.push({ sheet, pages: new Set(group.pages) });
   }
 
   return { shared, groups, knownPages: plan.knownPages };

@@ -30,11 +30,11 @@ describe("astro hoisted <script> with relative import", () => {
     const inline = [...html.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)].map((m) => m[1]);
     expect(inline).toHaveLength(1);
     bundle = inline[0];
-    // The page links the shared sheet plus every CSS group it reaches;
-    // read all of them so the assertions cover the page's whole cascade.
+    // The page gets the shared sheet plus every CSS group it reaches, each
+    // linked or, under `assetsInlineLimit`, inlined as Astro does; read all
+    // of them so the assertions cover the page's whole cascade.
     const cssHrefs = [...html.matchAll(/href="([^"]*\/assets\/styles\.(?:[a-z0-9-]+\.)?[a-f0-9]{8}\.css)"/g)];
-    expect(cssHrefs.length).toBeGreaterThan(0);
-    const sheets: string[] = [];
+    const sheets: string[] = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]);
     for (const match of cssHrefs) {
       sheets.push(await Bun.file(path.join(distDir, match[1])).text());
     }

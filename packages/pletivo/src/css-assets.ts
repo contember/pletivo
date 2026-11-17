@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import type { BunPlugin } from "bun";
+import { DEFAULT_ASSETS_INLINE_LIMIT, shouldInlineAsset, type AssetsInlineLimit } from "./assets-inline";
 
 /**
  * Assets referenced from CSS with `url()` — fonts, background images.
@@ -13,8 +14,8 @@ import type { BunPlugin } from "bun";
  *
  * The fix is to take the decision away from Bun: rewrite `url()` in the
  * CSS *before* Bun loads it, emitting anything at or above the inline
- * limit as a content-hashed file. Vite's `build.assetsInlineLimit`
- * default is 4096 B and Astro never overrides it, so that is the limit.
+ * limit as a content-hashed file. The limit is Vite's `build.assetsInlineLimit`,
+ * 4096 B unless the Astro config sets `vite.build.assetsInlineLimit`.
  *
  * The rewritten URL is a placeholder origin rather than the final `/…`
  * path: Bun tries to resolve absolute `url()` targets from disk and fails
@@ -24,16 +25,13 @@ import type { BunPlugin } from "bun";
 
 const PLACEHOLDER_ORIGIN = "https://pletivo-asset-placeholder.invalid";
 
-/** Vite's `build.assetsInlineLimit` default; Astro does not override it. */
-export const DEFAULT_CSS_ASSET_INLINE_LIMIT = 4096;
-
 export interface CssAssetOptions {
   /** Directory the extracted files are written to. */
   outDir: string;
   /** URL prefix the rewritten `url()` points at, e.g. `/assets/`. */
   publicPath: string;
-  /** Assets strictly below this many bytes stay inline. */
-  inlineLimit?: number;
+  /** Vite's `build.assetsInlineLimit`: assets strictly below it stay inline. */
+  inlineLimit?: AssetsInlineLimit;
 }
 
 interface EmittedAsset {
@@ -157,10 +155,10 @@ async function emitCssAsset(
     return null;
   }
 
-  const limit = active.inlineLimit ?? DEFAULT_CSS_ASSET_INLINE_LIMIT;
+  const limit = active.inlineLimit ?? DEFAULT_ASSETS_INLINE_LIMIT;
   // A fragment reference cannot survive being turned into a `data:` URI,
-  // so it is always a file — Vite applies the same exception.
-  if (bytes.byteLength < limit && !suffix.startsWith("#")) {
+  // so it is always a file — Vite applies the same exception, before the limit.
+  if (!suffix.startsWith("#") && shouldInlineAsset(bytes, file, limit)) {
     emitted.set(file, null);
     return null;
   }

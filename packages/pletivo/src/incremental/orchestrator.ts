@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { runWithRuntimeDepCapture } from "./dep-tracker";
 import { collectStaticDeps, isWalkableSourceFile } from "./import-graph";
-import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
+import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
 
 /**
  * Loaded handle to @nuasite/astro-fragments — resolved once per build
@@ -95,6 +95,8 @@ export interface RenderRequest {
 	 * builds with thousands of slugs.
 	 */
 	assumeDepsValid?: boolean;
+	/** Render even when the cache entry is valid: a cached page whose stylesheet markup can't be swapped in place. */
+	forceRender?: boolean;
 	/**
 	 * Additional file paths that should participate in invalidation for
 	 * this specific render. Pass either the resolved set directly, or a
@@ -130,6 +132,8 @@ export interface RenderOutcome {
 	 * it needs the target's CSS groups.
 	 */
 	cssEntry?: string;
+	/** The stylesheet markup the cached HTML carries; only on the `cached` path. */
+	cssHead?: CachedCssHead | null;
 	/**
 	 * Byte size of the output file. Cached path returns the persisted
 	 * value (no stat); rendered path returns the freshly-emitted size
@@ -140,15 +144,16 @@ export interface RenderOutcome {
 }
 
 export async function runIncrementalRender(req: RenderRequest): Promise<RenderOutcome> {
-	const cached = req.cache?.getRoute(req.routeKey);
+	const cached = req.forceRender ? undefined : req.cache?.getRoute(req.routeKey);
 	const depsValid = cached && (req.assumeDepsValid || (await canReuse(cached)));
 	if (cached && depsValid) {
 		// Persistent-dist mode: the cached HTML file is already on
 		// disk from the previous build. We don't even read it — the
 		// next build pass needs only metadata (island/hoisted lists,
-		// renderedModules for CSS, fragment refs for replay), all of
-		// which we persisted last time. Existence check is either a
-		// O(1) lookup against the prebuilt inventory or a stat fallback.
+		// renderedModules for CSS, fragment refs for replay, the CSS
+		// head markup to compare), all of which we persisted last time.
+		// Existence check is either a O(1) lookup against the prebuilt
+		// inventory or a stat fallback.
 		const exists = req.distFiles
 			? req.distFiles.has(cached.outPath)
 			: await fileExists(path.join(req.distDir, cached.outPath));
@@ -165,6 +170,7 @@ export async function runIncrementalRender(req: RenderRequest): Promise<RenderOu
 				hoistedHashes: cached.hoistedHashes ?? [],
 				astroIslands: cached.astroIslands,
 				cssEntry: cached.cssEntry,
+				cssHead: cached.cssHead,
 				size: cached.size ?? 0,
 			};
 		}
@@ -234,7 +240,8 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			astroIslands,
 			cssEntry: value.cssEntry,
 			// Populated downstream after writeHtml — we don't know the
-			// final byte length yet (CSS/script injection happens there).
+			// final byte length or CSS markup yet (injection happens there).
+			cssHead: null,
 			size: 0,
 		};
 		req.cache.setRoute(req.routeKey, entry);
@@ -258,15 +265,18 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 }
 
 /**
- * Patch the freshly-rendered size onto an existing cache entry. Build
- * pipeline calls this after `writeHtml` returns the actual byte count
- * — cheaper than re-stat'ing every cached file on the next warm build.
+ * Patch what `writeHtml` (or the cached-page CSS refresh) produced onto an
+ * existing cache entry: the byte size, so the next warm build needn't stat
+ * every cached file, and the stylesheet markup, so it can swap it.
  */
-export function recordRenderedSize(cache: CacheStore, routeKey: string, size: number): void {
+export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: number, cssHead: CachedCssHead | null): void {
 	const entry = cache.getRoute(routeKey);
 	if (!entry) return;
-	if (entry.size === size) return;
-	cache.setRoute(routeKey, { ...entry, size });
+	const sameCssHead = entry.cssHead === null || cssHead === null
+		? entry.cssHead === cssHead
+		: entry.cssHead.fragment === cssHead.fragment && entry.cssHead.pageCss === cssHead.pageCss;
+	if (entry.size === size && sameCssHead) return;
+	cache.setRoute(routeKey, { ...entry, size, cssHead });
 }
 
 async function fileExists(p: string): Promise<boolean> {

@@ -16,12 +16,22 @@ const { version: PLETIVO_VERSION } = require_("../../package.json") as { version
 // version 4, would keep linking its own CSS groups instead of the target's.
 // Bumped to 6: added per-route `astroIslands`. A page cached by version 5
 // would leave its framework components out of the island bundles.
-export const CACHE_SCHEMA_VERSION = 6;
+// Bumped to 7: added per-route `cssHead`. Inlined stylesheets cannot be
+// found in cached HTML by a `<link>` pattern, so the written fragment is kept.
+export const CACHE_SCHEMA_VERSION = 7;
 
 /** A framework component export an `<astro-island>` hydrates. */
 export interface CachedAstroIsland {
   componentPath: string;
   exportName: string;
+}
+
+/** The stylesheet markup `writeHtml` put before `</head>`, so a cached page's can be swapped. */
+export interface CachedCssHead {
+  /** The exact text inserted; empty when nothing was. */
+  fragment: string;
+  /** The page's own `.astro`/TSX `<style>` CSS, which an adjacent inlined sheet merges with. */
+  pageCss: string;
 }
 
 export interface CachedFragmentRef {
@@ -102,6 +112,8 @@ export interface RouteCacheEntry {
    * build. Absent means the route's own entry.
    */
   cssEntry?: string;
+  /** Written by `writeHtml`, like `size`; null when the page has no `</head>`, so no stylesheet reaches it. */
+  cssHead: CachedCssHead | null;
   /**
    * Byte size of the rendered HTML output. Cached so warm builds
    * don't have to stat every cached file just to print the total.
@@ -149,6 +161,9 @@ export interface PletivoCache {
   dynamicRoutes: Record<string, DynamicRouteCacheEntry>;
 }
 
+/** Present while a build writes `dist/`; `persist()` removes it. */
+const WRITING_MARKER = "writing";
+
 /**
  * On-disk cache backing pletivo's incremental build. Persists to
  * `node_modules/.pletivo/cache/cache.json`. Tracks per-route dep fingerprints,
@@ -179,6 +194,10 @@ export class CacheStore {
 
     const cachePath = path.join(dir, "cache.json");
     try {
+      // A build that changed `dist/` and didn't persist left the cache describing an older `dist/`.
+      if (await fs.stat(path.join(dir, WRITING_MARKER)).then(() => true, () => false)) {
+        return new CacheStore(dir, empty);
+      }
       const raw = await fs.readFile(cachePath, "utf8");
       const parsed = JSON.parse(raw) as PletivoCache;
       if (
@@ -198,6 +217,11 @@ export class CacheStore {
       // No cache, corrupt cache, or version mismatch — fall through to empty.
     }
     return new CacheStore(dir, empty);
+  }
+
+  /** A build without the cache rewrites `dist/`, so the cache no longer describes it. */
+  static async discard(projectRoot: string): Promise<void> {
+    await fs.rm(cacheDir(projectRoot), { recursive: true, force: true });
   }
 
   static async forceClean(projectRoot: string, configHash: string): Promise<CacheStore> {
@@ -270,15 +294,26 @@ export class CacheStore {
     this.invalidated = true;
   }
 
+  /**
+   * Call before writing `dist/`. Until `persist()` succeeds, the next load starts empty: an interrupted build may
+   * have changed pages the cache records as unchanged. A marker, so a no-op warm build still skips the JSON write.
+   */
+  async markWriting(): Promise<void> {
+    await fs.mkdir(this.dir, { recursive: true });
+    await fs.writeFile(path.join(this.dir, WRITING_MARKER), "");
+  }
+
   async persist(): Promise<void> {
     if (this.invalidated) return;
-    if (!this.dirty) return;
-    await fs.mkdir(this.dir, { recursive: true });
-    await fs.writeFile(
-      path.join(this.dir, "cache.json"),
-      JSON.stringify(this.data, null, 2),
-    );
-    this.dirty = false;
+    if (this.dirty) {
+      await fs.mkdir(this.dir, { recursive: true });
+      await fs.writeFile(
+        path.join(this.dir, "cache.json"),
+        JSON.stringify(this.data, null, 2),
+      );
+      this.dirty = false;
+    }
+    await fs.rm(path.join(this.dir, WRITING_MARKER), { force: true });
   }
 
 }
