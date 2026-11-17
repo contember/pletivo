@@ -172,6 +172,7 @@ async function loadProject(projectRoot: string, entries: readonly AstroRendererE
       frameworkCompilePlugin({
         compilers: others,
         target: "server",
+        loadedByRuntime: true,
         onCss(filename) {
           throw new Error(`${filename}: a compiled module's CSS must be imported by the module`);
         },

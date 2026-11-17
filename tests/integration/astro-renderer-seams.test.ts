@@ -123,6 +123,7 @@ describe("frameworkCompilePlugin", () => {
           frameworkCompilePlugin({
             compilers: [declining, compiling],
             target: "client",
+            loadedByRuntime: false,
             onCss: (filename, text) => css.push(`${path.basename(filename)} ${text}`),
           }),
         ],
@@ -166,7 +167,7 @@ describe("frameworkCompilePlugin matches filename suffixes", () => {
       const declining: FrameworkCompiler = { framework: "None", extensions: [".fake.mts"], compile: async () => null };
       const result = await Bun.build({
         entrypoints: [path.join(dir, "entry.js")],
-        plugins: [frameworkCompilePlugin({ compilers: [generic, modules, declining], target: "client", onCss: () => {} })],
+        plugins: [frameworkCompilePlugin({ compilers: [generic, modules, declining], target: "client", loadedByRuntime: false, onCss: () => {} })],
       });
       expect(result.success).toBe(true);
       const output = await result.outputs[0]!.text();
@@ -201,6 +202,7 @@ describe("frameworkCompilePlugin as a runtime plugin", () => {
             },
           ],
           target: "server",
+          loadedByRuntime: true,
           onCss: () => {},
         }),
       );
@@ -221,7 +223,7 @@ describe("frameworkCompilePlugin when every compiler declines", () => {
       await fs.writeFile(path.join(dir, "a.ts"), 'import v from "./plain.ts"; export default v;');
       await fs.writeFile(path.join(dir, "b.ts"), 'import v from "./Odd.w0odd"; export default v;');
       const declining: FrameworkCompiler = { framework: "None", extensions: [".ts", ".w0odd"], compile: async () => null };
-      const plugin = () => frameworkCompilePlugin({ compilers: [declining], target: "client", onCss: () => {} });
+      const plugin = () => frameworkCompilePlugin({ compilers: [declining], target: "client", loadedByRuntime: false, onCss: () => {} });
       const ok = await Bun.build({ entrypoints: [path.join(dir, "a.ts")], plugins: [plugin()] });
       expect(ok.success).toBe(true);
       expect(await ok.outputs[0]!.text()).toContain('"plain"');

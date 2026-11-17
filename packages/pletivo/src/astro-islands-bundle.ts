@@ -244,6 +244,7 @@ export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Pr
       frameworkCompilePlugin({
         compilers: options.compilers,
         target: "client",
+        loadedByRuntime: false,
         // The server render already put a hydrated component's CSS on the page; client:only is not covered yet.
         onCss() {},
       }),
