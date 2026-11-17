@@ -225,7 +225,8 @@ framework-preact, -react, -solid, -svelte, -vue, -multiple:
 - Svelte modules (`.svelte.js`, `.svelte.ts`) compile through Svelte's
   `compileModule`, as in Vite, on the server and in the island bundles; the
   Svelte renderer's own client is one. Island URLs are named by component,
-  not by content, so a changed bundle keeps its URL (open).
+  not by content, so a changed bundle keeps its URL. Deferred, with the hosting
+  rule in the README: [025](025-island-content-hashed-urls.md).
 
 with-mdx: the island equals Astro's. The page around it does not: an MDX page
 without a layout gets no `<!DOCTYPE html>` or `<meta charset>`, the

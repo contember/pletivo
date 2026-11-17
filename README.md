@@ -43,6 +43,16 @@ Pletivo compiles `.astro` files using `@astrojs/compiler` and renders them with 
 - Dev server with HMR (CSS hot swap + morphdom DOM patching)
 - `public/` copied verbatim, as Astro does (pletivo-native projects: content-hashed, plus a generated `sitemap.xml`)
 
+## Hosting
+
+Do not serve Astro island entries under `/_astro/` as `immutable`, or purge them
+on every deploy. Pletivo names each island entry (`_astro/<Name>.<hash>.js`) by
+its component path, not by its content, so a changed component keeps its URL. A
+browser holding the old entry would then import chunks the new deploy no longer
+has, and the island would not hydrate. Shared chunks are content-hashed and can
+be cached as immutable. See
+[`docs/todos/025`](docs/todos/025-island-content-hashed-urls.md).
+
 ## Performance
 
 Benchmarked on a real production site (113 pages, 12 content collections, MDX, Tailwind):
