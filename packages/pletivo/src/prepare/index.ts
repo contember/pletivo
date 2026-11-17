@@ -148,12 +148,9 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
 }
 
 /**
- * A `.md` file's module imports its `layout:` (`markdownModule`); a project layout is
- * carried as a source, one named as a package must be vendored. A route page is
- * compiled, so its layout must resolve. Any other `.md` is compiled only if something
- * imports it, and its `layout` field may be plain data (a collection entry's), so it is
- * vendored only when it names a package that resolves. An invalid one is named when
- * the page compiles.
+ * A `.md` file's bare `layout:`, which its compiled module imports (`markdownModule`).
+ * A project layout is carried as a source; one named as a package must be vendored.
+ * An invalid one is named when the file compiles.
  */
 function markdownLayoutImport(rel: string, source: string): MarkdownLayoutImport | null {
   if (!rel.endsWith(".md")) return null;
@@ -164,9 +161,7 @@ function markdownLayoutImport(rel: string, source: string): MarkdownLayoutImport
     return null;
   }
   if (layout === null || classifySpecifier(layout) === "relative") return null;
-  const route = rel.startsWith("pages/") && isRouteFile(rel.slice("pages/".length));
-  if (!route && classifySpecifier(layout) !== "vendor") return null;
-  return { specifier: layout, required: route };
+  return { specifier: layout, route: rel.startsWith("pages/") && isRouteFile(rel.slice("pages/".length)) };
 }
 
 function unsupportedProjectSemantics(config: PletivoConfig): PrepareDiagnostic[] {

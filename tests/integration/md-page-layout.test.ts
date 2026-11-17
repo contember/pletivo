@@ -282,6 +282,15 @@ describe("a layout field that is data, not a page's layout", () => {
     expect(html).toContain("Imported MDX note text.");
   });
 
+  test("prepare does not vendor a package a collection entry's layout field happens to name", async () => {
+    const root = await fixtureWithout(MDX_PAGE);
+    // A package the Workers graph cannot carry: vendoring it would fail prepare.
+    await fs.mkdir(path.join(root, "node_modules/wide"), { recursive: true });
+    await fs.writeFile(path.join(root, "node_modules/wide/package.json"), '{ "name": "wide", "main": "index.cjs" }\n');
+    await fs.writeFile(path.join(root, "node_modules/wide/index.cjs"), "module.exports = {};\n");
+    await expect(prepare(root)).resolves.toBeDefined();
+  });
+
   test("a _-prefixed .md under src/pages is not a page, so its layout field passes build and prepare", async () => {
     const root = await fixtureWithout(MDX_PAGE);
     await fs.mkdir(path.join(root, "src/pages/_drafts"));
