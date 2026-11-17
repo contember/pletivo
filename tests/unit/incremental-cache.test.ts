@@ -17,12 +17,12 @@ afterEach(async () => {
 
 describe("CacheStore", () => {
 	it("returns an empty cache when nothing is on disk", async () => {
-		const store = await CacheStore.load(tmp, "any-config-hash");
+		const store = await CacheStore.load(tmp, "any-config-hash", "dist");
 		expect(store.routeKeys()).toEqual([]);
 	});
 
 	it("round-trips a single route through persist / load", async () => {
-		const s1 = await CacheStore.load(tmp, "c1");
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
 		s1.setRoute("page::__static__", {
 			outPath: "page/index.html",
 			outputHash: "deadbeef",
@@ -38,9 +38,10 @@ describe("CacheStore", () => {
 			size: 0,
 		});
 		s1.setVirtualCss("/abs/Dyn.svelte.pletivo-style.css", ".d{}");
+		s1.setRouteOutputs(["page/index.html"]);
 		await s1.persist();
 
-		const s2 = await CacheStore.load(tmp, "c1");
+		const s2 = await CacheStore.load(tmp, "c1", "dist");
 		const r = s2.getRoute("page::__static__");
 		expect(r?.outPath).toBe("page/index.html");
 		expect(r?.outputHash).toBe("deadbeef");
@@ -52,16 +53,18 @@ describe("CacheStore", () => {
 	});
 
 	it("ignores the on-disk cache when the configHash differs", async () => {
-		const s1 = await CacheStore.load(tmp, "c1");
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
 		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s1.setRouteOutputs(["k.html"]);
 		await s1.persist();
+		expect((await CacheStore.load(tmp, "c1", "dist")).routeKeys()).toEqual(["k"]);
 
-		const s2 = await CacheStore.load(tmp, "c2");
+		const s2 = await CacheStore.load(tmp, "c2", "dist");
 		expect(s2.routeKeys()).toEqual([]);
 	});
 
 	it("forceClean wipes the on-disk cache", async () => {
-		const s1 = await CacheStore.load(tmp, "c1");
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
 		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
 		await s1.persist();
 		// Plant a stray file in the cache dir so we can verify forceClean
@@ -69,13 +72,13 @@ describe("CacheStore", () => {
 		await fs.mkdir(path.join(tmp, "node_modules", ".pletivo", "cache"), { recursive: true });
 		await fs.writeFile(path.join(tmp, "node_modules", ".pletivo", "cache", "ghost"), "x");
 
-		const cleaned = await CacheStore.forceClean(tmp, "c1");
+		const cleaned = await CacheStore.forceClean(tmp, "c1", "dist");
 		expect(cleaned.routeKeys()).toEqual([]);
 		await expect(fs.stat(path.join(tmp, "node_modules", ".pletivo", "cache", "ghost"))).rejects.toThrow();
 	});
 
 	it("pruneRoutes drops entries whose keys aren't in the keep set", async () => {
-		const s = await CacheStore.load(tmp, "c1");
+		const s = await CacheStore.load(tmp, "c1", "dist");
 		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
 		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
 		s.setRoute("c", { outPath: "c.html", outputHash: "3", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
@@ -84,7 +87,7 @@ describe("CacheStore", () => {
 	});
 
 	it("pruneRoutes keeps in-memory stylesheet text only while a kept route lists it", async () => {
-		const s = await CacheStore.load(tmp, "c1");
+		const s = await CacheStore.load(tmp, "c1", "dist");
 		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: ["/abs/A.css"], size: 0 });
 		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: ["/abs/B.css"], size: 0 });
 		s.setVirtualCss("/abs/A.css", ".a{}");
@@ -92,6 +95,98 @@ describe("CacheStore", () => {
 		s.pruneRoutes(new Set(["a"]));
 		expect(s.virtualCss("/abs/A.css")).toBe(".a{}");
 		expect(s.virtualCss("/abs/B.css")).toBeUndefined();
+	});
+
+	it("keeps the route output record when the render cache is invalidated", async () => {
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s1.setRouteOutputs(["feed.xml", "about/index.html"]);
+		await s1.persist();
+
+		const s2 = await CacheStore.load(tmp, "c2", "dist");
+		expect(s2.routeKeys()).toEqual([]);
+		expect(s2.routeOutputs()).toEqual(["about/index.html", "feed.xml"]);
+
+		// A build that did not persist leaves the marker; dist/ still holds what was recorded.
+		await s2.markWriting(["feed.xml"]);
+		const marked = await CacheStore.load(tmp, "c1", "dist");
+		expect(marked.routeKeys()).toEqual([]);
+		expect(marked.routeOutputs()).toEqual(["about/index.html", "feed.xml"]);
+	});
+
+	it("markWriting records the outputs a build is about to write, before it persists", async () => {
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s1.setRouteOutputs(["k.html"]);
+		await s1.persist();
+		const cacheJson = path.join(tmp, "node_modules", ".pletivo", "cache", "cache.json");
+		// Nothing new to write: no JSON write. The trailing newline marks the file as not rewritten.
+		const persisted = (await fs.readFile(cacheJson, "utf8")) + "\n";
+		await fs.writeFile(cacheJson, persisted);
+		const s2 = await CacheStore.load(tmp, "c1", "dist");
+		await s2.markWriting(["k.html"]);
+		expect(await fs.readFile(cacheJson, "utf8")).toBe(persisted);
+
+		// A new output is on disk before any page is written; the build then crashes.
+		const s3 = await CacheStore.load(tmp, "c1", "dist");
+		await s3.markWriting(["draft/index.html"]);
+		const crashed = await CacheStore.load(tmp, "c1", "dist");
+		expect(crashed.routeOutputs()).toEqual(["draft/index.html", "k.html"]);
+		expect(crashed.routeKeys()).toEqual([]);
+
+		// A cold build records what it writes too.
+		const cold = await CacheStore.forceClean(tmp, "c1", "dist");
+		await cold.markWriting(["a.html"]);
+		expect((await CacheStore.load(tmp, "c1", "dist")).routeOutputs()).toEqual(["a.html"]);
+	});
+
+	it("loads cold, without routes or a record, when there is no record for the output directory", async () => {
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
+		expect(s1.routeOutputs()).toBeNull();
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s1.setRouteOutputs(["k.html"]);
+		await s1.persist();
+		expect((await CacheStore.load(tmp, "c1", "dist")).routeKeys()).toEqual(["k"]);
+
+		const otherDir = await CacheStore.load(tmp, "c1", "build");
+		expect(otherDir.routeKeys()).toEqual([]);
+		expect(otherDir.routeOutputs()).toBeNull();
+
+		const cleaned = await CacheStore.forceClean(tmp, "c1", "dist");
+		expect(cleaned.routeOutputs()).toBeNull();
+
+		// A cache written before the record existed.
+		cleaned.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		cleaned.setRouteOutputs(["k.html"]);
+		await cleaned.persist();
+		const cacheJson = path.join(tmp, "node_modules", ".pletivo", "cache", "cache.json");
+		const { routeOutputs, ...withoutRecord } = JSON.parse(await fs.readFile(cacheJson, "utf8"));
+		expect(routeOutputs).toEqual({ outDir: "dist", files: ["k.html"] });
+		await fs.writeFile(cacheJson, JSON.stringify(withoutRecord));
+		const old = await CacheStore.load(tmp, "c1", "dist");
+		expect(old.routeKeys()).toEqual([]);
+		expect(old.routeOutputs()).toBeNull();
+	});
+
+	it("voids a route output record naming a path outside the output directory, and loads cold", async () => {
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s1.setRouteOutputs(["ok.html"]);
+		await s1.persist();
+		const cacheJson = path.join(tmp, "node_modules", ".pletivo", "cache", "cache.json");
+		const valid = JSON.parse(await fs.readFile(cacheJson, "utf8"));
+		const loadWith = async (files: string[]) => {
+			await fs.writeFile(cacheJson, JSON.stringify({ ...valid, routeOutputs: { outDir: "dist", files } }));
+			return await CacheStore.load(tmp, "c1", "dist");
+		};
+		const ok = await loadWith(["ok.html", "blog/a/index.html"]);
+		expect(ok.routeOutputs()).toEqual(["ok.html", "blog/a/index.html"]);
+		expect(ok.routeKeys()).toEqual(["k"]);
+		for (const bad of ["../src/index.ts", "/etc/passwd", "a/../../b", ".", ""]) {
+			const voided = await loadWith(["ok.html", bad]);
+			expect(voided.routeOutputs()).toBeNull();
+			expect(voided.routeKeys()).toEqual([]);
+		}
 	});
 
 });
@@ -129,11 +224,12 @@ describe("paramsToKey", () => {
 			{ params: { lang: "en", page: "2" } },
 			{ params: { slug: "" } },
 		];
-		const s1 = await CacheStore.load(tmp, "c1");
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
 		s1.setDynamicRoute("blog/[...page].astro", { paramSets: fresh, depFingerprints: {} });
+		s1.setRouteOutputs([]);
 		await s1.persist();
 
-		const restored = (await CacheStore.load(tmp, "c1")).getDynamicRoute("blog/[...page].astro");
+		const restored = (await CacheStore.load(tmp, "c1", "dist")).getDynamicRoute("blog/[...page].astro");
 		expect(restored?.paramSets.map((p) => paramsToKey(p.params))).toEqual(fresh.map((p) => paramsToKey(p.params)));
 	});
 });

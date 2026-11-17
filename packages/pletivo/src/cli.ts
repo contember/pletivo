@@ -92,7 +92,7 @@ switch (command) {
 
   Options:
     --incremental            Reuse the build cache to skip unchanged pages (off by default)
-    --clean                  Wipe node_modules/.pletivo/cache, then build incrementally
+    --clean                  Wipe node_modules/.pletivo/cache and dist/, then build incrementally
     --port=<number>          Dev server port (default: 3000)
     --host[=<addr>]          Dev server host (default: localhost, bare --host = 0.0.0.0)
     --404-page=<path>        Custom 404 page (overrides pages/404.{tsx,jsx,astro})

@@ -161,6 +161,17 @@ export interface DynamicRouteCacheEntry {
   depFingerprints: Record<string, DepFingerprint>;
 }
 
+/**
+ * Every file the last build wrote for its routes, pages and endpoints alike. `dist/`
+ * also holds files no route owns (public/, bundles, integration output), so only
+ * these may be removed when a later build no longer writes them.
+ */
+export interface RouteOutputs {
+  /** Output directory relative to the project root; `files` are relative to it. */
+  outDir: string;
+  files: string[];
+}
+
 export interface PletivoCache {
   schemaVersion: number;
   pletivoVersion: string;
@@ -169,6 +180,8 @@ export interface PletivoCache {
   dynamicRoutes: Record<string, DynamicRouteCacheEntry>;
   /** A compiled framework component's `<style>` text, by its in-memory stylesheet path, once for every route listing it in `dynamicCss`. */
   virtualCss: Record<string, string>;
+  /** Kept when the render cache is invalidated: it describes `dist/`, which survives that. */
+  routeOutputs: RouteOutputs | null;
 }
 
 /** Present while a build writes `dist/`; `persist()` removes it. */
@@ -188,11 +201,12 @@ export class CacheStore {
   private invalidated = false;
   private dirty = false;
 
-  private constructor(public readonly dir: string, data: PletivoCache) {
+  private constructor(public readonly dir: string, private readonly outDir: string, data: PletivoCache) {
     this.data = data;
   }
 
-  static async load(projectRoot: string, configHash: string): Promise<CacheStore> {
+  /** `outDir` is the output directory relative to the project root; a route output record of another one is not used. */
+  static async load(projectRoot: string, configHash: string, outDir: string): Promise<CacheStore> {
     const dir = cacheDir(projectRoot);
     const empty: PletivoCache = {
       schemaVersion: CACHE_SCHEMA_VERSION,
@@ -201,16 +215,21 @@ export class CacheStore {
       routes: {},
       dynamicRoutes: {},
       virtualCss: {},
+      routeOutputs: null,
     };
 
     const cachePath = path.join(dir, "cache.json");
     try {
-      // A build that changed `dist/` and didn't persist left the cache describing an older `dist/`.
-      if (await fs.stat(path.join(dir, WRITING_MARKER)).then(() => true, () => false)) {
-        return new CacheStore(dir, empty);
-      }
       const raw = await fs.readFile(cachePath, "utf8");
       const parsed = JSON.parse(raw) as PletivoCache;
+      const routeOutputs = parseRouteOutputs(parsed.routeOutputs);
+      // Without it a stale route output cannot be told from the rest of `dist/`, so the build is cold.
+      if (routeOutputs === null || routeOutputs.outDir !== outDir) return new CacheStore(dir, outDir, empty);
+      // A build that changed `dist/` and didn't persist left the cache describing an older `dist/`.
+      // Its route outputs are still files an earlier build wrote, so they stay prunable.
+      if (await fs.stat(path.join(dir, WRITING_MARKER)).then(() => true, () => false)) {
+        return new CacheStore(dir, outDir, { ...empty, routeOutputs });
+      }
       if (
         parsed.schemaVersion === CACHE_SCHEMA_VERSION &&
         parsed.pletivoVersion === PLETIVO_VERSION &&
@@ -225,12 +244,13 @@ export class CacheStore {
         if (!parsed.virtualCss || typeof parsed.virtualCss !== "object") {
           parsed.virtualCss = {};
         }
-        return new CacheStore(dir, parsed);
+        return new CacheStore(dir, outDir, { ...parsed, routeOutputs });
       }
+      return new CacheStore(dir, outDir, { ...empty, routeOutputs });
     } catch {
-      // No cache, corrupt cache, or version mismatch — fall through to empty.
+      // No cache or a corrupt one — fall through to empty.
     }
-    return new CacheStore(dir, empty);
+    return new CacheStore(dir, outDir, empty);
   }
 
   /** A build without the cache rewrites `dist/`, so the cache no longer describes it. */
@@ -238,16 +258,17 @@ export class CacheStore {
     await fs.rm(cacheDir(projectRoot), { recursive: true, force: true });
   }
 
-  static async forceClean(projectRoot: string, configHash: string): Promise<CacheStore> {
+  static async forceClean(projectRoot: string, configHash: string, outDir: string): Promise<CacheStore> {
     const dir = cacheDir(projectRoot);
     await fs.rm(dir, { recursive: true, force: true });
-    return new CacheStore(dir, {
+    return new CacheStore(dir, outDir, {
       schemaVersion: CACHE_SCHEMA_VERSION,
       pletivoVersion: PLETIVO_VERSION,
       configHash,
       routes: {},
       dynamicRoutes: {},
       virtualCss: {},
+      routeOutputs: null,
     });
   }
 
@@ -316,6 +337,22 @@ export class CacheStore {
     }
   }
 
+  /**
+   * Files the last build wrote for its routes into `outDir`. Null when there is no usable record:
+   * the build is cold, with an empty render cache, and must clear `dist/` as a plain build does.
+   */
+  routeOutputs(): string[] | null {
+    return this.data.routeOutputs?.files ?? null;
+  }
+
+  setRouteOutputs(files: Iterable<string>): void {
+    const next: RouteOutputs = { outDir: this.outDir, files: [...files].sort() };
+    const prev = this.data.routeOutputs;
+    if (prev && prev.outDir === next.outDir && prev.files.join("\0") === next.files.join("\0")) return;
+    this.data.routeOutputs = next;
+    this.dirty = true;
+  }
+
   /** True when nothing has mutated the cache since load. */
   isClean(): boolean {
     return !this.dirty;
@@ -327,12 +364,21 @@ export class CacheStore {
   }
 
   /**
-   * Call before writing `dist/`. Until `persist()` succeeds, the next load starts empty: an interrupted build may
-   * have changed pages the cache records as unchanged. A marker, so a no-op warm build still skips the JSON write.
+   * Call before writing `dist/`, with the route outputs this build will write. Until `persist()` succeeds, the next
+   * load has no routes: an interrupted build may have changed pages the cache records as unchanged. It keeps the
+   * route output record, widened here so a crash after any write leaves that output prunable. A marker, and JSON
+   * only when the record grows, so a no-op warm build still skips the JSON write.
    */
-  async markWriting(): Promise<void> {
+  async markWriting(outputs: Iterable<string>): Promise<void> {
     await fs.mkdir(this.dir, { recursive: true });
+    // The marker goes first: with it, the next load reads nothing from cache.json but the record.
     await fs.writeFile(path.join(this.dir, WRITING_MARKER), "");
+    const previous = this.data.routeOutputs?.files ?? [];
+    const widened = new Set([...previous, ...outputs]);
+    if (this.data.routeOutputs !== null && widened.size === previous.length) return;
+    this.data.routeOutputs = { outDir: this.outDir, files: [...widened].sort() };
+    await fs.writeFile(path.join(this.dir, "cache.json"), JSON.stringify(this.data, null, 2));
+    this.dirty = true;
   }
 
   async persist(): Promise<void> {
@@ -348,6 +394,24 @@ export class CacheStore {
     await fs.rm(path.join(this.dir, WRITING_MARKER), { force: true });
   }
 
+}
+
+/** A stored record names files to delete, so a path that is not plainly inside the output directory voids it. */
+function parseRouteOutputs(value: unknown): RouteOutputs | null {
+  if (typeof value !== "object" || value === null || !("outDir" in value) || !("files" in value)) return null;
+  const { outDir, files } = value;
+  if (typeof outDir !== "string" || !Array.isArray(files)) return null;
+  const items: unknown[] = files;
+  const parsed: string[] = [];
+  for (const file of items) {
+    if (typeof file !== "string" || !isInsideOutDir(file)) return null;
+    parsed.push(file);
+  }
+  return { outDir, files: parsed };
+}
+
+function isInsideOutDir(rel: string): boolean {
+  return !path.isAbsolute(rel) && path.normalize(rel) === rel && rel !== "." && rel.split(path.sep)[0] !== "..";
 }
 
 /**
