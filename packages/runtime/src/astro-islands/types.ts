@@ -12,7 +12,7 @@ export type IslandSlots = Record<string, (...args: unknown[]) => unknown>;
 export interface RendererMarkup {
   html: string;
   /** Extra `<astro-island>` attributes, e.g. React's `prefix`. */
-  attrs?: Record<string, string>;
+  attrs?: Record<string, unknown>;
 }
 
 /** The fourth argument Astro passes to `check` and `renderToStaticMarkup` (Astro's `AstroComponentMetadata`). */
@@ -26,6 +26,12 @@ export interface RendererMetadata {
   astroStaticSlot: true;
 }
 
+/**
+ * Rendered slots by name, each a `String` object as Astro's `SlotString` is: truthy even when
+ * empty, so a renderer's `!value` check still emits an empty `<astro-slot>`.
+ */
+export type RenderedSlots = Record<string, String>;
+
 /** The module an integration's `serverEntrypoint` default-exports (Astro's `SSRLoadedRendererValue`). */
 export interface RendererServer {
   name?: string;
@@ -34,14 +40,14 @@ export interface RendererServer {
     this: { result: object },
     Component: unknown,
     props: Record<string, unknown>,
-    slots: Record<string, string>,
+    slots: RenderedSlots,
     metadata?: RendererMetadata,
   ): boolean | Promise<boolean>;
   renderToStaticMarkup(
     this: { result: object },
     Component: unknown,
     props: Record<string, unknown>,
-    slots: Record<string, string>,
+    slots: RenderedSlots,
     metadata?: RendererMetadata,
   ): RendererMarkup | Promise<RendererMarkup>;
   supportsAstroStaticSlot?: boolean;

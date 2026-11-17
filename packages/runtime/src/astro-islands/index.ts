@@ -3,9 +3,11 @@
  * `<astro-island>` when hydrated. Inactive until a host calls `configureAstroIslands`:
  * then every non-`.astro` component call is offered here first.
  */
+import { renderFrameworkCall } from "./render";
 import type { AstroIslandsConfig, FrameworkComponentCall, FrameworkComponentResult } from "./types";
 
 export type * from "./types";
+export { finalizeIslandScripts, hoistIslandScripts } from "./prescripts";
 
 let config: AstroIslandsConfig | null = null;
 
@@ -50,6 +52,7 @@ export function currentPageResult(): object | undefined {
  * `null` when no renderer claims the component and it is not hydrated.
  */
 export function renderFrameworkComponent(call: FrameworkComponentCall): FrameworkComponentResult {
-  if (!astroIslandsConfigured()) return null;
-  throw new Error(`renderFrameworkComponent is not implemented yet (${call.displayName})`);
+  const active = config;
+  if (active === null || !astroIslandsConfigured()) return null;
+  return renderFrameworkCall(call, active, renderValueToString);
 }
