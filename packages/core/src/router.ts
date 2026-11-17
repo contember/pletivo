@@ -36,11 +36,14 @@ interface RouteSegment {
 }
 
 /**
- * Whether a file under the pages dir is a route, by its path relative to that dir. As in Astro,
- * a file or directory whose name starts with `_` is not (`createFileBasedRoutes`).
+ * Whether a file under the pages dir is a route, by its path relative to that dir. As in Astro
+ * (`createFileBasedRoutes`), a file or directory whose name starts with `_` is not, and neither is
+ * one whose name starts with `.`, except `.well-known`.
  */
 export function isRouteFile(file: string): boolean {
-  return !file.split("/").some((part) => part.startsWith("_"));
+  return !file.split("/").some(
+    (part) => part.startsWith("_") || (part.startsWith(".") && part !== ".well-known"),
+  );
 }
 
 /**

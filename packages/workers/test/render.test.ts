@@ -118,6 +118,45 @@ describe("projectRoutes", () => {
       expect((await renderPage({ files, pathname: "/", loader, compiler })).html).toContain('<p class="card">card</p>');
     });
   });
+
+  describe(".-prefixed files and directories, which are not routes except .well-known, as in Astro", () => {
+    const files = new Map<string, string>([
+      ["src/pages/index.astro", `<html><body><p>home</p></body></html>\n`],
+      ["src/pages/.hidden.astro", `<html><body><p>hidden</p></body></html>\n`],
+      ["src/pages/.hidden/x.astro", `<html><body><p>hidden x</p></body></html>\n`],
+      ["src/pages/.well-known/about.astro", `<html><body><p>well-known page</p></body></html>\n`],
+      ["src/pages/.well-known/security.txt.ts", `export function GET() {\n  return new Response("Contact: mailto:security@example.com\\n");\n}\n`],
+      ["src/pages/.well-known/.hidden.txt.ts", `export function GET() {\n  return new Response("hidden");\n}\n`],
+      ["src/pages/.well-known/_draft.astro", `<html><body><p>draft</p></body></html>\n`],
+      ["src/pages/_draft.astro", `<html><body><p>draft</p></body></html>\n`],
+    ]);
+
+    test("leave out every . entry but .well-known, and the _ rule still holds inside it", () => {
+      expect(projectRoutes(files).map((route) => route.file)).toEqual([
+        "index.astro",
+        ".well-known/about.astro",
+        ".well-known/security.txt.ts",
+      ]);
+    });
+
+    test("a .well-known page renders at its pathname", async () => {
+      expect((await renderPage({ files, pathname: "/.well-known/about", loader, compiler })).html).toContain(
+        "<p>well-known page</p>",
+      );
+    });
+
+    test("a .well-known endpoint is routed, then refused as every endpoint is on this host", async () => {
+      const error = await rejection(renderPage({ files, pathname: "/.well-known/security.txt", loader, compiler }));
+      expect(error).toBeInstanceOf(UnsupportedRouteError);
+      expect(String(error)).toContain("src/pages/.well-known/security.txt.ts");
+    });
+
+    test("the others do not render at their own pathname", async () => {
+      for (const pathname of ["/.hidden", "/.hidden/x", "/.well-known/.hidden.txt", "/.well-known/_draft", "/_draft"]) {
+        await expect(renderPage({ files, pathname, loader, compiler })).rejects.toBeInstanceOf(RouteNotFoundError);
+      }
+    });
+  });
 });
 
 describe("renderPage, an .astro component reached through JSX", () => {
