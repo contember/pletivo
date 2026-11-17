@@ -389,31 +389,43 @@ async function setupDynamicImport(layout: (typeof DYNAMIC_LAYOUTS)[number]): Pro
 	await write("src/pages/other.astro", `<html><head><title>Other</title></head><body><h1>Other</h1></body></html>\n`);
 }
 
-/** What each page's cache entry kept, as project-relative paths. */
+/** The stylesheets in the graph modules each page's cache entry kept, as project-relative paths. */
 async function cachedDynamicCss(): Promise<Record<string, string[]>> {
 	const raw = await fs.readFile(path.join(projectRoot, "node_modules/.pletivo/cache/cache.json"), "utf8");
-	const routes: Record<string, { dynamicCss: string[] }> = JSON.parse(raw).routes;
+	const routes: Record<string, { dynamicGraph: Array<{ items: Array<{ type: string; file: string }> }> }> = JSON.parse(raw).routes;
 	const out: Record<string, string[]> = {};
 	for (const [key, entry] of Object.entries(routes)) {
-		out[key] = entry.dynamicCss.map((file) => path.relative(projectRoot, file));
+		out[key] = entry.dynamicGraph.flatMap((node) =>
+			node.items.filter((item) => item.type === "css").map((item) => path.relative(projectRoot, item.file)),
+		);
 	}
 	return out;
 }
 
 /** The CSS each page links, by page: what a browser applies, whatever the chunking. */
-async function linkedCss(): Promise<Record<string, string>> {
+async function linkedCss(pages = ["index.html", "other/index.html"]): Promise<Record<string, string>> {
 	const sheets = await emittedStylesheets();
 	const out: Record<string, string> = {};
-	for (const page of ["index.html", "other/index.html"]) {
+	for (const page of pages) {
 		out[page] = (await stylesheetsOf(page)).map((href) => sheets.get(href) ?? `missing ${href}`).join("\n");
 	}
 	return out;
 }
 
 /** A full build of the same sources, which the warm build must equal. */
-async function fullBuildCss(): Promise<Record<string, string>> {
+async function fullBuildCss(pages?: string[]): Promise<Record<string, string>> {
 	expect(runBuild().status).toBe(0);
-	return await linkedCss();
+	return await linkedCss(pages);
+}
+
+/** A cold `--incremental` build, then a no-change one that must restore every page and equal a full build. */
+async function expectWarmEqualsFull(pages: string[]): Promise<void> {
+	expect(runBuild("--incremental").status).toBe(0);
+	const warm = runBuild("--incremental");
+	expect(warm.status).toBe(0);
+	expect(warm.stdout).toContain(`0 rendered + ${pages.length} cached`);
+	const css = await linkedCss(pages);
+	expect(css).toEqual(await fullBuildCss(pages));
 }
 
 describe("CSS chunking: a cached page keeps CSS its render imported dynamically", () => {
@@ -461,5 +473,79 @@ describe("CSS chunking: a cached page keeps CSS its render imported dynamically"
 		expect(css["index.html"]).toContain(".dyn-inner-marker-v2{");
 		expect(css["index.html"]).not.toContain(".dyn-inner-marker{");
 		expect(css).toEqual(await fullBuildCss());
+	});
+});
+
+/**
+ * The CSS graph follows `import()` with a string specifier as it follows a static import,
+ * so a full build attributes that CSS to the page that reaches it.
+ */
+describe("CSS chunking: CSS reached through a dynamic import", () => {
+	it("ships a stylesheet a module outside src/ imports dynamically, in the page's group", async () => {
+		await write("vendor/x.css", `.x-marker { color: rgb(1, 2, 3); }\n`);
+		await write("vendor/mod.css", `.mod-marker { color: rgb(3, 2, 1); }\n`);
+		await write("vendor/mod.js", `import "./mod.css";\nexport const mod = "mod";\n`);
+		await write(
+			"vendor/x.js",
+			`export async function load() {\n\tawait import("./x.css");\n\treturn (await import("./mod.js")).mod;\n}\n`,
+		);
+		await write(
+			"src/pages/index.astro",
+			`---\nimport { load } from "../../vendor/x.js";\nconst v = await load();\n---\n<html><head><title>X</title></head><body><h1>{v}</h1></body></html>\n`,
+		);
+		await write("src/pages/other.astro", `<html><head><title>Other</title></head><body><h1>Other</h1></body></html>\n`);
+
+		expect(runBuild().status).toBe(0);
+		const css = await linkedCss();
+		expect(css["index.html"]).toContain(".x-marker{");
+		expect(css["index.html"]).toContain(".mod-marker{");
+		expect(css["other/index.html"]).toBe("");
+
+		await expectWarmEqualsFull(["index.html", "other/index.html"]);
+	});
+
+	it("links a component's CSS on a page that imports it dynamically when another imports it statically", async () => {
+		await write("vendor/c.css", `.c-marker { color: rgb(3, 2, 1); }\n`);
+		await write("src/components/C.astro", `---\nimport "../../vendor/c.css";\n---\n<p class="c-marker">c</p>\n`);
+		await write(
+			"src/pages/dynamic.astro",
+			`---\nconst { default: C } = await import("../components/C.astro");\n---\n<html><head><title>D</title></head><body><C /></body></html>\n`,
+		);
+		await write(
+			"src/pages/static.astro",
+			`---\nimport C from "../components/C.astro";\n---\n<html><head><title>S</title></head><body><C /></body></html>\n`,
+		);
+		await write("src/pages/other.astro", `<html><head><title>Other</title></head><body><h1>Other</h1></body></html>\n`);
+		const pages = ["dynamic/index.html", "static/index.html", "other/index.html"];
+
+		expect(runBuild().status).toBe(0);
+		const css = await linkedCss(pages);
+		expect(css["dynamic/index.html"]).toContain(".c-marker{");
+		expect(css["static/index.html"]).toBe(css["dynamic/index.html"]);
+		expect(css["other/index.html"]).toBe("");
+
+		await expectWarmEqualsFull(pages);
+	});
+
+	it("keeps a cached page's import order when its dynamic import sits between static ones", async () => {
+		// Conflicting rules: the order decides which colour wins. Inner.astro is reached only
+		// through Dyn.astro, which a cached page does not load.
+		await write("vendor/a.css", `.t { color: rgb(1, 0, 0); }\n`);
+		await write("vendor/dyn.css", `.t { color: rgb(0, 2, 0); }\n`);
+		await write("vendor/z.css", `.t { color: rgb(0, 0, 3); }\n`);
+		await write("vendor/Inner.astro", `---\nimport "./dyn.css";\n---\n<p>inner</p>\n`);
+		await write("vendor/Dyn.astro", `---\nimport Inner from "./Inner.astro";\n---\n<Inner />\n`);
+		await write("vendor/load.js", `export async function load() {\n\treturn (await import("./Dyn.astro")).default;\n}\n`);
+		await write(
+			"src/pages/index.astro",
+			`---\nimport "../../vendor/a.css";\nimport { load } from "../../vendor/load.js";\nimport "../../vendor/z.css";\nconst D = await load();\n---\n<html><head><title>I</title></head><body><D /></body></html>\n`,
+		);
+		await write("src/pages/other.astro", `<html><head><title>Other</title></head><body><h1>Other</h1></body></html>\n`);
+
+		expect(runBuild().status).toBe(0);
+		const css = await linkedCss();
+		expect(css["index.html"]).toContain(".t{color:#010000}.t{color:#000200}.t{color:#000003}");
+
+		await expectWarmEqualsFull(["index.html", "other/index.html"]);
 	});
 });

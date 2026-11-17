@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
+import type { GraphNodeRecord } from "../js-imported-css";
 
 const require_ = createRequire(import.meta.url);
 const { version: PLETIVO_VERSION } = require_("../../package.json") as { version: string };
@@ -20,7 +21,9 @@ const { version: PLETIVO_VERSION } = require_("../../package.json") as { version
 // found in cached HTML by a `<link>` pattern, so the written fragment is kept.
 // Bumped to 8: added per-route `dynamicCss` and the cache-level `virtualCss`. A page
 // cached by version 7 would drop the CSS of modules its render imported dynamically.
-export const CACHE_SCHEMA_VERSION = 8;
+// Bumped to 9: `dynamicCss` became `dynamicGraph`, the graph modules themselves, so a
+// cached page's CSS lands in the same group and order as in a full build.
+export const CACHE_SCHEMA_VERSION = 9;
 
 /** A framework component export an `<astro-island>` hydrates. */
 export interface CachedAstroIsland {
@@ -117,11 +120,11 @@ export interface RouteCacheEntry {
   /** Written by `writeHtml`, like `size`; null when the page has no `</head>`, so no stylesheet reaches it. */
   cssHead: CachedCssHead | null;
   /**
-   * Stylesheets of modules the render imported dynamically. A cached page is
-   * not rendered, so those modules do not load and their CSS is restored from here.
-   * One that exists only in memory has its text in `PletivoCache.virtualCss`.
+   * CSS-graph modules the render reached only through `import()`. A cached page is
+   * not rendered, so those modules do not load and their graph nodes are restored from here.
+   * A stylesheet that exists only in memory has its text in `PletivoCache.virtualCss`.
    */
-  dynamicCss: string[];
+  dynamicGraph: GraphNodeRecord[];
   /**
    * Byte size of the rendered HTML output. Cached so warm builds
    * don't have to stat every cached file just to print the total.
@@ -178,7 +181,7 @@ export interface PletivoCache {
   configHash: string;
   routes: Record<string, RouteCacheEntry>;
   dynamicRoutes: Record<string, DynamicRouteCacheEntry>;
-  /** A compiled framework component's `<style>` text, by its in-memory stylesheet path, once for every route listing it in `dynamicCss`. */
+  /** A compiled framework component's `<style>` text, by its in-memory stylesheet path, once for every route listing it in `dynamicGraph`. */
   virtualCss: Record<string, string>;
   /** Kept when the render cache is invalidated: it describes `dist/`, which survives that. */
   routeOutputs: RouteOutputs | null;
@@ -300,7 +303,9 @@ export class CacheStore {
         this.dirty = true;
       }
     }
-    const listed = new Set(Object.values(this.data.routes).flatMap((entry) => entry.dynamicCss));
+    const listed = new Set(
+      Object.values(this.data.routes).flatMap((entry) => entry.dynamicGraph.flatMap((node) => node.items.filter((item) => item.type === "css").map((item) => item.file))),
+    );
     for (const file of Object.keys(this.data.virtualCss)) {
       if (!listed.has(file)) {
         delete this.data.virtualCss[file];

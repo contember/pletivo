@@ -9,7 +9,7 @@ import {
   collectPageModuleCss,
   configureJsImportedCss,
   getJsImportedCssOutput,
-  restoreDynamicCss,
+  restoreDynamicGraph,
   setVirtualCss,
 } from "../../packages/pletivo/src/js-imported-css";
 
@@ -77,29 +77,49 @@ describe("JS-imported CSS collection", () => {
     expect(await getJsImportedCssOutput()).toBe("");
   });
 
-  describe("CSS restored for a page taken from the incremental cache", () => {
+  describe("graph modules restored for a page taken from the incremental cache", () => {
+    const css = (file: string) => ({ type: "css" as const, file, dynamic: false });
+
     test("ships a recorded stylesheet and the stored text of an in-memory one", async () => {
       await write("vendor/dyn.css", `.dyn-restored { color: red; }`);
-      const stored = new Map([[path.join(root, "src/Dyn.svelte.pletivo-style.css"), ".svelte-restored{color:blue}"]]);
-      restoreDynamicCss("index::__static__", [path.join(root, "vendor/dyn.css"), ...stored.keys()], (file) => stored.get(file));
-      const css = await getJsImportedCssOutput();
-      expect(css).toContain(".dyn-restored");
-      expect(css).toContain(".svelte-restored");
+      const virtual = path.join(root, "src/Dyn.svelte.pletivo-style.css");
+      const stored = new Map([[virtual, ".svelte-restored{color:blue}"]]);
+      restoreDynamicGraph(
+        [{ file: path.join(root, "src/Dyn.svelte"), items: [css(path.join(root, "vendor/dyn.css")), css(virtual)] }],
+        (file) => stored.get(file),
+      );
+      const out = await getJsImportedCssOutput();
+      expect(out).toContain(".dyn-restored");
+      expect(out).toContain(".svelte-restored");
     });
 
     test("drops a recorded stylesheet deleted since, instead of failing the bundle", async () => {
       await write("vendor/kept.css", `.kept-restored { color: red; }`);
-      restoreDynamicCss("index::__static__", [path.join(root, "vendor/gone.css"), path.join(root, "vendor/kept.css")], () => undefined);
+      restoreDynamicGraph(
+        [{ file: path.join(root, "src/Dyn.svelte"), items: [css(path.join(root, "vendor/gone.css")), css(path.join(root, "vendor/kept.css"))] }],
+        () => undefined,
+      );
       expect(await getJsImportedCssOutput()).toContain(".kept-restored");
     });
 
     test("keeps the text a component compiled this build over the stored one", async () => {
       const file = path.join(root, "src/Dyn.svelte.pletivo-style.css");
       setVirtualCss(file, ".fresh-text{color:blue}");
-      restoreDynamicCss("index::__static__", [file], () => ".stale-text{color:blue}");
-      const css = await getJsImportedCssOutput();
-      expect(css).toContain(".fresh-text");
-      expect(css).not.toContain(".stale-text");
+      restoreDynamicGraph([{ file: path.join(root, "src/Dyn.svelte"), items: [css(file)] }], () => ".stale-text{color:blue}");
+      const out = await getJsImportedCssOutput();
+      expect(out).toContain(".fresh-text");
+      expect(out).not.toContain(".stale-text");
+    });
+
+    test("keeps a module loaded this build over the recorded one", async () => {
+      await write("vendor/fresh.css", `.fresh-node { color: red; }`);
+      await write("vendor/stale.css", `.stale-node { color: red; }`);
+      const module = path.join(root, "src/Dyn.astro");
+      await collectCssSideEffectImports(module, `import "../vendor/fresh.css";`, "astro:Dyn.astro");
+      restoreDynamicGraph([{ file: module, items: [css(path.join(root, "vendor/stale.css"))] }], () => undefined);
+      const out = await getJsImportedCssOutput();
+      expect(out).toContain(".fresh-node");
+      expect(out).not.toContain(".stale-node");
     });
   });
 });
