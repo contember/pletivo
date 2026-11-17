@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import { scanRoutes } from "./router";
 import { matchRoute, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
+import { escapeStyleEnd } from "@pletivo/core/inline-style";
 import { initCollections, getValidationFailures, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry } from "@pletivo/runtime/island";
 import { runInPage, runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
@@ -1712,11 +1713,6 @@ function renderCssHead(base: string, stylesheets: Stylesheet[], pageCss: string)
       : `<style>${escapeStyleEnd(sheet.content)}</style>\n`;
   }
   return out;
-}
-
-/** `</style` would end the element early; esbuild prints it as `<\/style`, as Astro's default build emits. */
-function escapeStyleEnd(css: string): string {
-  return css.replace(/<\/(style)/gi, "<\\/$1");
 }
 
 /**

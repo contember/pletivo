@@ -114,7 +114,7 @@ describe("finalizeHtml", () => {
     expect(html.match(/<style>/g)).toHaveLength(1);
     expect(html.match(/<\/style>/gi)).toHaveLength(1);
     expect(html).not.toContain("</StYlE><script>");
-    expect(html).toContain("\\3C /style><script>");
+    expect(html).toContain("<\\/StYlE><script>");
   });
 
   test("inserts CSS and scripts verbatim, `$` replacement patterns included", () => {
