@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, hashString } from "../../packages/pletivo/src/incremental/cache";
+import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, hashString, paramsToKey } from "../../packages/pletivo/src/incremental/cache";
 
 let tmp = "";
 
@@ -77,6 +77,48 @@ describe("CacheStore", () => {
 		expect(s.routeKeys().sort()).toEqual(["a", "c"]);
 	});
 
+});
+
+describe("paramsToKey", () => {
+	it("treats an undefined, a missing and an empty param as the same param set", () => {
+		expect(paramsToKey({ page: undefined })).toBe(paramsToKey({}));
+		expect(paramsToKey({ page: "" })).toBe(paramsToKey({}));
+		expect(paramsToKey({ lang: "en", page: undefined })).toBe(paramsToKey({ lang: "en" }));
+	});
+
+	it("keeps param sets with different values or names apart", () => {
+		const keys = [
+			paramsToKey({}),
+			paramsToKey({ page: "2" }),
+			paramsToKey({ page: "3" }),
+			paramsToKey({ slug: "2" }),
+			paramsToKey({ lang: "en" }),
+			paramsToKey({ lang: "en", page: "2" }),
+			paramsToKey({ lang: "de", page: "2" }),
+			paramsToKey({ page: "a/b" }),
+		];
+		expect(new Set(keys).size).toBe(keys.length);
+	});
+
+	it("ignores param order", () => {
+		expect(paramsToKey({ lang: "en", page: "2" })).toBe(paramsToKey({ page: "2", lang: "en" }));
+	});
+
+	it("matches every cached param set to its fresh getStaticPaths entry after persist / load", async () => {
+		const fresh: Array<{ params: Record<string, string | undefined> }> = [
+			{ params: { page: undefined } },
+			{ params: { page: "2" } },
+			{ params: { lang: "en", page: undefined } },
+			{ params: { lang: "en", page: "2" } },
+			{ params: { slug: "" } },
+		];
+		const s1 = await CacheStore.load(tmp, "c1");
+		s1.setDynamicRoute("blog/[...page].astro", { paramSets: fresh, depFingerprints: {} });
+		await s1.persist();
+
+		const restored = (await CacheStore.load(tmp, "c1")).getDynamicRoute("blog/[...page].astro");
+		expect(restored?.paramSets.map((p) => paramsToKey(p.params))).toEqual(fresh.map((p) => paramsToKey(p.params)));
+	});
 });
 
 describe("fingerprintFile / canReuseFingerprint", () => {
