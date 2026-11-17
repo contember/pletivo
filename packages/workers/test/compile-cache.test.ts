@@ -421,7 +421,7 @@ describe("compressHTML and the scope id", () => {
 
 describe("createCompileCache, the bound", () => {
   function entryOf(source: string, code: string | null = null): CompiledFile {
-    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null, scripts: [], annotated: false, scopedStyleStrategy: undefined, compressHTML: undefined, globs: [] };
+    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null, scripts: [], annotated: false, scopedStyleStrategy: undefined, compressHTML: undefined, trailingSlash: undefined, globs: [] };
   }
 
   function retained(entry: CompiledFile, maxBytes: number): boolean {

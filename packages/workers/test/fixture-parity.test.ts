@@ -88,11 +88,12 @@ describe("byte parity with pletivo build", () => {
     "the Markdown-layout fixture renders each .md page inside its layout the same way",
     async () => {
       const { ok, output } = await localParity("packages/workers/test/fixture-md-layout");
-      // Two pages inside a layout (named relatively and from the project root), with its
-      // scoped style and its component's, and one page with no layout. An imported
-      // stylesheet and a hoisted script are delivered differently by design (docs/todos/016).
-      expect(output).toContain("3/3 byte-identical");
-      expect(output).toContain("= 3 enumerated path(s)");
+      // Pages inside a layout named relatively, from the project root and as a package (it
+      // reaches the isolate only if prepare vendors it), with its scoped style and its
+      // component's, and one page with no layout. An imported stylesheet and a hoisted
+      // script are delivered differently by design (docs/todos/016).
+      expect(output).toContain("4/4 byte-identical");
+      expect(output).toContain("= 4 enumerated path(s)");
       expect(ok).toBe(true);
     },
     60_000,

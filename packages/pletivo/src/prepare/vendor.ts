@@ -33,6 +33,8 @@ export interface ProjectImportSource {
   source: string;
   /** Processed `<script>` bodies of an `.astro` file, which run in the browser. */
   scripts?: readonly string[];
+  /** Bare specifiers the file's compiled module imports beyond its source's own: an `.md` page's layout. */
+  imports?: readonly string[];
 }
 
 export interface FrozenVirtualSource {
@@ -135,6 +137,16 @@ export async function prepareModuleGraph(
       extensionOf(project.file) === ".css",
       project.source,
     );
+    for (const specifier of project.imports ?? []) {
+      queue.push({
+        importer: project.id,
+        importerFile: project.file,
+        resolveFrom: path.dirname(project.file),
+        relativeViaVite: false,
+        stylesheet: false,
+        specifier,
+      });
+    }
   }
 
   for (const specifier of configImports) {

@@ -5,6 +5,7 @@
  */
 
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import type { ArtifactTrailingSlash } from "@pletivo/core/artifact";
 import { BoundedLru } from "./bounded-lru.ts";
 import type { ImportMetaGlob } from "./compile/import-meta-glob.ts";
 import type { ModuleKind } from "./compile/module-kind.ts";
@@ -43,6 +44,8 @@ export interface CompiledFile {
   scopedStyleStrategy: ScopedStyleStrategy | undefined;
   /** The `.astro` `compact` it compiled with; `undefined` for every other kind. */
   compressHTML: boolean | undefined;
+  /** The `trailingSlash` a `.md` module's `url` was built with; `undefined` for every other kind. */
+  trailingSlash: ArtifactTrailingSlash | undefined;
   /** `import.meta.glob` calls, replaced by placeholders in `code`; linking expands them. */
   globs: readonly ImportMetaGlob[];
 }

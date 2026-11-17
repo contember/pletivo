@@ -599,6 +599,15 @@ describe("createProjectHost", () => {
       expect((await get(never, "/")).status).toBe(404);
     });
 
+    test("gives a .md page's layout the url in the trailingSlash form", async () => {
+      const files = {
+        "src/layouts/Post.astro": "---\nconst { url } = Astro.props;\n---\n<p>url={url}</p><slot />\n",
+        "src/pages/post.md": "---\nlayout: ../layouts/Post.astro\n---\n\nx\n",
+      };
+      expect((await get(routingHost({ trailingSlash: "always" }, files), "/post/")).body).toContain("url=/post/");
+      expect((await get(routingHost({}, files), "/post")).body).toContain("url=/post<");
+    });
+
     test("answers config redirects, filling the destination's params", async () => {
       const host = routingHost(
         {

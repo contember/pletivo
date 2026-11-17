@@ -61,6 +61,7 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
           annotateSourceFile: options.annotateSourceFile === true,
           scopedStyleStrategy: options.artifact?.prepared.artifact.config.scopedStyleStrategy,
           compressHTML: options.artifact?.prepared.artifact.config.compressHTML,
+          trailingSlash: options.artifact?.prepared.artifact.config.trailingSlash,
         });
         await linkModule(walk, resolver, module, compiled);
       }

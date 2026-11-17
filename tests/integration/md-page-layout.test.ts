@@ -111,6 +111,18 @@ describe(".md page with layout: frontmatter", () => {
     expect(css.indexOf("color:rgb(7,8,9)")).toBeLessThan(css.indexOf("color:rgb(1,2,3)"));
   });
 
+  test("keeps that order when an .astro page imports the .md", async () => {
+    const root = await fixtureWithout(MDX_PAGE);
+    await fs.writeFile(
+      path.join(root, "src/pages/wrapped.astro"),
+      '---\nimport { Content } from "./about.md";\n---\n<Content />\n',
+    );
+    await build(root, config);
+    const css = await pageCss(root, await built(root, "wrapped"));
+    expect(css.indexOf("color:rgb(7,8,9)")).toBeGreaterThan(-1);
+    expect(css.indexOf("color:rgb(7,8,9)")).toBeLessThan(css.indexOf("color:rgb(1,2,3)"));
+  });
+
   test("links a package stylesheet its layout imports on its page only", async () => {
     const root = await fixtureWithout(MDX_PAGE);
     for (const [name, color] of [["md-theme", "rgb(11, 11, 11)"], ["other-theme", "rgb(12, 12, 12)"]]) {
@@ -177,6 +189,23 @@ describe(".md page with layout: frontmatter", () => {
     const root = await fixtureWithout(MDX_PAGE);
     await fs.writeFile(path.join(root, "src/pages/bad.md"), "---\nlayout: 3\n---\n\nBody.\n");
     await expect(build(root, config)).rejects.toThrow("src/pages/bad.md: `layout:` in frontmatter must be a path");
+  });
+
+  test("gives the layout the url in the trailingSlash form", async () => {
+    const root = await fixtureWithout(MDX_PAGE);
+    await fs.writeFile(path.join(root, "astro.config.mjs"), 'export default { trailingSlash: "always" };\n');
+    await build(root, config);
+    expect(await built(root, "about")).toContain('data-url="/about/"');
+  });
+
+  test("an import with ?raw gets the file's text, not the module", async () => {
+    const root = await fixtureWithout(MDX_PAGE);
+    await fs.writeFile(
+      path.join(root, "src/pages/source.astro"),
+      '---\nimport text from "./about.md?raw";\n---\n<pre>{text.trim()}</pre>\n',
+    );
+    await build(root, config);
+    expect(await built(root, "source")).toContain("<pre>---\ntitle: About\nlayout: ../layouts/Base.astro\n---");
   });
 
   test("prepare accepts it", async () => {

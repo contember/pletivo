@@ -211,7 +211,8 @@ function walkable(file: string): boolean {
   const ext = path.extname(file).toLowerCase();
   // A `.astro` file is worth following wherever it lives — packages ship
   // components. Nothing else under node_modules can reach a project component.
-  if (ext === ".astro") return true;
+  // A `.md` module imports its layout; its loader records that edge.
+  if (ext === ".astro" || ext === ".md") return true;
   if (!(ext in LOADERS)) return false;
   if (file.includes(`${path.sep}node_modules${path.sep}`)) return false;
   if (file.startsWith(ownSrcDir + path.sep)) return false;

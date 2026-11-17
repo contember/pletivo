@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { markdownModule } from "../../packages/core/src/content/markdown-module";
+import { cacheBustImports } from "../../packages/pletivo/src/md-plugin";
 
 function compile(source: string, file: string, root = ""): string {
   return markdownModule({ source, file, label: file, root, base: "/", runtime: "runtime", markdown: "markdown" });
@@ -36,10 +37,25 @@ describe("markdownModule", () => {
     expect(line(compile("x\n", "src/content/a.md"), "export const url")).toBe("export const url = undefined;");
   });
 
+  test("ends a page's url with / under trailingSlash: always, except the root's empty one", () => {
+    const always = (file: string) =>
+      markdownModule({ source: "x\n", file, label: file, root: "", base: "/", trailingSlash: "always", runtime: "r", markdown: "m" });
+    expect(line(always("src/pages/docs/a.md"), "export const url")).toBe('export const url = "/docs/a/";');
+    expect(line(always("src/pages/index.md"), "export const url")).toBe('export const url = "";');
+  });
+
   test("keeps import.meta.env in the Markdown as text", () => {
     const code = compile("Use `import.meta.env.SITE`.\n", "src/pages/a.md");
     expect(code).not.toContain("import.meta.env");
     expect(code).toContain("import\\u002Emeta.env.SITE");
+  });
+
+  test("dev cache busting versions the layout import and leaves an import shown in the Markdown alone", () => {
+    const code = compile("---\nlayout: ../layouts/Post.astro\n---\n\nRun `import './example.js'`.\n", "src/pages/a.md");
+    const busted = cacheBustImports(code, 4);
+    expect(line(busted, "import $$Layout")).toBe('import $$Layout from "../layouts/Post.astro?v=4";');
+    expect(line(busted, "const $$body")).toBe(line(code, "const $$body"));
+    expect(line(code, "const $$body")).toContain("import './example.js'");
   });
 
   test("names the file when layout: is not a path", () => {

@@ -240,7 +240,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
-  configureMdModules(projectRoot, config.base);
+  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash);
   configureJsImportedCss(projectRoot, config.srcDir);
   // Before any project module loads: the renderers decide how its framework components compile.
   // Rewired after a failed astro:config:setup recovers, which may register renderers.

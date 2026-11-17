@@ -28,6 +28,8 @@ import { freezeMarkdown } from "./markdown";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
 import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
+import { markdownLayoutOf } from "@pletivo/core/content/markdown-module";
+import { isRouteFile } from "@pletivo/core/router";
 import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
 import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
@@ -132,14 +134,33 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
     const file = path.join(physicalBase, rel);
     const source = await Bun.file(file).text();
     const scripts = rel.endsWith(".astro") ? await processedScripts(file, source) : [];
+    const imports = markdownPageImports(rel, source);
     sources.push({
       id: `project:${projectPath}`,
       file,
       source,
       ...(scripts.length > 0 ? { scripts } : {}),
+      ...(imports.length > 0 ? { imports } : {}),
     });
   }
   return sources.sort((left, right) => compareStrings(left.id, right.id));
+}
+
+/**
+ * A `.md` page's module imports its `layout:` (`markdownModule`). A layout named as a
+ * package is vendored like any import; a project one is carried as a source. Only a
+ * route is certain to be compiled: elsewhere a `layout` field may be plain data. An
+ * invalid `layout:` is named when the page compiles.
+ */
+function markdownPageImports(rel: string, source: string): string[] {
+  if (!rel.endsWith(".md") || !rel.startsWith("pages/") || !isRouteFile(rel.slice("pages/".length))) return [];
+  let layout: string | null;
+  try {
+    layout = markdownLayoutOf(source, rel);
+  } catch {
+    return [];
+  }
+  return layout === null || layout.startsWith(".") || layout.startsWith("/") ? [] : [layout];
 }
 
 function unsupportedProjectSemantics(config: PletivoConfig): PrepareDiagnostic[] {

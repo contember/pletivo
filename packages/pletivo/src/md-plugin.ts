@@ -17,11 +17,11 @@ import { collectCssSideEffectImports } from "./js-imported-css";
 const markdownContentPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "markdown-content.ts");
 
 let registered = false;
-let settings: { projectRoot: string; base: string } | null = null;
+let settings: { projectRoot: string; base: string; trailingSlash: string | undefined } | null = null;
 
 /** The project a `.md` module's root-relative `layout:` and its `url` are read against. */
-export function configureMdModules(projectRoot: string, base: string): void {
-  settings = { projectRoot, base };
+export function configureMdModules(projectRoot: string, base: string, trailingSlash: string | undefined): void {
+  settings = { projectRoot, base, trailingSlash };
 }
 
 export async function registerMdPlugin(): Promise<void> {
@@ -32,15 +32,26 @@ export async function registerMdPlugin(): Promise<void> {
     setup(build) {
       build.onLoad({ filter: /\.md(\?.*)?$/ }, async (args) => {
         const file = stripQuery(args.path);
-        const code = compileMdModule(await Bun.file(file).text(), file);
+        const source = await Bun.file(file).text();
+        // Vite's `?raw` / `?inline`: the file's text, not the compiled module.
+        if (/\?(raw|inline)\b/.test(args.path)) return { contents: `export default ${JSON.stringify(source)};`, loader: "js" };
+        const code = compileMdModule(source, file);
         // The layout is an import, so the CSS walks follow it from the page as from an `.astro` page.
         recordAstroImports(file, code);
         const relative = path.relative(settings?.projectRoot ?? process.cwd(), file);
         await collectCssSideEffectImports(file, code, `md:${relative}`);
-        return { contents: applyDevCacheBust(code, getDevVersion()), loader: "js" };
+        return { contents: cacheBustImports(code, getDevVersion()), loader: "js" };
       });
     },
   });
+}
+
+/** Dev cache busting on the import lines only: the Markdown, a string literal, may show an import as text. */
+export function cacheBustImports(code: string, version: number): string {
+  return code
+    .split("\n")
+    .map((line) => (line.startsWith("import ") ? applyDevCacheBust(line, version) : line))
+    .join("\n");
 }
 
 /** The module Bun loads for the `.md` file at `file`. */
@@ -52,6 +63,7 @@ export function compileMdModule(source: string, file: string): string {
     label: path.relative(projectRoot, file),
     root: projectRoot,
     base: settings?.base ?? "/",
+    trailingSlash: settings?.trailingSlash,
     runtime: markdownContentPath,
     markdown: markdownContentPath,
   });
