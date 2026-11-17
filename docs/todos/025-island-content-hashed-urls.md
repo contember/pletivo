@@ -13,7 +13,7 @@ In an Astro project, `pletivo build` emits island entries under `_astro/`:
 - `client.<hash>.js` per renderer, hashed from the renderer name;
 - `before-hydration.<hash>.js`, hashed from the joined script source.
 
-See `createIslandClientUrls` in `packages/pletivo/src/astro-islands-bundle.ts`.
+See `createIslandClientUrls` in `packages/core/src/island-urls.ts`, which both hosts use.
 The entry module imports the component by that same relative specifier, so a
 checkout's location changes neither an entry's name nor its bytes, as long as
 the build runs from the project root, as the CLI does: Bun names a shared
