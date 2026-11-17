@@ -44,12 +44,16 @@ directive scripts, and the same `component-url`, `renderer-url` and `uid`.
 The JavaScript at every island URL a Workers render emits, served by the host.
 
 - **Which components get a client module.** Prepare renders no page, so it takes what the
-  `.astro` sources hydrate: it compiles each with the Astro compiler and the Bun host's
+  `.astro` files hydrate: the sources, the project's own outside `srcDir` (a layout beside it,
+  outside `node_modules` and dot directories) and the package `.astro` components the vendor
+  graph carries. It compiles each with the Astro compiler and the Bun host's
   `resolvePath` (`resolveComponentPath`), and reads `hydratedComponents` and
   `clientOnlyComponents`. A `component-url` hashes the import **as spelled**
   (`../components/Counter`, `.jsx` falling back to `.tsx`, a directory for an `index`), so the
   entry set is (spelling, export) pairs, not files. Enumerating every export of every claimed
   file instead names URLs no page asks for: both measured projects import without extensions.
+  Every hydration found is built, an unused `.astro` file's too; one that fails names the
+  `.astro` files that asked for it.
 - **The same bundler.** `buildAstroIslands` (`astro-islands-bundle.ts`) is `pletivo build`'s
   island bundler, in memory: same compilers (client target), Bun.build options, Vite plugins.
   Its entries are sorted by URL on both hosts. Bun names cross-chunk exports in entry order, and
@@ -61,15 +65,19 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   `MissingIslandClientError`, naming the missing URL and asking for a new prepare
   (`packages/workers/test/island-clients.test.ts`). A framework component's own edit needed a new
   prepare already.
-- **Artifact.** `islands.clients`: each module's `url` (`/_astro/<file>.js`), `source`, the
-  client `imports` it loads and the project `sources` it was bundled from. Required, and parsed
-  strictly: unique URLs, and every import another client module, so the graph closes where the
-  artifact enters. `ARTIFACT_VERSION` stays 2: a W1 host refuses the unknown field, this host the
+- **Artifact.** `islands.clients`: each module's `url` (`/_astro/<file>.js`), `source`, whether
+  it is a content-named `chunk`, the client `imports` it loads and the project `sources` it was
+  bundled from. Required, and parsed strictly: unique URLs, and every listed import another
+  client module, so the listed graph closes where the artifact enters. The parser checks the
+  list, not the `source`; prepare derives the list from the code, failing on an import outside
+  the client bundle. `ARTIFACT_VERSION` stays 2: a W1 host refuses the unknown field, this host the
   missing one. The client build's project reads are digested before it reads them, as the server
   bundle's are, so an edit racing prepare reads as stale.
-- **Serving.** `island-clients.ts`, after the browser modules and before `public/`. A
-  `chunk-<hash>.js` is content-named and `immutable`; every other client module is named by its
-  path (025) and goes out `no-cache`, as it changes under its URL with the next prepare.
+- **Serving.** `island-clients.ts`, after the browser modules and before `public/`. A module Bun
+  emitted as a chunk (`chunk: true`) is content-named and `immutable`; every other client module
+  is named by its path (025), a component file called `chunk-list.jsx` included, and goes out
+  `no-cache` with an `ETag` of its source, as it changes under its URL with the next prepare. A
+  matching `If-None-Match` gets 304.
 - **Tailwind (016's remaining hole).** A page's islands, their imports and the project files
   those were bundled from: those files' current text joins the page's candidates. That is what
   the Bun host's scan reads, the project's sources and no `node_modules`; the bundle text would
@@ -99,13 +107,22 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   - a component importing a package stylesheet, or a stylesheet with a query;
   - a `.svelte` or `.vue` component from a package that has a `<style>`: its compiled CSS
     would sit beside it in `node_modules`, which is not a project file;
-  - a non-JS asset (an image import in a component);
+  - a non-JS asset (an image import in a component), naming the importing component and the
+    file, from the server bundle or, when only the browser conditions reach it, the client
+    bundle: the artifact carries JavaScript client modules only. `pletivo build` writes such an
+    asset byte for byte;
+  - a hydrated component whose island module name would start with `.` (a `.Counter.jsx`),
+    which the host does not serve, naming the `.astro` file that hydrates it;
   - a Node built-in other than `node:async_hooks` and `node:crypto`, bare or `node:`,
     static or dynamic, naming the importing file. The render isolate runs under
     `nodejs_compat`, which provides both; Svelte's server runtime imports both. Those two
     are refused too by their bare names and through `require()`. Only a string-literal
     specifier is seen: a computed `import()` of a built-in reaches the isolate unchecked;
   - a base other than `/` and `before-hydration` scripts (prepare already refused both).
+- **Bun 1.3.14 crashes** (segfault) when any `onLoad` hook, a pass-through one too, matches a
+  file it emits as an asset. The prepare and island bundlers' read trackers therefore match only
+  the extensions Bun loads as source or text plus the framework compilers', so the asset reaches
+  the named refusal above.
 - **`client:component-path` from MDX** is not rewritten; MDX does not compile in the
   isolate yet.
 - **Shared helpers are two instances.** A project module only components import is
