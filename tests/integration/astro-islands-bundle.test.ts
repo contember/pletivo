@@ -22,7 +22,9 @@ const reactLabel = { componentPath: path.join(components, "ReactCounter.jsx"), e
 const reactNamespace = { componentPath: path.join(components, "frameworks.js"), exportName: "react.Counter" };
 const svelteCounter = { componentPath: path.join(components, "Counter.svelte"), exportName: "default" };
 const vueCounter = { componentPath: path.join(components, "Counter.vue"), exportName: "default" };
-const islands: AstroIslandComponent[] = [preactCounter, reactCounter, reactLabel, reactNamespace, svelteCounter, vueCounter];
+// A bare import stays a package specifier, as Astro's `resolvePath` leaves it.
+const packageExport = { componentPath: "preact", exportName: "h" };
+const islands: AstroIslandComponent[] = [preactCounter, reactCounter, reactLabel, reactNamespace, svelteCounter, vueCounter, packageExport];
 
 const renderers: AstroRendererEntry[] = [
   { name: "@astrojs/preact", serverEntrypoint: "@astrojs/preact/server.js", clientEntrypoint: "@astrojs/preact/client.js" },
@@ -92,42 +94,52 @@ const beforeHydrationScripts = [
 ];
 
 describe("createIslandClientUrls", () => {
+  const projectRoot = "/srv/site";
+
   test("names a component after its file and a renderer `client`, under the base's _astro/", () => {
-    const urls = createIslandClientUrls({ base: "/docs" });
+    const urls = createIslandClientUrls({ projectRoot, base: "/docs" });
     expect(urls.component("/srv/site/src/Counter.jsx", "default")).toMatch(/^\/docs\/_astro\/Counter\.[\w-]{8}\.js$/);
     expect(urls.component("/srv/site/src/Counter", "default")).toMatch(/^\/docs\/_astro\/Counter\.[\w-]{8}\.js$/);
     expect(urls.renderer("@astrojs/react")).toMatch(/^\/docs\/_astro\/client\.[\w-]{8}\.js$/);
     expect(urls.renderer("@astrojs/svelte")).toMatch(/^\/docs\/_astro\/client\.svelte\.[\w-]{8}\.js$/);
-    expect(createIslandClientUrls({ base: "/" }).renderer("@astrojs/react")).toMatch(/^\/_astro\/client\.[\w-]{8}\.js$/);
+    expect(createIslandClientUrls({ projectRoot, base: "/" }).renderer("@astrojs/react")).toMatch(/^\/_astro\/client\.[\w-]{8}\.js$/);
   });
 
   test("the same inputs give the same URLs", () => {
-    const a = createIslandClientUrls({ base: "/docs" });
-    const b = createIslandClientUrls({ base: "/docs/" });
+    const a = createIslandClientUrls({ projectRoot, base: "/docs" });
+    const b = createIslandClientUrls({ projectRoot, base: "/docs/" });
     expect(a.component("/srv/site/src/Counter.jsx", "Counter")).toBe(b.component("/srv/site/src/Counter.jsx", "Counter"));
     expect(a.renderer("@astrojs/preact")).toBe(b.renderer("@astrojs/preact"));
   });
 
   test("gives a before-hydration URL only when there are scripts", () => {
-    expect(createIslandClientUrls({ base: "/docs" }).beforeHydration).toBeNull();
-    expect(createIslandClientUrls({ base: "/docs", beforeHydrationScripts: [] }).beforeHydration).toBeNull();
-    const url = createIslandClientUrls({ base: "/docs", beforeHydrationScripts: ["a()"] }).beforeHydration;
+    expect(createIslandClientUrls({ projectRoot, base: "/docs" }).beforeHydration).toBeNull();
+    expect(createIslandClientUrls({ projectRoot, base: "/docs", beforeHydrationScripts: [] }).beforeHydration).toBeNull();
+    const url = createIslandClientUrls({ projectRoot, base: "/docs", beforeHydrationScripts: ["a()"] }).beforeHydration;
     expect(url).toMatch(/^\/docs\/_astro\/before-hydration\.[\w-]{8}\.js$/);
-    expect(createIslandClientUrls({ base: "/docs", beforeHydrationScripts: ["a()"] }).beforeHydration).toBe(url);
-    expect(createIslandClientUrls({ base: "/docs", beforeHydrationScripts: ["b()"] }).beforeHydration).not.toBe(url);
+    expect(createIslandClientUrls({ projectRoot, base: "/docs", beforeHydrationScripts: ["a()"] }).beforeHydration).toBe(url);
+    expect(createIslandClientUrls({ projectRoot, base: "/docs", beforeHydrationScripts: ["b()"] }).beforeHydration).not.toBe(url);
   });
 
   test("different inputs give different URLs", () => {
-    const urls = createIslandClientUrls({ base: "/" });
+    const urls = createIslandClientUrls({ projectRoot, base: "/" });
     const file = "/srv/site/src/Counter.jsx";
     expect(urls.component(file, "A")).not.toBe(urls.component(file, "B"));
     expect(urls.component(file, "default")).not.toBe(urls.component("/srv/site/other/Counter.jsx", "default"));
     expect(urls.renderer("@astrojs/preact")).not.toBe(urls.renderer("@astrojs/react"));
   });
+
+  test("a component's URL does not depend on where the project is", () => {
+    const a = createIslandClientUrls({ projectRoot, base: "/" });
+    const b = createIslandClientUrls({ projectRoot: "/home/ci/checkouts/site-b", base: "/" });
+    expect(a.component("/srv/site/src/Counter.jsx", "default")).toBe(
+      b.component("/home/ci/checkouts/site-b/src/Counter.jsx", "default"),
+    );
+  });
 });
 
 describe("bundleAstroIslands", () => {
-  const urls = createIslandClientUrls({ base, beforeHydrationScripts });
+  const urls = createIslandClientUrls({ projectRoot: root, base, beforeHydrationScripts });
   const compileTargets: FrameworkCompileTarget[] = [];
   let distDir: string;
 
@@ -177,6 +189,11 @@ describe("bundleAstroIslands", () => {
     const namespaced = await load(urls.component(reactNamespace.componentPath, reactNamespace.exportName));
     const react = namespaced.react;
     expect(typeof react === "object" && react !== null && "Counter" in react && typeof react.Counter).toBe("function");
+  });
+
+  test("a component imported from a package resolves from the project's packages", async () => {
+    const mod = await load(urls.component(packageExport.componentPath, packageExport.exportName));
+    expect(typeof mod.h).toBe("function");
   });
 
   test("each renderer module default-exports its client hydrator", async () => {

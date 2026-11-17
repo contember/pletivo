@@ -7,13 +7,18 @@
 ## The gap
 
 In an Astro project, `pletivo build` emits island entries under `_astro/`:
-- `<Name>.<hash>.js`, one per hydrated component, hashed from the component path and the export name;
+- `<Name>.<hash>.js`, one per hydrated component, hashed from the component's
+  path relative to the project root (POSIX separators; a package specifier as
+  written) and the export name;
 - `client.<hash>.js` per renderer, hashed from the renderer name;
 - `before-hydration.<hash>.js`, hashed from the joined script source.
 
 See `createIslandClientUrls` in `packages/pletivo/src/astro-islands-bundle.ts`.
-None of them is hashed from the bundled code. The render needs the URLs, so they
-are fixed before the bundle exists. Chunks shared
+The entry module imports the component by that same relative specifier, so a
+checkout's location changes neither an entry's name nor its bytes. A component
+outside the checkout, reached through `../` segments, still gets a name that
+depends on the checkout's depth. None of them is hashed from the bundled code.
+The render needs the URLs, so they are fixed before the bundle exists. Chunks shared
 between entries are content-hashed by Bun (`chunk-<hash>.js`).
 
 Hoisted scripts have the same gap. `_astro/hoisted-<hash>.js` hashes the path
@@ -42,6 +47,25 @@ Checked on 2026-11-17:
 Either one changing would make the risk real. Until this is fixed, the README
 tells hosts to serve every `/_astro/*.js` except `chunk-<hash>.js` with `no-cache`. A CDN purge alone
 cannot evict a browser's `immutable` copy.
+
+## Island `uid` follows the checkout's location, as in Astro
+
+The `uid` of an `<astro-island>` hashes its `client:component-path`, which is
+absolute for a component imported by a relative path. So the same project built
+from two checkouts gives its islands different `uid`s. Astro 5.16.11 does the same:
+- ``astroId = shorthash(`<!--${metadata.componentExport!.value}:${metadata.componentUrl}-->…`)``,
+  `packages/astro/src/runtime/server/render/component.ts:333-338`;
+- `componentUrl` is the `client:component-path` value,
+  `packages/astro/src/runtime/server/hydration.ts:61-62`;
+- the compiler fills that attribute through `resolvePath`,
+  `packages/astro/src/core/compile/compile.ts:69-70`;
+- `resolvePath` makes a relative specifier absolute,
+  `packages/astro/src/core/viteUtils.ts:19-22`.
+
+pletivo keeps that formula byte for byte on purpose
+(`packages/runtime/src/astro-islands/render.ts`), for parity with Astro.
+`tests/integration/reproducible-build.test.ts` masks only the `uid` attribute
+when it compares two checkouts.
 
 ## When to come back
 
