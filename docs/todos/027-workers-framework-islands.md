@@ -36,7 +36,8 @@ directive scripts, and the same `component-url`, `renderer-url` and `uid`.
   that project file. A Svelte/Vue component's compiled CSS becomes a virtual project
   stylesheet beside the component (`Counter.vue.pletivo-style.css`, the Bun host's name),
   so its own `@import` and `url()` resolve against the project like any other CSS.
-  Editing a component's script or template needs a new prepare.
+  Editing a component's script or template needs a new prepare: every project file the
+  bundle compiled is a prepare input, so a stale bundle is reported like a stale config.
 
 ## What is left
 
@@ -49,13 +50,20 @@ directive scripts, and the same `component-url`, `renderer-url` and `uid`.
   components carry CSS do not compare byte-for-byte; the markup outside the head
   `<style>` does. A `url()` in such CSS is left relative to the page here, which is a
   real broken image, not only a byte difference.
-- **Refused by name at prepare:** a component importing a package stylesheet, a
-  stylesheet with a query, or a non-JS asset (an image import in a component); a base
-  other than `/` and `before-hydration` scripts (prepare already refused both).
+- **Refused by name at prepare:**
+  - a component importing a package stylesheet, or a stylesheet with a query;
+  - a `.svelte` or `.vue` component from a package that has a `<style>`: its compiled CSS
+    would sit beside it in `node_modules`, which is not a project file;
+  - a non-JS asset (an image import in a component);
+  - a Node built-in other than `node:async_hooks` and `node:crypto`, bare or `node:`,
+    static or dynamic, naming the importing file. The render isolate runs under
+    `nodejs_compat`, which provides both; Svelte's server runtime imports both;
+  - a base other than `/` and `before-hydration` scripts (prepare already refused both).
 - **`client:component-path` from MDX** is not rewritten; MDX does not compile in the
   isolate yet.
-- **Shared helpers are two instances.** A plain module a component and an `.astro` page
-  both import is bundled into the islands bundle and compiled live for the page, so
-  module state is not shared between them.
+- **Shared helpers are two instances.** A project module only components import is
+  bundled and kept out of the vendor graph. One a live module imports too is bundled and
+  also compiled live, so module state is not shared between the two; when its imports
+  cannot be carried for the live copy, prepare refuses it by name.
 - **`tests/fixture-astro-renderers-preact`** cannot be prepared: its endpoint imports
   `astro/container`, which reaches `node:path`, and this host has no endpoint routes.
