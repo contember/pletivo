@@ -124,37 +124,42 @@ export function createHtmlNormalizer(
       const css = url === null ? null : readBundle(url);
       return css === null ? tag : `<style>${css}</style>`;
     });
-    // Names the tool that built the page.
-    text = text.replace(/(<meta name="generator" content=")[^"]*"/g, '$1[generator]"');
-    // Bundled asset URLs: the directory and hash are bundler output, and so is the
-    // name of a CSS or JS chunk. An image or font keeps its name. Ordinals keep
-    // distinct files distinct (srcset widths, two chunks).
-    text = text.replace(HASHED_URL, (url: string, dir: string, name: string, ext: string) => {
-      if (!isBundle(dir, ext)) return url;
-      return /^(css|m?js)$/.test(ext)
-        ? `/[bundle]/${ordinal(ext, url)}.${ext}`
-        : `/[asset]/${name}~${ordinal(`${name}.${ext}`, url)}.${ext}`;
-    });
-    // Scope ids hash the component path and the compiler version; ordinals keep
-    // the element ↔ selector link checkable. `data-astro-template` is not one.
-    text = text.replace(/data-astro-cid-([a-z0-9]{8})/g, (_m, id: string) => `data-astro-cid-c${ordinal("cid", id)}`);
-    text = text.replace(/(?<![\w-])astro-([a-z0-9]{8})(?![\w-])/g, (_m, id: string) => `astro-s${ordinal("scope", id)}`);
     // Page CSS is compared as one sheet, after the markup: where a `<style>` sits and how
-    // the CSS is split into sheets do not change the cascade. Minifiers spell equal CSS
-    // differently (`0.25em` / `.25em`, `white` / `#fff`): every sheet goes through the
-    // same one, then `canonicalPageCss` (see css.ts).
+    // the CSS is split into sheets do not change the cascade. Taken out first, so the
+    // ordinals below number the markup's values before the CSS's, whose rule order differs.
     const sheets: string[] = [];
     text = text.replace(PAGE_STYLE, (_m, css: string) => {
       sheets.push(css);
       return "";
     });
+    // Names the tool that built the page.
+    text = text.replace(/(<meta name="generator" content=")[^"]*"/g, '$1[generator]"');
+    const ordinals = (part: string): string =>
+      part
+        // Bundled asset URLs: the directory and hash are bundler output, and so is the
+        // name of a CSS or JS chunk. An image or font keeps its name. Ordinals keep
+        // distinct files distinct (srcset widths, two chunks).
+        .replace(HASHED_URL, (url: string, dir: string, name: string, ext: string) => {
+          if (!isBundle(dir, ext)) return url;
+          return /^(css|m?js)$/.test(ext)
+            ? `/[bundle]/${ordinal(ext, url)}.${ext}`
+            : `/[asset]/${name}~${ordinal(`${name}.${ext}`, url)}.${ext}`;
+        })
+        // Scope ids hash the component path and the compiler version; ordinals keep
+        // the element ↔ selector link checkable. `data-astro-template` is not one.
+        .replace(/data-astro-cid-([a-z0-9]{8})/g, (_m, id: string) => `data-astro-cid-c${ordinal("cid", id)}`)
+        .replace(/(?<![\w-])astro-([a-z0-9]{8})(?![\w-])/g, (_m, id: string) => `astro-s${ordinal("scope", id)}`);
+    text = ordinals(text);
+    const pageCss = sheets.map(ordinals);
     // A `<style>` with attributes is not page CSS this rule knows; it stays, minified, in place.
     text = await replaceAsync(text, /(<style[^>]*>)([\s\S]*?)(<\/style>)/g, async (open, css, close) => `${open}${await canonicalCss(css)}${close}`);
     text = normalizeVoidElements(text);
     text = normalizeAttributeSpelling(text);
     text = collapseWhitespace(text);
-    if (sheets.length > 0) {
-      const minified = await Promise.all(sheets.map((css) => canonicalCss(css)));
+    if (pageCss.length > 0) {
+      // Minifiers spell equal CSS differently (`0.25em` / `.25em`, `white` / `#fff`): every
+      // sheet goes through the same one, then `canonicalPageCss` (see css.ts).
+      const minified = await Promise.all(pageCss.map((css) => canonicalCss(css)));
       text += `\n<style>\n${canonicalPageCss(minified).join("\n")}\n</style>`;
     }
     return text;

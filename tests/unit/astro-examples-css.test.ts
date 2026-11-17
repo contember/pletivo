@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canonicalPageCss, normalizeValue, parseCss, propertyFamilies } from "../astro-examples/css";
+import { canonicalPageCss, normalizeValue, parseCss, propertyFamilies, selectorListSpecificity } from "../astro-examples/css";
 import { createHtmlNormalizer, pletivoBundle, astroBundle } from "../astro-examples/compare";
 
 const same = (a: string[], b: string[]) => expect(canonicalPageCss(a)).toEqual(canonicalPageCss(b));
@@ -30,8 +30,19 @@ describe("canonicalPageCss: what it erases", () => {
     same([".c{display:grid;font-size:2em;margin-top:2em}"], [".c{margin-top:2em;font-size:2em;display:grid}"]);
   });
 
+  test("the order of independent properties whose names share a logical alias", () => {
+    same(["a{width:1px;height:1px}"], ["a{height:1px;width:1px}"]);
+    same(["a{font-size:1em;line-height:2}"], ["a{line-height:2;font-size:1em}"]);
+  });
+
   test("the order of rules that share no property family", () => {
     same(["html,body{margin:0}.message{text-align:center}"], [".message{text-align:center}html,body{margin:0}"]);
+  });
+
+  test("the order of rules that cannot tie: other specificity, importance or scope", () => {
+    same(["strong,b{font-weight:700}a.active{font-weight:bolder}"], ["a.active{font-weight:bolder}strong,b{font-weight:700}"]);
+    same(["a{color:red!important}a{color:blue}"], ["a{color:blue}a{color:red!important}"]);
+    same(["@font-face{font-family:x}body{font-family:y}"], ["body{font-family:y}@font-face{font-family:x}"]);
   });
 
   test("how the CSS is split into sheets", () => {
@@ -61,11 +72,24 @@ describe("canonicalPageCss: what it keeps", () => {
     differ(["a{margin:0}b{margin-top:1px}"], ["b{margin-top:1px}a{margin:0}"]);
     differ(["a{place-items:center;align-items:start}"], ["a{align-items:start;place-items:center}"]);
     differ(["a{font:12px x;line-height:2}"], ["a{line-height:2;font:12px x}"]);
+    differ(["a{inline-size:1px;width:2px}"], ["a{width:2px;inline-size:1px}"]);
+    differ(["a{inset:0;top:1px}"], ["a{top:1px;inset:0}"]);
+    differ(["a{gap:0;row-gap:1px}"], ["a{row-gap:1px;gap:0}"]);
+    differ(["a{word-wrap:normal;overflow-wrap:anywhere}"], ["a{overflow-wrap:anywhere;word-wrap:normal}"]);
   });
 
   test("the order of two rules setting one property", () => {
     differ([".a{color:red}.b{color:blue}"], [".b{color:blue}.a{color:red}"]);
     differ([".a{--x:1}.b{--x:2}"], [".b{--x:2}.a{--x:1}"]);
+  });
+
+  test("the order of rules that can tie on specificity", () => {
+    differ(["a.x{color:red}b.y{color:blue}"], ["b.y{color:blue}a.x{color:red}"]);
+    differ([".x,#y{color:red}#z{color:blue}"], ["#z{color:blue}.x,#y{color:red}"]);
+    differ([":is(.x,#y){color:red}#z{color:blue}"], ["#z{color:blue}:is(.x,#y){color:red}"]);
+    differ([":nth-child(2 of .x){color:red}.a.b{color:blue}"], [".a.b{color:blue}:nth-child(2 of .x){color:red}"]);
+    differ(["@media (x){.a{color:red}}.b{color:blue}"], [".b{color:blue}@media (x){.a{color:red}}"]);
+    differ(["@font-face{font-family:x;src:url(a)}@font-face{font-family:x;src:url(b)}"], ["@font-face{font-family:x;src:url(b)}@font-face{font-family:x;src:url(a)}"]);
   });
 
   test("the order of vendor-prefixed fallbacks", () => {
@@ -81,6 +105,21 @@ describe("canonicalPageCss: what it keeps", () => {
     differ(["a{color:red}"], ["a{color:blue}"]);
     differ(["html{font-family:system-ui}"], ["html{font-family:system-ui,sans-serif}"]);
     differ([":root{--x:a b}"], [":root{--x:ab}"]);
+  });
+});
+
+describe("selectorListSpecificity", () => {
+  test("scores ids, classes, attributes, pseudo-classes, types and pseudo-elements", () => {
+    expect(selectorListSpecificity("#a .b[c]:hover p::before")).toEqual(new Set(["1,3,2"]));
+    expect(selectorListSpecificity("a:before,*")).toEqual(new Set(["0,0,2", "0,0,0"]));
+    expect(selectorListSpecificity(":where(#a) .b")).toEqual(new Set(["0,1,0"]));
+    expect(selectorListSpecificity(":not(#a,.b) c")).toEqual(new Set(["1,0,1"]));
+  });
+
+  test("gives up on what it does not score", () => {
+    expect(selectorListSpecificity(".a\\:b")).toBeNull();
+    expect(selectorListSpecificity("li:nth-child(2 of .x)")).toBeNull();
+    expect(selectorListSpecificity("::slotted(p)")).toBeNull();
   });
 });
 
