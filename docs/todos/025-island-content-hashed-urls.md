@@ -28,18 +28,26 @@ or fails to hydrate the island if the chunks it imports are gone.
 
 A deploy that changes none of that code is unaffected.
 
-**The risk is unverified.** No site is known to combine pletivo islands with
-`immutable` caching of `/_astro/*`. Until this is fixed, the README tells hosts
-to serve every `/_astro/*.js` except `chunk-*.js` with `no-cache`. A CDN purge alone
+**The risk is unverified.** No site is known to combine pletivo-built islands, or
+hoisted scripts that import modules, with `immutable` caching of `/_astro/*`.
+Checked on 2026-11-17:
+- a production site built by `pletivo build` sets no cache rule for `/_astro/*`;
+- a production site that serves `/_astro/*` as `immutable` builds with Astro.
+
+Either one changing would make the risk real. Until this is fixed, the README
+tells hosts to serve every `/_astro/*.js` except `chunk-<hash>.js` with `no-cache`. A CDN purge alone
 cannot evict a browser's `immutable` copy.
 
 ## When to come back
 
 When a site has framework islands or hoisted scripts built by pletivo *and*
 serves `/_astro/*` as `immutable` (or needs to). Hoisted scripts look cheaper
-(not probed): the build already rewrites their tags in the written pages after
-bundling them, since it inlines small ones, so a content hash may need only that
-rewrite plus the same `--incremental` refresh.
+(not probed):
+- the build bundles them before writing pages, and already rewrites their tags in
+  the rendered HTML (`inlineHoistedScripts`, which inlines small ones);
+- so a content hash may need only that rewrite, the same `--incremental` refresh
+  for cached pages, and a rewrite of endpoint output, which is written verbatim
+  today.
 
 ## Option A: bundle before the render
 

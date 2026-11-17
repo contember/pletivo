@@ -49,7 +49,7 @@ In an Astro project, only some JavaScript under `/_astro/` is named by content:
 
 | files under `/_astro/` | named by | cache as |
 |---|---|---|
-| `chunk-*.js` (code shared between islands) | content | `immutable` is safe |
+| `chunk-<hash>.js` with an 8-character hash, e.g. `chunk-e677st6c.js` (code shared between islands); match `^chunk-[a-z0-9]{8}\.js$`, not `chunk-*`, which also catches an island named `chunk-…` | content | `immutable` is safe |
 | non-JS files (images, `?url` imports) | content | `immutable` is safe |
 | every other `*.js`: island entries (`<Name>.<hash>.js`, `client.<hash>.js`, `before-hydration.<hash>.js`) and hoisted scripts (`hoisted-<hash>.js`) | the component path, the renderer name or the inline script source, not the bundled code | `Cache-Control: no-cache`, or a short `max-age` |
 
