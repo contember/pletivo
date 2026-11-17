@@ -37,7 +37,7 @@ Pletivo compiles `.astro` files using `@astrojs/compiler` and renders them with 
 - Content collections with Zod schemas, `getCollection()`, `getEntry()`, `reference()`
 - `getStaticPaths()` for dynamic routes
 - `.md` pages in `src/pages/`
-- a file or directory under `src/pages/` whose name starts with `_` is not a route, as in Astro (pletivo-native projects too)
+- A file or directory under `src/pages/` whose name starts with `_` is not a route, as in Astro (pletivo-native projects too)
 - `<script>` and `<script is:inline>` tags
 - Tailwind CSS v4 pipeline
 - Astro integrations via Vite host shim
