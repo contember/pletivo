@@ -462,11 +462,13 @@ export async function registerAstroPlugin(): Promise<void> {
         }
 
         if (result.scripts && result.scripts.length > 0) {
+          // Project-relative and POSIX, so a checkout's location does not change the script's URL.
+          const hashPath = rel.split(path.sep).join(path.posix.sep);
           for (let i = 0; i < result.scripts.length; i++) {
             const s = result.scripts[i];
             if (s.type === "inline") {
               const code = stripTypes(s.code);
-              const hash = Bun.hash(`${cleanPath}\0${i}\0${code}`)
+              const hash = Bun.hash(`${hashPath}\0${i}\0${code}`)
                 .toString(16)
                 .padStart(16, "0");
               setHoistedScript(hoistedScriptId(rel, i), {
