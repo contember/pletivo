@@ -363,11 +363,11 @@ describe("a project without an Astro config", () => {
 
 describe("incremental build", () => {
   /** Runs the CLI build and returns its stdout; a failed build throws with its stderr. */
-  function runBuild(root: string, incremental = true): string {
+  function runBuild(root: string, incremental = true, env: Record<string, string> = {}): string {
     const result = spawnSync("bun", ["run", cliPath, "build", ...(incremental ? ["--incremental"] : [])], {
       cwd: root,
       encoding: "utf8",
-      env: { ...process.env, NODE_ENV: "production" },
+      env: { ...process.env, NODE_ENV: "production", ...env },
     });
     if (result.status !== 0) throw new Error(`build exited with ${result.status}:\n${result.stderr}`);
     return result.stdout;
@@ -467,9 +467,9 @@ describe("incremental build", () => {
     expect((await emittedSheets(root)).size).toBe(0);
     await expectSameAsFullBuild(root);
 
-    // A third build with nothing changed leaves the refreshed markup alone.
+    // A third build with nothing changed finds the swapped markup recorded and leaves it alone.
     const html = await fs.readFile(path.join(root, "dist/about/index.html"), "utf8");
-    runBuild(root);
+    expect(runBuild(root)).toContain("0 rendered + 2 cached");
     expect(await fs.readFile(path.join(root, "dist/about/index.html"), "utf8")).toBe(html);
   });
 
@@ -534,18 +534,53 @@ export default { ${build}integrations: [{ name: "rewrite", hooks: { "astro:build
       await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v2 { color: blue; }\n");
       expect(runBuild(root)).toMatch(aboutCached);
       await expectSameAsFullBuild(root);
+      expect(runBuild(root)).toContain("0 rendered + 2 cached");
     });
 
     test(`a page whose stylesheet markup a hook rewrote otherwise stays cached, then renders again for a new sheet (${label})`, async () => {
-      const root = await hookProject(build, `html.replace(/<style>/g, '<style nonce="n">')`);
+      // A dynamic route's slug is rendered again from its params.
+      const root = await hookProject(build, `html.replace(/<style>/g, '<style nonce="n">')`, {
+        "src/pages/blog/[slug].astro": `---\nexport function getStaticPaths() {\n  return [{ params: { slug: "post" }, props: { title: "Post" } }];\n}\nconst { title } = Astro.props;\n---\n<html><head><title>{title}</title><style is:global>.post-page{color:navy}</style></head><body><h1>{title}</h1></body></html>\n`,
+      });
       runBuild(root);
       expect(await fs.readFile(path.join(root, "dist/about/index.html"), "utf8")).toContain('<style nonce="n">');
       // Nothing changed, so the markup is not looked for.
-      expect(runBuild(root)).toContain("0 rendered + 2 cached");
-      expect(runBuild(root)).toContain("0 rendered + 2 cached");
+      expect(runBuild(root)).toContain("0 rendered + 3 cached");
+      expect(runBuild(root)).toContain("0 rendered + 3 cached");
 
       await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v2 { color: blue; }\n");
-      expect(runBuild(root)).not.toMatch(aboutCached);
+      const stdout = runBuild(root);
+      expect(stdout).not.toMatch(aboutCached);
+      expect(stdout).toMatch(/blog\/\[slug\]\.astro \[post\] → dist\/blog\/post\/index\.html \([^)]*\)\n/);
+      expect(await fs.readFile(path.join(root, "dist/blog/post/index.html"), "utf8")).toContain("<h1>Post</h1>");
+      await expectSameAsFullBuild(root);
+    });
+  }
+
+  for (const [label, interrupt] of [
+    ["a plain build", (root: string) => runBuild(root, false)],
+    [
+      "an incremental build that did not finish",
+      (root: string) => expect(() => runBuild(root, true, { FAIL_DONE: "1" })).toThrow("build:done gave up"),
+    ],
+  ] as const) {
+    test(`after ${label} changed dist, the next incremental build does not trust the cache`, async () => {
+      const root = await project({
+        "astro.config.mjs": `export default { integrations: [{ name: "fail", hooks: { "astro:build:done": () => {\n  if (process.env.FAIL_DONE) { console.error("build:done gave up"); process.exit(1); }\n} } }] };\n`,
+        "vendor/hoisted.css": ".hoisted-v1 { color: red; }\n",
+        "src/scripts/entry.js": entryScript(`import "../../vendor/hoisted.css";\n`),
+        "src/pages/index.astro": indexPage,
+        "src/pages/about.astro": aboutPage,
+      });
+      runBuild(root);
+      await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v2 { color: blue; }\n");
+      interrupt(root);
+      expect(styles(await sheetsOf(root, "about/index.html")).join("")).toContain(".hoisted-v2");
+
+      // Back to the sources the cache last recorded.
+      await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v1 { color: red; }\n");
+      runBuild(root);
+      expect(styles(await sheetsOf(root, "about/index.html")).join("")).toContain(".hoisted-v1");
       await expectSameAsFullBuild(root);
     });
   }

@@ -226,6 +226,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // Incremental is opt-in: a plain build is a full rebuild. `clean`
   // implies incremental — you only wipe the cache to rebuild it fresh.
   const incremental = options.incremental || options.clean;
+  if (!incremental) await CacheStore.discard(projectRoot);
   const cache: CacheStore | null = !incremental
     ? null
     : options.clean
@@ -1025,12 +1026,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // global bundle) to avoid cross-page leaks from unscoped rules like
   // `:global()` selectors or `body` styles.
   //
-  // Cached pages skip writeHtml() entirely — their fully-processed HTML
-  // is already on disk in dist (restored from the prior snapshot at
-  // the top of build()). Re-running writeHtml on them would inject CSS
-  // / hydration scripts a second time. We still account for their
-  // file size in the summary and pass their HTML downstream to the
-  // island/hoisted-script scanners.
+  // Cached pages skip writeHtml() — their HTML is already in dist, and running
+  // it again would inject CSS / hydration scripts twice. Only their stylesheet
+  // markup is refreshed; one that can't be swapped in place is rendered again below.
+  if (cache) await cache.markWriting();
   let totalSize = 0;
   let cachedCount = 0;
   let renderedCount = 0;

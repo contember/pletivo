@@ -161,6 +161,9 @@ export interface PletivoCache {
   dynamicRoutes: Record<string, DynamicRouteCacheEntry>;
 }
 
+/** Present while a build writes `dist/`; `persist()` removes it. */
+const WRITING_MARKER = "writing";
+
 /**
  * On-disk cache backing pletivo's incremental build. Persists to
  * `node_modules/.pletivo/cache/cache.json`. Tracks per-route dep fingerprints,
@@ -191,6 +194,10 @@ export class CacheStore {
 
     const cachePath = path.join(dir, "cache.json");
     try {
+      // A build that changed `dist/` and didn't persist left the cache describing an older `dist/`.
+      if (await fs.stat(path.join(dir, WRITING_MARKER)).then(() => true, () => false)) {
+        return new CacheStore(dir, empty);
+      }
       const raw = await fs.readFile(cachePath, "utf8");
       const parsed = JSON.parse(raw) as PletivoCache;
       if (
@@ -210,6 +217,11 @@ export class CacheStore {
       // No cache, corrupt cache, or version mismatch — fall through to empty.
     }
     return new CacheStore(dir, empty);
+  }
+
+  /** A build without the cache rewrites `dist/`, so the cache no longer describes it. */
+  static async discard(projectRoot: string): Promise<void> {
+    await fs.rm(cacheDir(projectRoot), { recursive: true, force: true });
   }
 
   static async forceClean(projectRoot: string, configHash: string): Promise<CacheStore> {
@@ -282,15 +294,26 @@ export class CacheStore {
     this.invalidated = true;
   }
 
+  /**
+   * Call before writing `dist/`. Until `persist()` succeeds, the next load starts empty: an interrupted build may
+   * have changed pages the cache records as unchanged. A marker, so a no-op warm build still skips the JSON write.
+   */
+  async markWriting(): Promise<void> {
+    await fs.mkdir(this.dir, { recursive: true });
+    await fs.writeFile(path.join(this.dir, WRITING_MARKER), "");
+  }
+
   async persist(): Promise<void> {
     if (this.invalidated) return;
-    if (!this.dirty) return;
-    await fs.mkdir(this.dir, { recursive: true });
-    await fs.writeFile(
-      path.join(this.dir, "cache.json"),
-      JSON.stringify(this.data, null, 2),
-    );
-    this.dirty = false;
+    if (this.dirty) {
+      await fs.mkdir(this.dir, { recursive: true });
+      await fs.writeFile(
+        path.join(this.dir, "cache.json"),
+        JSON.stringify(this.data, null, 2),
+      );
+      this.dirty = false;
+    }
+    await fs.rm(path.join(this.dir, WRITING_MARKER), { force: true });
   }
 
 }

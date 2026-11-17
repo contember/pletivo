@@ -151,8 +151,9 @@ export async function runIncrementalRender(req: RenderRequest): Promise<RenderOu
 		// disk from the previous build. We don't even read it — the
 		// next build pass needs only metadata (island/hoisted lists,
 		// renderedModules for CSS, fragment refs for replay, the CSS
-		// head markup to compare), all of which we persisted last time. Existence check is either a
-		// O(1) lookup against the prebuilt inventory or a stat fallback.
+		// head markup to compare), all of which we persisted last time.
+		// Existence check is either a O(1) lookup against the prebuilt
+		// inventory or a stat fallback.
 		const exists = req.distFiles
 			? req.distFiles.has(cached.outPath)
 			: await fileExists(path.join(req.distDir, cached.outPath));
