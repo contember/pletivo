@@ -258,3 +258,112 @@ export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Pr
     if (output.path.endsWith(".css")) await fs.rm(output.path, { force: true });
   }
 }
+
+// ── PROBE: bundle before the render, URLs from the bundle output (content-hashed) ──
+
+export interface PrebundledIslandUrls {
+  /** `componentPath\0exportName` → URL. */
+  components: Map<string, string>;
+  renderers: Map<string, string>;
+  beforeHydration: string | null;
+}
+
+export function islandKey(componentPath: string, exportName: string): string {
+  return `${componentPath}\0${exportName}`;
+}
+
+const ENTRY_DIR = "__pletivo_island_entries__";
+
+export async function prebundleAstroIslands(options: BundleAstroIslandsOptions): Promise<PrebundledIslandUrls> {
+  const prefix = astroUrlPrefix(options.base);
+  const modules = new Map<string, string>();
+  const labels = new Map<string, string>();
+  const entryOf = new Map<string, { kind: "component" | "renderer" | "before-hydration"; key: string }>();
+  let n = 0;
+  // One directory per entry, so `[name]` stays the plain component name, as Vite's is.
+  const addEntry = (name: string, source: string, label: string, kind: "component" | "renderer" | "before-hydration", key: string) => {
+    const entryPath = path.join(options.projectRoot, ENTRY_DIR, String(n++), `${safeName(name)}.js`);
+    modules.set(entryPath, source);
+    labels.set(entryPath, label);
+    entryOf.set(entryPath, { kind, key });
+  };
+  for (const { componentPath, exportName } of options.components) {
+    addEntry(
+      path.basename(componentPath, path.extname(componentPath)),
+      componentEntrySource(componentPath, exportName),
+      `island entry for export "${exportName}" of ${componentPath}`,
+      "component",
+      islandKey(componentPath, exportName),
+    );
+  }
+  for (const renderer of options.renderers) {
+    if (renderer.clientEntrypoint === null) continue;
+    addEntry(
+      renderer.name === "@astrojs/svelte" ? "client.svelte" : "client",
+      `export { default } from ${JSON.stringify(renderer.clientEntrypoint)};\n`,
+      `client entry of renderer ${renderer.name}`,
+      "renderer",
+      renderer.name,
+    );
+  }
+  const beforeHydration = beforeHydrationSource(options.beforeHydrationScripts);
+  if (beforeHydration !== null) addEntry("before-hydration", beforeHydration, "before-hydration scripts", "before-hydration", "");
+
+  const urls: PrebundledIslandUrls = { components: new Map(), renderers: new Map(), beforeHydration: null };
+  if (modules.size === 0) return urls;
+  const outdir = path.join(options.distDir, ASTRO_DIR);
+  const result = await Bun.build({
+    entrypoints: [...modules.keys()],
+    root: options.projectRoot,
+    outdir,
+    naming: { entry: "[name].[hash].[ext]" },
+    splitting: true,
+    format: "esm",
+    target: "browser",
+    minify: true,
+    metafile: true,
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    throw: false,
+    plugins: [
+      inMemoryPlugin(options.projectRoot, modules, options.virtualModule, labels),
+      preactPlugin(options.projectRoot),
+      frameworkCompilePlugin({ compilers: options.compilers, target: "client", loadedByRuntime: false, onCss() {} }),
+    ],
+  });
+  if (!result.success) throw new Error(`Astro island bundling failed:\n${formatBuildLogs(result.logs, labels)}`);
+  if (!result.metafile) throw new Error("PROBE: no metafile");
+  for (const [outPath, entryPoint] of metafileEntryPoints(result.metafile)) {
+    const entry = entryOf.get(path.resolve(options.projectRoot, entryPoint));
+    // A shared chunk names the module it was split from as its entry point; an entry's CSS names the entry.
+    if (!entry || !outPath.endsWith(".js")) continue;
+    const url = prefix + path.basename(outPath);
+    if (entry.kind === "component") urls.components.set(entry.key, url);
+    else if (entry.kind === "renderer") urls.renderers.set(entry.key, url);
+    else urls.beforeHydration = url;
+  }
+  if (urls.renderers.size !== options.renderers.filter((r) => r.clientEntrypoint !== null).length) {
+    throw new Error(`PROBE: ${urls.renderers.size} renderer outputs`);
+  }
+  if (urls.components.size !== options.components.length) {
+    throw new Error(`PROBE: ${urls.components.size} component outputs for ${options.components.length} entries`);
+  }
+  for (const output of result.outputs) {
+    if (output.path.endsWith(".css")) await fs.rm(output.path, { force: true });
+  }
+  return urls;
+}
+
+/** Output path → its entry point, for every entry output in Bun's metafile. */
+function metafileEntryPoints(metafile: string | object): [string, string][] {
+  const meta: unknown = typeof metafile === "string" ? JSON.parse(metafile) : metafile;
+  if (typeof meta !== "object" || meta === null || !("outputs" in meta)) throw new Error("PROBE: metafile without outputs");
+  const outputs = meta.outputs;
+  if (typeof outputs !== "object" || outputs === null) throw new Error("PROBE: metafile outputs not an object");
+  const found: [string, string][] = [];
+  for (const [outPath, out] of Object.entries(outputs)) {
+    if (typeof out === "object" && out !== null && "entryPoint" in out && typeof out.entryPoint === "string") {
+      found.push([outPath, out.entryPoint]);
+    }
+  }
+  return found;
+}

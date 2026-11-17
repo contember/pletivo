@@ -2,6 +2,7 @@
 // `client:*` directive gets the `client:component-*` props the `.astro` compiler adds.
 import type { Transformer } from "unified";
 import { resolveComponentPath } from "./astro-plugin";
+import { addStaticIsland } from "./island-prepass";
 
 type Tree = Parameters<Transformer>[0];
 type File = Parameters<Transformer>[1];
@@ -74,6 +75,8 @@ export function rehypeAstroIslandMetadata(): Transformer {
       if (!file.path) throw new Error(`Cannot resolve the import of <${tagName}> without the MDX file's path`);
       const resolvedPath = resolveComponentPath(matched.path, file.path);
 
+      // PROBE: record for the island pre-bundle.
+      addStaticIsland(file.path, { componentPath: resolvedPath, exportName: exportName(tagName, matched) });
       if (names.includes("client:only")) addClientOnlyMetadata(node, tagName, names, matched, resolvedPath);
       else addClientMetadata(node, tagName, names, matched, resolvedPath);
     });

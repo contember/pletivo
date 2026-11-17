@@ -12,7 +12,7 @@ import type { AstroRendererEntry } from "@pletivo/core/astro-host/renderers";
 import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 import { configureAstroIslands } from "@pletivo/runtime/astro-islands/index";
 import type { IslandClientUrls, IslandScripts, LoadedRenderer, RendererServer } from "@pletivo/runtime/astro-islands/types";
-import { bundleAstroIslands, createIslandClientUrls, type AstroIslandComponent, type VirtualModuleSource } from "./astro-islands-bundle";
+import { bundleAstroIslands, createIslandClientUrls, islandKey, prebundleAstroIslands, type AstroIslandComponent, type PrebundledIslandUrls, type VirtualModuleSource } from "./astro-islands-bundle";
 import { resolveViteId, serveViteVirtualImports, tryLoadViteId } from "./astro-host/vite-plugins";
 import { frameworkCompilePlugin, loadFrameworkCompilers } from "./framework-compile";
 import { configureRegisteredRenderers } from "./framework-components";
@@ -46,6 +46,10 @@ export interface AstroRenderers {
   componentsIn(html: string): AstroIslandComponent[];
   /** Components a page hydrates that this build did not render: one restored from the incremental cache. */
   addHydratedComponents(components: readonly AstroIslandComponent[]): void;
+  /** PROBE: bundle `components` now; later renders take their URLs from the output. */
+  prebundle(distDir: string, components: readonly AstroIslandComponent[]): Promise<void>;
+  /** PROBE: hydrated components the pre-bundle did not cover; they got path-based URLs. */
+  missedComponents(): AstroIslandComponent[];
 }
 
 /** An island's `component-url`, which names one component export (`createIslandClientUrls`). */
@@ -87,14 +91,18 @@ export async function setupAstroRenderers(options: SetupAstroRenderersOptions): 
     if (!hydrated.has(key)) hydrated.set(key, { componentPath: component.componentPath, exportName: component.exportName });
   };
   const urls = createIslandClientUrls({ base: options.base, beforeHydrationScripts: options.beforeHydrationScripts });
+  let prebundled: PrebundledIslandUrls | null = null;
+  const missed = new Map<string, AstroIslandComponent>();
   const recordingUrls: IslandClientUrls = {
     component(componentPath, exportName) {
-      const url = urls.component(componentPath, exportName);
+      const hashed = prebundled?.components.get(islandKey(componentPath, exportName));
+      if (prebundled && hashed === undefined) missed.set(islandKey(componentPath, exportName), { componentPath, exportName });
+      const url = hashed ?? urls.component(componentPath, exportName);
       record({ componentPath, exportName });
       byUrl.set(url, { componentPath, exportName });
       return url;
     },
-    renderer: (rendererName) => urls.renderer(rendererName),
+    renderer: (rendererName) => prebundled?.renderers.get(rendererName) ?? urls.renderer(rendererName),
     beforeHydration: urls.beforeHydration,
   };
   configureAstroIslands({ renderers: project.renderers, urls: recordingUrls, scripts: project.scripts });
@@ -118,6 +126,20 @@ export async function setupAstroRenderers(options: SetupAstroRenderersOptions): 
     addHydratedComponents(components) {
       for (const component of components) record(component);
     },
+    async prebundle(distDir, components) {
+      prebundled = await prebundleAstroIslands({
+        projectRoot: project.projectRoot,
+        distDir,
+        base: options.base,
+        beforeHydrationScripts: options.beforeHydrationScripts,
+        components,
+        renderers: project.entries,
+        compilers: project.compilers,
+        virtualModule: loadViteVirtualModule,
+      });
+      recordingUrls.beforeHydration = prebundled.beforeHydration;
+    },
+    missedComponents: () => [...missed.values()],
   };
 }
 

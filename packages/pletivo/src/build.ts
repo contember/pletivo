@@ -16,6 +16,7 @@ import { generateSitemap } from "./sitemap";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { registerProjectSourcePlugin } from "./project-source-plugin";
 import { bundleRenderedIslands, setupAstroRenderers } from "./astro-renderers";
+import { staticIslandFiles, staticIslands } from "./island-prepass";
 import { installImportMetaEnv } from "./import-meta-env";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, inlineHoistedScripts, HOISTED_URL_RE } from "./astro-plugin";
 import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
@@ -622,6 +623,21 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   }
   phase("astro:routes:resolved", tRoutesResolved);
 
+  // PROBE: load every page module, so the compilers report every hydrated component, then bundle before the render.
+  const tPrebundle = performance.now();
+  let prebundledCount = 0;
+  const forcePrepass = process.env.PLETIVO_PROBE_FORCE_PREPASS === "1";
+  if ((astroRenderers || forcePrepass) && process.env.PLETIVO_PROBE_PREBUNDLE !== "0") {
+    await Promise.all(
+      staticRoutes.filter((r) => !r.file.endsWith(".md")).map((r) => import(path.join(pagesDir, r.file))),
+    );
+    const found = staticIslands();
+    prebundledCount = found.length;
+    if (forcePrepass) console.log(`PROBE forced prepass: ${found.length} hydrated components in ${staticIslandFiles().size} compiled .astro/.mdx files`);
+    if (astroRenderers) await astroRenderers.prebundle(distDir, found);
+  }
+  phase("PROBE island prebundle", tPrebundle);
+
   const results: PageResult[] = [];
 
   // Static pages — parallel
@@ -1131,7 +1147,17 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     for (const result of dedupedResults) {
       if (result.source === "cached" && result.astroIslands) astroRenderers.addHydratedComponents(result.astroIslands);
     }
-    await bundleRenderedIslands(astroRenderers, distDir, astroRenderers.hydratedComponents());
+    if (process.env.PLETIVO_PROBE_PREBUNDLE === "0") {
+      await bundleRenderedIslands(astroRenderers, distDir, astroRenderers.hydratedComponents());
+    } else {
+      const missed = astroRenderers.missedComponents();
+      if (missed.length > 0) await bundleRenderedIslands(astroRenderers, distDir, missed);
+      const hydrated = new Set(astroRenderers.hydratedComponents().map((c) => `${c.componentPath}\0${c.exportName}`));
+      const unused = staticIslands().filter((c) => !hydrated.has(`${c.componentPath}\0${c.exportName}`));
+      console.log(`PROBE islands bundled=${prebundledCount} hydrated=${hydrated.size} missed=${missed.length} unused=${unused.length}`);
+      for (const c of unused) console.log(`PROBE unused ${c.componentPath} #${c.exportName}`);
+      for (const c of missed) console.log(`PROBE missed ${c.componentPath} #${c.exportName}`);
+    }
   }
   phase("islands bundling", tBundle);
   clearHoistedScripts();

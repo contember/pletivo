@@ -21,6 +21,7 @@ import { fileURLToPath } from "url";
 import type { BunPlugin } from "bun";
 import { transform, parse } from "@astrojs/compiler";
 import { is } from "@astrojs/compiler/utils";
+import { recordStaticIslands } from "./island-prepass";
 import type { Node } from "@astrojs/compiler/types";
 import { imageUrlFor, probeAndRegisterImage } from "./image";
 import { registerUrlAsset } from "./url-asset";
@@ -428,6 +429,15 @@ export async function registerAstroPlugin(): Promise<void> {
             .join("\n");
           throw new Error(`Astro compiler errors in ${rel}:\n${errors}`);
         }
+
+        // PROBE: the compiler's hydration metadata, for the island pre-bundle.
+        recordStaticIslands(
+          cleanPath,
+          [...result.hydratedComponents, ...result.clientOnlyComponents].map((c) => ({
+            componentPath: decodeURI(c.resolvedPath),
+            exportName: c.exportName,
+          })),
+        );
 
         // Clear this file's previous contributions before re-populating.
         // Without this, entries linger across dev recompiles when the
