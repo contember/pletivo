@@ -27,7 +27,7 @@ import {
 const JSX_EXTENSIONS = new Set([".tsx", ".jsx"]);
 const TSCONFIG_NAMES = ["tsconfig.json", "jsconfig.json"];
 
-interface JsxImportSource {
+export interface JsxImportSource {
   value: string;
   /** Where it was set, for the error. */
   origin: string;
@@ -88,7 +88,7 @@ function jsxImportSourceOf(file: string): JsxImportSource | null {
   return nearestTsconfig(path.dirname(file));
 }
 
-function nearestTsconfig(dir: string): JsxImportSource | null {
+export function nearestTsconfig(dir: string): JsxImportSource | null {
   const memo = tsconfigByDir.get(dir);
   if (memo !== undefined) return memo;
   let found: JsxImportSource | null = null;
