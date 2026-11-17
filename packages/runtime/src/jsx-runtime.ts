@@ -3,7 +3,7 @@ import { pushTsxStyle } from "./render-context";
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
 import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
 import { currentPageResult, renderFrameworkComponent } from "./astro-islands";
-import { hasPletivoClientProp, isNativeComponent, markNativeComponent } from "./astro-islands/native";
+import { isNativeComponent, markNativeComponent } from "./astro-islands/native";
 export { HtmlString };
 
 const VOID_ELEMENTS = new Set([
@@ -243,7 +243,9 @@ function isClientDirectiveKey(key: string): boolean {
 function offerToRenderers(tag: ComponentFn, props: Props): Promise<HtmlString | null> | null {
   // An `.astro` component called from JSX renders itself, joining the page.
   if ("isAstroComponentFactory" in tag && tag.isAstroComponentFactory === true) return null;
-  if (isNativeComponent(tag) || hasPletivoClientProp(props)) return null;
+  if (isNativeComponent(tag)) return null;
+  // pletivo's own island syntax keeps its own path; an object `client` prop is the component's.
+  if (props.client && typeof props.client === "string") return null;
   const result = currentPageResult();
   if (!result) return null;
   return renderFrameworkComponent({

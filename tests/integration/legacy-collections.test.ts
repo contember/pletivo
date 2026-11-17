@@ -9,6 +9,7 @@ import {
 } from "../../packages/pletivo/src/content/collection";
 import { registerMdxPlugin } from "../../packages/pletivo/src/mdx-plugin";
 import { jsx } from "../../packages/pletivo/src/runtime/jsx-runtime";
+import { isNativeComponent } from "@pletivo/runtime/astro-islands/native";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-legacy-collections");
 
@@ -88,6 +89,7 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
     const rendered = await intro?.render();
     expect(rendered?.headings).toEqual([]);
     expect(rendered?.remarkPluginFrontmatter).toEqual({});
+    expect(isNativeComponent(rendered?.Content)).toBe(true);
     const content = await rendered?.Content?.();
     expect(content?.__html).toContain("Welcome</h1>");
   });

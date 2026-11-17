@@ -14,8 +14,3 @@ export function markNativeComponent<T extends object>(component: T): T {
 export function isNativeComponent(value: unknown): boolean {
   return typeof value === "function" && NATIVE_COMPONENT in value;
 }
-
-/** pletivo's own island syntax (`client="load"`), which its own island path renders. */
-export function hasPletivoClientProp(props: Record<string, unknown>): boolean {
-  return "client" in props;
-}

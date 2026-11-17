@@ -8,7 +8,8 @@ import { __resetForTests, initAstroHost, type AstroHost } from "../../packages/p
 import { resolveComponentPath } from "../../packages/pletivo/src/astro-plugin";
 import { frameworkCompilePlugin } from "../../packages/pletivo/src/framework-compile";
 import { configureAstroIslands, renderFrameworkComponent, renderValueToString } from "../../packages/runtime/src/astro-islands";
-import { markNativeComponent } from "../../packages/runtime/src/astro-islands/native";
+import { isNativeComponent, markNativeComponent } from "../../packages/runtime/src/astro-islands/native";
+import { render } from "../../packages/core/src/content/collection";
 import { createHtml } from "../../packages/runtime/src/html-string";
 import { Fragment as ShimFragment, renderComponent, runInPage, type AstroResult } from "../../packages/runtime/src/astro-shim";
 import { Fragment as JsxFragment, jsx } from "../../packages/runtime/src/jsx-runtime";
@@ -209,18 +210,29 @@ describe("the island hook in its callers", () => {
       await expect(renderComponent(result, "Widget", Widget, {}, {})).rejects.toThrow(notImplemented);
       expect(String(await renderComponent(result, "Fragment", ShimFragment, {}, { default: () => "f" }))).toBe("f");
       expect(String(await renderComponent(result, "Content", NativeContent, {}, {}))).toBe("<p>content</p>");
-      expect(String(await renderComponent(result, "Widget", Widget, { client: "load" }, {}))).toBe("<i>w</i>");
+      // `.astro` has no pletivo island syntax: a `client` prop is the component's own.
+      await expect(renderComponent(result, "Widget", Widget, { client: "load" }, {})).rejects.toThrow(notImplemented);
       await runInPage(page, async () => {
         expect(() => jsx(Widget, {})).toThrow(notImplemented);
         expect(String(await jsx(JsxFragment, { children: "j" }))).toBe("j");
         expect(String(await jsx(NativeContent, {}))).toBe("<p>content</p>");
         expect(String(await jsx(Widget, { client: "load" }))).toContain("<pletivo-island");
+        // A provider's `client={queryClient}` is not pletivo's island syntax.
+        expect(() => jsx(Widget, { client: { query: true } })).toThrow(notImplemented);
       });
       // Outside a page there is no result to key renderers on.
       expect(String(await jsx(Widget, {}))).toBe("<i>w</i>");
     } finally {
       configureAstroIslands(null);
     }
+  });
+});
+
+describe("pletivo's own components are marked native", () => {
+  test("the Fragments and an entry's Content", async () => {
+    expect(isNativeComponent(ShimFragment)).toBe(true);
+    expect(isNativeComponent(JsxFragment)).toBe(true);
+    expect(isNativeComponent((await render(null)).Content)).toBe(true);
   });
 });
 

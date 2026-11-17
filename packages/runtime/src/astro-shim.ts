@@ -18,7 +18,7 @@ import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
 import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
 import { bindPageResult, bindRenderValue, renderFrameworkComponent } from "./astro-islands";
-import { hasPletivoClientProp, isNativeComponent, markNativeComponent } from "./astro-islands/native";
+import { isNativeComponent, markNativeComponent } from "./astro-islands/native";
 import {
   getSlotArgs,
   recordRenderedModule,
@@ -660,10 +660,9 @@ export async function renderComponent(
   }
 
   // A framework component, or `client:only` (a null component), once the host registered renderers.
-  const framework =
-    isNativeComponent(Component) || hasPletivoClientProp(props)
-      ? null
-      : renderFrameworkComponent({ source: "astro", result, displayName, Component, props, slots });
+  const framework = isNativeComponent(Component)
+    ? null
+    : renderFrameworkComponent({ source: "astro", result, displayName, Component, props, slots });
   if (framework) {
     const rendered = await framework;
     if (rendered) return rendered;

@@ -14,7 +14,11 @@ import { loadVueCompiler } from "./vue";
 /** Renderers whose components compile through the shared JSX compiler. */
 const JSX_RENDERERS = new Set(["@astrojs/preact", "@astrojs/react", "@astrojs/solid-js"]);
 
-/** Compilers for the project's renderers, in registration order; JSX ones share one compiler. */
+/**
+ * Compilers for the project's renderers, in registration order; JSX ones share one compiler.
+ * On the server target the JSX compiler belongs in `project-source-plugin`, not in
+ * `frameworkCompilePlugin`, which would claim every project `.tsx` before pletivo's loader.
+ */
 export async function loadFrameworkCompilers(
   projectRoot: string,
   renderers: readonly AstroRendererEntry[],
@@ -53,7 +57,8 @@ const FALLBACK_LOADERS: Readonly<Record<string, "js" | "jsx" | "ts" | "tsx">> = 
 /**
  * A Bun plugin that compiles every file whose extension a compiler is offered. Dev's
  * `?v=N` cache-bust query is allowed and stripped. A Bun runtime plugin must return a
- * module, so a file every compiler declines is returned as written, or fails by name.
+ * module, so a file every compiler declines is returned as written, or fails by name:
+ * no later plugin sees it. Pass it the server-target compilers without the JSX one.
  */
 export function frameworkCompilePlugin(options: FrameworkCompilePluginOptions): BunPlugin {
   const extensions = [...new Set(options.compilers.flatMap((c) => c.extensions))];
