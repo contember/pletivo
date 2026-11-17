@@ -57,7 +57,9 @@ directive scripts, and the same `component-url`, `renderer-url` and `uid`.
   - a non-JS asset (an image import in a component);
   - a Node built-in other than `node:async_hooks` and `node:crypto`, bare or `node:`,
     static or dynamic, naming the importing file. The render isolate runs under
-    `nodejs_compat`, which provides both; Svelte's server runtime imports both;
+    `nodejs_compat`, which provides both; Svelte's server runtime imports both. Those two
+    are refused too by their bare names and through `require()`. Only a string-literal
+    specifier is seen: a computed `import()` of a built-in reaches the isolate unchecked;
   - a base other than `/` and `before-hydration` scripts (prepare already refused both).
 - **`client:component-path` from MDX** is not rewritten; MDX does not compile in the
   isolate yet.
