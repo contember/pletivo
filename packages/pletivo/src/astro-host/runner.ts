@@ -41,6 +41,7 @@ import type {
 } from "@pletivo/core/astro-host/types";
 import { createLogger } from "@pletivo/core/astro-host/logger";
 import { isOverridden } from "@pletivo/core/astro-host/overrides";
+import { parseAstroRenderer, type AstroRendererEntry } from "@pletivo/core/astro-host/renderers";
 import { loadAstroConfig } from "./config-loader";
 import {
   captureMdxIntegrationOptions,
@@ -79,6 +80,8 @@ export interface AstroHost {
   injectedPageSsrScripts: string[];
   /** Routes injected via `injectRoute()` during config:setup */
   injectedRoutes: InjectedRoute[];
+  /** Renderers registered via `addRenderer()`, in registration order. */
+  renderers: AstroRendererEntry[];
   /** Ran once on startup (setup + server:setup in dev; setup + config:done in build) */
   ready: Promise<void>;
   /**
@@ -153,6 +156,7 @@ export async function initAstroHost(
   const injectedBeforeHydrationScripts: string[] = [];
   const injectedPageSsrScripts: string[] = [];
   const injectedRoutes: InjectedRoute[] = [];
+  const renderers: AstroRendererEntry[] = [];
   const setupLog: string[] = [];
   const setupErrors: SetupFailure[] = [];
   /** Integrations to re-run, in setup order. Keyed so a repeat failure updates in place. */
@@ -166,6 +170,7 @@ export async function initAstroHost(
     injectedBeforeHydrationScripts,
     injectedPageSsrScripts,
     injectedRoutes,
+    renderers,
     ready: Promise.resolve(),
     setupErrors,
     retryFailedSetup: async () => [],
@@ -210,12 +215,16 @@ export async function initAstroHost(
         return config;
       },
       addRenderer(renderer) {
-        if (dedupe) return;
-        const name =
-          typeof renderer === "object" && renderer !== null && "name" in renderer && typeof renderer.name === "string"
-            ? renderer.name
-            : integration.name;
-        logger.warn(`renderer "${name}" ignored: pletivo does not implement Astro framework renderers`);
+        const parsed = parseAstroRenderer(renderer);
+        if ("error" in parsed) {
+          if (!dedupe) logger.warn(`addRenderer() ignored: ${parsed.error}`);
+          return;
+        }
+        // A retried hook registers again: keep the first registration and its order.
+        if (renderers.some((r) => r.name === parsed.name)) return;
+        renderers.push(parsed);
+        // Recorded for the renderer work in progress; nothing renders through them yet.
+        logger.warn(`renderer "${parsed.name}" ignored: pletivo does not implement Astro framework renderers`);
       },
       addWatchFile() {},
       addClientDirective() {},

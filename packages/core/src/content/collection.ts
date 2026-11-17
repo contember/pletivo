@@ -16,6 +16,7 @@
 import { z } from "zod";
 import { slug as githubSlug } from "github-slugger";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { markNativeComponent } from "@pletivo/runtime/astro-islands/native";
 import { renderMarkdown, parseFrontmatter, parseYamlObject } from "./markdown";
 import type { ImageMetadata } from "../image-service";
 
@@ -909,10 +910,10 @@ export async function render(entry: CollectionEntry | null | undefined): Promise
 }
 
 function astroRenderResult(renderHtml: CollectionEntry["render"] | null): AstroRenderResult {
-  const Content = (props?: { components?: Record<string, unknown> }) => {
+  const Content = markNativeComponent((props?: { components?: Record<string, unknown> }) => {
     if (!renderHtml) return { __html: "" };
     return renderHtml(props?.components).then((result) => ({ __html: result.html }));
-  };
+  });
   return { Content, headings: [], remarkPluginFrontmatter: {} };
 }
 
@@ -943,7 +944,9 @@ function withLegacyRender(entry: InternalCollectionEntry, isMdx: boolean): void 
     const rendered = astroRenderResult(renderHtml);
     return {
       ...rendered,
-      Content: (props) => (props?.components === undefined ? { __html: html() } : rendered.Content(props)),
+      Content: markNativeComponent((props?: { components?: Record<string, unknown> }) =>
+        props?.components === undefined ? { __html: html() } : rendered.Content(props),
+      ),
       get html() {
         return html();
       },

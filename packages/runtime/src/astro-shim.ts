@@ -17,6 +17,8 @@ import { HtmlString, createHtml, isHtmlString, type RawHtml } from "./html-strin
 import { withBase } from "./base";
 import { resolveScriptUrl } from "./script-registry";
 import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
+import { bindPageResult, bindRenderValue, renderFrameworkComponent } from "./astro-islands";
+import { isNativeComponent, markNativeComponent } from "./astro-islands/native";
 import {
   getSlotArgs,
   recordRenderedModule,
@@ -519,6 +521,8 @@ interface PageScope {
   result: AstroResult;
 }
 const pageScopeStorage = new AsyncLocalStorage<PageScope>();
+bindPageResult(() => pageScopeStorage.getStore()?.result);
+bindRenderValue((value) => renderValue(value));
 
 /**
  * Render a page inside its request: every Astro component reached from `fn`
@@ -629,9 +633,6 @@ export async function renderComponent(
 ): Promise<HtmlString> {
   // Astro awaits a component given as a promise, e.g. `import("./G.astro").then((m) => m.default)`.
   if (Component instanceof Promise) Component = await Component;
-  if (Component == null) {
-    return createHtml("");
-  }
 
   // Strip out internal-only keys
   const cleanProps: Record<string, unknown> = {};
@@ -656,6 +657,19 @@ export async function renderComponent(
       slots,
     );
     return rendered;
+  }
+
+  // A framework component, or `client:only` (a null component), once the host registered renderers.
+  const framework = isNativeComponent(Component)
+    ? null
+    : renderFrameworkComponent({ source: "astro", result, displayName, Component, props, slots });
+  if (framework) {
+    const rendered = await framework;
+    if (rendered) return rendered;
+  }
+
+  if (Component == null) {
+    return createHtml("");
   }
 
   // Plain function component (pletivo JSX, or shim Fragment)
@@ -874,7 +888,7 @@ export function unescapeHTML(value: unknown): HtmlString | Promise<HtmlString> {
  * Treated as a regular function component by `renderComponent`: it receives
  * `children` (bridged from slots.default) and returns them raw.
  */
-export async function Fragment(
+export const Fragment = markNativeComponent(async function Fragment(
   props: { children?: unknown; "set:html"?: unknown },
 ): Promise<HtmlString> {
   if (props["set:html"] !== undefined) {
@@ -882,7 +896,7 @@ export async function Fragment(
   }
   if (isHtmlString(props.children)) return props.children;
   return createHtml(await renderValue(props.children));
-}
+});
 
 // ── Page entrypoint helper ──────────────────────────────────────────
 

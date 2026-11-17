@@ -2,6 +2,8 @@ import { renderIslandWrapper, registerIsland } from "./island";
 import { pushTsxStyle } from "./render-context";
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
 import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
+import { currentPageResult, renderFrameworkComponent } from "./astro-islands";
+import { isNativeComponent, markNativeComponent } from "./astro-islands/native";
 export { HtmlString };
 
 const VOID_ELEMENTS = new Set([
@@ -156,27 +158,9 @@ export function jsx(
   props: Props,
 ): HtmlString | Promise<HtmlString> {
   if (typeof tag === "function") {
-    // Island detection: client="load" or client:load syntax
-    const hydrate = getClientDirective(props);
-    if (hydrate) {
-      return renderIsland(tag, props, hydrate);
-    }
-
-    const result = tag(props);
-
-    // Async component support
-    if (result instanceof Promise) {
-      return result.then((resolved) => {
-        if (typeof resolved === "string") return createHtml(escapeHtml(resolved));
-        if (!isHtmlString(resolved)) assertNotForeignElement(resolved, tag.name || undefined);
-        return resolved;
-      });
-    }
-
-    if (typeof result === "string") return createHtml(escapeHtml(result));
-    // A page's root element reaches no later sink: the host only checks it is HTML.
-    if (!isHtmlString(result)) assertNotForeignElement(result, tag.name || undefined);
-    return result;
+    const framework = offerToRenderers(tag, props);
+    if (framework) return framework.then((rendered) => rendered ?? renderFunctionComponent(tag, props));
+    return renderFunctionComponent(tag, props);
   }
 
   // Typed as a string here, but an object (React's `forwardRef`, `memo`) gets this far at runtime.
@@ -215,7 +199,7 @@ export function jsx(
 
 export { jsx as jsxs, jsx as jsxDEV };
 
-export function Fragment(
+export const Fragment = markNativeComponent(function Fragment(
   props: { children?: unknown },
 ): HtmlString | Promise<HtmlString> {
   const inner = renderChildren(props.children);
@@ -223,7 +207,7 @@ export function Fragment(
     return inner.then((resolved) => createHtml(resolved));
   }
   return createHtml(inner);
-}
+});
 
 const CLIENT_DIRECTIVE_KEYS = ["client:load", "client:idle", "client:visible", "client:media", "client:only"] as const;
 
@@ -253,6 +237,49 @@ function getClientDirective(props: Props): string | null {
 /** Check if a prop key is a client directive (to exclude from component props) */
 function isClientDirectiveKey(key: string): boolean {
   return key === "client" || key.startsWith("client:");
+}
+
+/** A component call the configured Astro renderers may claim; `null` when islands are off. */
+function offerToRenderers(tag: ComponentFn, props: Props): Promise<HtmlString | null> | null {
+  // An `.astro` component called from JSX renders itself, joining the page.
+  if ("isAstroComponentFactory" in tag && tag.isAstroComponentFactory === true) return null;
+  if (isNativeComponent(tag)) return null;
+  // pletivo's own island syntax keeps its own path; an object `client` prop is the component's.
+  if (props.client && typeof props.client === "string") return null;
+  const result = currentPageResult();
+  if (!result) return null;
+  return renderFrameworkComponent({
+    source: "jsx",
+    result,
+    displayName: tag.name || "anonymous",
+    Component: tag,
+    props,
+    slots: {},
+  });
+}
+
+function renderFunctionComponent(tag: ComponentFn, props: Props): HtmlString | Promise<HtmlString> {
+  // Island detection: client="load" or client:load syntax
+  const hydrate = getClientDirective(props);
+  if (hydrate) {
+    return renderIsland(tag, props, hydrate);
+  }
+
+  const result = tag(props);
+
+  // Async component support
+  if (result instanceof Promise) {
+    return result.then((resolved) => {
+      if (typeof resolved === "string") return createHtml(escapeHtml(resolved));
+      if (!isHtmlString(resolved)) assertNotForeignElement(resolved, tag.name || undefined);
+      return resolved;
+    });
+  }
+
+  if (typeof result === "string") return createHtml(escapeHtml(result));
+  // A page's root element reaches no later sink: the host only checks it is HTML.
+  if (!isHtmlString(result)) assertNotForeignElement(result, tag.name || undefined);
+  return result;
 }
 
 /**

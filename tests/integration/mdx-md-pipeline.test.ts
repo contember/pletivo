@@ -15,6 +15,7 @@ import {
   captureMdxIntegrationOptions,
 } from "../../packages/pletivo/src/mdx-plugin";
 import { configureMarkdown, parseMarkdown } from "@pletivo/core/content/markdown";
+import { isNativeComponent } from "@pletivo/runtime/astro-islands/native";
 
 // A real remark plugin: rewrites the text "MARK" to "DONE" in the mdast tree.
 const remarkMark = () => (tree: any) => {
@@ -92,7 +93,10 @@ describe(".mdx compilation", () => {
 
     // Import the way the build does — file URL + cache-bust query (the .mdx
     // onLoad filter matches the `?...` suffix).
-    const html = await renderDefault(await import(`${pathToFileURL(file).href}?v=test`));
+    const mod = await import(`${pathToFileURL(file).href}?v=test`);
+    // pletivo renders MDX itself; Astro's renderers never see it.
+    expect(isNativeComponent(mod.default)).toBe(true);
+    const html = await renderDefault(mod);
     expect(html).toContain("DONE"); // remark plugin ran
     expect(html).not.toContain("MARK");
     expect(html).toContain("<table>"); // GFM ran (prepended remark-gfm)

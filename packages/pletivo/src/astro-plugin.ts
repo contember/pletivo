@@ -16,6 +16,7 @@
  */
 
 import path from "path";
+import { existsSync } from "fs";
 import { fileURLToPath } from "url";
 import type { BunPlugin } from "bun";
 import { transform, parse } from "@astrojs/compiler";
@@ -98,6 +99,22 @@ const hoistedBundleCache = new Map<string, Uint8Array<ArrayBuffer>>();
 
 /** Specifier used as the Bun.build entrypoint for hoisted scripts. */
 const HOISTED_PREFIX = "pletivo:hoisted:";
+/**
+ * What the compiler writes as a hydrated component's `client:component-path`: a relative
+ * specifier made absolute against the importing file, `.jsx` falling back to `.tsx`, as
+ * Astro's `resolvePath` does. The island's uid hashes this string.
+ */
+export function resolveComponentPath(specifier: string, importer: string): string {
+  // The compiler also passes its `$$renderScript` ids here; they must stay keyed as `hoistedScriptId` built them.
+  if (!specifier.startsWith(".") || specifier.includes("?astro&type=script")) return specifier;
+  const absolute = path.resolve(path.dirname(importer), specifier).replaceAll("\\", "/");
+  if (absolute.endsWith(".jsx") && !existsSync(absolute)) {
+    const tsx = absolute.slice(0, -4) + ".tsx";
+    if (existsSync(tsx)) return tsx;
+  }
+  return absolute;
+}
+
 /** Public URL path prefix for hoisted-script bundles. */
 export const HOISTED_URL_PATH = "/_astro/hoisted-";
 /** Capture group is the hex hash. Not anchored — works under any base prefix. */
@@ -395,7 +412,7 @@ export async function registerAstroPlugin(): Promise<void> {
           internalURL: shimPath,
           sourcemap: false,
           scopedStyleStrategy,
-          resolvePath: async (specifier) => specifier,
+          resolvePath: async (specifier) => resolveComponentPath(specifier, cleanPath),
         });
 
         if (result.diagnostics?.some((d) => d.severity === 1)) {
