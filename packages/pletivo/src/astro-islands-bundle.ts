@@ -16,6 +16,8 @@ import { preactResolver } from "./islands-bundle";
 const ASTRO_DIR = "_astro";
 
 export interface IslandClientUrlsOptions {
+  /** Absolute. Component entry names hash a component file's path relative to it. */
+  projectRoot: string;
   /** The site's base path, e.g. `/` or `/docs`. */
   base: string;
   /** Contents of the scripts integrations injected at the `before-hydration` stage. */
@@ -24,14 +26,13 @@ export interface IslandClientUrlsOptions {
 
 /** A component export a page hydrates, as `client:component-path` and `client:component-export` name it. */
 export interface AstroIslandComponent {
-  /** Absolute, as the compiler resolved the import; may lack an extension. */
+  /** Absolute, as the compiler resolved a relative import, or a package specifier; may lack an extension. */
   componentPath: string;
   /** `default`, a named export, or a dotted path such as `react.Counter`. */
   exportName: string;
 }
 
 export interface BundleAstroIslandsOptions extends IslandClientUrlsOptions {
-  projectRoot: string;
   distDir: string;
   components: readonly AstroIslandComponent[];
   renderers: readonly AstroRendererEntry[];
@@ -68,9 +69,22 @@ function safeName(name: string): string {
   return name.replace(/[^A-Za-z0-9_.-]/g, "_");
 }
 
-function componentFile(componentPath: string, exportName: string): string {
+/**
+ * A component file as a specifier relative to the project root, with POSIX separators, so a checkout's
+ * location changes no island entry name or byte. A package specifier stays as it is.
+ */
+function portableSpecifier(projectRoot: string, componentPath: string): string {
+  if (!path.isAbsolute(componentPath)) return componentPath;
+  const relative = path.relative(projectRoot, componentPath);
+  // A file on another Windows drive has no relative form.
+  if (path.isAbsolute(relative)) return componentPath;
+  const posix = relative.split(path.sep).join(path.posix.sep);
+  return posix.startsWith("../") ? posix : `./${posix}`;
+}
+
+function componentFile(projectRoot: string, componentPath: string, exportName: string): string {
   const name = safeName(path.basename(componentPath, path.extname(componentPath)));
-  return `${name}.${shortHash(["component", componentPath, exportName])}.js`;
+  return `${name}.${shortHash(["component", portableSpecifier(projectRoot, componentPath), exportName])}.js`;
 }
 
 function rendererFile(rendererName: string): string {
@@ -92,7 +106,7 @@ export function createIslandClientUrls(options: IslandClientUrlsOptions): Island
   const prefix = astroUrlPrefix(options.base);
   const beforeHydration = beforeHydrationSource(options.beforeHydrationScripts);
   return {
-    component: (componentPath, exportName) => prefix + componentFile(componentPath, exportName),
+    component: (componentPath, exportName) => prefix + componentFile(options.projectRoot, componentPath, exportName),
     renderer: (rendererName) => prefix + rendererFile(rendererName),
     beforeHydration: beforeHydration === null ? null : prefix + beforeHydrationFile(beforeHydration),
   };
@@ -100,13 +114,16 @@ export function createIslandClientUrls(options: IslandClientUrlsOptions): Island
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
 
-/** Astro's hydrator reads `mod[exportName]`, or walks a dotted path from the module, so the first segment is what to export. */
-function componentEntrySource(componentPath: string, exportName: string): string {
+/**
+ * Astro's hydrator reads `mod[exportName]`, or walks a dotted path from the module, so the first segment is what to export.
+ * The entry sits in the project root; its specifier is relative because Bun's minifier picks names from the source's characters.
+ */
+function componentEntrySource(projectRoot: string, componentPath: string, exportName: string): string {
   const exported = exportName.split(".")[0];
   if (!IDENTIFIER.test(exported)) {
     throw new Error(`Cannot hydrate export "${exportName}" of ${componentPath}: not an identifier`);
   }
-  return `export { ${exported} } from ${JSON.stringify(componentPath)};\n`;
+  return `export { ${exported} } from ${JSON.stringify(portableSpecifier(projectRoot, componentPath))};\n`;
 }
 
 function escapeRegExp(text: string): string {
@@ -208,7 +225,7 @@ export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Pr
   for (const { componentPath, exportName } of options.components) {
     addEntry(
       urls.component(componentPath, exportName),
-      componentEntrySource(componentPath, exportName),
+      componentEntrySource(options.projectRoot, componentPath, exportName),
       `island entry for export "${exportName}" of ${componentPath}`,
     );
   }

@@ -86,7 +86,11 @@ export async function setupAstroRenderers(options: SetupAstroRenderersOptions): 
     const key = `${component.componentPath}\0${component.exportName}`;
     if (!hydrated.has(key)) hydrated.set(key, { componentPath: component.componentPath, exportName: component.exportName });
   };
-  const urls = createIslandClientUrls({ base: options.base, beforeHydrationScripts: options.beforeHydrationScripts });
+  const urls = createIslandClientUrls({
+    projectRoot: options.projectRoot,
+    base: options.base,
+    beforeHydrationScripts: options.beforeHydrationScripts,
+  });
   const recordingUrls: IslandClientUrls = {
     component(componentPath, exportName) {
       const url = urls.component(componentPath, exportName);
