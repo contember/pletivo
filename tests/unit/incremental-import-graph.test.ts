@@ -52,6 +52,21 @@ describe("collectStaticDeps", () => {
 		expect([...deps].sort()).toEqual([entry, layout].sort());
 	});
 
+	it("resolves an extensionless import to the file when a directory of that name sits beside it", async () => {
+		const block = await write("blocks/Hero.ts", `export const hero = 1;`);
+		const registry = await write("blocks.ts", `export { hero } from "./blocks/Hero.ts";`);
+		const entry = await write("page.ts", `import { hero } from "./blocks"; export const x = hero;`);
+		const deps = await collectStaticDeps(entry);
+		expect([...deps].sort()).toEqual([entry, registry, block].sort());
+	});
+
+	it("resolves an extensionless import of a directory to its index file", async () => {
+		const index = await write("blocks/index.ts", `export const hero = 1;`);
+		const entry = await write("page.ts", `import { hero } from "./blocks"; export const x = hero;`);
+		const deps = await collectStaticDeps(entry);
+		expect([...deps].sort()).toEqual([entry, index].sort());
+	});
+
 	it("walks .astro files (transformed via @astrojs/compiler)", async () => {
 		const dep = await write("Heading.astro", `<h1>hi</h1>`);
 		const entry = await write("Page.astro", `---\nimport Heading from "./Heading.astro";\n---\n<Heading />`);

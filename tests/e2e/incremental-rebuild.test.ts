@@ -62,6 +62,15 @@ function runBuild(args: string[] = []): { stdout: string; stderr: string; status
 	return { stdout: result.stdout, stderr: result.stderr, status: result.status ?? -1 };
 }
 
+/** Inline `<style>` blocks plus every stylesheet the page links from dist/. */
+async function linkedCss(html: string): Promise<string> {
+	const inline = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]);
+	const linked = await Promise.all(
+		[...html.matchAll(/<link[^>]+href="(\/[^"]+\.css)"/g)].map((m) => fs.readFile(path.join(projectRoot, "dist", m[1]), "utf8")),
+	);
+	return [...inline, ...linked].join("\n");
+}
+
 describe("e2e incremental rebuild", () => {
 	it("second build skips every cached page", async () => {
 		const first = runBuild();
@@ -151,6 +160,30 @@ describe("e2e incremental rebuild", () => {
 
 		const html = await fs.readFile(path.join(projectRoot, "dist", "about", "index.html"), "utf8");
 		expect(html).toContain("About v2");
+	});
+
+	// `../blocks` names both `blocks.ts` and the `blocks/` directory beside it.
+	// Like Bun, the dep graph must take the file, or no block is a dep of the page.
+	it("re-renders a page when a block behind a registry file beside its directory changes", async () => {
+		const hero = (version: string) =>
+			`<section class="hero-${version}">Hero ${version}</section>\n<style>.hero-${version} { color: rgb(1, 2, 3); }</style>\n`;
+		await write("src/blocks.ts", `export { default as Hero } from "./blocks/Hero.astro";\n`);
+		await write("src/blocks/Hero.astro", hero("v1"));
+		await write(
+			"src/pages/landing.astro",
+			`---\nimport { Hero } from "../blocks";\n---\n<html><head><title>Landing</title></head><body><Hero /></body></html>\n`,
+		);
+		expect(runBuild().status).toBe(0);
+
+		await write("src/blocks/Hero.astro", hero("v2"));
+		const second = runBuild();
+		expect(second.status).toBe(0);
+		expect(second.stdout).toMatch(/1 rendered \+ 2 cached/);
+
+		const html = await fs.readFile(path.join(projectRoot, "dist", "landing", "index.html"), "utf8");
+		expect(html).toContain("Hero v2");
+		expect(await linkedCss(html)).toContain(".hero-v2");
+		expect(await linkedCss(html)).not.toContain(".hero-v1");
 	});
 
 	it("--clean wipes the cache and forces every page to re-render", async () => {
