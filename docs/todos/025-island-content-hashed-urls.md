@@ -15,7 +15,10 @@ In an Astro project, `pletivo build` emits island entries under `_astro/`:
 
 See `createIslandClientUrls` in `packages/pletivo/src/astro-islands-bundle.ts`.
 The entry module imports the component by that same relative specifier, so a
-checkout's location changes neither an entry's name nor its bytes. A component
+checkout's location changes neither an entry's name nor its bytes, as long as
+the build runs from the project root, as the CLI does: Bun names a shared
+`chunk-<hash>.js` by its path relative to the working directory, and the
+entries import it by that name. A component
 outside the checkout, reached through `../` segments, still gets a name that
 depends on the checkout's depth. None of them is hashed from the bundled code.
 The render needs the URLs, so they are fixed before the bundle exists. Chunks shared
