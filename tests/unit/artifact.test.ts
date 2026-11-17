@@ -408,6 +408,7 @@ describe("site artifact islands", () => {
   const scenarios: { name: string; islands: unknown; path: string }[] = [
     { name: "an unknown field", islands: { ...ISLANDS, base: "/" }, path: "$.artifact.islands.base" },
     { name: "a Windows project root", islands: { ...ISLANDS, projectRoot: "C:\\site" }, path: "$.artifact.islands.projectRoot" },
+    { name: "a relative project root", islands: { ...ISLANDS, projectRoot: "srv/site" }, path: "$.artifact.islands.projectRoot" },
     { name: "no renderers", islands: { ...ISLANDS, renderers: [] }, path: "$.artifact.islands.renderers" },
     {
       name: "a duplicate renderer",
@@ -450,6 +451,23 @@ describe("site artifact islands", () => {
       expect(formatError(withIslands(scenario.islands)).path).toBe(scenario.path);
     });
   }
+
+  test("accepts an absolute POSIX, Windows drive or UNC project root", () => {
+    for (const projectRoot of ["/srv/site", "C:/work/site", "//server/share/site"]) {
+      expect(parsePreparedSite(withIslands({ ...ISLANDS, projectRoot })).artifact.islands?.projectRoot).toBe(projectRoot);
+    }
+  });
+
+  test("lets only an islands bundle module import a Node built-in", () => {
+    const importing = (importer: string) =>
+      artifactWith({
+        modules: BUNDLE,
+        resolutions: [{ importer, specifier: "node:crypto", target: { kind: "external", specifier: "node:crypto" } }],
+      });
+    expect(parsePreparedSite(importing("islands-bundle:0f/Counter.js")).artifact.resolutions).toHaveLength(1);
+    expect(formatError(importing("project:src/pages/index.astro")).path).toBe("$.artifact.resolutions[0].importer");
+    expect(formatError(importing("artifact:entry.js")).path).toBe("$.artifact.resolutions[0].importer");
+  });
 });
 
 describe("site artifact inputs", () => {

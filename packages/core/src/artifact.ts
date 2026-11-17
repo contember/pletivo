@@ -68,11 +68,12 @@ export const ISLANDS_BUNDLE_MODULE_PREFIX = "islands-bundle:";
 export const ISLAND_STYLESHEET_PREFIX = "pletivo-island-stylesheet:";
 
 /**
- * Node built-ins a bundled module may import, as an `external` resolution target: workerd provides
- * them under `nodejs_compat`, which the render isolate's runtime needs anyway. A project file
- * may not import them; prepare refuses that.
+ * Node built-ins an islands bundle module may import, as an `external` resolution target. The
+ * render isolate runs under `nodejs_compat`, which its own runtime needs for `node:async_hooks`
+ * and which provides `node:crypto`; Svelte's server runtime imports both. Prepare refuses any
+ * other built-in, and a project file may import none of them.
  */
-export const ARTIFACT_BUILTIN_EXTERNALS: ReadonlySet<string> = new Set(["node:async_hooks"]);
+export const ARTIFACT_BUILTIN_EXTERNALS: ReadonlySet<string> = new Set(["node:async_hooks", "node:crypto"]);
 
 /** Id prefix of the `tailwindcss` bundle a host's Tailwind isolate runs those modules in. */
 export const TAILWIND_RUNTIME_MODULE_PREFIX = "tailwind-runtime:";
@@ -318,6 +319,17 @@ export function parsePreparedSite(value: unknown): PreparedSite {
     "$.artifact.resolutions",
   );
 
+  resolutions.forEach((resolution, index) => {
+    const { target } = resolution;
+    if (target.kind !== "external" || !ARTIFACT_BUILTIN_EXTERNALS.has(target.specifier)) return;
+    if (!resolution.importer.startsWith(ISLANDS_BUNDLE_MODULE_PREFIX)) {
+      throw new ArtifactFormatError(
+        `$.artifact.resolutions[${index}].importer`,
+        `only an islands bundle module may import the Node built-in ${JSON.stringify(target.specifier)}`,
+      );
+    }
+  });
+
   const site: PreparedSite = {
     artifact: {
       version: ARTIFACT_VERSION,
@@ -401,7 +413,10 @@ function parseIslands(value: unknown, modules: readonly ArtifactModule[]): Artif
   };
 
   const projectRoot = requireNonEmptyString(requiredField(islands, "projectRoot", at), `${at}.projectRoot`);
-  if (projectRoot.includes("\\")) throw new ArtifactFormatError(`${at}.projectRoot`, "expected \"/\" separators");
+  // POSIX (`/srv/site`), a Windows drive (`C:/site`) or UNC (`//server/share`), with `/` separators.
+  if (projectRoot.includes("\\") || !/^(?:\/|[A-Za-z]:\/)/.test(projectRoot)) {
+    throw new ArtifactFormatError(`${at}.projectRoot`, "expected an absolute path with \"/\" separators");
+  }
 
   const renderersValue = requiredField(islands, "renderers", at);
   if (!Array.isArray(renderersValue) || renderersValue.length === 0) {
