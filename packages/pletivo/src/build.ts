@@ -233,11 +233,12 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // implies incremental — you only wipe the cache to rebuild it fresh.
   const incremental = options.incremental || options.clean;
   if (!incremental) await CacheStore.discard(projectRoot);
+  const outDir = path.relative(projectRoot, distDir);
   const cache: CacheStore | null = !incremental
     ? null
     : options.clean
-      ? await CacheStore.forceClean(projectRoot, configHash)
-      : await CacheStore.load(projectRoot, configHash);
+      ? await CacheStore.forceClean(projectRoot, configHash, outDir)
+      : await CacheStore.load(projectRoot, configHash, outDir);
   const fragments: FragmentsHelper | null = await resolveFragmentsHelper(projectRoot);
   phase("cache load + fragments resolve", tCacheLoad);
 
@@ -245,14 +246,15 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // previous build produced in place, and each route's writeHtml call
   // (for routes that actually re-render) overwrites the corresponding
   // file. Cached routes' HTML is already on disk and untouched.
-  // Orphans (outputs of routes that no longer exist) are pruned at
-  // the end of the build.
+  // Outputs of routes that no longer exist are pruned after the page
+  // writes, from the previous build's route output record.
   //
   // With caching off we still wipe — that path matches the historical
   // pletivo behavior exactly so tooling that diffs dist/ across runs
-  // keeps working.
+  // keeps working. An incremental build without a record wipes too:
+  // nothing would tell its stale route outputs from the rest of dist/.
   const tDistWipe = performance.now();
-  if (!cache) {
+  if (!cache || cache.routeOutputs() === null) {
     await fs.rm(distDir, { recursive: true, force: true });
   }
   await fs.mkdir(distDir, { recursive: true });
@@ -1123,6 +1125,15 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   }
   phase("writeHtml all pages", tWrite);
   flushProfile("writeHtml");
+
+  // Before integrations write: a path a removed route wrote may be theirs now.
+  if (cache) {
+    const tPrune = performance.now();
+    const routeOutputs = new Set(dedupedResults.map((r) => path.relative(distDir, r.outPath)));
+    await pruneStaleRouteOutputs(distDir, cache.routeOutputs() ?? [], routeOutputs, publicDir, publicManifest);
+    cache.setRouteOutputs(routeOutputs);
+    phase("prune stale route outputs", tPrune);
+  }
   clearAstroCss();
   clearCssModules();
   clearScss();
@@ -1225,25 +1236,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     }
     cache.pruneRoutes(keepKeys);
 
-    // Prune dist files that no longer belong to any current route.
-    // Walk every cache entry's `outPath` to build the keep set, then
-    // walk dist/<page-paths> and delete strays. We intentionally don't
-    // touch `_astro/`, `_islands/`, `_fragments/` here — those have
-    // their own ownership models (content-hashed bundles, integration-
-    // owned fragments) and aren't 1:1 with routes.
-    const tPrune = performance.now();
-    const keepOutputs = new Set<string>();
-    for (const r of dedupedResults) {
-      keepOutputs.add(path.relative(distDir, r.outPath));
-    }
-    // For the prune we also need entries written during this build
-    // (fresh renders) — combine the start-of-build inventory with the
-    // freshly-emitted outputs.
-    const seenFiles = new Set(distFiles);
-    for (const r of dedupedResults) seenFiles.add(path.relative(distDir, r.outPath));
-    await pruneOrphanPageFiles(distDir, seenFiles, keepOutputs);
-    phase("prune dist orphans", tPrune);
-
     const tPersist = performance.now();
     await cache.persist();
     phase("cache.json persist", tPersist);
@@ -1253,13 +1245,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
 /**
  * Walk dist once and collect every file's path relative to `distDir`.
- * Used for two things:
- *   1. `runIncrementalRender` consults the set to verify a cached
- *      route's output is still on disk — O(1) lookup instead of an
- *      `fs.access` per slug.
- *   2. The end-of-build prune diffs the same set against the kept
- *      route outputs to find orphans, so we don't have to walk dist
- *      twice in one build.
+ * `runIncrementalRender` consults the set to verify a cached route's
+ * output is still on disk — O(1) lookup instead of an `fs.access` per slug.
  */
 async function collectDistFiles(distDir: string): Promise<Set<string>> {
   const out = new Set<string>();
@@ -1287,20 +1274,42 @@ async function removeOtherKindOutput(outPath: string, raw: boolean): Promise<voi
   if (stat?.isFile()) await fs.unlink(dir);
 }
 
-async function pruneOrphanPageFiles(distDir: string, distFiles: Set<string>, keep: Set<string>): Promise<void> {
-  // Scan the inventory we already collected at build start. Anything
-  // not in `keep` is a leftover from a previous build (route deleted,
-  // slug removed, i18n locale dropped) and should be cleaned up.
-  // Skip the reserved astro/pletivo output directories — those have
-  // their own ownership models.
-  await Promise.all([...distFiles].map(async (rel) => {
-    if (!rel.endsWith(".html")) return;
-    if (rel.startsWith("_astro/") || rel.startsWith("_islands/") || rel.startsWith("_fragments/")) return;
-    if (keep.has(rel)) return;
-    try {
-      await fs.unlink(path.join(distDir, rel));
-    } catch {}
+/**
+ * Delete what the previous build wrote for a route (page or endpoint) and this one
+ * did not, then the directories that leaves empty. Everything else in dist/ is not
+ * a route's: public/ copies, bundles, integration output.
+ */
+async function pruneStaleRouteOutputs(
+  distDir: string,
+  previous: string[],
+  current: Set<string>,
+  publicDir: string,
+  publicManifest: Map<string, string>,
+): Promise<void> {
+  const removed = await Promise.all(previous.filter((rel) => !current.has(rel)).map(async (rel) => {
+    // A public/ file copied under its own name this build took over the path.
+    const publicKey = "/" + rel.split(path.sep).join("/");
+    if (!publicManifest.has(publicKey) && (await isFile(path.join(publicDir, rel)))) return null;
+    const abs = path.join(distDir, rel);
+    if (!(await isFile(abs))) return null;
+    await fs.unlink(abs);
+    return rel;
   }));
+  const dirs = new Set<string>();
+  for (const rel of removed) {
+    if (rel === null) continue;
+    for (let dir = path.dirname(rel); dir !== "."; dir = path.dirname(dir)) dirs.add(dir);
+  }
+  // Deepest first, so a parent is tried after its children; rmdir refuses a non-empty one.
+  const depth = (dir: string) => dir.split(path.sep).length;
+  for (const dir of [...dirs].sort((a, b) => depth(b) - depth(a))) {
+    await fs.rmdir(path.join(distDir, dir)).catch(() => {});
+  }
+}
+
+async function isFile(abs: string): Promise<boolean> {
+  const stat = await fs.lstat(abs).catch(() => null);
+  return stat?.isFile() ?? false;
 }
 
 async function walkDist(root: string, current: string, visit: (rel: string) => Promise<void>): Promise<void> {
