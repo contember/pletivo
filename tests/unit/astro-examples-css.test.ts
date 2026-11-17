@@ -101,10 +101,49 @@ describe("canonicalPageCss: what it keeps", () => {
     differ(['@import "a.css";y{margin:0}'], ['y{margin:0}@import "a.css";']);
   });
 
+  test("the order of rules in a layer, or in an at-rule it does not know, around a nested condition", () => {
+    differ(["@layer a{.x{color:red}@media (y){.z{color:blue}}}"], ["@layer a{@media (y){.z{color:blue}}.x{color:red}}"]);
+    differ(
+      ["@layer u{.flex{display:flex}.sm\\:hidden{@media (width>=40rem){display:none}}}"],
+      ["@layer u{.sm\\:hidden{@media (width>=40rem){display:none}}.flex{display:flex}}"],
+    );
+    differ(["@scope (.a){p{color:red}}@scope (.b){p{color:blue}}"], ["@scope (.b){p{color:blue}}@scope (.a){p{color:red}}"]);
+    differ([".a{opacity:1}@starting-style{.a{opacity:0}}"], ["@starting-style{.a{opacity:0}}.a{opacity:1}"]);
+  });
+
+  test("the order of two descriptor blocks with one name", () => {
+    differ(["@keyframes x{from{color:red}}@keyframes x{from{opacity:0}}"], ["@keyframes x{from{opacity:0}}@keyframes x{from{color:red}}"]);
+    differ(["@property --x{syntax:'*'}@property --x{inherits:true}"], ["@property --x{inherits:true}@property --x{syntax:'*'}"]);
+  });
+
+  test("the case of custom properties and statement at-rules", () => {
+    differ([":root{--Accent:red}"], [":root{--accent:red}"]);
+    differ(['@import "/A.css";'], ['@import "/a.css";']);
+    differ(["@layer A,B;"], ["@layer a,b;"]);
+  });
+
+  test("the order of aliases and their standard names", () => {
+    differ(["a{grid-gap:0;row-gap:1px}"], ["a{row-gap:1px;grid-gap:0}"]);
+    differ(["a{gap:0;grid-row-gap:1px}"], ["a{grid-row-gap:1px;gap:0}"]);
+    differ(["a{color-adjust:exact;print-color-adjust:economy}"], ["a{print-color-adjust:economy;color-adjust:exact}"]);
+  });
+
+  test("the order around a selector the scorer gives up on", () => {
+    differ(["svg|a{color:red}b{color:blue}"], ["b{color:blue}svg|a{color:red}"]);
+    differ([":host(.x){color:red}.a.b{color:blue}"], [".a.b{color:blue}:host(.x){color:red}"]);
+  });
+
+  test("the rules after a stray closing brace", () => {
+    differ(["a{color:red}}b{color:blue}"], ["a{color:red}"]);
+    differ(["a{color:red}}b{color:blue}"], ["a{color:red}b{color:blue}"]);
+  });
+
   test("a different value", () => {
     differ(["a{color:red}"], ["a{color:blue}"]);
     differ(["html{font-family:system-ui}"], ["html{font-family:system-ui,sans-serif}"]);
     differ([":root{--x:a b}"], [":root{--x:ab}"]);
+    differ(["html{font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Noto Sans,Ubuntu,Cantarell,Helvetica Neue Light}"], ["html{font-family:system-ui Light}"]);
+    differ(['@font-face{src:url(/a.woff2)format("woff2-variations")}'], ["@font-face{src:url(/a.woff2)format(woff2-variations)}"]);
   });
 });
 
@@ -120,6 +159,12 @@ describe("selectorListSpecificity", () => {
     expect(selectorListSpecificity(".a\\:b")).toBeNull();
     expect(selectorListSpecificity("li:nth-child(2 of .x)")).toBeNull();
     expect(selectorListSpecificity("::slotted(p)")).toBeNull();
+    expect(selectorListSpecificity("svg|a")).toBeNull();
+    expect(selectorListSpecificity(":host-context(.x)")).toBeNull();
+  });
+
+  test("reads a non-ASCII name", () => {
+    expect(selectorListSpecificity(".é ü")).toEqual(new Set(["0,1,1"]));
   });
 });
 
@@ -149,6 +194,28 @@ describe("the page normaliser", () => {
     const inlined = await pletivo("<html><head></head><body><style>a{color:red}</style><p>x</p></body></html>");
     expect(linked).toBe(inlined);
     expect(linked).toContain("<style>\na{color:red}\n</style>");
+  });
+
+  test("keeps page CSS in order against CSS left in the markup", async () => {
+    const normalize = createHtmlNormalizer(css, astroBundle, () => null);
+    const external = '<link rel="stylesheet" href="https://fonts.example/x.css">';
+    const page = "<style>.x{color:red}</style>";
+    expect(await normalize(external + page)).not.toBe(await normalize(page + external));
+    const print = '<style media="print">.x{color:blue}</style>';
+    expect(await normalize(print + page)).not.toBe(await normalize(page + print));
+  });
+
+  test("leaves a <style> where it does not apply", async () => {
+    const normalize = createHtmlNormalizer(css, pletivoBundle, () => null);
+    const style = "<style>.x{color:red}</style>";
+    for (const [open, close] of [["<template>", "</template>"], ["<!--", "-->"], ['<script>s="', '"</script>']]) {
+      expect(await normalize(`${open}${style}${close}`)).not.toBe(await normalize(`${open}${close}${style}`));
+    }
+  });
+
+  test("does not read in a disabled link", async () => {
+    const normalize = createHtmlNormalizer(css, astroBundle, () => "a{color:red}");
+    expect(await normalize('<link rel="stylesheet" href="/_astro/x.Ab12Cd34.css" disabled>')).toContain("<link");
   });
 
   test("keeps a link it cannot read, and one with a media query", async () => {

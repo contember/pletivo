@@ -1,7 +1,7 @@
 # 024 — Astro's official examples, built by pletivo
 
 **Priority:** S-tier
-**Status:** open; 11 of 18 match (0 at baseline) and 15 of 18 build, with page CSS compared on meaning; all 7 framework examples match
+**Status:** open; 11 of 18 match (0 at baseline) and 15 of 18 build, with page CSS compared on meaning; framework-preact, -react, -solid, -svelte, -vue, -multiple and with-mdx match
 **Area:** Astro compatibility, measured
 
 `tests/astro-examples/run.ts` builds every static-site example in
@@ -34,15 +34,21 @@ may disagree on:
 - scope-id hash values, as ordinals, so the element ↔ selector link still counts;
 - page CSS, compared on meaning (`css.ts`): a linked bundled stylesheet is read in
   where it is linked, every bare `<style>` is taken out of the markup, and the page's
-  CSS is compared as one sheet after it. Each sheet first goes through the esbuild
-  Astro's Vite minified with. Then:
+  CSS is compared as one sheet after it. CSS left in the markup (an external or
+  `media=` link, a `<style>` with attributes) leaves a barrier in the sheet, so the
+  order against it still counts; a `<style>` in a comment, `<script>`, `<template>`,
+  `<noscript>` or other text content is not page CSS. Each sheet first goes through
+  the esbuild Astro's Vite minified with, comments dropped. Then:
   - declarations, and rules, may change places only with a neighbour they cannot
     tie with: a different property family (a shorthand shares one with its
-    longhands; `place-*`, `inset`, `gap`, `font`/`line-height`, logical sizes and
-    `word-wrap` are linked by a short table), scope (style rules, or one
-    `@font-face` / `@keyframes`), importance, or a specificity neither selector can
-    have. A selector the scorer does not read ties with everything; `@layer` and
-    `@import` stay in place;
+    longhands; `place-*`, `inset`, `page-break`, `gap` and `grid-*-gap`, `columns`,
+    `font`/`line-height`, logical sizes, `white-space`, `word-wrap` and
+    `color-adjust` are linked by a short table), scope (style rules, or the
+    descriptors of one `@font-face` / `@keyframes x` / `@property --x` …), importance,
+    or a specificity neither selector can have. A selector the scorer does not read
+    ties with everything. Two descriptor blocks with one prelude keep their order.
+    `@layer`, `@import`, any other at-rule (`@scope`, `@starting-style`) and what
+    contains one stay in place;
   - values: whitespace next to `,` and after `)` (not before an operator), a custom
     property's surrounding whitespace, a quoted `format()` keyword, and Bun's
     `system-ui` fallback stack;

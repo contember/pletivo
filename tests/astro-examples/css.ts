@@ -8,12 +8,14 @@
  * an element gets:
  *
  * 1. Two declarations conflict when they could decide the same value: they set a
- *    property of a shared family (below), in the same scope (style rules, or one
- *    `@font-face` / `@keyframes x`), with the same importance, and their selectors can
- *    tie on specificity. A selector this cannot score ties with everything.
+ *    property of a shared family (below), in the same scope (style rules, or the
+ *    descriptors of one `@font-face` / `@keyframes x` / `@property --x` …), with the same
+ *    importance, and their selectors can tie on specificity. A selector this cannot score
+ *    ties with everything. Two descriptor blocks with the same prelude always conflict.
  * 2. Declarations in a block, and rules and at-rule blocks in a list, may change places
- *    only with a neighbour they do not conflict with. `@layer` and statement at-rules
- *    (`@import`) stay in place. The canonical order is the smallest-text-first order
+ *    only with a neighbour they do not conflict with. `@layer`, statement at-rules
+ *    (`@import`), any at-rule not named here (`@scope`, `@starting-style`), and whatever
+ *    contains one stay in place. The canonical order is the smallest-text-first order
  *    under that constraint, the same for every reordering of that kind (the
  *    lexicographic normal form of a trace). So `a:1;b:2` equals `b:2;a:1`, while
  *    `margin:0;margin-top:1px` stays apart from its reverse.
@@ -30,25 +32,26 @@ type CssNode =
   | { kind: "declaration"; property: string; value: string }
   | { kind: "block"; prelude: string; children: CssNode[] };
 
-/** Parse minified CSS: blocks nest, declarations end at `;` or `}`; strings and `(…)` are opaque. */
+/** Parse minified, comment-free CSS: blocks nest, declarations end at `;` or `}`; strings and `(…)` are opaque. */
 export function parseCss(css: string): CssNode[] {
   let at = 0;
-  const parseList = (): CssNode[] => {
+  const parseList = (nested: boolean): CssNode[] => {
     const nodes: CssNode[] = [];
     while (at < css.length) {
       while (at < css.length && (css[at] === ";" || /\s/.test(css.charAt(at)))) at++;
       if (at >= css.length) break;
+      const start = at;
       if (css[at] === "}") {
         at++;
-        return nodes;
+        if (nested) return nodes;
+        // A stray `}` at the top level is kept as text of the next rule, which it invalidates.
       }
-      const start = at;
       const stop = scanTo(css, at, "{;}");
       const text = css.slice(start, stop).trim();
       at = stop;
       if (css[at] === "{") {
         at++;
-        nodes.push({ kind: "block", prelude: text, children: parseList() });
+        nodes.push({ kind: "block", prelude: text, children: parseList(true) });
         continue;
       }
       if (css[at] === ";") at++;
@@ -61,7 +64,7 @@ export function parseCss(css: string): CssNode[] {
     }
     return nodes;
   };
-  return parseList();
+  return parseList(false);
 }
 
 /** The index of the first of `stops` at nesting depth 0 outside strings, or the end. */
@@ -111,6 +114,10 @@ const GROUP_FAMILIES: Record<string, string[]> = {
 const SHORTHAND_FAMILIES: Record<string, string[]> = {
   font: ["line"],
   gap: ["row", "column"],
+  "grid-gap": ["gap", "row", "column"],
+  "grid-row-gap": ["row"],
+  "grid-column-gap": ["column"],
+  "color-adjust": ["print"],
   columns: ["column"],
   "inline-size": ["width", "height"],
   "block-size": ["width", "height"],
@@ -121,8 +128,8 @@ const SHORTHAND_FAMILIES: Record<string, string[]> = {
 const ALL = "*";
 
 export function propertyFamilies(property: string): string[] {
+  if (property.startsWith("--")) return [property];
   const name = property.toLowerCase();
-  if (name.startsWith("--")) return [name];
   if (name === "all") return [ALL];
   const unprefixed = name.replace(/^-(webkit|moz|ms|o)-/, "");
   const dash = unprefixed.indexOf("-");
@@ -132,6 +139,9 @@ export function propertyFamilies(property: string): string[] {
 
 /** Bun's expansion of `system-ui`, which keeps `system-ui` first. */
 const BUN_SYSTEM_UI_FALLBACKS = ",-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Noto Sans,Ubuntu,Cantarell,Helvetica Neue";
+
+/** A quoted `format()` keyword: CSS Fonts 4 allows these unquoted, with the same meaning. */
+const FORMAT_STRING = /format\((["'])(woff2?|truetype|opentype|embedded-opentype|collection|svg)\1\)/g;
 
 export function normalizeValue(property: string, value: string): string {
   const name = property.toLowerCase();
@@ -157,9 +167,10 @@ export function normalizeValue(property: string, value: string): string {
     out += c;
   }
   if (name.startsWith("--")) out = out.trim();
-  if (name === "src") out = out.replace(/format\((["'])([\w-]+)\1\)/g, "format($2)");
-  if (name === "font-family" && out.startsWith(`system-ui${BUN_SYSTEM_UI_FALLBACKS}`)) {
-    out = `system-ui${out.slice(`system-ui${BUN_SYSTEM_UI_FALLBACKS}`.length)}`;
+  if (name === "src") out = out.replace(FORMAT_STRING, "format($2)");
+  const expanded = `system-ui${BUN_SYSTEM_UI_FALLBACKS}`;
+  if (name === "font-family" && out.startsWith(expanded) && /^(,|!|$)/.test(out.slice(expanded.length))) {
+    out = `system-ui${out.slice(expanded.length)}`;
   }
   return out;
 }
@@ -193,10 +204,14 @@ const STYLE: Context = { scope: "style", specificity: null };
 
 /** At-rules whose content is style rules applied under a condition. */
 const CONDITIONAL = /^@(media|supports|container|document|-moz-document)\b/i;
+/** At-rules whose content is descriptors of one named thing, not style rules. */
+const DESCRIPTORS =
+  /^@(font-face|(-webkit-|-moz-|-o-)?keyframes|property|counter-style|page|font-palette-values|font-feature-values|position-try|view-transition)\b/i;
 
 function canonicalNode(node: CssNode, context: Context): Canonical {
   if (node.kind === "declaration") {
-    const text = `${node.property.toLowerCase()}:${normalizeValue(node.property, node.value)}`;
+    const verbatim = node.property.startsWith("--") || node.property.startsWith("@");
+    const text = `${verbatim ? node.property : node.property.toLowerCase()}:${normalizeValue(node.property, node.value)}`;
     if (node.property.startsWith("@")) return { text, atoms: [], barrier: true };
     const important = /!\s*important$/i.test(node.value);
     return {
@@ -205,10 +220,13 @@ function canonicalNode(node: CssNode, context: Context): Canonical {
       barrier: false,
     };
   }
+  const descriptors = node.prelude.startsWith("@") && DESCRIPTORS.test(node.prelude);
   let inner: Context;
-  if (node.prelude.startsWith("@")) {
-    // Conditional groups hold style rules; `@font-face`, `@keyframes x` and the like are their own scope.
-    inner = CONDITIONAL.test(node.prelude) ? STYLE : { scope: node.prelude, specificity: new Set(["-"]) };
+  if (descriptors) {
+    inner = { scope: node.prelude, specificity: new Set(["-"]) };
+  } else if (node.prelude.startsWith("@")) {
+    // Any other at-rule (`@scope`, `@starting-style`, unknown ones) is a barrier below; its rules tie with all.
+    inner = CONDITIONAL.test(node.prelude) || /^@layer\b/i.test(node.prelude) ? context : { scope: context.scope, specificity: null };
   } else if (context.scope === "style") {
     // Nested style rules are scored as unknown rather than resolved against their parent.
     inner = { scope: "style", specificity: context === STYLE ? selectorListSpecificity(node.prelude) : null };
@@ -216,10 +234,13 @@ function canonicalNode(node: CssNode, context: Context): Canonical {
     inner = context;
   }
   const children = node.children.map((child) => canonicalNode(child, inner));
+  // `@layer` orders the cascade itself; an at-rule this does not know may too.
+  const opaque = node.prelude.startsWith("@") && !descriptors && !CONDITIONAL.test(node.prelude);
   return {
     text: `${node.prelude}{${canonicalOrder(children).join(";")}}`,
-    atoms: children.flatMap((child) => child.atoms),
-    barrier: node.prelude.startsWith("@layer") || children.some((child) => child.barrier),
+    // The later of two same-named descriptor blocks wins as a whole, whatever they set.
+    atoms: descriptors ? [{ families: new Set([ALL]), scope: node.prelude, important: false, specificity: null }] : children.flatMap((child) => child.atoms),
+    barrier: opaque || children.some((child) => child.barrier),
   };
 }
 
@@ -253,6 +274,9 @@ export function selectorListSpecificity(list: string): Set<string> | null {
 }
 
 type Specificity = [number, number, number];
+
+/** Functional pseudo-classes that score as one class whatever their argument (without `of`). */
+const SCORED_FUNCTIONS = /^(nth-child|nth-last-child|nth-of-type|nth-last-of-type|lang|dir|state)$/;
 
 function selectorSpecificity(selector: string): Specificity | null {
   const total: Specificity = [0, 0, 0];
@@ -292,10 +316,10 @@ function selectorSpecificity(selector: string): Specificity | null {
             if (compareSpecificity(score, max) > 0) max = score;
           }
           add(max);
-        } else if (/\bof\b/.test(args)) {
-          return null;
-        } else {
+        } else if (SCORED_FUNCTIONS.test(name) && !/\bof\b/.test(args)) {
           add([0, 1, 0]);
+        } else {
+          return null;
         }
         i = close + 1;
       } else {
@@ -306,7 +330,7 @@ function selectorSpecificity(selector: string): Specificity | null {
     } else if (/[a-zA-Z_-]/.test(c) || c.charCodeAt(0) > 127) {
       add([0, 0, 1]);
       i = readName(selector, i);
-    } else if (c === "*" || c === ">" || c === "+" || c === "~" || c === " " || c === "|") {
+    } else if (c === "*" || c === ">" || c === "+" || c === "~" || c === " ") {
       i++;
     } else {
       return null;
@@ -317,7 +341,7 @@ function selectorSpecificity(selector: string): Specificity | null {
 
 function readName(text: string, from: number): number {
   let i = from;
-  while (i < text.length && /[\w-]/.test(text.charAt(i))) i++;
+  while (i < text.length && (/[\w-]/.test(text.charAt(i)) || text.charCodeAt(i) > 127)) i++;
   return i;
 }
 
@@ -341,25 +365,34 @@ function splitTopLevel(text: string, separator: string): string[] {
  * entries (declarations of one block, or rules of one list) in their relative order.
  * Two lists that differ only by swaps of non-conflicting neighbours get the same order.
  */
+interface OrderEntry {
+  node: Canonical;
+  blockers: number;
+  later: OrderEntry[];
+  done: boolean;
+}
+
 function canonicalOrder(nodes: Canonical[]): string[] {
-  const pending = [...nodes];
-  const out: string[] = [];
-  while (pending.length > 0) {
-    let pick = -1;
-    let best: Canonical | null = null;
-    for (const [at, node] of pending.entries()) {
-      if (pending.slice(0, at).some((earlier) => conflicts(earlier, node))) continue;
-      if (best === null || node.text < best.text) {
-        best = node;
-        pick = at;
-      }
+  // Each entry counts the earlier entries it conflicts with that are not emitted yet.
+  const entries: OrderEntry[] = nodes.map((node) => ({ node, blockers: 0, later: [], done: false }));
+  for (const [at, earlier] of entries.entries()) {
+    for (const entry of entries.slice(at + 1)) {
+      if (!conflicts(earlier.node, entry.node)) continue;
+      earlier.later.push(entry);
+      entry.blockers++;
     }
-    // The first pending entry has nothing before it, so it is always ready.
-    if (best === null) throw new Error("canonicalOrder: no entry is ready");
-    out.push(best.text);
-    pending.splice(pick, 1);
   }
-  return out;
+  const out: string[] = [];
+  for (;;) {
+    let best: OrderEntry | null = null;
+    for (const entry of entries) {
+      if (!entry.done && entry.blockers === 0 && (best === null || entry.node.text < best.node.text)) best = entry;
+    }
+    if (best === null) return out;
+    best.done = true;
+    out.push(best.node.text);
+    for (const entry of best.later) entry.blockers--;
+  }
 }
 
 /** Every rule of the page's stylesheets, one per line, in canonical order. */

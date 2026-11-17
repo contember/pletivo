@@ -171,7 +171,7 @@ async function exampleCssCanonicalizer(exampleDir: string): Promise<CssCanonical
   }
   const transform = esbuild.transform;
   return async (css) => {
-    const result: unknown = await transform(css, { loader: "css", minify: true });
+    const result: unknown = await transform(css, { loader: "css", minify: true, legalComments: "none" });
     if (typeof result !== "object" || result === null || !("code" in result) || typeof result.code !== "string") {
       throw new Error("esbuild transform() returned no code");
     }

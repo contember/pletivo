@@ -80,22 +80,30 @@ const HASHED_URL =
 /** A bundled file's text by its URL path (`/_astro/x.css`), or null when this side has none. */
 export type BundleReader = (urlPath: string) => string | null;
 
-/** A `<link rel="stylesheet">` to a bundled sheet, without `media`: what the page loads unconditionally. */
-const STYLESHEET_LINK = /<link\b[^>]*>/gi;
+/**
+ * Where page CSS can come from, in document order: a `<link>`, a bare `<style>` (Astro and
+ * pletivo write page CSS without attributes), any other `<style>`. Comments and elements
+ * whose content is inert or text (group 1) are matched whole, so nothing in them is.
+ */
+const PAGE_CSS_SOURCES =
+  /<!--[\s\S]*?-->|<(script|template|noscript|textarea|title)\b[^>]*>[\s\S]*?<\/\1\s*>|(<link\b[^>]*>)|<style>([\s\S]*?)<\/style>|(<style\b[^>]*>[\s\S]*?<\/style>)/gi;
 
-function linkedSheetPath(tag: string, isBundle: BundleRule): string | null {
-  const attribute = (name: string) => new RegExp(`\\s${name}=(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
-  const rel = attribute("rel");
-  if ((rel?.[1] ?? rel?.[2] ?? rel?.[3])?.toLowerCase() !== "stylesheet" || attribute("media")) return null;
-  const href = attribute("href");
-  const url = href?.[1] ?? href?.[2] ?? href?.[3];
+/** Stands for CSS left in the markup, so page CSS keeps its order against it. */
+const PINNED_CSS = "@pinned-in-markup;";
+
+function linkAttribute(tag: string, name: string): string | undefined {
+  const match = new RegExp(`\\s${name}=(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+/** A stylesheet `<link>` the page loads unconditionally, to a bundled sheet: its URL path. */
+function inlinableSheetPath(tag: string, isBundle: BundleRule): string | null {
+  if (linkAttribute(tag, "media") !== undefined || /\sdisabled(?=[\s=/>])/i.test(tag)) return null;
+  const url = linkAttribute(tag, "href");
   if (!url?.startsWith("/")) return null;
   const dir = /^\/(_astro|_islands|assets)\/.*\.css$/.exec(url)?.[1];
   return dir !== undefined && isBundle(dir, "css") ? url : null;
 }
-
-/** A bare `<style>`: Astro and pletivo write page CSS without attributes. */
-const PAGE_STYLE = /<style>([\s\S]*?)<\/style>/g;
 
 export function createHtmlNormalizer(
   canonicalCss: CssCanonicalizer,
@@ -118,23 +126,30 @@ export function createHtmlNormalizer(
 
   return async (html) => {
     let text = html.replace(/\r\n/g, "\n");
-    // A linked bundled sheet counts as if inlined where it is linked: inlining is a size threshold.
-    text = text.replace(STYLESHEET_LINK, (tag) => {
-      const url = linkedSheetPath(tag, isBundle);
-      const css = url === null ? null : readBundle(url);
-      return css === null ? tag : `<style>${css}</style>`;
-    });
-    // Page CSS is compared as one sheet, after the markup: where a `<style>` sits and how
-    // the CSS is split into sheets do not change the cascade. Taken out first, so the
-    // ordinals below number the markup's values before the CSS's, whose rule order differs.
-    const sheets: string[] = [];
-    text = text.replace(PAGE_STYLE, (_m, css: string) => {
-      sheets.push(css);
-      return "";
+    // Page CSS is compared as one sheet, after the markup: where a `<style>` sits, how the
+    // CSS is split into sheets, and whether a bundled sheet is linked or inlined (a size
+    // threshold) do not change the cascade. CSS that stays in the markup leaves a barrier
+    // in its place. Taken out first, so the ordinals below number the markup's values
+    // before the CSS's, whose rule order differs.
+    const sheets: Array<string | null> = [];
+    text = text.replace(PAGE_CSS_SOURCES, (match, _inert: string | undefined, link: string | undefined, css: string | undefined, kept: string | undefined) => {
+      if (css !== undefined) {
+        sheets.push(css);
+        return "";
+      }
+      if (link !== undefined) {
+        if (linkAttribute(link, "rel")?.toLowerCase() !== "stylesheet") return link;
+        const url = inlinableSheetPath(link, isBundle);
+        const bundled = url === null ? null : readBundle(url);
+        sheets.push(bundled);
+        return bundled === null ? link : "";
+      }
+      if (kept !== undefined) sheets.push(null);
+      return match;
     });
     // Names the tool that built the page.
     text = text.replace(/(<meta name="generator" content=")[^"]*"/g, '$1[generator]"');
-    const ordinals = (part: string): string =>
+    const numberValues = (part: string): string =>
       part
         // Bundled asset URLs: the directory and hash are bundler output, and so is the
         // name of a CSS or JS chunk. An image or font keeps its name. Ordinals keep
@@ -149,17 +164,17 @@ export function createHtmlNormalizer(
         // the element ↔ selector link checkable. `data-astro-template` is not one.
         .replace(/data-astro-cid-([a-z0-9]{8})/g, (_m, id: string) => `data-astro-cid-c${ordinal("cid", id)}`)
         .replace(/(?<![\w-])astro-([a-z0-9]{8})(?![\w-])/g, (_m, id: string) => `astro-s${ordinal("scope", id)}`);
-    text = ordinals(text);
-    const pageCss = sheets.map(ordinals);
+    text = numberValues(text);
+    const pageCss = sheets.map((css) => (css === null ? null : numberValues(css)));
     // A `<style>` with attributes is not page CSS this rule knows; it stays, minified, in place.
     text = await replaceAsync(text, /(<style[^>]*>)([\s\S]*?)(<\/style>)/g, async (open, css, close) => `${open}${await canonicalCss(css)}${close}`);
     text = normalizeVoidElements(text);
     text = normalizeAttributeSpelling(text);
     text = collapseWhitespace(text);
-    if (pageCss.length > 0) {
+    if (pageCss.some((css) => css !== null)) {
       // Minifiers spell equal CSS differently (`0.25em` / `.25em`, `white` / `#fff`): every
       // sheet goes through the same one, then `canonicalPageCss` (see css.ts).
-      const minified = await Promise.all(pageCss.map((css) => canonicalCss(css)));
+      const minified = await Promise.all(pageCss.map((css) => (css === null ? PINNED_CSS : canonicalCss(css))));
       text += `\n<style>\n${canonicalPageCss(minified).join("\n")}\n</style>`;
     }
     return text;
