@@ -25,7 +25,7 @@ import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
-import { prepareIslands } from "./islands";
+import { bundleOnlyFiles, prepareIslands } from "./islands";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
 import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
@@ -33,7 +33,7 @@ import { markdownLayoutOf } from "@pletivo/core/content/markdown-module";
 import { isRouteFile } from "@pletivo/core/router";
 import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
-import { prepareModuleGraph, type MarkdownLayoutImport, type ProjectImportSource } from "./vendor";
+import { prepareModuleGraph, type MarkdownLayoutImport, type PreparedGraph, type ProjectImportSource } from "./vendor";
 import { classifySpecifier } from "./scan";
 
 export { PrepareError, type PrepareDiagnostic } from "./error";
@@ -75,10 +75,16 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const pluginModules = markdown.config === null
     ? []
     : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
-  // First: the vendor graph must not walk the components it bundles, whose packages may be CommonJS.
+  // First: the vendor graph must not walk what the islands bundle owns, whose packages may be CommonJS.
   const islands = await prepareIslands(projectRoot, host?.renderers ?? [], sources);
-  const graphSources = islands === null ? sources : sources.filter((source) => !islands.componentFiles.has(source.file));
-  const graph = await prepareModuleGraph(projectRoot, graphSources, freezeViteVirtualModule, pluginModules);
+  const bundleOnly = islands === null ? new Set<string>() : bundleOnlyFiles(islands, sources);
+  const graphSources = islands === null
+    ? sources
+    : sources.filter((source) => !islands.componentFiles.has(source.file) && !bundleOnly.has(source.file));
+  const shared = islands === null
+    ? []
+    : graphSources.filter((source) => islands.bundledFiles.has(source.file)).map((source) => source.file);
+  const graph = await prepareSharedGraph(projectRoot, graphSources, shared, pluginModules);
   const pageScript = await freezePageScripts(host, projectRoot);
 
   return {
@@ -94,8 +100,40 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
       browserResolutions: graph.browserResolutions,
       ...(islands === null ? {} : { islands: islands.islands }),
     },
-    inputs,
+    inputs: islands === null ? inputs : [...inputs, ...islands.inputs].sort((left, right) => compareStrings(left.path, right.path)),
   };
+}
+
+/**
+ * The vendor graph. When it fails and builds without the files framework components share with
+ * live modules, the failure is theirs: refuse them by name rather than the package they import.
+ */
+async function prepareSharedGraph(
+  projectRoot: string,
+  sources: readonly ProjectImportSource[],
+  shared: readonly string[],
+  pluginModules: readonly string[],
+): Promise<PreparedGraph> {
+  try {
+    return await prepareModuleGraph(projectRoot, sources, freezeViteVirtualModule, pluginModules);
+  } catch (error) {
+    if (!(error instanceof PrepareError) || shared.length === 0) throw error;
+    const sharedFiles = new Set(shared);
+    try {
+      await prepareModuleGraph(projectRoot, sources.filter((source) => !sharedFiles.has(source.file)), freezeViteVirtualModule, pluginModules);
+    } catch {
+      throw error;
+    }
+    throw new PrepareError(
+      shared.map((file) => ({
+        source: normalizePath(path.relative(projectRoot, file)),
+        hook: "islands",
+        reason:
+          "framework components and the project's live modules both import it, and its imports cannot be carried " +
+          `for the live ones on the Workers host: ${error.message}`,
+      })),
+    );
+  }
 }
 
 /** Bundled here, on Bun, because the Worker cannot resolve a package or a Vite plugin. */
