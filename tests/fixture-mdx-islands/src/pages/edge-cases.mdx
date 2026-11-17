@@ -1,0 +1,12 @@
+import D from '../components/ns-default.jsx';
+import { ns } from '../components/ns-named.jsx';
+import * as UI from '../components/ui.jsx';
+import Counter from '../components/Counter.jsx';
+
+<D.Component id="default-member" client:load />
+
+<ns.Component id="named-member" client:load />
+
+<UI id="bare-namespace" client:load />
+
+<Counter id="only-written-path" client:only="preact" client:component-path="/written/by/hand" />
