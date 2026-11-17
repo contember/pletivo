@@ -1,7 +1,7 @@
 # 024 — Astro's official examples, built by pletivo
 
 **Priority:** S-tier
-**Status:** open; 5 of 18 match (0 at baseline) and 15 of 18 build, measured with Astro's DOCTYPE rule; the 6 framework examples differ only in the CSS text Bun's CSS pipeline rewrites
+**Status:** open; 11 of 18 match (0 at baseline) and 15 of 18 build, with page CSS compared on meaning; all 7 framework examples match
 **Area:** Astro compatibility, measured
 
 `tests/astro-examples/run.ts` builds every static-site example in
@@ -32,8 +32,23 @@ may disagree on:
   chunk name of CSS and JS. An image or font keeps its name. Every distinct URL
   gets an ordinal, so two chunks or two `srcset` widths stay distinct;
 - scope-id hash values, as ordinals, so the element ↔ selector link still counts;
-- CSS minifier spelling: both sides' `<style>` text goes through the esbuild
-  Astro's Vite minified with;
+- page CSS, compared on meaning (`css.ts`): a linked bundled stylesheet is read in
+  where it is linked, every bare `<style>` is taken out of the markup, and the page's
+  CSS is compared as one sheet after it. Each sheet first goes through the esbuild
+  Astro's Vite minified with. Then:
+  - declarations, and rules, may change places only with a neighbour they cannot
+    tie with: a different property family (a shorthand shares one with its
+    longhands; `place-*`, `inset`, `gap`, `font`/`line-height`, logical sizes and
+    `word-wrap` are linked by a short table), scope (style rules, or one
+    `@font-face` / `@keyframes`), importance, or a specificity neither selector can
+    have. A selector the scorer does not read ties with everything; `@layer` and
+    `@import` stay in place;
+  - values: whitespace next to `,` and after `)` (not before an operator), a custom
+    property's surrounding whitespace, a quoted `format()` keyword, and Bun's
+    `system-ui` fallback stack;
+  - every rule is kept, so a rule on one side only is still a difference.
+  Bun's other lowerings (`hsla()` to hex, `margin-inline` into longhands) are not
+  erased;
 - a trailing `/` on a void element's start tag (`<meta charset="utf-8"/>`):
   the HTML parser ignores it, so the DOM is the same. Only the spec's void
   elements, outside `<svg>` and `<math>`, where the `/` self-closes;
@@ -120,6 +135,23 @@ First differences, Astro vs pletivo:
   `--accent: #2337ff`, pletivo writes `--accent:#2337ff` (Bun's CSS pipeline).
 - portfolio, `404.html`: Astro links the sheet (`<link rel="stylesheet">`),
   pletivo inlines it as `<style>`.
+
+## With page CSS compared on meaning (#93)
+
+The full harness on `main` at 582f92e: **15 of 18 build, 11 of 18 match**. Before the
+CSS rule, on the same outputs: 15 build, 5 match. The six framework examples now
+match; with them basics, container-with-vitest, minimal, with-mdx and with-vitest.
+
+First differences left, Astro vs pletivo:
+
+- blog: `data-astro-cid-x="true"` vs a bare attribute (Left). In its CSS, one
+  component rule (`a[data-astro-cid-x]`) sits at another place relative to a rule it
+  can tie with;
+- portfolio: `Icon.astro`'s random gradient id. In its CSS, Bun's `hsla()` → hex and
+  `margin-inline` → longhands;
+- with-nanostores: an island `uid`, CSS module class names
+  (`_container_jwp5b_1` vs `CartFlyout_container_…`) and a different rule set;
+- framework-alpine: the page-script bundle is inlined (Decisions).
 
 ## Gaps and what closed them
 
@@ -226,18 +258,11 @@ portfolio:
 framework-alpine: the page-script bundle is inlined, Astro links it (see
 Decisions).
 
-framework-preact, -react, -solid, -svelte, -vue, -multiple:
+framework-preact, -react, -solid, -svelte, -vue, -multiple: match with page CSS
+compared on meaning. Their CSS text still differs as written (declaration order,
+`system-ui`, and in framework-preact where `Message.css` sits); none of it changes
+the cascade.
 
-- Inlined CSS text, as in blog: Bun's CSS pipeline reorders `.counter`'s
-  declarations, and in -multiple expands `system-ui`. In framework-preact the
-  order differs too: Astro puts the lazily imported `Message.css` after the
-  page's own `<style>`, while pletivo emits all of `src/`'s CSS as one sheet
-  ahead of it.
-- Island `uid`: it hashes the island's slot HTML, which differs in two ways.
-  `.astro` is compiled without `compact` (Astro's `compressHTML`), so
-  whitespace stays, and without `normalizedFilename`, so the
-  `data-astro-cid-*` scope differs. With both set, every `uid` in
-  framework-preact, -react and -multiple equals Astro's.
 - Svelte modules (`.svelte.js`, `.svelte.ts`) compile through Svelte's
   `compileModule`, as in Vite, on the server and in the island bundles; the
   Svelte renderer's own client is one. Island URLs are named by component,
