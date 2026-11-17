@@ -111,9 +111,129 @@ export function createHtmlNormalizer(canonicalCss: CssCanonicalizer, isBundle: B
     // Minifiers spell equal CSS differently (`0.25em` / `.25em`, `white` / `#fff`):
     // both sides go through the same one.
     text = await replaceAsync(text, /(<style[^>]*>)([\s\S]*?)(<\/style>)/g, async (open, css, close) => `${open}${await canonicalCss(css)}${close}`);
+    text = normalizeVoidElements(text);
     text = collapseWhitespace(text);
     return text;
   };
+}
+
+/** The HTML spec's void elements: a trailing `/` on their start tag is ignored by the parser. */
+const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+/** Raw-text elements the whitespace step leaves as written; so does the void-element step. */
+const RAW_TEXT_ELEMENTS = new Set(["pre", "textarea", "script", "style"]);
+/** Foreign content: a `/` there self-closes any element, so it is kept. */
+const FOREIGN_ELEMENTS = new Set(["svg", "math"]);
+
+interface StartTag {
+  name: string;
+  /** Where the tag's `>` is. */
+  end: number;
+  /** Where the self-closing `/` and the whitespace before it start, or -1. */
+  selfClosingAt: number;
+}
+
+const isSpace = (c: string | undefined) => c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
+
+/** Read a start tag whose name starts at `at`, as the HTML tokenizer does: quoted values may hold `/` and `>`. */
+function readStartTag(html: string, at: number): StartTag | null {
+  let i = at;
+  while (i < html.length && !isSpace(html[i]) && html[i] !== "/" && html[i] !== ">") i++;
+  const name = html.slice(at, i).toLowerCase();
+  let selfClosingAt = -1;
+  while (i < html.length) {
+    const c = html[i];
+    if (c === ">") return { name, end: i, selfClosingAt };
+    if (isSpace(c)) {
+      i++;
+      continue;
+    }
+    if (c === "/") {
+      let start = i;
+      while (start > at && isSpace(html[start - 1])) start--;
+      selfClosingAt = html[i + 1] === ">" ? start : -1;
+      i++;
+      continue;
+    }
+    selfClosingAt = -1;
+    // An attribute name, then an optional `=` and value.
+    while (i < html.length && !isSpace(html[i]) && html[i] !== "/" && html[i] !== ">" && html[i] !== "=") i++;
+    let j = i;
+    while (isSpace(html[j])) j++;
+    if (html[j] !== "=") continue;
+    j++;
+    while (isSpace(html[j])) j++;
+    const quote = html[j];
+    if (quote === '"' || quote === "'") {
+      const close = html.indexOf(quote, j + 1);
+      if (close === -1) return null;
+      i = close + 1;
+    } else {
+      // An unquoted value ends at whitespace or `>`: a `/` in it is part of the value.
+      i = j;
+      while (i < html.length && !isSpace(html[i]) && html[i] !== ">") i++;
+    }
+  }
+  return null;
+}
+
+/**
+ * Drop the trailing `/` of a void element's start tag (`<meta charset="utf-8"/>` →
+ * `<meta charset="utf-8">`): the HTML parser ignores it, so the DOM is the same. Inside
+ * `<svg>` and `<math>`, the `/` self-closes, so it is kept there; raw-text elements are
+ * left as written, as the whitespace step leaves them.
+ */
+export function normalizeVoidElements(html: string): string {
+  let out = "";
+  let copied = 0;
+  let foreignDepth = 0;
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) break;
+    if (html.startsWith("<!--", lt)) {
+      const close = html.indexOf("-->", lt + 4);
+      i = close === -1 ? html.length : close + 3;
+      continue;
+    }
+    if (html[lt + 1] === "!" || html[lt + 1] === "?") {
+      const close = html.indexOf(">", lt);
+      i = close === -1 ? html.length : close + 1;
+      continue;
+    }
+    if (html[lt + 1] === "/") {
+      const name = /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(lt, lt + 64))?.[1]?.toLowerCase();
+      if (name && FOREIGN_ELEMENTS.has(name) && foreignDepth > 0) foreignDepth--;
+      const close = html.indexOf(">", lt);
+      i = close === -1 ? html.length : close + 1;
+      continue;
+    }
+    if (!/[a-zA-Z]/.test(html[lt + 1] ?? "")) {
+      i = lt + 1;
+      continue;
+    }
+    const tag = readStartTag(html, lt + 1);
+    if (!tag) break;
+    i = tag.end + 1;
+    const selfClosing = tag.selfClosingAt !== -1;
+    if (foreignDepth > 0) {
+      if (FOREIGN_ELEMENTS.has(tag.name) && !selfClosing) foreignDepth++;
+      continue;
+    }
+    if (FOREIGN_ELEMENTS.has(tag.name)) {
+      if (!selfClosing) foreignDepth++;
+      continue;
+    }
+    if (RAW_TEXT_ELEMENTS.has(tag.name)) {
+      const close = new RegExp(`</${tag.name}\\s*>`, "i").exec(html.slice(i));
+      i = close ? i + close.index + close[0].length : html.length;
+      continue;
+    }
+    if (selfClosing && VOID_ELEMENTS.has(tag.name)) {
+      out += html.slice(copied, tag.selfClosingAt) + ">";
+      copied = tag.end + 1;
+    }
+  }
+  return out + html.slice(copied);
 }
 
 /** Elements whose content is kept byte for byte: whitespace there renders, runs or is CSS. */
