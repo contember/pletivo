@@ -4,6 +4,7 @@ import { watch } from "fs";
 import { scanRoutes } from "./router";
 import { matchRoute, resolveScriptRoute, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
+import { escapeStyleEnd } from "@pletivo/core/inline-style";
 import { getContentBaseDirs, initCollections, runWithBunContentRuntime } from "./content/collection";
 import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
 import { runInPage, runWithRenderTracking, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
@@ -526,7 +527,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       });
       const pageTsxCss = tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
       const combinedCss = [pageAstroCss, pageTsxCss].filter(Boolean).join("\n");
-      const scopedStyleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
+      const scopedStyleTag = combinedCss ? `<style>${escapeStyleEnd(combinedCss)}</style>` : "";
       const beforeHydration = astroHost?.injectedBeforeHydrationScripts
         ?.map((s) => `<script type="module">${s}</script>`)
         .join("\n") ?? "";
@@ -681,7 +682,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     const tsxCss = tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
     const combinedCss = [astroCss, tsxCss].filter(Boolean).join("\n");
     const styleLink = `<link rel="stylesheet" href="${withBase("/__styles.css")}">`;
-    const styleTag = combinedCss ? `<style>${combinedCss}</style>` : "";
+    const styleTag = combinedCss ? `<style>${escapeStyleEnd(combinedCss)}</style>` : "";
     const headInjection = `${styleLink}\n${styleTag}\n${hmrClientScript()}`;
     if (html.includes("</head>")) {
       html = html.replace("</head>", () => headInjection + "\n</head>");

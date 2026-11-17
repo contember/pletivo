@@ -2,6 +2,7 @@
 
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
 import { extractAstroScopes } from "@pletivo/core/astro-host/scoped-style";
+import { escapeStyleEnd } from "@pletivo/core/inline-style";
 import { pageDoctype, type PageDoctypeOptions } from "@pletivo/core/page-doctype";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 
@@ -95,7 +96,7 @@ export function finalizeHtml(
   const doctype = pageDoctype(html, doctypeOptions);
   const parts = css.filter(Boolean);
   if (parts.length > 0) {
-    const tag = parts.map((part) => `<style>${escapeInlineStyle(part)}</style>`).join("\n");
+    const tag = parts.map((part) => `<style>${escapeStyleEnd(part)}</style>`).join("\n");
     if (out.includes("</head>")) out = out.replace("</head>", () => tag + "\n</head>");
     else if (out.includes("</body>")) out = out.replace("</body>", () => tag + "\n</body>");
     else out = tag + "\n" + out;
@@ -103,10 +104,6 @@ export function finalizeHtml(
   const injected = injectedScriptTags(scripts);
   if (injected && out.includes("</head>")) out = out.replace("</head>", () => injected + "\n</head>");
   return doctype + out;
-}
-
-function escapeInlineStyle(css: string): string {
-  return css.replace(/<\/style/gi, "\\3C /style");
 }
 
 function injectedScriptTags(scripts: InjectedScripts | undefined): string {
