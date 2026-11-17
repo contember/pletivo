@@ -14,6 +14,8 @@ import { devCss } from "./css";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, getHoistedScriptByHash, getAllHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, getHoistedBundleCache, setHoistedBundleCache, HOISTED_URL_PATH } from "./astro-plugin";
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
+import { pageDoctype } from "@pletivo/core/page-doctype";
+import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import { bundlePageScripts } from "./astro-host/page-scripts";
 import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
@@ -505,6 +507,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       }
       // Each Astro island carries its scripts; the page keeps the first of each, in document order.
       html = finalizeIslandScripts(html);
+      const doctype = pageDoctype(html, { compressHTML: resolveCompressHTML(astroHost?.config), partial: Boolean(mod.partial) });
 
       // Inject dev stylesheet link + HMR / hydration scripts + any
       // integration-injected scripts (`injectScript('page', code)` from
@@ -547,9 +550,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         html += headInjection;
       }
 
-      if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
-        html = "<!DOCTYPE html>\n" + html;
-      }
+      html = doctype + html;
 
       // Run registered Vite plugins' transformIndexHtml hooks. Nua CMS
       // relies on this being available even if it currently calls its own
@@ -670,6 +671,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
     else return null;
     html = finalizeIslandScripts(html);
+    const doctype = pageDoctype(html, { compressHTML: resolveCompressHTML(astroHost?.config), partial: Boolean(mod.partial) });
 
     const astroCss = await getAstroCssForPage({
       entryFile: fullPath,
@@ -688,9 +690,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     } else {
       html += headInjection;
     }
-    if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
-      html = "<!DOCTYPE html>\n" + html;
-    }
+    html = doctype + html;
     return html;
   }
 

@@ -163,6 +163,17 @@ describe("isolate entry", () => {
       html: "<h1>home</h1>",
       renderedModules: [],
       tsxStyles: [],
+      partial: false,
+    });
+  });
+
+  test("reports a page module's truthy partial export", async () => {
+    const PARTIAL = "src/pages/partial.tsx";
+    const partialProgram = program({ [PARTIAL]: { default: () => "<p>part</p>", partial: 1 } });
+    expect(await callWith(partialProgram, renderRequest(PARTIAL, [], null))).toMatchObject({
+      status: "rendered",
+      html: "<p>part</p>",
+      partial: true,
     });
   });
 

@@ -1,7 +1,7 @@
 # 024 — Astro's official examples, built by pletivo
 
 **Priority:** S-tier
-**Status:** open; 4 of 18 match (0 at baseline); the 7 framework examples build and render islands, none matches yet
+**Status:** open; 5 of 18 match (0 at baseline) and 15 of 18 build, measured with Astro's DOCTYPE rule; the 6 framework examples differ only in the CSS text Bun's CSS pipeline rewrites
 **Area:** Astro compatibility, measured
 
 `tests/astro-examples/run.ts` builds every static-site example in
@@ -104,6 +104,22 @@ the build, naming the file (#51, #59). blog builds now.
 | with-nanostores | no | | | fails by name: Preact component |
 | with-tailwindcss | no | | | fails by name: `layout:` in a `.md` page's frontmatter |
 | with-vitest | yes | 2/2 | 1/1 | **match** |
+
+## Now (#79)
+
+The full harness, with Astro's DOCTYPE rule: **15 of 18 build, 5 of 18 match**.
+Compared with After, with-nanostores now builds (3/3 routes, 0/1 pages equal;
+its first difference is the CSS text in `<style>`), and with-mdx matches. The
+other matches are basics, container-with-vitest, minimal and with-vitest.
+starlog still fails on `astro:transitions`; with-markdoc and with-tailwindcss
+still fail by name.
+
+First differences, Astro vs pletivo:
+
+- blog, `about/index.html`: the inlined global sheet. Astro keeps
+  `--accent: #2337ff`, pletivo writes `--accent:#2337ff` (Bun's CSS pipeline).
+- portfolio, `404.html`: Astro links the sheet (`<link rel="stylesheet">`),
+  pletivo inlines it as `<style>`.
 
 ## Gaps and what closed them
 
@@ -228,10 +244,9 @@ framework-preact, -react, -solid, -svelte, -vue, -multiple:
   not by content, so a changed bundle keeps its URL. Deferred, with the hosting
   rule in the README: [025](025-island-content-hashed-urls.md).
 
-with-mdx: the island equals Astro's. The page around it does not: an MDX page
-without a layout gets no `<!DOCTYPE html>` or `<meta charset>`, the
-`components = { h1: Title }` export is not applied, headings get no `id`, and
-code blocks are not highlighted with Shiki.
+with-mdx: matches. The MDX page features (`<meta charset>`, the `components`
+export, heading ids, Shiki) came first, then Astro's DOCTYPE rule for every page
+of an Astro project (`pageDoctype` in `@pletivo/core`).
 
 Found on the way, not blocking an example:
 

@@ -86,6 +86,8 @@ export interface IsolateRenderedResponse {
   html: string;
   renderedModules: string[];
   tsxStyles: string[];
+  /** The page module exports a truthy `partial`: an Astro project gives it no doctype. */
+  partial: boolean;
 }
 
 export interface IsolateUnresolvedResponse {
@@ -154,7 +156,7 @@ export function parseIsolateReply(value: unknown): IsolateReply {
 function parseIsolateResponse(value: Record<string, unknown>): IsolateResponse {
   const { status } = value;
   if (status === "rendered") {
-    const { html, renderedModules, tsxStyles } = value;
+    const { html, renderedModules, tsxStyles, partial } = value;
     if (typeof html !== "string") throw new IsolateProtocolError("$.html", "expected a string");
     if (!isStringArray(renderedModules)) {
       throw new IsolateProtocolError("$.renderedModules", "expected a string array");
@@ -162,7 +164,8 @@ function parseIsolateResponse(value: Record<string, unknown>): IsolateResponse {
     if (!isStringArray(tsxStyles)) {
       throw new IsolateProtocolError("$.tsxStyles", "expected a string array");
     }
-    return { status, html, renderedModules, tsxStyles };
+    if (typeof partial !== "boolean") throw new IsolateProtocolError("$.partial", "expected a boolean");
+    return { status, html, renderedModules, tsxStyles, partial };
   }
   if (status === "unresolved") {
     const { reason } = value;

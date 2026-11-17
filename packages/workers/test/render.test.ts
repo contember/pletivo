@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { ArtifactFormatError, ArtifactVersionError } from "@pletivo/core/artifact";
+import { ARTIFACT_VERSION, ArtifactFormatError, ArtifactVersionError } from "@pletivo/core/artifact";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
 import {
   IsolateExecutionError,
@@ -175,6 +175,49 @@ describe("renderPage, .astro through the Worker Loader", () => {
     expect(modules.some((source) => source.includes("<p>plain</p>"))).toBe(true);
     expect(modules.some((source) => source.includes("pletivo at"))).toBe(false);
     expect(modules.some((source) => source.includes("function $$Layout"))).toBe(false);
+  });
+});
+
+describe("renderPage, an Astro project's doctype", () => {
+  const ASTRO_SITE = new Map<string, string>([
+    ["src/components/Layout.astro", `<html lang="en"><head><title>t</title></head><body><slot /></body></html>\n`],
+    ["src/pages/index.astro", `---\nimport Layout from "../components/Layout.astro";\n---\n<Layout><p>home</p></Layout>\n`],
+    ["src/pages/bare.astro", `<p>bare</p>\n<style>p { color: red; }</style>\n`],
+    ["src/pages/declared.astro", `<!doctype html>\n<html><body><p>declared</p></body></html>\n`],
+    ["src/pages/partial.astro", `---\nexport const partial = true;\n---\n<p>part</p>\n`],
+  ]);
+  const renderAstro = (pathname: string, compressHTML: boolean) =>
+    renderPage({
+      files: ASTRO_SITE,
+      pathname,
+      loader,
+      compiler,
+      artifact: loadProjectArtifact({
+        artifact: { version: ARTIFACT_VERSION, config: { compressHTML }, scripts: { headInline: [], page: [] }, modules: [], resolutions: [] },
+      }),
+    });
+
+  test("goes before a layout's <html>, with no newline under the default compressHTML", async () => {
+    expect((await renderAstro("/", true)).html).toStartWith('<!DOCTYPE html><html lang="en">');
+  });
+
+  test("is followed by a newline without compressHTML", async () => {
+    expect((await renderAstro("/", false)).html).toStartWith('<!DOCTYPE html>\n<html lang="en">');
+  });
+
+  test("goes before the CSS of a page without <html>", async () => {
+    expect((await renderAstro("/bare", true)).html).toStartWith("<!DOCTYPE html><style>");
+  });
+
+  test("is not added to a page that declares one", async () => {
+    // The compiler prints the page's `<!doctype html>` as `<!DOCTYPE html>`.
+    const { html } = await renderAstro("/declared", false);
+    expect(html).toStartWith("<!DOCTYPE html>");
+    expect(html.match(/<!doctype/gi)).toHaveLength(1);
+  });
+
+  test("is not added to a partial", async () => {
+    expect((await renderAstro("/partial", true)).html).toBe("<p>part</p>");
   });
 });
 

@@ -214,6 +214,7 @@ describe("isolate response boundary", () => {
       html: "<p>ok</p>",
       renderedModules: ["project:src/pages/index.astro"],
       tsxStyles: ["p { color: red; }"],
+      partial: false,
     };
     const unresolved: IsolateUnresolvedResponse = { status: "unresolved", reason: "no-static-path" };
     const paths: IsolatePathsResponse = {
@@ -233,15 +234,16 @@ describe("isolate response boundary", () => {
     const malformed: Array<{ name: string; value: unknown }> = [
       { name: "not an object", value: "rendered" },
       { name: "unknown status", value: { status: "redirect" } },
-      { name: "missing html", value: { status: "rendered", renderedModules: [], tsxStyles: [] } },
+      { name: "missing html", value: { status: "rendered", renderedModules: [], tsxStyles: [], partial: false } },
       {
         name: "non-string html",
-        value: { status: "rendered", html: 1, renderedModules: [], tsxStyles: [] },
+        value: { status: "rendered", html: 1, renderedModules: [], tsxStyles: [], partial: false },
       },
       {
         name: "non-string rendered module",
-        value: { status: "rendered", html: "", renderedModules: [1], tsxStyles: [] },
+        value: { status: "rendered", html: "", renderedModules: [1], tsxStyles: [], partial: false },
       },
+      { name: "missing partial", value: { status: "rendered", html: "", renderedModules: [], tsxStyles: [] } },
       { name: "bad unresolved reason", value: { status: "unresolved", reason: "redirected" } },
       {
         name: "malformed paths",

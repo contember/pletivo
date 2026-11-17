@@ -17,5 +17,4 @@ _astro/hoisted-[bundle:1].js
 index.html
 
 --- pletivo:conformance index.html ---
-<!DOCTYPE html>
-<html> <head><title>Base Path</title></head> <body> <h1>Base Path</h1> <script type="module">document.documentElement.dataset.externalLoaded="external-marker-from-disk";</script> <script type="module" src="/sub-app/_astro/hoisted-[bundle:1].js"></script></body></html>
+<!DOCTYPE html><html> <head><title>Base Path</title></head> <body> <h1>Base Path</h1> <script type="module">document.documentElement.dataset.externalLoaded="external-marker-from-disk";</script> <script type="module" src="/sub-app/_astro/hoisted-[bundle:1].js"></script></body></html>

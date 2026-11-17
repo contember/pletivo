@@ -42,6 +42,8 @@ import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from 
 import { recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { escapeRegex } from "@pletivo/core/escape-regex";
+import { pageDoctype } from "@pletivo/core/page-doctype";
+import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
 
 /** Shape a dynamic page module is used through: its default export + getStaticPaths. */
@@ -131,6 +133,8 @@ interface PageResult {
    * with no `</head>` gets the `<style>` block prepended to its body.
    */
   raw?: boolean;
+  /** The page module exports a truthy `partial`: an Astro project gives it no doctype. */
+  partial?: boolean;
 }
 
 export interface BuildOptions {
@@ -331,6 +335,11 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   function cssEntryOf(ctx: ReturnType<typeof makePageContext>, ownEntry: string): string {
     return rewriteEntries.get(ctx.__pageContext) ?? ownEntry;
   }
+  /** Whether the rewrite target's module is a partial, keyed like `rewriteEntries`: Astro reads the target's. */
+  const rewritePartials = new WeakMap<object, boolean>();
+  function partialOf(ctx: ReturnType<typeof makePageContext>, ownPartial: boolean): boolean {
+    return rewritePartials.get(ctx.__pageContext) ?? ownPartial;
+  }
 
   /**
    * Backs `Astro.rewrite` during a build: re-runs routing for `target` and
@@ -362,6 +371,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       // main render loop makes.
       if (route.file.endsWith(".md")) {
         rewriteEntries.set(from, fullPath);
+        rewritePartials.set(from, false);
         return htmlResponse(await renderMarkdownFile(fullPath, projectRoot));
       }
       await assertPageLayoutSupported(fullPath, projectRoot);
@@ -384,6 +394,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       if (html === null) continue;
       // A chain of rewrites ends at the innermost page.
       rewriteEntries.set(from, cssEntryOf(ctx, fullPath));
+      rewritePartials.set(from, partialOf(ctx, Boolean(mod.partial)));
       return htmlResponse(html);
     }
     return null;
@@ -684,6 +695,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       return null;
     }
     const pathname = toPathname(outPath, distDir);
+    let partial = Boolean(mod.partial);
     const outcome = await runIncrementalRender({
       routeKey,
       outFile,
@@ -700,6 +712,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
           renderComponent(mod.default, {}, ctx),
         );
+        partial = partialOf(ctx, partial);
         warnDroppedSsrWrites(route.file, ctx, mod);
         return { html: html ?? "", renderedModules, tsxStyles, cssEntry: rewriteEntries.get(ctx.__pageContext) };
       },
@@ -709,7 +722,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       return null;
     }
     const cssEntry = outcome.cssEntry ?? fullPath;
-    return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
+    return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead, partial };
   }
   const staticResults = await Promise.all(staticRoutes.map((route) => renderStaticRoute(route, false)));
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
@@ -747,8 +760,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     // the same files.
     const assumeDepsValid =
       cache !== null && dynamicMods.get(route.file) === undefined && cache.getDynamicRoute(route.file) !== undefined;
-    let modPromise: Promise<{ default?: unknown }> | null = null;
-    const getMod = (): Promise<{ default?: unknown }> => {
+    let modPromise: Promise<{ default?: unknown; partial?: unknown }> | null = null;
+    const getMod = (): Promise<{ default?: unknown; partial?: unknown }> => {
       if (!modPromise) {
         const prefetched = dynamicMods.get(route.file);
         modPromise = prefetched
@@ -817,7 +830,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
       const cssEntry = outcome.cssEntry ?? fullPath;
-      return { file: route.file, params, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
+      // A cached slug is not written again, and its module may not be loaded.
+      const partial = outcome.source === "rendered" && partialOf(ctx, Boolean((await getMod()).partial));
+      return { file: route.file, params, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead, partial };
     };
     dynamicSlugRenderers.set(route.file, renderSlug);
     for (const { params } of paramSets) {
@@ -896,6 +911,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         html,
         renderedModules,
         tsxStyles,
+        partial: partialOf(ctx, Boolean(mod.partial)),
       });
     }
   }
@@ -943,6 +959,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
               html,
               renderedModules,
               tsxStyles,
+              partial: partialOf(ctx, Boolean(mod.partial)),
             });
           }
         }
@@ -965,7 +982,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const result404 = await render404Page(pagesDir, ctx404);
   if (result404) {
     const cssEntry404 = cssEntryOf(ctx404, result404.entry);
-    results.push({ file: result404.file, entryFile: cssEntry404, label: result404.file, pageEntry: cssEntry404, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles });
+    results.push({ file: result404.file, entryFile: cssEntry404, label: result404.file, pageEntry: cssEntry404, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles, partial: partialOf(ctx404, result404.partial) });
   }
 
   // Deduplicate by output path — later entries win. The main use case
@@ -1047,7 +1064,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
       return;
     }
-    const { size, cssHead } = await writeHtml(result.outPath, inlineHoistedScripts(result.html, inlinedScripts), base, stylesheetsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
+    const { size, cssHead } = await writeHtml(result.outPath, inlineHoistedScripts(result.html, inlinedScripts), base, stylesheetsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile, result.partial);
     totalSize += size;
     renderedCount++;
     // Now that we know the final byte count and CSS markup, patch them onto
@@ -1572,12 +1589,14 @@ async function writeHtml(
   renderedModules?: Set<string>,
   tsxStyles?: string[],
   entryFile?: string,
+  partial = false,
 ): Promise<{ size: number; cssHead: CachedCssHead | null }> {
   // Each Astro island carries its scripts; the page keeps the first of each, in document order.
   html = finalizeIslandScripts(html);
-  if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
-    html = "<!DOCTYPE html>\n" + html;
-  }
+  const { getHost } = await import("./astro-host");
+  const host = getHost();
+  // Decided on the rendered page, prepended last: the CSS below may be prepended to a page without `<head>`.
+  const doctype = pageDoctype(html, { compressHTML: resolveCompressHTML(host?.config), partial });
 
   // Rewrite references to hashed public assets (e.g. /style.css → /style.abc123.css).
   // Done before CSS/island injection so the injected tags (which use already-hashed
@@ -1625,8 +1644,6 @@ async function writeHtml(
 
   // Integration-injected scripts (from `injectScript('page', code)` etc.)
   // If any integration injected head scripts, emit them into every page.
-  const { getHost } = await import("./astro-host");
-  const host = getHost();
   if (host) {
     const injected = [
       ...host.injectedHeadScripts.map((s) => `<script>${s}</script>`),
@@ -1651,6 +1668,7 @@ async function writeHtml(
       html += hydrationBlock;
     }
   }
+  html = doctype + html;
 
   const bytes = Buffer.byteLength(html, "utf-8");
   await timeAsync("fsWrite", async () => {
@@ -1753,7 +1771,7 @@ function findCssHead(html: string, fragment: string): { start: number; end: numb
 async function render404Page(
   pagesDir: string,
   pageContext: { __pageContext: PageContext },
-): Promise<{ file: string; entry: string; html: string; renderedModules: Set<string>; tsxStyles: string[] } | null> {
+): Promise<{ file: string; entry: string; html: string; renderedModules: Set<string>; tsxStyles: string[]; partial: boolean } | null> {
   for (const ext of [".tsx", ".jsx", ".astro"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
@@ -1767,7 +1785,7 @@ async function render404Page(
           renderComponent(mod.default, {}, pageContext),
         );
         if (html) {
-          return { file: `404${ext}`, entry: fullPath, html, renderedModules, tsxStyles };
+          return { file: `404${ext}`, entry: fullPath, html, renderedModules, tsxStyles, partial: Boolean(mod.partial) };
         }
       }
       break;
