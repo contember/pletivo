@@ -69,11 +69,27 @@ export interface ViteUserConfig {
   [key: string]: unknown;
 }
 
+export type ResolveIdHandler = (id: string, importer?: string) => ResolveIdResult | Promise<ResolveIdResult>;
+export type LoadHandler = (id: string) => LoadResult | null | undefined | Promise<LoadResult | null | undefined>;
+
+/** A RegExp, or a glob that Vite resolves against the working directory unless it is absolute or starts with `**`. */
+export type HookIdPattern = string | RegExp;
+export type HookIdFilter =
+  | HookIdPattern
+  | HookIdPattern[]
+  | { include?: HookIdPattern | HookIdPattern[]; exclude?: HookIdPattern | HookIdPattern[] };
+
+/** Rollup's object form of a hook. Vite 6.3+ runs `handler` only for an id `filter.id` matches. */
+export interface ObjectHook<Handler> {
+  handler: Handler;
+  filter?: { id?: HookIdFilter };
+}
+
 export interface ViteLikePlugin {
   name: string;
   enforce?: "pre" | "post";
-  resolveId?(id: string, importer?: string): ResolveIdResult | Promise<ResolveIdResult>;
-  load?(id: string): LoadResult | null | undefined | Promise<LoadResult | null | undefined>;
+  resolveId?: ResolveIdHandler | ObjectHook<ResolveIdHandler>;
+  load?: LoadHandler | ObjectHook<LoadHandler>;
   transform?(
     code: string,
     id: string,

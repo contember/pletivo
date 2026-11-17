@@ -21,7 +21,15 @@ import { bundlePageScripts } from "./astro-host/page-scripts";
 import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
-import { initAstroHost, dispatchMiddlewares, bundleVirtualEntry, type SetupFailure } from "./astro-host";
+import {
+  initAstroHost,
+  dispatchMiddlewares,
+  bundleVirtualEntry,
+  codeFromLoadResult,
+  pluginLoad,
+  pluginResolveId,
+  type SetupFailure,
+} from "./astro-host";
 import { resolveConfigWatchFiles, watchConfigFiles, type ConfigWatcher } from "./dev-config-watch";
 import { createSnapshotStore } from "./dev-snapshots";
 import { createIdleRecycler, isHmrTransportPath, resolveIdleRecycleMs, type IdleRecycler } from "./dev-idle-recycle";
@@ -1449,30 +1457,24 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       // do similar source rewrites work drop-in.
       if (astroHost && /^(\/@|\/virtual:)/.test(pathname)) {
         for (const p of astroHost.server.__plugins) {
-          const resolveId = (p as { resolveId?: (id: string) => unknown }).resolveId;
-          if (typeof resolveId !== "function") continue;
-          let resolved: unknown;
+          let resolved: string | null;
           try {
-            resolved = await resolveId(pathname);
+            resolved = await pluginResolveId(p, pathname);
           } catch {
             continue;
           }
-          if (typeof resolved !== "string") continue;
+          if (resolved === null) continue;
 
           // First try plugin-provided load() for pre-bundled content
-          const load = (p as { load?: (id: string) => unknown }).load;
-          if (typeof load === "function") {
-            try {
-              const loaded = await load(resolved);
-              if (loaded != null) {
-                const code = typeof loaded === "string" ? loaded : (loaded as { code: string }).code;
-                return new Response(code, {
-                  headers: { "Content-Type": "application/javascript; charset=utf-8" },
-                });
-              }
-            } catch {
-              // fall through to bundling path
+          try {
+            const loaded = await pluginLoad(p, resolved);
+            if (loaded !== null) {
+              return new Response(codeFromLoadResult(loaded), {
+                headers: { "Content-Type": "application/javascript; charset=utf-8" },
+              });
             }
+          } catch {
+            // fall through to bundling path
           }
 
           // No (usable) load() hook — resolved id is probably an
