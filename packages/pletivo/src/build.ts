@@ -1157,7 +1157,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // pletivo's own sitemap is for pletivo-native projects. An Astro project
   // gets one only from an integration (@astrojs/sitemap), as under Astro.
   if (!astroHost) {
-    await generateSitemap(distDir, base);
+    // Pages this build wrote, not a dist/ scan: public/ copies, asset directories
+    // and an incremental build's not-yet-pruned orphans are not pages.
+    const pageFiles = dedupedResults.filter((r) => !r.raw).map((r) => path.relative(distDir, r.outPath));
+    await generateSitemap(distDir, base, pageFiles);
   }
 
   // Run Astro integration `astro:build:done` hooks. Integrations like

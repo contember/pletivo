@@ -2,15 +2,18 @@ import path from "path";
 import fs from "fs/promises";
 
 /**
- * Generate sitemap.xml from a list of built page paths
+ * Generate sitemap.xml from the HTML pages the build wrote.
+ * `pageFiles` are paths relative to `distDir`, e.g. `blog/post/index.html`.
  */
 export async function generateSitemap(
   distDir: string,
   base: string,
+  pageFiles: readonly string[],
   siteUrl?: string,
 ): Promise<void> {
-  // Scan dist/ for all HTML files
-  const htmlFiles = await scanHtmlFiles(distDir, "");
+  const htmlFiles = pageFiles
+    .map((file) => file.split(path.sep).join("/"))
+    .filter((file) => path.posix.basename(file) !== "404.html");
 
   const urls = htmlFiles.map((file) => {
     // Convert file path to URL
@@ -22,11 +25,7 @@ export async function generateSitemap(
     return fullUrl;
   });
 
-  // `scanHtmlFiles` walks with `fs.readdir`, which hands back whatever order
-  // the filesystem holds — the same build lands in a different order on tmpfs
-  // than on ext4. Sort so the file's bytes depend on the site, not on the disk
-  // it was built on. Sitemap consumers treat `<url>` order as meaningless, so
-  // any total order will do; sorted URLs are the one a reader can predict.
+  // Sorted so the file's bytes depend on the site, not on route discovery or getStaticPaths order.
   urls.sort();
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -36,24 +35,6 @@ ${urls.map((url) => `  <url>\n    <loc>${escapeXml(url)}</loc>\n  </url>`).join(
 `;
 
   await fs.writeFile(path.join(distDir, "sitemap.xml"), xml);
-}
-
-async function scanHtmlFiles(dir: string, prefix: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) {
-      // Skip _islands and assets directories
-      if (entry.name.startsWith("_") || entry.name === "assets") continue;
-      files.push(...await scanHtmlFiles(path.join(dir, entry.name), rel));
-    } else if (entry.name.endsWith(".html") && entry.name !== "404.html") {
-      files.push(rel);
-    }
-  }
-
-  return files;
 }
 
 function escapeXml(s: string): string {
