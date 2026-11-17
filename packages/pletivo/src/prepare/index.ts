@@ -41,6 +41,10 @@ export interface PrepareOptions {
 
 const SKIPPED_DIRS = new Set(["node_modules", "dist", ".astro", ".wrangler", ".pletivo"]);
 
+function isSkippedDotEntry(segment: string): boolean {
+  return segment.startsWith(".") && segment !== ".well-known";
+}
+
 export async function prepare(root: string, options: PrepareOptions = {}): Promise<PreparedSite> {
   const projectRoot = realpathSync(path.resolve(root));
   // Digest before loading: an edit racing prepare must read as stale, never as current.
@@ -121,8 +125,10 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
     );
   }
   const sources: ProjectImportSource[] = [];
-  for await (const rel of new Glob("**/*").scan({ cwd: physicalBase, dot: false })) {
-    if (rel.split("/").some((segment) => SKIPPED_DIRS.has(segment))) continue;
+  // `dot`, so `src/pages/.well-known` (a route directory, as in Astro) is carried; other dot entries are not.
+  for await (const rel of new Glob("**/*").scan({ cwd: physicalBase, dot: true })) {
+    const segments = rel.split("/");
+    if (segments.some((segment) => SKIPPED_DIRS.has(segment) || isSkippedDotEntry(segment))) continue;
     const projectPath = path.posix.join(physicalRelative, rel);
     const file = path.join(physicalBase, rel);
     const source = await Bun.file(file).text();

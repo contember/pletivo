@@ -451,6 +451,22 @@ describe("pletivo prepare", () => {
     expect(moduleById(site, plugins).source).toContain("remarkShout");
   });
 
+  test("carries a src/pages/.well-known page's imports and skips other dot entries", async () => {
+    const copied = await copyFixtures(await temporaryDirectory());
+    const files: Record<string, string> = {
+      "src/pages/.well-known/about.tsx": `import { value } from "parent-a";\nexport default () => <p>{value}</p>;\n`,
+      // Scanned, its import would fail prepare as unresolved.
+      "src/.hidden/x.ts": `import "not-installed-anywhere";\n`,
+      "src/pages/.well-known/.draft.ts": `import "not-installed-anywhere";\n`,
+    };
+    for (const [file, source] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(copied, file)), { recursive: true });
+      await fs.writeFile(path.join(copied, file), source);
+    }
+    const site = await prepare(copied);
+    expect(targetFor(site, "project:src/pages/.well-known/about.tsx", "parent-a")).toStartWith("npm:");
+  });
+
   test("emits the canonical site as JSON and as a TypeScript module", async () => {
     const site = await prepare(project);
     const directory = await temporaryDirectory();
