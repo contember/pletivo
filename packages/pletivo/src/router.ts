@@ -10,7 +10,8 @@ export async function scanRoutes(pagesDir: string): Promise<Route[]> {
   const glob = new Glob("**/*.{tsx,jsx,ts,js,astro,mdx,md}");
   const routes: Route[] = [];
 
-  for await (const file of glob.scan(pagesDir)) {
+  // `dot`, so `isRouteFile` decides on dot entries, as it lets `.well-known` through.
+  for await (const file of glob.scan({ cwd: pagesDir, dot: true })) {
     if (!isRouteFile(file)) continue;
     routes.push(parseRoute(file));
   }

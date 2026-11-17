@@ -30,6 +30,34 @@ describe("isRouteFile", () => {
     expect(isRouteFile("snake_case.astro")).toBe(true);
     expect(isRouteFile("[_id].astro")).toBe(true);
   });
+
+  test("a .-prefixed file is not a route", () => {
+    expect(isRouteFile(".hidden.astro")).toBe(false);
+    expect(isRouteFile("blog/.draft.md")).toBe(false);
+    expect(isRouteFile(".data.json.ts")).toBe(false);
+  });
+
+  test("nothing under a .-prefixed directory is a route, at any depth", () => {
+    expect(isRouteFile(".hidden/x.astro")).toBe(false);
+    expect(isRouteFile("blog/.drafts/deep/post.md")).toBe(false);
+  });
+
+  test("a .well-known directory is the exception, at any depth", () => {
+    expect(isRouteFile(".well-known/security.txt.ts")).toBe(true);
+    expect(isRouteFile(".well-known/about.astro")).toBe(true);
+    expect(isRouteFile("docs/.well-known/index.md")).toBe(true);
+  });
+
+  test("inside .well-known, the . and _ rules still apply to each name", () => {
+    expect(isRouteFile(".well-known/.hidden.txt.ts")).toBe(false);
+    expect(isRouteFile(".well-known/_draft.astro")).toBe(false);
+    expect(isRouteFile(".well-known.astro")).toBe(false);
+  });
+
+  test("names with `.` past the first character are routes", () => {
+    expect(isRouteFile("robots.txt.ts")).toBe(true);
+    expect(isRouteFile("v1.2/notes.md")).toBe(true);
+  });
 });
 
 describe("parseRoute", () => {

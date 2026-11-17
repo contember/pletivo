@@ -61,4 +61,34 @@ describe("scanRoutes", () => {
       await fs.rm(pages, { recursive: true, force: true });
     }
   });
+
+  test("skips .-prefixed files and directories except .well-known, as Astro does", async () => {
+    const pages = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-router-scan-"));
+    try {
+      const files = [
+        "index.astro",
+        ".hidden.astro",
+        ".hidden/x.astro",
+        "blog/.drafts/post.md",
+        ".well-known/security.txt.ts",
+        ".well-known/about.astro",
+        ".well-known/.hidden.txt.ts",
+        ".well-known/_draft.astro",
+        "_draft.astro",
+      ];
+      for (const file of files) {
+        await fs.mkdir(path.dirname(path.join(pages, file)), { recursive: true });
+        await fs.writeFile(path.join(pages, file), "");
+      }
+      const routes = await scanRoutes(pages);
+      expect(routes.map((r) => r.file).sort()).toEqual([
+        ".well-known/about.astro",
+        ".well-known/security.txt.ts",
+        "index.astro",
+      ]);
+      expect(routes.find((r) => r.file === ".well-known/security.txt.ts")?.isEndpoint).toBe(true);
+    } finally {
+      await fs.rm(pages, { recursive: true, force: true });
+    }
+  });
 });
