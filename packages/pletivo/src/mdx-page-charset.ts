@@ -2,6 +2,7 @@
 // gets `<meta charset="utf-8">` ahead of its content, as a Markdown page does. pletivo refuses a page
 // with `layout:` frontmatter, so Astro's layout branch, which skips the charset, has no counterpart.
 import type { Transformer } from "unified";
+import { isRouteFile } from "@pletivo/core/router";
 
 const EXPORT_CONST_PARTIAL_TRUE = /export\s+const\s+partial\s*=\s*true/;
 
@@ -24,7 +25,7 @@ function shouldAddCharset(children: unknown[], filePath: string, pagesDir: strin
   if (partial) return false;
 
   if (!filePath.startsWith(pagesDir)) return false;
-  if (filePath.slice(pagesDir.length).split("/").some((part) => part.startsWith("_"))) return false;
+  if (!isRouteFile(filePath.slice(pagesDir.length))) return false;
 
   // A leading component is taken for a wrapping layout, which writes its own `<head>`.
   for (const node of children) {

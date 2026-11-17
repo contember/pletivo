@@ -1,5 +1,36 @@
 import { describe, test, expect } from "bun:test";
-import { parseRoute, matchRoute, resolveScriptRoute, routeToOutputPath, findRoute } from "@pletivo/core/router";
+import { isRouteFile, parseRoute, matchRoute, resolveScriptRoute, routeToOutputPath, findRoute } from "@pletivo/core/router";
+
+describe("isRouteFile", () => {
+  test("a _-prefixed file is not a route", () => {
+    expect(isRouteFile("_draft.md")).toBe(false);
+    expect(isRouteFile("blog/_draft.astro")).toBe(false);
+  });
+
+  test("nothing under a _-prefixed directory is a route, at any depth", () => {
+    expect(isRouteFile("_components/Card.astro")).toBe(false);
+    expect(isRouteFile("blog/_drafts/post.md")).toBe(false);
+    expect(isRouteFile("_lib/deep/index.tsx")).toBe(false);
+  });
+
+  test("a _-prefixed dynamic route is not a route", () => {
+    expect(isRouteFile("_[slug].astro")).toBe(false);
+    expect(isRouteFile("_[...rest].astro")).toBe(false);
+  });
+
+  test("a _-prefixed endpoint is not a route", () => {
+    expect(isRouteFile("_data.json.ts")).toBe(false);
+    expect(isRouteFile("api/_feed.xml.js")).toBe(false);
+  });
+
+  test("its siblings, and names with `_` past the first character, are routes", () => {
+    expect(isRouteFile("draft.md")).toBe(true);
+    expect(isRouteFile("blog/[slug].astro")).toBe(true);
+    expect(isRouteFile("data.json.ts")).toBe(true);
+    expect(isRouteFile("snake_case.astro")).toBe(true);
+    expect(isRouteFile("[_id].astro")).toBe(true);
+  });
+});
 
 describe("parseRoute", () => {
   test("static index page", () => {

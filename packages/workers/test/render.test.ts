@@ -92,6 +92,32 @@ describe("projectRoutes", () => {
   test("ignores files outside the pages directory", () => {
     expect(projectRoutes(SITE).some((route) => route.file.includes("Layout"))).toBe(false);
   });
+
+  describe("_-prefixed files and directories, which are not routes, as in Astro", () => {
+    const files = new Map<string, string>([
+      ["src/pages/index.astro", `---\nimport Card from "./_components/Card.astro";\n---\n<html><body><Card /></body></html>\n`],
+      ["src/pages/_components/Card.astro", `<p class="card">card</p>\n`],
+      ["src/pages/_draft.astro", `<html><body><p>draft</p></body></html>\n`],
+      ["src/pages/_[slug].astro", `<html><body><p>hidden</p></body></html>\n`],
+      ["src/pages/_feed.xml.ts", `export function GET() {\n  return new Response("<feed/>");\n}\n`],
+      ["src/pages/blog/_drafts/next.md", "# Next\n"],
+      ["src/pages/blog/[slug].astro", `<html><body><p>post</p></body></html>\n`],
+    ]);
+
+    test("are left out, their siblings kept", () => {
+      expect(projectRoutes(files).map((route) => route.file)).toEqual(["index.astro", "blog/[slug].astro"]);
+    });
+
+    test("do not render at their own pathname", async () => {
+      for (const pathname of ["/_draft", "/_components/Card", "/blog/_drafts/next", "/_feed.xml"]) {
+        await expect(renderPage({ files, pathname, loader, compiler })).rejects.toBeInstanceOf(RouteNotFoundError);
+      }
+    });
+
+    test("can still be imported by a page", async () => {
+      expect((await renderPage({ files, pathname: "/", loader, compiler })).html).toContain('<p class="card">card</p>');
+    });
+  });
 });
 
 describe("renderPage, an .astro component reached through JSX", () => {

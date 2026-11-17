@@ -1,4 +1,6 @@
 import { describe, test, expect } from "bun:test";
+import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import { scanRoutes } from "../../packages/pletivo/src/router";
 
@@ -34,5 +36,29 @@ describe("scanRoutes", () => {
     const slugRoute = routes.find((r) => r.file === "blog/[slug].tsx");
     expect(slugRoute).toBeDefined();
     expect(slugRoute!.isDynamic).toBe(true);
+  });
+
+  test("skips _-prefixed files and directories, as Astro does", async () => {
+    const pages = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-router-scan-"));
+    try {
+      const files = [
+        "index.astro",
+        "_draft.md",
+        "_components/Card.astro",
+        "blog/[slug].astro",
+        "blog/_drafts/post.md",
+        "_[id].astro",
+        "feed.xml.ts",
+        "_data.json.ts",
+      ];
+      for (const file of files) {
+        await fs.mkdir(path.dirname(path.join(pages, file)), { recursive: true });
+        await fs.writeFile(path.join(pages, file), "");
+      }
+      const routes = await scanRoutes(pages);
+      expect(routes.map((r) => r.file).sort()).toEqual(["blog/[slug].astro", "feed.xml.ts", "index.astro"]);
+    } finally {
+      await fs.rm(pages, { recursive: true, force: true });
+    }
   });
 });
