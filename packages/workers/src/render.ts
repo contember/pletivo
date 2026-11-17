@@ -283,6 +283,17 @@ export class ContentUnavailableError extends Error {
   }
 }
 
+/** A content project whose `srcDir` is not inside its `rootDir`: collections could not be located. */
+export class ContentLayoutError extends Error {
+  constructor(readonly srcDir: string, readonly rootDir: string) {
+    super(
+      `[pletivo-workers] srcDir ${JSON.stringify(srcDir)} is not inside rootDir ${JSON.stringify(rootDir)}, ` +
+        "so a collection's directory under srcDir has no path from the project root",
+    );
+    this.name = "ContentLayoutError";
+  }
+}
+
 /** The route matched, but this host cannot render that kind of page. */
 export class UnsupportedRouteError extends Error {
   constructor(readonly file: string, reason: string) {
@@ -775,11 +786,11 @@ async function callIsolate(input: {
   // Loader serializes the callback closure; only this immutable DTO may cross.
   const stub = options.loader.get(key, immutableCodeFactory(workerCode));
 
+  // Before the handle opens: a layout it cannot read must not leave one open.
+  const contentLayout = content ? { rootDir: projectRoot(options), srcDir: srcDirInRoot(options) } : null;
   // Opened per render: the isolate outlives the request, so the ref travels with it.
   const handle = content ? content.store.open(options.files, options.assets, content.owner) : null;
-  const requestBody: IsolateRequest = handle
-    ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options) }
-    : body;
+  const requestBody: IsolateRequest = handle ? { ...body, contentRef: handle.ref, ...contentLayout } : body;
   const request = new Request("http://pletivo.invalid/render", {
     method: "POST",
     body: JSON.stringify(requestBody),
@@ -849,6 +860,16 @@ function srcDirOf(options: ProjectLayout): string {
  */
 export function projectRoot(options: ProjectLayout): string {
   return options.rootDir ?? parentDir(srcDirOf(options));
+}
+
+/** `srcDir` relative to the project root. */
+function srcDirInRoot(options: ProjectLayout): string {
+  const root = projectRoot(options);
+  const src = srcDirOf(options);
+  if (root === "") return src;
+  if (src === root) return ".";
+  if (src.startsWith(root + "/")) return src.slice(root.length + 1);
+  throw new ContentLayoutError(src, root);
 }
 
 async function renderModule(input: {

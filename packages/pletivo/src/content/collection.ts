@@ -31,20 +31,21 @@ import {
 } from "../image";
 import { recordRuntimeDep } from "../incremental/dep-tracker";
 
-const CONTENT_CONFIG_CANDIDATES = [
-  "src/content.config.ts",
-  "src/content.config.mts",
-  "src/content.config.mjs",
-  "src/content.config.js",
-  "src/content/config.ts",
-  "src/content/config.mts",
-  "src/content/config.mjs",
-  "src/content/config.js",
+/** Relative to `srcDir`, in the order Astro looks for them. */
+export const CONTENT_CONFIG_CANDIDATES = [
+  "content.config.ts",
+  "content.config.mts",
+  "content.config.mjs",
+  "content.config.js",
+  "content/config.ts",
+  "content/config.mts",
+  "content/config.mjs",
+  "content/config.js",
 ];
 
-async function findContentConfigPath(projectRoot: string): Promise<string | null> {
+async function findContentConfigPath(projectRoot: string, srcDir: string): Promise<string | null> {
   for (const candidate of CONTENT_CONFIG_CANDIDATES) {
-    const configPath = path.join(projectRoot, candidate);
+    const configPath = path.join(projectRoot, srcDir, candidate);
     if (await Bun.file(configPath).exists()) return configPath;
   }
   return null;
@@ -105,8 +106,8 @@ const bunContentHost: ContentHost = {
 
   resolveDir: (projectRoot, base) => path.resolve(projectRoot, base),
 
-  async loadConfig(projectRoot, version) {
-    const configPath = await findContentConfigPath(projectRoot);
+  async loadConfig(projectRoot, version, srcDir) {
+    const configPath = await findContentConfigPath(projectRoot, srcDir);
     if (!configPath) return {};
     const mod = await import(configPath + `?v=${version}`);
     return mod.collections || {};

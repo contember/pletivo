@@ -305,6 +305,25 @@ describe("incremental detection #6 — tsconfig/package.json in configHash", () 
 		expect(after.stdout).toMatch(/1 rendered \+ 0 cached/);
 	});
 
+	it("editing the content config under a custom srcDir busts the cache", async () => {
+		await write("pletivo.config.ts", `export default { srcDir: "app" };`);
+		await write("app/content.config.ts", `export const collections = {};`);
+		await write("app/pages/index.ts", `
+			export default function Home() {
+				return { __html: '<!DOCTYPE html><html><head><title>Home</title></head><body><h1>Home</h1></body></html>' };
+			}
+		`);
+
+		expect(runBuild().status).toBe(0);
+		expect(runBuild().stdout).toMatch(/1 cached/);
+
+		await write("app/content.config.ts", `export const collections = {}; // edited`);
+
+		const after = runBuild();
+		expect(after.status).toBe(0);
+		expect(after.stdout).toMatch(/1 rendered \+ 0 cached/);
+	});
+
 	it("editing svelte.config.js busts the cache", async () => {
 		// The Svelte compiler reads it once per build; its preprocessors and options change every component.
 		await write("svelte.config.js", `export default { compilerOptions: {} };`);

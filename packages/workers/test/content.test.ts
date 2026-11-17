@@ -17,6 +17,7 @@ import {
 import { CONTENT_MODULE_NAME } from "../src/generated/runtime-modules.ts";
 import type { ProjectFiles } from "../src/project-store.ts";
 import {
+  ContentLayoutError,
   ContentUnavailableError,
   projectPaths,
   renderPage,
@@ -384,6 +385,90 @@ const { Content } = await intro.render();
       ]);
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  test("read a collection without a loader from <srcDir>/content/<name>", async () => {
+    const files = new Map<string, string>([
+      [
+        "app/content.config.ts",
+        `import { defineCollection } from "astro:content";
+export const collections = { docs: defineCollection({}) };
+`,
+      ],
+      [
+        "app/pages/index.astro",
+        `---
+import { getCollection } from "astro:content";
+const docs = await getCollection("docs");
+---
+<html><body><ul>{docs.map((doc) => <li>{doc.data.title}</li>)}</ul></body></html>
+`,
+      ],
+      ["app/content/docs/intro.md", note("Intro")],
+      // What the old hardcoded `src/` would have read.
+      ["src/content/docs/stray.md", note("Stray")],
+    ]);
+    const page = await renderPage({
+      files,
+      pagesDir: "app/pages",
+      srcDir: "app",
+      pathname: "/",
+      loader,
+      compiler,
+      content: contentAccess(),
+      executionNamespace: EXECUTION_NAMESPACE,
+    });
+    expect(page.html).toContain("<ul><li>Intro</li></ul>");
+  });
+
+  test("read a legacy collection under a nested project root's srcDir", async () => {
+    const files = new Map<string, string>([
+      ["site/app/content.config.ts", `import { defineCollection } from "astro:content";
+export const collections = { docs: defineCollection({}) };
+`],
+      ["site/app/pages/index.astro", `---
+import { getCollection } from "astro:content";
+const docs = await getCollection("docs");
+---
+<html><body><ul>{docs.map((doc) => <li>{doc.data.title}</li>)}</ul></body></html>
+`],
+      ["site/app/content/docs/intro.md", note("Intro")],
+      ["site/src/content/docs/stray.md", note("Stray")],
+    ]);
+    const page = await renderPage({
+      files,
+      pagesDir: "site/app/pages",
+      srcDir: "site/app",
+      rootDir: "site",
+      pathname: "/",
+      loader,
+      compiler,
+      content: contentAccess(),
+      executionNamespace: EXECUTION_NAMESPACE,
+    });
+    expect(page.html).toContain("<ul><li>Intro</li></ul>");
+  });
+
+  test("refuse a content project whose srcDir is outside its rootDir, opening no content handle", async () => {
+    const access = contentAccess();
+    const opened = spyOn(access.store, "open");
+    try {
+      await expect(
+        renderPage({
+          files: project({ "a.md": note("Alpha") }),
+          srcDir: "src",
+          rootDir: "site",
+          pathname: "/",
+          loader,
+          compiler,
+          content: access,
+          executionNamespace: EXECUTION_NAMESPACE,
+        }),
+      ).rejects.toThrow(ContentLayoutError);
+      expect(opened).not.toHaveBeenCalled();
+    } finally {
+      opened.mockRestore();
     }
   });
 

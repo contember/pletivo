@@ -43,6 +43,8 @@ export interface IsolatePathRoute {
 interface IsolateRequestBase {
   contentRef?: string;
   rootDir?: string;
+  /** The source directory relative to `rootDir`: where a legacy collection's `content/<name>` sits. */
+  srcDir?: string;
   /** The origin `astro:i18n` helpers build absolute URLs with, as the page's render would. */
   site?: string;
 }

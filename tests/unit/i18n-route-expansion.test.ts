@@ -93,17 +93,23 @@ describe("buildAstroRoutes with i18n", () => {
   test("tags non-localized route when i18n is absent", () => {
     const routes = buildAstroRoutes(
       [{ route: parseRoute("about.astro") }],
-      { ...baseConfig },
+      { ...baseConfig }, "src",
     );
     expect(routes).toHaveLength(1);
     expect(routes[0]!.pathname).toBe("about");
     expect(routes[0]!.locale).toBeUndefined();
+    expect(routes[0]!.component).toBe("src/pages/about.astro");
+  });
+
+  test("component path is under the project's srcDir", () => {
+    const routes = buildAstroRoutes([{ route: parseRoute("blog/post.astro") }], { ...baseConfig }, "./app/");
+    expect(routes[0]!.component).toBe("app/pages/blog/post.astro");
   });
 
   test("root file tagged with default locale under prefixDefault=false", () => {
     const routes = buildAstroRoutes(
       [{ route: parseRoute("about.astro") }],
-      { ...baseConfig, i18n: i18nSimple },
+      { ...baseConfig, i18n: i18nSimple }, "src",
     );
     expect(routes[0]!.locale).toBe("en");
     expect(routes[0]!.pathname).toBe("about");
@@ -115,7 +121,7 @@ describe("buildAstroRoutes with i18n", () => {
         { route: parseRoute("pt/about.astro") },
         { route: parseRoute("it/about.astro") },
       ],
-      { ...baseConfig, i18n: i18nSimple },
+      { ...baseConfig, i18n: i18nSimple }, "src",
     );
     expect(routes[0]!.locale).toBe("pt");
     expect(routes[0]!.pathname).toBe("pt/about");
@@ -126,7 +132,7 @@ describe("buildAstroRoutes with i18n", () => {
   test("aliased locale source directory maps to canonical code", () => {
     const routes = buildAstroRoutes(
       [{ route: parseRoute("spanish/about.astro") }],
-      { ...baseConfig, i18n: i18nAlias },
+      { ...baseConfig, i18n: i18nAlias }, "src",
     );
     expect(routes[0]!.locale).toBe("es");
     expect(routes[0]!.pathname).toBe("spanish/about");
@@ -135,7 +141,7 @@ describe("buildAstroRoutes with i18n", () => {
   test("root file without locale dir under prefixDefault=true is untagged", () => {
     const routes = buildAstroRoutes(
       [{ route: parseRoute("404.astro") }],
-      { ...baseConfig, i18n: i18nPrefixAlways },
+      { ...baseConfig, i18n: i18nPrefixAlways }, "src",
     );
     expect(routes[0]!.locale).toBeUndefined();
   });
@@ -151,7 +157,7 @@ describe("buildAstroRoutes with i18n", () => {
           ],
         },
       ],
-      { ...baseConfig, i18n: i18nSimple },
+      { ...baseConfig, i18n: i18nSimple }, "src",
     );
     expect(routes).toHaveLength(2);
     for (const r of routes) {

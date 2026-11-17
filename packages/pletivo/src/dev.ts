@@ -321,7 +321,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     broadcastHmr(JSON.stringify({ type: "reload" }));
   }
 
-  await initCollections(projectRoot);
+  await initCollections(projectRoot, config.srcDir);
   let routes = await scanRoutes(pagesDir);
   // Resolve i18n once per dev-server start; renderPage uses it to set
   // Astro.currentLocale from the matched route and Astro.preferredLocale
@@ -1539,7 +1539,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       console.log(`  ${config.srcDir}/${filename} changed → ${hmrType} update (${clients} clients)`);
 
       if (filename.startsWith("content/") || /^content\.config\.(ts|mts|mjs|js)$/.test(filename)) {
-        await initCollections(projectRoot);
+        await initCollections(projectRoot, config.srcDir);
       }
 
       if (filename.startsWith("pages/")) {
@@ -1588,7 +1588,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       watch(rootDir, { recursive: true }, async (_event, filename) =>
         runWithBunContentRuntime(async () => {
           if (!filename || filename.includes("_tmp_")) return;
-          await initCollections(projectRoot); // clears the collection cache
+          await initCollections(projectRoot, config.srcDir); // clears the collection cache
           if (astroHost) {
             const absPath = path.join(rootDir, filename);
             astroHost.server.watcher.emit(fs.existsSync(absPath) ? "change" : "unlink", absPath);

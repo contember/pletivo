@@ -31,7 +31,7 @@ export interface PletivoRouteWithPaths {
  * Build the AstroRoute[] array from pletivo routes + Astro config redirects.
  *
  * When `config.i18n` is set, each source route is tagged with its
- * resolved locale (detected from the `src/pages/<locale>/...` directory
+ * resolved locale (detected from the `<srcDir>/pages/<locale>/...` directory
  * structure). Non-localized root files are treated as the default
  * locale under `prefixDefaultLocale: false` and stay untagged under
  * `prefixDefaultLocale: true` — matching Astro's convention.
@@ -39,8 +39,10 @@ export interface PletivoRouteWithPaths {
 export function buildAstroRoutes(
   routes: PletivoRouteWithPaths[],
   config: AstroConfig,
+  srcDir: string,
   injectedRoutes?: InjectedRoute[],
 ): AstroRoute[] {
+  const pagesDir = path.posix.join(srcDir, "pages");
   const out: AstroRoute[] = [];
   const i18n = resolveI18nConfig(config.i18n);
 
@@ -53,11 +55,11 @@ export function buildAstroRoutes(
       const paths = entry.staticPaths ?? [];
       for (const sp of paths) {
         const pathname = materializePathname(r, sp.params);
-        out.push(makePageRoute(r, pathname, Object.keys(sp.params), locale));
+        out.push(makePageRoute(r, pagesDir, pathname, Object.keys(sp.params), locale));
       }
     } else {
       const pathname = materializePathname(r, {});
-      out.push(makePageRoute(r, pathname, [], locale));
+      out.push(makePageRoute(r, pagesDir, pathname, [], locale));
     }
   }
 
@@ -127,6 +129,7 @@ function materializePathname(route: Route, params: RouteParams): string {
 
 function makePageRoute(
   route: Route,
+  pagesDir: string,
   pathname: string,
   paramNames: string[],
   locale: string | undefined,
@@ -137,7 +140,7 @@ function makePageRoute(
     type: "page",
     pathname,
     route: "/" + route.file.replace(/\.(tsx|jsx|ts|js|astro)$/, "").replace(/\/index$/, ""),
-    component: path.posix.join("src/pages", route.file),
+    component: path.posix.join(pagesDir, route.file),
     params: paramNames,
     pattern,
     generate: (p) => {
