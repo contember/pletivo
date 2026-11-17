@@ -25,7 +25,7 @@ SSG-relevant gaps in Astro API surface support, ordered by priority.
 
 ## B-tier — Unlocks integrations and specific use-cases
 
-- [025 — Content-hashed island and hoisted-script URLs](025-island-content-hashed-urls.md) — **deferred**; they are not named by content, so `/_astro/*.js` other than Bun's `chunk-<hash>.js` (`^chunk-[a-z0-9]{8}\.js$`) must not be `immutable`; option A probed on `probe/island-prebundle`
+- [025 — Content-hashed island and hoisted-script URLs](025-island-content-hashed-urls.md) — **deferred**; they are not named by content, so `/_astro/*.js` other than `chunk-*.js` must not be `immutable`; option A probed on `probe/island-prebundle`
 - [026 — Dynamic `import()` the CSS graph cannot follow](026-css-graph-dynamic-import-limits.md) — **open**, documented only; a computed specifier or a package component reached through `import()` loses its CSS on a warm build, and lands in the shared sheet on a full one
 - [004 — injectRoute()](004-inject-route.md) — sitemap, RSS, robots.txt integrations broken
 - [012 — Endpoint routes](012-endpoint-routes.md) — `src/pages/robots.txt.ts` was skipped silently; done for static endpoints
