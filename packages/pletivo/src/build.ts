@@ -39,7 +39,7 @@ import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, paramsToKey, type CachedAstroIsland, type CachedCssHead } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
-import { recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
+import { findCssHead, recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
 
@@ -1552,12 +1552,9 @@ async function writeHtml(
   // paths from bundleCss) are not double-rewritten.
   html = timeSync("rewriteRefs", () => rewriteRefs(html, publicManifest));
 
-  // Per-page CSS from <style> blocks in .astro components, in the
-  // cascade order the page's import graph dictates. Scoped blocks are matched
-  // by scope id (class or `data-astro-cid-*`) in the HTML (so unscoped rules inside a regular
-  // <style> — `:global()`, `body` — can't leak onto other pages), `is:global`
-  // blocks by whether the component rendered. Read before any stylesheet is
-  // inlined: inlined CSS carries scope ids of components this page may not render.
+  // The page's own `.astro` <style> CSS in import-graph cascade order: scoped blocks matched by scope id
+  // in the HTML, `is:global` ones by whether the component rendered. Read before any sheet is inlined,
+  // since inlined CSS carries scope ids of components this page may not render.
   const pageCss = await timeAsync("pageCss", async () => {
     const pageAstroCss = await getAstroCssForPage({
       entryFile,
@@ -1568,11 +1565,13 @@ async function writeHtml(
     return [pageAstroCss, pageTsxCss].filter(Boolean).join("\n");
   });
   let cssHead = "";
+  let cssHeadEnd = -1;
   if (html.includes("</head>")) {
     cssHead = renderCssHead(base, stylesheets, pageCss);
     html = html.replace("</head>", () => cssHead + "</head>");
+    cssHeadEnd = html.indexOf("</head>");
   } else if (pageCss) {
-    const styleTag = `<style>${pageCss}</style>`;
+    const styleTag = `<style>${escapeStyleEnd(pageCss)}</style>`;
     if (html.includes("</body>")) {
       html = html.replace("</body>", () => styleTag + "\n</body>");
     } else {
@@ -1583,7 +1582,7 @@ async function writeHtml(
   // CSS Modules — inject generated scoped CSS from .module.css imports
   const cssModulesOutput = getCssModulesOutput();
   if (cssModulesOutput) {
-    const moduleStyleTag = `<style>${cssModulesOutput}</style>`;
+    const moduleStyleTag = `<style>${escapeStyleEnd(cssModulesOutput)}</style>`;
     if (html.includes("</head>")) {
       html = html.replace("</head>", () => moduleStyleTag + "\n</head>");
     } else if (html.includes("</body>")) {
@@ -1627,7 +1626,8 @@ async function writeHtml(
     await fs.mkdir(path.dirname(outPath), { recursive: true });
     await fs.writeFile(outPath, html);
   });
-  return { size: bytes, cssHead: { fragment: cssHead, pageCss } };
+  const injectedAfter = cssHeadEnd !== -1 && html.indexOf("</head>") > cssHeadEnd;
+  return { size: bytes, cssHead: { fragment: cssHead, pageCss, injectedAfter } };
 }
 
 /**
@@ -1661,9 +1661,14 @@ function renderCssHead(base: string, stylesheets: Stylesheet[], pageCss: string)
   for (const sheet of merged) {
     out += sheet.type === "external"
       ? `<link rel="stylesheet" href="${base}${sheet.href}">\n`
-      : `<style>${sheet.content}</style>\n`;
+      : `<style>${escapeStyleEnd(sheet.content)}</style>\n`;
   }
   return out;
+}
+
+/** `</style` would end the element early; esbuild prints it as `<\/style`, as Astro's default build emits. */
+function escapeStyleEnd(css: string): string {
+  return css.replace(/<\/(style)/gi, "<\\/$1");
 }
 
 /**
@@ -1687,15 +1692,13 @@ async function refreshCachedCssHead(
   // writeHtml puts the markup only into a page with a `</head>`.
   if (headEnd === -1) return { size: Buffer.byteLength(html, "utf-8"), cssHead: previous };
   const fragment = renderCssHead(base, stylesheets, previous.pageCss);
-  const cssHead = { fragment, pageCss: previous.pageCss };
+  const cssHead = { ...previous, fragment };
   if (fragment === previous.fragment) return { size: Buffer.byteLength(html, "utf-8"), cssHead };
 
-  // Later head injections (CSS modules, scripts) land after the markup, still before `</head>`.
-  const at = previous.fragment === "" ? headEnd : html.lastIndexOf(previous.fragment, headEnd - previous.fragment.length);
-  if (at === -1) {
-    throw new Error(`${outPath}: the stylesheet markup recorded in the incremental cache is not in the page; rebuild with --incremental --clean`);
-  }
-  const next = html.slice(0, at) + fragment + html.slice(at + previous.fragment.length);
+  // `runIncrementalRender` renders a page fresh when this would fail, and nothing writes it since.
+  const at = findCssHead(html, previous.fragment);
+  if (!at) throw new Error(`${outPath}: the page changed during the build; its stylesheet markup is gone`);
+  const next = html.slice(0, at.start) + fragment + html.slice(at.end);
   await fs.writeFile(outPath, next);
   return { size: Buffer.byteLength(next, "utf-8"), cssHead };
 }

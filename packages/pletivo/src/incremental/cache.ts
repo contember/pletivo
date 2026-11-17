@@ -32,6 +32,8 @@ export interface CachedCssHead {
   fragment: string;
   /** The page's own `.astro`/TSX `<style>` CSS, which an adjacent inlined sheet merges with. */
   pageCss: string;
+  /** Whether later injections (CSS modules, scripts) sit between the markup and `</head>`. */
+  injectedAfter: boolean;
 }
 
 export interface CachedFragmentRef {

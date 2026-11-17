@@ -9,12 +9,9 @@ import type { PletivoConfig } from "../../packages/pletivo/src/config";
 
 setDefaultTimeout(60_000);
 
-/**
- * Astro's `build.inlineStylesheets` (5.16.11, `plugin-css.ts`): a built stylesheet
- * strictly below `vite.build.assetsInlineLimit` is inlined as `<style>` on every
- * page that uses it and not emitted; adjacent inline sheets merge into one `<style>`.
- * The fixtures import CSS from outside `src/`, so each page's CSS is its own group.
- */
+// Astro 5.16.11 `build.inlineStylesheets`: a sheet strictly below `assetsInlineLimit` is inlined on every
+// page that uses it and not emitted; adjacent inline sheets merge. The fixtures import CSS from outside
+// `src/`, so each page's CSS is its own group.
 
 const repoRoot = path.resolve(import.meta.dir, "../..");
 const cliPath = path.join(repoRoot, "packages/pletivo/src/cli.ts");
@@ -206,6 +203,23 @@ describe("inlineStylesheets: auto (the default)", () => {
   });
 });
 
+describe("</style inside inlined CSS", () => {
+  test("is escaped as Astro's default build emits it, so the <style> ends where it should", async () => {
+    const root = await project({
+      "astro.config.mjs": "export default {};\n",
+      "vendor/x.css": `.x::before { content: "</style><b>x</b>"; }\n.y::before { content: "</STYLE>"; }\n`,
+      "src/pages/index.astro": page("../../vendor/x.css", ".index-page{color:blue}"),
+    });
+    await buildProject(root);
+    const html = await fs.readFile(path.join(root, "dist/index.html"), "utf8");
+    expect(html).toContain(`content:"<\\/style><b>x</b>"`);
+    expect(html).toContain(`content:"<\\/STYLE>"`);
+    // The only `</style` left is the element's own end tag.
+    expect(html.match(/<\/style/gi)).toHaveLength(1);
+    expect(styles(await sheetsOf(root, "index.html"))[0]).toContain(".index-page{color:blue}");
+  });
+});
+
 describe("inlineStylesheets: always and never", () => {
   test("always inlines a sheet over the limit and writes no stylesheet", async () => {
     const root = await project({
@@ -314,46 +328,163 @@ describe("a project without an Astro config", () => {
 });
 
 describe("incremental build", () => {
-  function runBuild(root: string): { stdout: string; status: number; stderr: string } {
-    const result = spawnSync("bun", ["run", cliPath, "build", "--incremental"], {
+  /** Runs the CLI build and returns its stdout; a failed build throws with its stderr. */
+  function runBuild(root: string, incremental = true): string {
+    const result = spawnSync("bun", ["run", cliPath, "build", ...(incremental ? ["--incremental"] : [])], {
       cwd: root,
       encoding: "utf8",
       env: { ...process.env, NODE_ENV: "production" },
     });
-    return { stdout: result.stdout, stderr: result.stderr, status: result.status ?? -1 };
+    if (result.status !== 0) throw new Error(`build exited with ${result.status}:\n${result.stderr}`);
+    return result.stdout;
   }
 
-  test("a cached page picks up a changed inlined sheet", async () => {
-    // Hoisted-script CSS lands in the shared sheet, which every page gets.
+  /** Every file under `dist/`, by dist-relative path. */
+  async function distContents(root: string): Promise<Record<string, string>> {
+    const dist = path.join(root, "dist");
+    const out: Record<string, string> = {};
+    for (const entry of await fs.readdir(dist, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const file = path.join(entry.parentPath, entry.name);
+      out[path.relative(dist, file)] = await fs.readFile(file, "utf8");
+    }
+    return out;
+  }
+
+  /** Build a copy of the project's sources from scratch and compare the output. */
+  async function expectSameAsFullBuild(root: string): Promise<void> {
+    const copy = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-inline-css-full-"));
+    tmpRoots.push(copy);
+    const skip = new Set([path.join(root, "dist"), path.join(root, "node_modules")]);
+    await fs.cp(root, copy, { recursive: true, filter: (src) => !skip.has(src) });
+    runBuild(copy, false);
+    const incremental = await distContents(root);
+    const full = await distContents(copy);
+    // An incremental build keeps earlier builds' assets; everything a full build writes must match.
+    expect(Object.fromEntries(Object.keys(full).map((rel) => [rel, incremental[rel]]))).toEqual(full);
+    const pages = (files: Record<string, string>) => Object.keys(files).filter((rel) => rel.endsWith(".html")).sort();
+    expect(pages(incremental)).toEqual(pages(full));
+  }
+
+  // Hoisted-script CSS lands in the shared sheet, which every page gets. It sits
+  // outside `src/`, so changing it leaves the pages that don't import it cached.
+  const indexPage = `<html><head><title>i</title></head><body><h1>i</h1></body></html>\n<script>\n  import "../scripts/entry.js";\n</script>\n`;
+  const aboutPage = `<html><head><title>a</title><style is:global>.about-page{color:green}</style></head><body><h1>a</h1></body></html>\n`;
+  const entryScript = (imports: string) => `${imports}document.documentElement.dataset.x = "1";\n`;
+
+  test("a cached page picks up a changed inlined sheet, next to its own <style>", async () => {
     const root = await project({
       "astro.config.mjs": "export default {};\n",
       "vendor/hoisted.css": ".hoisted-v1 { color: red; }\n",
-      "src/scripts/entry.js": `import "../../vendor/hoisted.css";\ndocument.documentElement.dataset.x = "1";\n`,
-      "src/pages/index.astro": `<html><head><title>i</title><style is:global>.index-page{color:blue}</style></head><body><h1>i</h1></body></html>\n<script>\n  import "../scripts/entry.js";\n</script>\n`,
-      "src/pages/about.ts": `export default function About() {\n  return { __html: '<!DOCTYPE html><html><head><title>About</title></head><body><h1>About</h1></body></html>' };\n}\n`,
+      "src/scripts/entry.js": entryScript(`import "../../vendor/hoisted.css";\n`),
+      "src/pages/index.astro": indexPage,
+      "src/pages/about.astro": aboutPage,
     });
-    const first = runBuild(root);
-    expect(first.status).toBe(0);
+    runBuild(root);
     const before = await sheetsOf(root, "about/index.html");
     expect(links(before)).toEqual([]);
     expect(styles(before).join("")).toContain(".hoisted-v1");
 
     await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v2 { color: blue; }\n");
-    const second = runBuild(root);
-    expect(second.status).toBe(0);
-    expect(second.stdout).toContain("about.ts → dist/about/index.html");
-    expect(second.stdout).toContain("[cached]");
+    expect(runBuild(root)).toMatch(/about\.astro → dist\/about\/index\.html \([^)]*\) \[cached\]/);
 
     const after = await sheetsOf(root, "about/index.html");
     expect(links(after)).toEqual([]);
     expect(styles(after)).toHaveLength(1);
-    expect(styles(after)[0]).toContain(".hoisted-v2");
-    expect(styles(after)[0]).not.toContain(".hoisted-v1");
+    const [css] = styles(after);
+    expect(css).not.toContain(".hoisted-v1");
+    expect(css.indexOf(".hoisted-v2")).toBeGreaterThanOrEqual(0);
+    expect(css.indexOf(".hoisted-v2")).toBeLessThan(css.indexOf(".about-page"));
     expect((await emittedSheets(root)).size).toBe(0);
+    await expectSameAsFullBuild(root);
 
     // A third build with nothing changed leaves the refreshed markup alone.
     const html = await fs.readFile(path.join(root, "dist/about/index.html"), "utf8");
-    expect(runBuild(root).status).toBe(0);
+    runBuild(root);
     expect(await fs.readFile(path.join(root, "dist/about/index.html"), "utf8")).toBe(html);
+  });
+
+  for (const [label, config] of [
+    ["no other head injections", "export default {};\n"],
+    [
+      "an injected head script",
+      `export default { integrations: [{ name: "head-script", hooks: { "astro:config:setup": ({ injectScript }) => injectScript("head-inline", "window.probe = 1;") } }] };\n`,
+    ],
+  ] as const) {
+    test(`a cached page without CSS gains a sheet as a full build places it, with ${label}`, async () => {
+      const root = await project({
+        "astro.config.mjs": config,
+        "vendor/hoisted.css": ".hoisted-marker { color: red; }\n",
+        "src/scripts/entry.js": entryScript(""),
+        "src/pages/index.astro": indexPage,
+        "src/pages/plain.astro": "<html><head><title>p</title></head><body><h1>p</h1></body></html>\n",
+      });
+      runBuild(root);
+      expect(styles(await sheetsOf(root, "plain/index.html"))).toEqual([]);
+
+      await fs.writeFile(path.join(root, "src/scripts/entry.js"), entryScript(`import "../../vendor/hoisted.css";\n`));
+      runBuild(root);
+      expect(styles(await sheetsOf(root, "plain/index.html")).join("")).toContain(".hoisted-marker");
+      await expectSameAsFullBuild(root);
+    });
+  }
+
+  /** A project whose `astro:build:done` hook rewrites every HTML file with `rewrite` (a JS expression on `html`). */
+  async function hookProject(build: string, rewrite: string): Promise<string> {
+    return await project({
+      "astro.config.mjs": `import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const rewriteAll = (dir) => {
+  for (const entry of fs.readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    const file = path.join(entry.parentPath, entry.name);
+    if (!entry.isFile() || !file.endsWith(".html")) continue;
+    const html = fs.readFileSync(file, "utf8");
+    fs.writeFileSync(file, ${rewrite});
+  }
+};
+export default { ${build}integrations: [{ name: "rewrite", hooks: { "astro:build:done": ({ dir }) => rewriteAll(fileURLToPath(dir)) } }] };
+`,
+      "vendor/hoisted.css": ".hoisted-v1 { color: red; }\n",
+      "src/scripts/entry.js": entryScript(`import "../../vendor/hoisted.css";\n`),
+      "src/pages/index.astro": indexPage,
+      "src/pages/about.astro": aboutPage,
+    });
+  }
+  const aboutCached = /about\.astro → dist\/about\/index\.html \([^)]*\) \[cached\]/;
+
+  for (const [label, build] of [["auto", ""], ["never", `build: { inlineStylesheets: "never" }, `]] as const) {
+    test(`a page an astro:build:done minifier collapsed stays cached and takes a changed sheet (${label})`, async () => {
+      const root = await hookProject(build, String.raw`html.replace(/>\s+</g, "><")`);
+      runBuild(root);
+      expect(await fs.readFile(path.join(root, "dist/about/index.html"), "utf8")).not.toMatch(/>\s+</);
+      // The collapsed markup is still found, so nothing re-renders.
+      expect(runBuild(root)).toContain("0 rendered + 2 cached");
+
+      await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v2 { color: blue; }\n");
+      expect(runBuild(root)).toMatch(aboutCached);
+      await expectSameAsFullBuild(root);
+    });
+
+    test(`a page whose stylesheet markup a hook rewrote otherwise is rendered fresh (${label})`, async () => {
+      const root = await hookProject(build, String.raw`html.replace(/<(style|link)\b/g, "<$1 data-rewritten")`);
+      runBuild(root);
+      expect(await fs.readFile(path.join(root, "dist/about/index.html"), "utf8")).toContain("data-rewritten");
+
+      await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v2 { color: blue; }\n");
+      expect(runBuild(root)).not.toMatch(aboutCached);
+      await expectSameAsFullBuild(root);
+    });
+  }
+
+  test("only whitespace between the recorded tags is tolerated, not other markup", async () => {
+    // With `never` the markup is a `<link>` then the page's `<style>`; the hook puts a comment between them.
+    const root = await hookProject(`build: { inlineStylesheets: "never" }, `, String.raw`html.replace(/<style>/g, "<!--x--><style>")`);
+    runBuild(root);
+    expect(await fs.readFile(path.join(root, "dist/about/index.html"), "utf8")).toMatch(/<link [^>]*>\s*<!--x--><style>/);
+
+    await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v2 { color: blue; }\n");
+    expect(runBuild(root)).not.toMatch(aboutCached);
+    await expectSameAsFullBuild(root);
   });
 });

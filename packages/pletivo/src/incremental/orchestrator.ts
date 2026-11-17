@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { escapeRegex } from "@pletivo/core/escape-regex";
 import { runWithRuntimeDepCapture } from "./dep-tracker";
 import { collectStaticDeps, isWalkableSourceFile } from "./import-graph";
 import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
@@ -154,7 +155,7 @@ export async function runIncrementalRender(req: RenderRequest): Promise<RenderOu
 		const exists = req.distFiles
 			? req.distFiles.has(cached.outPath)
 			: await fileExists(path.join(req.distDir, cached.outPath));
-		if (exists) {
+		if (exists && (await cssHeadReplaceable(path.join(req.distDir, cached.outPath), cached.cssHead))) {
 			if (req.fragments && cached.fragments.length > 0) {
 				replayFragments(req.fragments, cached.fragments, normalizeUsedBy(cached.outPath));
 			}
@@ -171,8 +172,8 @@ export async function runIncrementalRender(req: RenderRequest): Promise<RenderOu
 				size: cached.size ?? 0,
 			};
 		}
-		// File was deleted out from under us (manual rm, race) — fall
-		// through to a fresh render.
+		// File was deleted out from under us (manual rm, race), or its
+		// stylesheet markup can't be swapped — fall through to a fresh render.
 	}
 
 	return await freshRender(req, cached);
@@ -238,7 +239,7 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			cssEntry: value.cssEntry,
 			// Populated downstream after writeHtml — we don't know the
 			// final byte length or CSS markup yet (injection happens there).
-			cssHead: { fragment: "", pageCss: "" },
+			cssHead: { fragment: "", pageCss: "", injectedAfter: false },
 			size: 0,
 		};
 		req.cache.setRoute(req.routeKey, entry);
@@ -269,8 +270,48 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: number, cssHead: CachedCssHead): void {
 	const entry = cache.getRoute(routeKey);
 	if (!entry) return;
-	if (entry.size === size && entry.cssHead.fragment === cssHead.fragment && entry.cssHead.pageCss === cssHead.pageCss) return;
+	if (
+		entry.size === size &&
+		entry.cssHead.fragment === cssHead.fragment &&
+		entry.cssHead.pageCss === cssHead.pageCss &&
+		entry.cssHead.injectedAfter === cssHead.injectedAfter
+	) return;
 	cache.setRoute(routeKey, { ...entry, size, cssHead });
+}
+
+/**
+ * Where a page's recorded stylesheet markup sits: the last match before `</head>`, after which come only
+ * later injections; an empty one at `</head>`. An HTML minifier in `astro:build:done` may have collapsed
+ * the whitespace between its tags, so such a run matches any whitespace, and the rest matches exactly.
+ */
+export function findCssHead(html: string, fragment: string): { start: number; end: number } | null {
+	const headEnd = html.indexOf("</head>");
+	if (headEnd === -1) return null;
+	if (fragment === "") return { start: headEnd, end: headEnd };
+	const exact = html.lastIndexOf(fragment, headEnd - fragment.length);
+	if (exact !== -1) return { start: exact, end: exact + fragment.length };
+
+	const pattern = new RegExp(fragment.split(/(?<=>)\s+(?=<|$)/).map(escapeRegex).join("\\s*"), "g");
+	let last: { start: number; end: number } | null = null;
+	for (const match of html.slice(0, headEnd).matchAll(pattern)) {
+		last = { start: match.index, end: match.index + match[0].length };
+	}
+	return last;
+}
+
+/**
+ * Whether a cached page's stylesheet markup can be swapped in place. A `build:done` hook may have
+ * rewritten the page, and markup it never had goes before later injections, at an unknown offset.
+ */
+async function cssHeadReplaceable(file: string, cssHead: CachedCssHead): Promise<boolean> {
+	if (cssHead.fragment === "") return !cssHead.injectedAfter;
+	let html: string;
+	try {
+		html = await fs.readFile(file, "utf8");
+	} catch {
+		return false;
+	}
+	return findCssHead(html, cssHead.fragment) !== null;
 }
 
 async function fileExists(p: string): Promise<boolean> {
