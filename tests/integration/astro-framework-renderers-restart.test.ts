@@ -1,14 +1,14 @@
 /**
- * A process wires one renderer set: its compilers are Bun plugins. When a retried
- * `astro:config:setup` changes a wired set, the supervised dev child exits for a restart, as
- * on a config change; without a supervisor, dev says to restart it.
+ * A retry that changes a wired renderer set restarts a supervised dev child (else dev says to);
+ * a hook that fails only on a fresh process's first pass is retried before wiring, so no restart.
  */
 import { afterEach, expect, test } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
 import { CHILD_ENV_FLAG, RESTART_EXIT_CODE } from "../../packages/pletivo/src/dev-supervisor";
 
-const template = path.join(import.meta.dir, "../fixture-astro-renderers-restart");
+const RESTART = path.join(import.meta.dir, "../fixture-astro-renderers-restart");
+const LATE_SETUP = path.join(import.meta.dir, "../fixture-astro-renderers-late-setup");
 const cli = path.resolve(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
 interface Dev {
@@ -28,7 +28,7 @@ afterEach(async () => {
   }
 });
 
-async function startDev(args: readonly string[], env: Record<string, string>): Promise<Dev> {
+async function startDev(template: string, args: readonly string[], env: Record<string, string>): Promise<Dev> {
   const root = await fs.mkdtemp(path.join(import.meta.dir, "../.renderers-restart-"));
   await fs.cp(template, root, { recursive: true });
   const port = 7600 + Math.floor(Math.random() * 1000);
@@ -59,7 +59,7 @@ async function startDev(args: readonly string[], env: Record<string, string>): P
 }
 
 test("the supervised dev child exits for a restart when a retry changes the wired renderers", async () => {
-  const dev = await startDev([], { [CHILD_ENV_FLAG]: "1" });
+  const dev = await startDev(RESTART, [], { [CHILD_ENV_FLAG]: "1" });
   // A change under src/ retries the failed hook, which now passes and registers Preact.
   await fs.writeFile(path.join(dev.root, "src/ready.txt"), "ready\n");
   const code = await Promise.race([dev.child.exited, Bun.sleep(20_000).then(() => "still running")]);
@@ -68,11 +68,26 @@ test("the supervised dev child exits for a restart when a retry changes the wire
 }, 60_000);
 
 test("without a supervisor, dev keeps serving and says to restart it", async () => {
-  const dev = await startDev(["--no-restart"], {});
+  const dev = await startDev(RESTART, ["--no-restart"], {});
   await fs.writeFile(path.join(dev.root, "src/ready.txt"), "ready\n");
   for (let attempt = 0; attempt < 100 && !dev.output().includes("framework renderers changed"); attempt++) {
     await Bun.sleep(100);
   }
   expect(dev.output()).toContain("framework renderers changed (@astrojs/vue → @astrojs/vue, @astrojs/preact); restart `pletivo dev`");
   expect((await fetch(`${dev.base}/`)).status).toBe(200);
+}, 60_000);
+
+test("a hook that passes only on a retry is retried at start, so the supervised child serves without restarting", async () => {
+  const dev = await startDev(LATE_SETUP, [], { [CHILD_ENV_FLAG]: "1" });
+  for (let request = 0; request < 5; request++) {
+    const response = await fetch(`${dev.base}/`);
+    const html = await response.text();
+    expect({ request, status: response.status, output: dev.output() }).toMatchObject({ request, status: 200 });
+    expect(html).toContain("preact 3</button>");
+    expect(html).toContain("vue 4</button>");
+    // Past the rate limit on request-triggered retries, so each request could retry.
+    await Bun.sleep(1100);
+  }
+  expect(dev.child.exitCode).toBeNull();
+  expect(dev.output()).not.toContain("restarting dev server");
 }, 60_000);

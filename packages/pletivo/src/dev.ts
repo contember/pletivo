@@ -244,6 +244,12 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     });
     wiredRenderers = names;
   }
+  // A hook that fails only on a first pass (it needs a later integration's setup) passes on a retry.
+  // Retry once now, so the process starts with the set a retry reaches and does not restart into it.
+  if (astroHost && astroHost.setupErrors.length > 0) {
+    const recovered = await astroHost.retryFailedSetup();
+    if (recovered.length > 0) console.log(`  astro:config:setup recovered → ${recovered.join(", ")}`);
+  }
   await wireAstroRenderers();
   {
     const vite = astroHost?.config.vite as

@@ -1,8 +1,6 @@
 /**
- * `pletivo dev` renders framework components as islands and serves their client bundles at
- * the URLs the page references, built on request; edits reach the next render without a
- * restart. The server runs on a copy of the fixture inside `tests/` (so the repo's
- * `node_modules` resolve), which the tests edit; the copy gets its own library package.
+ * `pletivo dev` renders framework islands and serves their bundles; edits show without a restart.
+ * Runs on a copy of the fixture inside `tests/`, so the repo's `node_modules` resolve.
  */
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import fs from "fs/promises";
