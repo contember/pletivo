@@ -282,7 +282,7 @@ export interface CollectionConfig {
   /**
    * Loader that provides raw entries. Accepts glob(), Astro Content Layer loaders, or inline functions.
    * Without a loader (and without `directory`) the collection is an Astro legacy
-   * collection, read from `src/content/<name>/` — see `legacyCollectionLoader`.
+   * collection, read from `<srcDir>/content/<name>/` — see `legacyCollectionLoader`.
    */
   loader?: AnyLoader;
   /** Shorthand for loader: glob({ base: directory }) */
@@ -386,11 +386,11 @@ export interface ContentHost {
   /** Absolute (host-shaped) form of a project-root-relative directory, for `getContentBaseDirs`. */
   resolveDir(projectRoot: string, base: string): string;
   /**
-   * The project's collection definitions, by executing its `content.config.*`.
-   * `version` increments on every `initCollections()` so a host that caches
-   * modules can bust its cache.
+   * The project's collection definitions, by executing its `content.config.*` under
+   * `srcDir` (project-root-relative). `version` increments on every `initCollections()`
+   * so a host that caches modules can bust its cache.
    */
-  loadConfig(projectRoot: string, version: number): Promise<Record<string, CollectionConfig>>;
+  loadConfig(projectRoot: string, version: number, srcDir: string): Promise<Record<string, CollectionConfig>>;
   /** Record a file the current render depends on. Bun host: the incremental cache. */
   recordDep?(path: string): void;
   /** `image()` bound to an entry's directory. Absent: image() schemas fail with a clear message. */
@@ -440,6 +440,8 @@ interface ContentGeneration {
   /** Settles once `initCollections` has loaded (or dropped) this generation's config. */
   configLoad: Promise<void>;
   configProjectRoot: string;
+  /** The project's source directory, relative to `configProjectRoot`. */
+  configSrcDir: string;
   configVersion: number;
   validationFailures: Array<{ collection: string; id: string; errors: string }>;
 }
@@ -458,12 +460,12 @@ export function createContentRuntime(host: ContentHost): ContentRuntime {
   const runtime = { host };
   runtimeStates.set(runtime, {
     nextConfigVersion: 0,
-    current: createGeneration("", 0),
+    current: createGeneration("", "src", 0),
   });
   return runtime;
 }
 
-function createGeneration(projectRoot: string, configVersion: number): ContentGeneration {
+function createGeneration(projectRoot: string, srcDir: string, configVersion: number): ContentGeneration {
   return {
     collectionCache: new Map(),
     collectionInflight: new Map(),
@@ -471,6 +473,7 @@ function createGeneration(projectRoot: string, configVersion: number): ContentGe
     collectionsConfig: null,
     configLoad: Promise.resolve(),
     configProjectRoot: projectRoot,
+    configSrcDir: srcDir,
     configVersion,
     validationFailures: [],
   };
@@ -617,7 +620,7 @@ const LEGACY_DATA_PATTERN = "**/*.{json,yaml,yml}";
 
 /**
  * Astro 5's stand-in for a collection defined without a loader: a glob over
- * `src/content/<name>/` that skips any path segment starting with `_`.
+ * `<srcDir>/content/<name>/` that skips any path segment starting with `_`.
  *
  * A data collection's id is its path without the extension. A content collection
  * is emulated the way Astro emulates its legacy API: `id` is the path with its
@@ -628,9 +631,8 @@ const LEGACY_DATA_PATTERN = "**/*.{json,yaml,yml}";
  * Entries are keyed like Astro's store (slug, or a data entry's id): a repeated
  * key warns and the later file replaces the earlier one in its place.
  */
-function legacyCollectionLoader(name: string, type: CollectionConfig["type"]): Loader {
-  // Astro resolves this from `srcDir`; pletivo finds the content config under `src/` too.
-  const base = `src/content/${name}`;
+function legacyCollectionLoader(name: string, type: CollectionConfig["type"], srcDir: string): Loader {
+  const base = joinRelative(srcDir, `content/${name}`);
   const isData = type === "data";
   const pattern = isData ? LEGACY_DATA_PATTERN : LEGACY_CONTENT_PATTERN;
   return {
@@ -704,6 +706,12 @@ function extensionOf(file: string): string {
   const slash = Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\"));
   const dot = file.lastIndexOf(".");
   return dot > slash + 1 ? file.slice(dot).toLowerCase() : "";
+}
+
+/** `rest` under a project-root-relative `dir` (`./app/` → `app/<rest>`), without `node:path`. */
+function joinRelative(dir: string, rest: string): string {
+  const trimmed = dir.replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  return trimmed === "" || trimmed === "." ? rest : `${trimmed}/${rest}`;
 }
 
 // ── defineCollection ──
@@ -785,14 +793,14 @@ export function getValidationFailures(): ReadonlyArray<{ collection: string; id:
  * runtime for a coherent build or dev-server lifecycle. Call this whenever that
  * runtime must observe a new project snapshot.
  */
-export async function initCollections(projectRoot: string): Promise<void> {
+export async function initCollections(projectRoot: string, srcDir = "src"): Promise<void> {
   const runtime = requireRuntime();
   const state = requireState();
-  const generation = createGeneration(projectRoot, ++state.nextConfigVersion);
+  const generation = createGeneration(projectRoot, srcDir, ++state.nextConfigVersion);
   state.current = generation;
 
   generation.configLoad = runtime.host
-    .loadConfig(projectRoot, generation.configVersion)
+    .loadConfig(projectRoot, generation.configVersion, srcDir)
     .then((config) => {
       if (state.current === generation) generation.collectionsConfig = config;
     });
@@ -849,7 +857,8 @@ export async function getCollection(
   const config = generation.collectionsConfig[name];
   if (!config) {
     throw new Error(
-      `Collection "${name}" not found. Define it in src/content.config.ts or src/content/config.ts`,
+      `Collection "${name}" not found. Define it in ` +
+        `${joinRelative(generation.configSrcDir, "content.config.ts")} or ${joinRelative(generation.configSrcDir, "content/config.ts")}`,
     );
   }
 
@@ -993,7 +1002,7 @@ async function loadCollection(
   config: CollectionConfig,
   name: string,
 ): Promise<InternalCollectionEntry[]> {
-  const loader = config.loader ?? legacyCollectionLoader(name, config.type);
+  const loader = config.loader ?? legacyCollectionLoader(name, config.type, generation.configSrcDir);
 
   let rawEntries: RawEntry[];
 

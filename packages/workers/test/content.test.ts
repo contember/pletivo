@@ -387,6 +387,40 @@ const { Content } = await intro.render();
     }
   });
 
+  test("read a collection without a loader from <srcDir>/content/<name>", async () => {
+    const files = new Map<string, string>([
+      [
+        "app/content.config.ts",
+        `import { defineCollection } from "astro:content";
+export const collections = { docs: defineCollection({}) };
+`,
+      ],
+      [
+        "app/pages/index.astro",
+        `---
+import { getCollection } from "astro:content";
+const docs = await getCollection("docs");
+---
+<html><body><ul>{docs.map((doc) => <li>{doc.data.title}</li>)}</ul></body></html>
+`,
+      ],
+      ["app/content/docs/intro.md", note("Intro")],
+      // What the old hardcoded `src/` would have read.
+      ["src/content/docs/stray.md", note("Stray")],
+    ]);
+    const page = await renderPage({
+      files,
+      pagesDir: "app/pages",
+      srcDir: "app",
+      pathname: "/",
+      loader,
+      compiler,
+      content: contentAccess(),
+      executionNamespace: EXECUTION_NAMESPACE,
+    });
+    expect(page.html).toContain("<ul><li>Intro</li></ul>");
+  });
+
   test("refuse to render a content project with nothing to read content with", async () => {
     // Rendering it anyway would give an empty collection and a page that looks fine.
     await expect(

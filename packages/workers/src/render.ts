@@ -778,7 +778,7 @@ async function callIsolate(input: {
   // Opened per render: the isolate outlives the request, so the ref travels with it.
   const handle = content ? content.store.open(options.files, options.assets, content.owner) : null;
   const requestBody: IsolateRequest = handle
-    ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options) }
+    ? { ...body, contentRef: handle.ref, rootDir: projectRoot(options), srcDir: srcDirInRoot(options) }
     : body;
   const request = new Request("http://pletivo.invalid/render", {
     method: "POST",
@@ -849,6 +849,16 @@ function srcDirOf(options: ProjectLayout): string {
  */
 export function projectRoot(options: ProjectLayout): string {
   return options.rootDir ?? parentDir(srcDirOf(options));
+}
+
+/** `srcDir` relative to the project root. */
+function srcDirInRoot(options: ProjectLayout): string {
+  const root = projectRoot(options);
+  const src = srcDirOf(options);
+  if (root === "") return src;
+  if (src === root) return ".";
+  if (src.startsWith(root + "/")) return src.slice(root.length + 1);
+  throw new Error(`[pletivo-workers] srcDir ${JSON.stringify(src)} is not inside rootDir ${JSON.stringify(root)}`);
 }
 
 async function renderModule(input: {

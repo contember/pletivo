@@ -523,7 +523,7 @@ async function withContent(
     },
   });
   return collections.runWithContentRuntime(runtime, async () => {
-    await collections.initCollections(body.rootDir || "");
+    await collections.initCollections(body.rootDir || "", body.srcDir);
     return run();
   });
 }

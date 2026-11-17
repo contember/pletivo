@@ -4,7 +4,12 @@ import { scanRoutes } from "./router";
 import { matchRoute, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
 import { escapeStyleEnd } from "@pletivo/core/inline-style";
-import { initCollections, getValidationFailures, runWithBunContentRuntime } from "./content/collection";
+import {
+  CONTENT_CONFIG_CANDIDATES,
+  initCollections,
+  getValidationFailures,
+  runWithBunContentRuntime,
+} from "./content/collection";
 import { resetIslandRegistry } from "@pletivo/runtime/island";
 import { runInPage, runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
@@ -201,7 +206,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   configureImportGraphCompilers(astroRenderers?.compilers ?? []);
   phase("plugins+astroHost", tPlugins);
   const tColl = performance.now();
-  await initCollections(projectRoot);
+  await initCollections(projectRoot, config.srcDir);
   phase("initCollections", tColl);
 
   // Before the cache load: neither hook reads the cache, and `astro:build:setup` may
@@ -633,7 +638,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       const staticPaths = paramSet ? paramSet.map((p) => ({ params: p.params }) as StaticPath) : undefined;
       return { route: r, staticPaths };
     });
-    const astroRoutes = buildAstroRoutes(pletivoRoutes, astroHost.config, astroHost.injectedRoutes);
+    const astroRoutes = buildAstroRoutes(pletivoRoutes, astroHost.config, config.srcDir, astroHost.injectedRoutes);
     await astroHost.runRoutesResolved(astroRoutes);
     // Stash for build:done below so we don't rebuild the array
     (astroHost as unknown as { __cachedRoutes?: unknown }).__cachedRoutes = astroRoutes;
@@ -1385,14 +1390,7 @@ async function computeProjectConfigHash(
     "pletivo.config.ts",
     "pletivo.config.js",
     ...SVELTE_CONFIG_NAMES,
-    "src/content.config.ts",
-    "src/content.config.mts",
-    "src/content.config.mjs",
-    "src/content.config.js",
-    "src/content/config.ts",
-    "src/content/config.mts",
-    "src/content/config.mjs",
-    "src/content/config.js",
+    ...CONTENT_CONFIG_CANDIDATES.map((candidate) => path.join(config.srcDir, candidate)),
     "tsconfig.json",
   ]) {
     const p = path.join(projectRoot, file);
