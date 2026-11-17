@@ -14,7 +14,7 @@ import { pathToFileURL } from "url";
 import { resolveMdxOptions } from "../../packages/pletivo/src/mdx-plugin";
 import { astroHighlightPlugins, parseShikiConfig, parseSyntaxHighlight } from "../../packages/pletivo/src/mdx-syntax-highlight";
 import type { PletivoConfig } from "../../packages/pletivo/src/config";
-import { normalizeVoidElements } from "../astro-examples/compare";
+import { normalizeAttributeSpelling, normalizeVoidElements } from "../astro-examples/compare";
 
 const cli = path.resolve(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 type Fixture = "astro" | "compat" | "native" | "shiki" | "shikiTheme" | "shikiOff" | "prism";
@@ -114,22 +114,11 @@ describe("an MDX page in a project without an Astro config", () => {
   });
 });
 
-/**
- * Temporary: spellings pletivo's JSX runtime writes differently from Astro's, with the same DOM:
- * a style object's trailing `;`, an empty attribute as `=""`, and `"` in a value as `&quot;`.
- * Both sides go through it until that difference is decided.
- */
-function attributeSpelling(html: string): string {
-  return html
-    .replace(/ style="([^"]*);"/g, ' style="$1"')
-    .replace(/ ([\w:-]+)=""/g, " $1")
-    .replace(/&#34;/g, "&quot;");
-}
-
 /** What Astro 5.16.11 with `@astrojs/mdx` 4.3.13 builds from the fixture, `<!DOCTYPE html>` left out. */
 async function expectAstroOutput(name: Fixture, astro: string): Promise<void> {
-  const html = await normalizedPage(name, "index.html");
-  expect(attributeSpelling(html)).toBe(attributeSpelling(normalizeVoidElements(astro)));
+  // `data-seen=""` and `&quot;` here, `data-seen` and `&#34;` in Astro's: the harness normaliser makes them one.
+  const same = (html: string) => normalizeAttributeSpelling(normalizeVoidElements(html));
+  expect(same(await page(name, "index.html"))).toBe(same(astro));
 }
 
 describe("a code block in an Astro project's MDX", () => {
