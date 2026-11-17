@@ -10,9 +10,10 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { AstroRendererEntry } from "@pletivo/core/astro-host/renderers";
 import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
-import { configureAstroIslands } from "@pletivo/runtime/astro-islands/index";
+import { configureAstroIslands, isRendererServer } from "@pletivo/runtime/astro-islands/index";
 import type { IslandClientUrls, IslandScripts, LoadedRenderer, RendererServer } from "@pletivo/runtime/astro-islands/types";
-import { bundleAstroIslands, createIslandClientUrls, type AstroIslandComponent, type VirtualModuleSource } from "./astro-islands-bundle";
+import { createIslandClientUrls } from "@pletivo/core/island-urls";
+import { bundleAstroIslands, type AstroIslandComponent, type VirtualModuleSource } from "./astro-islands-bundle";
 import { resolveViteId, serveViteVirtualImports, tryLoadViteId } from "./astro-host/vite-plugins";
 import { frameworkCompilePlugin, loadFrameworkCompilers } from "./framework-compile";
 import { configureRegisteredRenderers } from "./framework-components";
@@ -242,19 +243,8 @@ async function loadServerEntrypoint(entry: AstroRendererEntry, projectRoot: stri
   return server;
 }
 
-/** Astro's `SSRLoadedRendererValue`: the functions are called as Astro calls them, so only their presence is checked. */
-function isRendererServer(value: unknown): value is RendererServer {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.check === "function" &&
-    typeof value.renderToStaticMarkup === "function" &&
-    (value.supportsAstroStaticSlot === undefined || typeof value.supportsAstroStaticSlot === "boolean") &&
-    (value.renderHydrationScript === undefined || typeof value.renderHydrationScript === "function")
-  );
-}
-
 /** The prebuilt scripts Astro inlines ahead of islands, from the project's own `astro`. */
-async function readIslandScripts(projectRoot: string): Promise<IslandScripts> {
+export async function readIslandScripts(projectRoot: string): Promise<IslandScripts> {
   let astroDir: string;
   try {
     astroDir = path.dirname(Bun.resolveSync("astro/package.json", projectRoot));

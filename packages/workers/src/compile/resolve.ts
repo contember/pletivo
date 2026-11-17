@@ -1,4 +1,7 @@
 import {
+  ARTIFACT_BUILTIN_EXTERNALS,
+  ISLAND_STYLESHEET_PREFIX,
+  ISLANDS_BUNDLE_MODULE_PREFIX,
   TAILWIND_MODULE_PREFIX,
   TAILWIND_RUNTIME_MODULE_ID,
   TAILWIND_RUNTIME_MODULE_PREFIX,
@@ -91,6 +94,9 @@ export class ImportResolver {
       const local = await this.#resolveFromProject(importer, rawSpecifier);
       if (local !== null) return local;
     }
+    if (rawSpecifier.startsWith(ISLAND_STYLESHEET_PREFIX) && importer.id.startsWith(ISLANDS_BUNDLE_MODULE_PREFIX)) {
+      return this.#islandStylesheet(importer, rawSpecifier);
+    }
 
     const directAlias = HOST_ALIASES.get(rawSpecifier);
     if (directAlias !== undefined) return this.#externalUse(importer, rawSpecifier, rawSpecifier);
@@ -174,6 +180,20 @@ export class ImportResolver {
     return frozen.id;
   }
 
+  /** The one way a carried module reaches a project file: a framework component's stylesheet, which stays live. */
+  #islandStylesheet(importer: SourceModule, rawSpecifier: string): ResolutionUse {
+    const target = this.#walk.islandStylesheet(rawSpecifier.slice(ISLAND_STYLESHEET_PREFIX.length));
+    if (target === null) {
+      throw unresolvedImport(
+        importer,
+        rawSpecifier,
+        "missing",
+        "a framework component imports this stylesheet and the project has no such CSS file; re-run `pletivo prepare`",
+      );
+    }
+    return moduleResolution(target);
+  }
+
   #embeddedTailwind(specifier: string): SourceModule | null {
     const { tailwind } = this.#options;
     if (tailwind === undefined || !isTailwindStylesheetSpecifier(specifier)) return null;
@@ -220,6 +240,9 @@ export class ImportResolver {
 
     const local = this.#walk.resolveProjectFile(resolved);
     if (local !== null) {
+      // Before the file's own compile: its framework's compiler claimed it at prepare.
+      const component = this.#walk.islandComponent(local);
+      if (component !== null) return moduleResolution(component);
       const target = this.#walk.projectModule(local);
       if (target === null) {
         const framework = frameworkOfFile(local);
@@ -242,6 +265,8 @@ export class ImportResolver {
   }
 
   #externalUse(importer: SourceModule, rawSpecifier: string, external: string): ResolutionUse {
+    // Only an artifact resolution names one; the isolate imports it as written.
+    if (ARTIFACT_BUILTIN_EXTERNALS.has(external)) return { kind: "external", specifier: external, rewritten: external };
     const alias = HOST_ALIASES.get(external);
     if (alias === undefined) {
       throw unresolvedImport(

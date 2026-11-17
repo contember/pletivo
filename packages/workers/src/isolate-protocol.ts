@@ -13,6 +13,7 @@ export type IsolateProgramExport =
   | "contentConfig"
   | "content"
   | "markdown"
+  | "islands"
   | "scripts"
   | "i18n"
   | "envInstallers"

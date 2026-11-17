@@ -6,6 +6,7 @@ import { Glob } from "bun";
 import {
   ARTIFACT_VERSION,
   type ArtifactConfig,
+  type ArtifactInput,
   type ArtifactMarkdownConfig,
   type PreparedSite,
 } from "@pletivo/core/artifact";
@@ -25,6 +26,7 @@ import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
+import { bundleOnlyFiles, prepareIslands } from "./islands";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
 import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
@@ -32,7 +34,7 @@ import { markdownLayoutOf } from "@pletivo/core/content/markdown-module";
 import { isRouteFile } from "@pletivo/core/router";
 import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
-import { prepareModuleGraph, type MarkdownLayoutImport, type ProjectImportSource } from "./vendor";
+import { prepareModuleGraph, type MarkdownLayoutImport, type PreparedGraph, type ProjectImportSource } from "./vendor";
 import { classifySpecifier } from "./scan";
 
 export { PrepareError, type PrepareDiagnostic } from "./error";
@@ -74,7 +76,16 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const pluginModules = markdown.config === null
     ? []
     : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
-  const graph = await prepareModuleGraph(projectRoot, sources, freezeViteVirtualModule, pluginModules);
+  // First: the vendor graph must not walk what the islands bundle owns, whose packages may be CommonJS.
+  const islands = await prepareIslands(projectRoot, host?.renderers ?? [], sources);
+  const bundleOnly = islands === null ? new Set<string>() : bundleOnlyFiles(islands, sources);
+  const graphSources = islands === null
+    ? sources
+    : sources.filter((source) => !islands.componentFiles.has(source.file) && !bundleOnly.has(source.file));
+  const shared = islands === null
+    ? []
+    : graphSources.filter((source) => islands.bundledFiles.has(source.file)).map((source) => source.file);
+  const graph = await prepareSharedGraph(projectRoot, graphSources, shared, pluginModules);
   const pageScript = await freezePageScripts(host, projectRoot);
 
   return {
@@ -85,12 +96,64 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: pageScript === null ? [] : [pageScript],
       },
-      modules: graph.modules,
-      resolutions: graph.resolutions,
+      modules: islands === null ? graph.modules : [...graph.modules, ...islands.modules],
+      resolutions: islands === null ? graph.resolutions : [...graph.resolutions, ...islands.resolutions],
       browserResolutions: graph.browserResolutions,
+      ...(islands === null ? {} : { islands: islands.islands }),
     },
-    inputs,
+    inputs: islands === null ? inputs : withBundleInputs(inputs, islands.inputs),
   };
+}
+
+/** A file both record, such as a `package.json` a component imports, keeps the digest read first. */
+function withBundleInputs(inputs: readonly ArtifactInput[], bundle: readonly ArtifactInput[]): ArtifactInput[] {
+  const recorded = new Set(inputs.map((input) => input.path));
+  return [...inputs, ...bundle.filter((input) => !recorded.has(input.path))].sort((left, right) =>
+    compareStrings(left.path, right.path),
+  );
+}
+
+/**
+ * The vendor graph. When it fails only because of files framework components share with live
+ * modules, each that fails it on its own is refused by name, rather than the package it imports.
+ */
+async function prepareSharedGraph(
+  projectRoot: string,
+  sources: readonly ProjectImportSource[],
+  shared: readonly string[],
+  pluginModules: readonly string[],
+): Promise<PreparedGraph> {
+  const graphOf = (files: readonly ProjectImportSource[]) =>
+    prepareModuleGraph(projectRoot, files, freezeViteVirtualModule, pluginModules);
+  try {
+    return await graphOf(sources);
+  } catch (error) {
+    if (!(error instanceof PrepareError) || shared.length === 0) throw error;
+    const sharedFiles = new Set(shared);
+    const unshared = sources.filter((source) => !sharedFiles.has(source.file));
+    try {
+      await graphOf(unshared);
+    } catch {
+      // It fails without them too: not theirs.
+      throw error;
+    }
+    const diagnostics: PrepareDiagnostic[] = [];
+    for (const file of shared) {
+      try {
+        await graphOf([...unshared, ...sources.filter((source) => source.file === file)]);
+      } catch (fileError) {
+        if (!(fileError instanceof PrepareError)) throw fileError;
+        diagnostics.push({
+          source: normalizePath(path.relative(projectRoot, file)),
+          hook: "islands",
+          reason:
+            "framework components and the project's live modules both import it, and its imports cannot be carried " +
+            `for the live ones on the Workers host: ${fileError.message}`,
+        });
+      }
+    }
+    throw diagnostics.length === 0 ? error : new PrepareError(diagnostics);
+  }
 }
 
 /** Bundled here, on Bun, because the Worker cannot resolve a package or a Vite plugin. */

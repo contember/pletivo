@@ -6,6 +6,7 @@ import {
   digestArtifactInput,
   parsePreparedSite,
   serializePreparedSite,
+  type ArtifactIslands,
   type ArtifactResolution,
   type PreparedSite,
 } from "@pletivo/core/artifact";
@@ -373,6 +374,99 @@ describe("site artifact", () => {
 
   test("rejects unknown envelope fields", () => {
     expect(() => parsePreparedSite({ ...PREPARED, report: { diagnostics: [] } })).toThrow(ArtifactFormatError);
+  });
+});
+
+describe("site artifact islands", () => {
+  const BUNDLE = [
+    { id: "islands-bundle:0f/renderer.js", kind: "js", source: "export default {};" },
+    { id: "islands-bundle:0f/Counter.js", kind: "js", source: "export default 1;" },
+  ];
+  const ISLANDS: ArtifactIslands = {
+    projectRoot: "/srv/site",
+    renderers: [
+      { name: "@astrojs/vue", clientEntrypoint: "@astrojs/vue/client.js", server: "islands-bundle:0f/renderer.js" },
+      { name: "@astrojs/react", clientEntrypoint: null, server: "islands-bundle:0f/renderer.js" },
+    ],
+    scripts: { island: "island()", directives: { visible: "v()", load: "l()" } },
+    components: [{ file: "src/components/Counter.vue", module: "islands-bundle:0f/Counter.js" }],
+    stylesheets: [{ file: "src/components/Counter.vue.pletivo-style.css", source: ".a{}" }],
+  };
+
+  function withIslands(islands: unknown): unknown {
+    return artifactWith({ modules: BUNDLE, islands });
+  }
+
+  test("round-trips, keeping renderer order and sorting directives", () => {
+    const parsed = parsePreparedSite(JSON.parse(serializePreparedSite(withIslands(ISLANDS))));
+    expect(parsed.artifact.islands).toEqual(ISLANDS);
+    expect(parsed.artifact.islands?.renderers.map((renderer) => renderer.name)).toEqual(["@astrojs/vue", "@astrojs/react"]);
+    expect(Object.keys(parsed.artifact.islands?.scripts.directives ?? {})).toEqual(["load", "visible"]);
+    expect(parsePreparedSite(artifactWith({})).artifact.islands).toBeUndefined();
+  });
+
+  const scenarios: { name: string; islands: unknown; path: string }[] = [
+    { name: "an unknown field", islands: { ...ISLANDS, base: "/" }, path: "$.artifact.islands.base" },
+    { name: "a Windows project root", islands: { ...ISLANDS, projectRoot: "C:\\site" }, path: "$.artifact.islands.projectRoot" },
+    { name: "a relative project root", islands: { ...ISLANDS, projectRoot: "srv/site" }, path: "$.artifact.islands.projectRoot" },
+    { name: "no renderers", islands: { ...ISLANDS, renderers: [] }, path: "$.artifact.islands.renderers" },
+    {
+      name: "a duplicate renderer",
+      islands: { ...ISLANDS, renderers: [ISLANDS.renderers[0], ISLANDS.renderers[0]] },
+      path: "$.artifact.islands.renderers[1].name",
+    },
+    {
+      name: "a renderer server outside the islands bundle",
+      islands: { ...ISLANDS, renderers: [{ ...ISLANDS.renderers[0], server: "artifact:entry.js" }] },
+      path: "$.artifact.islands.renderers[0].server",
+    },
+    {
+      name: "a component module that is not carried",
+      islands: { ...ISLANDS, components: [{ file: "src/A.vue", module: "islands-bundle:0f/missing.js" }] },
+      path: "$.artifact.islands.components[0].module",
+    },
+    {
+      name: "a component path outside the project",
+      islands: { ...ISLANDS, components: [{ file: "../A.vue", module: "islands-bundle:0f/Counter.js" }] },
+      path: "$.artifact.islands.components[0].file",
+    },
+    {
+      name: "a stylesheet that is not CSS",
+      islands: { ...ISLANDS, stylesheets: [{ file: "src/A.js", source: "" }] },
+      path: "$.artifact.islands.stylesheets[0].file",
+    },
+    {
+      name: "a stylesheet at a component's path",
+      islands: { ...ISLANDS, stylesheets: [{ file: "src/components/Counter.vue", source: "" }] },
+      path: "$.artifact.islands.stylesheets[0].file",
+    },
+    {
+      name: "a directive that is not a string",
+      islands: { ...ISLANDS, scripts: { island: "", directives: { load: 1 } } },
+      path: "$.artifact.islands.scripts.directives.load",
+    },
+  ];
+  for (const scenario of scenarios) {
+    test(`rejects ${scenario.name}, by path`, () => {
+      expect(formatError(withIslands(scenario.islands)).path).toBe(scenario.path);
+    });
+  }
+
+  test("accepts an absolute POSIX, Windows drive or UNC project root", () => {
+    for (const projectRoot of ["/srv/site", "C:/work/site", "//server/share/site"]) {
+      expect(parsePreparedSite(withIslands({ ...ISLANDS, projectRoot })).artifact.islands?.projectRoot).toBe(projectRoot);
+    }
+  });
+
+  test("lets only an islands bundle module import a Node built-in", () => {
+    const importing = (importer: string) =>
+      artifactWith({
+        modules: BUNDLE,
+        resolutions: [{ importer, specifier: "node:crypto", target: { kind: "external", specifier: "node:crypto" } }],
+      });
+    expect(parsePreparedSite(importing("islands-bundle:0f/Counter.js")).artifact.resolutions).toHaveLength(1);
+    expect(formatError(importing("project:src/pages/index.astro")).path).toBe("$.artifact.resolutions[0].importer");
+    expect(formatError(importing("artifact:entry.js")).path).toBe("$.artifact.resolutions[0].importer");
   });
 });
 

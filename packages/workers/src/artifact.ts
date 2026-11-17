@@ -1,7 +1,10 @@
 import {
   ANY_PROJECT_IMPORTER,
+  ARTIFACT_BUILTIN_EXTERNALS,
   parsePreparedSite,
+  type ArtifactIslandScripts,
   type ArtifactModule,
+  type ArtifactRenderer,
   type ArtifactResolution,
   type ArtifactResolutionTarget,
   type ModuleId,
@@ -44,6 +47,17 @@ export interface ArtifactResolver {
   modules(): readonly ArtifactModule[];
 }
 
+/** The artifact's framework islands, indexed. See `ArtifactIslands`. */
+export interface ProjectIslands {
+  readonly projectRoot: string;
+  readonly renderers: readonly ArtifactRenderer[];
+  readonly scripts: ArtifactIslandScripts;
+  /** Project-root-relative file -> the bundle module it became. */
+  readonly components: ReadonlyMap<string, ModuleId>;
+  /** Project-root-relative file -> a compiled component's CSS, which no project file holds. */
+  readonly stylesheets: ReadonlyMap<string, string>;
+}
+
 /**
  * A `pletivo prepare` artifact, validated and bound to this host once.
  * Everything a render needs from it is derived here, not per render.
@@ -57,6 +71,8 @@ export interface ProjectArtifact {
   readonly moduleNames: ReadonlySet<string>;
   /** `config.i18n`, resolved once; `null` for a project without one. */
   readonly i18n: ResolvedI18nConfig | null;
+  /** `null` for a project without framework renderers. */
+  readonly islands: ProjectIslands | null;
 }
 
 /** Validate an untrusted artifact and bind it to the host externals it may use. */
@@ -75,8 +91,9 @@ export function loadProjectArtifact(value: unknown): ProjectArtifact {
   }
 
   for (const resolution of prepared.artifact.resolutions) {
-    if (resolution.target.kind === "external" && !HOST_ALIASES.has(resolution.target.specifier)) {
-      throw new UnsupportedArtifactExternalError(resolution.target.specifier);
+    const { target } = resolution;
+    if (target.kind === "external" && !HOST_ALIASES.has(target.specifier) && !ARTIFACT_BUILTIN_EXTERNALS.has(target.specifier)) {
+      throw new UnsupportedArtifactExternalError(target.specifier);
     }
   }
 
@@ -86,6 +103,19 @@ export function loadProjectArtifact(value: unknown): ProjectArtifact {
     browserResolver: resolverOf(modules, prepared.artifact.browserResolutions ?? []),
     moduleNames: new Set(prepared.artifact.modules.map((module) => executionNameForModuleId(module.id))),
     i18n: resolveI18nConfig(prepared.artifact.config.i18n),
+    islands: islandsOf(prepared),
+  };
+}
+
+function islandsOf(prepared: PreparedSite): ProjectIslands | null {
+  const { islands } = prepared.artifact;
+  if (islands === undefined) return null;
+  return {
+    projectRoot: islands.projectRoot,
+    renderers: islands.renderers,
+    scripts: islands.scripts,
+    components: new Map(islands.components.map((component) => [component.file, component.module])),
+    stylesheets: new Map(islands.stylesheets.map((stylesheet) => [stylesheet.file, stylesheet.source])),
   };
 }
 

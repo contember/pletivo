@@ -47,6 +47,8 @@ export interface CompileProjectOptions {
   compiler: AstroCompiler;
   /** Where the source tree starts in `files`, e.g. `src`. Used to probe for the content config. */
   srcDir?: string;
+  /** Where the project root sits in `files`: what the artifact's project paths are relative to. Defaults to `""`. */
+  rootDir?: string;
   /** What `pletivo prepare` froze: resolutions for bare specifiers and their `node_modules` sources. */
   artifact?: ProjectArtifact;
   /** Tailwind's host-embedded CSS sources, used only for CSS imports of its public stylesheets. */

@@ -446,6 +446,7 @@ async function isolatePaths(
     // Static routes are included so the isolate can reject unsupported SSR exports.
     entries: routes.map((route) => prefix + route.file),
     srcDir: srcDirOf(options),
+    rootDir: projectRoot(options),
     compiler: options.compiler,
     artifact: options.artifact,
     assets: options.assets,
@@ -543,6 +544,7 @@ function compilePage(file: string, options: ProjectOptions): Promise<CompiledPro
     files: options.files,
     entries: [file],
     srcDir: srcDirOf(options),
+    rootDir: projectRoot(options),
     compiler: options.compiler,
     artifact: options.artifact,
     assets: options.assets,
@@ -915,12 +917,24 @@ function programModule(program: ExecutableProgram): string {
   useEnv(env?.client ?? null, "$$envClient", ENV_CLIENT_MODULE_NAME);
   useEnv(env?.server ?? null, "$$envServer", ENV_SERVER_MODULE_NAME);
 
+  let islands = "null";
+  if (program.requirements.islands !== null) {
+    const { projectRoot, renderers, scripts } = program.requirements.islands;
+    const servers = renderers.map((renderer, index) => {
+      imports.push(`import * as $$renderer${index} from ${moduleSpecifier(renderer.executionName)};`);
+      return `{ name: ${JSON.stringify(renderer.name)}, clientEntrypoint: ${JSON.stringify(renderer.clientEntrypoint)}, ` +
+        `server: $$renderer${index} }`;
+    });
+    islands = `{ projectRoot: ${JSON.stringify(projectRoot)}, renderers: [${servers.join(", ")}], scripts: ${JSON.stringify(scripts)} }`;
+  }
+
   // Keyed by the protocol's export names, which `IsolateProgram` is checked against.
   const exports: Record<IsolateProgramExport, string> = {
     pages: `{\n${pages.join("\n")}\n}`,
     contentConfig,
     content: contentModules,
     markdown: markdownPipeline,
+    islands,
     scripts: JSON.stringify(program.scripts),
     i18n: i18nModule,
     envInstallers: `[${installers.join(", ")}]`,

@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import type { ProjectAssetInfo, ProjectAssetsView } from "../src/asset-port.ts";
+import { EMPTY_ARTIFACT_RESOLVER, executionNameForModuleId, loadProjectArtifact } from "../src/artifact.ts";
+import { CompileWalk } from "../src/compile/walk-state.ts";
 import { compileProject, isExecutableModule } from "../src/compile-project.ts";
 import { typescriptSuspects } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
-import { codeOf, hasModule, importsOf, nameOf, stylesOf } from "./compiled.ts";
+import { codeOf, hasModule, importsOf, nameOf, stylesheetsOf, stylesOf } from "./compiled.ts";
 
 const compiler = createAstroCompiler(await astroWasmModule());
 
@@ -468,5 +470,90 @@ import { helper } from "../lib/util";
       'pletivo cannot render Solid components: src/components/Counter.tsx (jsxImportSource "solid-js", set by its @jsxImportSource pragma)',
     );
     expect(hasModule(await compileProject({ files: files("pletivo"), compiler }), "src/components/Counter.tsx")).toBe(true);
+  });
+
+  describe("with framework islands prepared", () => {
+    const RENDERER = "islands-bundle:0f/renderer.js";
+    const COUNTER = "islands-bundle:0f/Counter.js";
+    const STYLESHEET = "src/components/Counter.vue.pletivo-style.css";
+    const artifact = loadProjectArtifact({
+      artifact: {
+        version: 2,
+        config: {},
+        scripts: { headInline: [], page: [] },
+        modules: [
+          { id: RENDERER, kind: "js", source: "export default { name: '@astrojs/vue' };" },
+          { id: COUNTER, kind: "js", source: `import "pletivo-island-stylesheet:${STYLESHEET}";\nexport default {};` },
+        ],
+        resolutions: [],
+        islands: {
+          projectRoot: "/srv/site",
+          renderers: [{ name: "@astrojs/vue", clientEntrypoint: "@astrojs/vue/client.js", server: RENDERER }],
+          scripts: { island: "", directives: {} },
+          components: [{ file: "src/components/Counter.vue", module: COUNTER }],
+          stylesheets: [{ file: STYLESHEET, source: ".counter{}" }],
+        },
+      },
+    });
+
+    test("imports a claimed component from the bundle, with Bun's absolute component path", async () => {
+      const project = await compileProject({
+        files: new Map([
+          ["src/pages/a.astro", `---\nimport Counter from "../components/Counter.vue";\n---\n<Counter client:load />\n`],
+          ["src/components/Counter.vue", "<template><button>+</button></template>\n"],
+        ]),
+        compiler,
+        artifact,
+      });
+      expect(project.program.modules[executionNameForModuleId(COUNTER)]).toBeDefined();
+      expect(project.program.requirements.islands?.renderers.map((renderer) => renderer.executionName)).toEqual([
+        executionNameForModuleId(RENDERER),
+      ]);
+      // The island uid hashes this string, so it has to be the one the Bun host compiles in.
+      expect(codeOf(project, "src/pages/a.astro")).toContain('"client:component-path":("/srv/site/src/components/Counter.vue")');
+      expect(stylesheetsOf(project, COUNTER)).toEqual([STYLESHEET]);
+    });
+
+    test("rebuilds the path Bun's compiler resolves, from a site below the workspace root", () => {
+      const walk = new CompileWalk(
+        new Map([["site/src/A.tsx", ""], ["site/src/B.jsx", ""], ["site/src/B.tsx", ""]]),
+        EMPTY_ARTIFACT_RESOLVER,
+        undefined,
+        artifact.islands,
+        "site",
+      );
+      const page = "site/src/pages/index.astro";
+      expect(walk.componentPath(page, "../A.jsx")).toBe("/srv/site/src/A.tsx");
+      expect(walk.componentPath(page, "../B.jsx")).toBe("/srv/site/src/B.jsx");
+      expect(walk.componentPath(page, "./../../../shared/C.jsx")).toBe("/srv/shared/C.jsx");
+      // Out of the root and back in: Bun falls back to `.tsx` all the same.
+      expect(walk.componentPath(page, "../../../site/src/A.jsx")).toBe("/srv/site/src/A.tsx");
+      expect(walk.componentPath(page, "some-package/C.vue")).toBe("some-package/C.vue");
+    });
+
+    test("keeps a UNC or drive root as Bun spells it on Windows", () => {
+      const { islands } = artifact;
+      if (islands === null) throw new Error("the fixture artifact carries islands");
+      const files = new Map([["src/A.tsx", ""]]);
+      const islandsAt = (projectRoot: string) =>
+        new CompileWalk(files, EMPTY_ARTIFACT_RESOLVER, undefined, { ...islands, projectRoot });
+      expect(islandsAt("//server/share/site").componentPath("src/pages/index.astro", "../A.jsx")).toBe(
+        "//server/share/site/src/A.tsx",
+      );
+      expect(islandsAt("C:/work/site").componentPath("src/pages/index.astro", "../A.jsx")).toBe("C:/work/site/src/A.tsx");
+    });
+
+    test("still refuses, by name, a component no prepared integration compiled", async () => {
+      await expect(
+        compileProject({
+          files: new Map([
+            ["src/pages/a.astro", `---\nimport Counter from "../components/Counter.svelte";\n---\n<Counter />\n`],
+            ["src/components/Counter.svelte", "<button>+</button>\n"],
+          ]),
+          compiler,
+          artifact,
+        }),
+      ).rejects.toThrow("pletivo cannot render Svelte components: src/components/Counter.svelte");
+    });
   });
 });

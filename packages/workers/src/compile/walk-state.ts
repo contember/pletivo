@@ -1,5 +1,5 @@
 import type { ModuleId } from "@pletivo/core/artifact";
-import { executionNameForModuleId, projectModuleId, type ArtifactResolver } from "../artifact.ts";
+import { executionNameForModuleId, projectModuleId, type ArtifactResolver, type ProjectIslands } from "../artifact.ts";
 import { ASSETS_SOURCES } from "../astro-assets.ts";
 import type {
   OrderedExecutionEdge,
@@ -67,6 +67,9 @@ export class CompileWalk {
   readonly #projectFiles: NormalizedProjectFiles;
   readonly #artifact: ArtifactResolver;
   readonly #srcDir: string | undefined;
+  readonly #islands: ProjectIslands | null;
+  /** Where the project root sits among the file keys: what artifact paths are relative to. */
+  readonly #rootDir: string;
   readonly #takenNames = new Map<string, ModuleId>();
   readonly #claimed = new Map<ModuleId, SourceModule>();
   /** Named and not yet compiled. Appended to *while* it is walked; see `pending`. */
@@ -75,10 +78,18 @@ export class CompileWalk {
   /** Set the moment something reaches for the content API, with the config it seeded. */
   #content: ProgramContentRequirement | null = null;
 
-  constructor(files: ProjectFiles, artifact: ArtifactResolver, srcDir: string | undefined) {
+  constructor(
+    files: ProjectFiles,
+    artifact: ArtifactResolver,
+    srcDir: string | undefined,
+    islands: ProjectIslands | null = null,
+    rootDir = "",
+  ) {
     this.#projectFiles = new NormalizedProjectFiles(files);
     this.#artifact = artifact;
     this.#srcDir = srcDir;
+    this.#islands = islands;
+    this.#rootDir = rootDir;
     this.sources = new CompileSources(this.#projectFiles, artifact);
   }
 
@@ -138,6 +149,65 @@ export class CompileWalk {
       compilePath: module.compilePath ?? module.id,
       origin: "artifact",
     });
+  }
+
+  /** The islands bundle module a project file became at prepare, or `null` when it is not a framework component. */
+  islandComponent(file: string): SourceModule | null {
+    const relative = this.#rootRelative(file);
+    const module = relative === null ? undefined : this.#islands?.components.get(relative);
+    return module === undefined ? null : this.artifactModule(module);
+  }
+
+  /**
+   * A stylesheet an islands bundle module imports, by project-root-relative path: a project file,
+   * or a compiled component's CSS, placed beside the component as the Bun host places it.
+   */
+  islandStylesheet(file: string): SourceModule | null {
+    const key = this.#fileKey(file);
+    const compiled = this.#islands?.stylesheets.get(file);
+    if (compiled !== undefined) this.#projectFiles.add(key, compiled);
+    const module = this.projectModule(key);
+    return module?.kind === "css" ? module : null;
+  }
+
+  /**
+   * The `client:component-path` Bun's Astro compiler writes for `specifier` in the project file
+   * `importer`: a relative specifier made absolute, `.jsx` falling back to `.tsx`. The island
+   * `uid` hashes it, so it is rebuilt under the project root the artifact was prepared in.
+   */
+  componentPath(importer: string, specifier: string): string {
+    const islands = this.#islands;
+    const from = this.#rootRelative(importer);
+    if (islands === null || from === null || !specifier.startsWith(".")) return specifier;
+    const root = islands.projectRoot.split("/").filter((segment) => segment !== "");
+    const segments = [...root, ...from.split("/").slice(0, -1)];
+    for (const segment of specifier.split("/")) {
+      if (segment === "" || segment === ".") continue;
+      if (segment === "..") segments.pop();
+      else segments.push(segment);
+    }
+    // Bun's own fallback. Only a file inside the project is in `files`, wherever the specifier went on the way.
+    const inside = segments.length > root.length && root.every((segment, index) => segments[index] === segment);
+    if (inside && segments[segments.length - 1].endsWith(".jsx")) {
+      const relative = segments.slice(root.length).join("/");
+      const tsx = `${relative.slice(0, -4)}.tsx`;
+      if (!this.#projectFiles.has(this.#fileKey(relative)) && this.#projectFiles.has(this.#fileKey(tsx))) {
+        segments[segments.length - 1] = `${segments[segments.length - 1].slice(0, -4)}.tsx`;
+      }
+    }
+    // Keeps a POSIX root's `/`, a UNC root's `//` and a Windows drive root's none.
+    const prefix = /^\/*/.exec(islands.projectRoot)?.[0] ?? "";
+    return `${prefix}${segments.join("/")}`;
+  }
+
+  /** A file key as a path relative to the project root, or `null` outside it. */
+  #rootRelative(file: string): string | null {
+    if (this.#rootDir === "") return file;
+    return file.startsWith(`${this.#rootDir}/`) ? file.slice(this.#rootDir.length + 1) : null;
+  }
+
+  #fileKey(rootRelative: string): string {
+    return this.#rootDir === "" ? rootRelative : `${this.#rootDir}/${rootRelative}`;
   }
 
   hostStylesheet(specifier: keyof TailwindStylesheets, source: string): SourceModule {

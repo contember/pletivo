@@ -15,9 +15,10 @@ import {
   type ArtifactMarkdownConfig,
   type PortablePlugin,
 } from "@pletivo/core/artifact";
-import { EMPTY_ARTIFACT_RESOLVER, type ArtifactResolver } from "./artifact.ts";
+import { EMPTY_ARTIFACT_RESOLVER, type ArtifactResolver, type ProjectIslands } from "./artifact.ts";
 import type {
   ExecutableEntry,
+  ProgramIslandsRequirement,
   ProgramMarkdownPlugin,
   ProgramMarkdownRequirement,
 } from "./compiled-program.ts";
@@ -36,7 +37,7 @@ export type { CompiledProject, CompileProjectOptions } from "./compile/types.ts"
 export async function compileProject(options: CompileProjectOptions): Promise<CompiledProject> {
   const { compiler, cache } = options;
   const artifact = options.artifact?.resolver ?? EMPTY_ARTIFACT_RESOLVER;
-  const walk = new CompileWalk(options.files, artifact, options.srcDir);
+  const walk = new CompileWalk(options.files, artifact, options.srcDir, options.artifact?.islands ?? null, options.rootDir);
   const resolver = new ImportResolver(walk, {
     artifact,
     tailwind: options.tailwind,
@@ -75,9 +76,24 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
   const markdown = markdownConfig !== undefined && rendersMarkdown
     ? markdownRequirement(walk, artifact, markdownConfig)
     : null;
+  // Every page: a renderer's `check` sees any non-`.astro` component, and some spend ids there.
+  const islands = options.artifact?.islands ? islandsRequirement(walk, options.artifact.islands) : null;
   await link();
 
-  return emitProject(walk, entries, markdown, options.artifact?.prepared.artifact.config.i18n ?? null);
+  return emitProject(walk, entries, markdown, islands, options.artifact?.prepared.artifact.config.i18n ?? null);
+}
+
+/** Claim each renderer's server module into the walk and name where the isolate imports it from. */
+function islandsRequirement(walk: CompileWalk, islands: ProjectIslands): ProgramIslandsRequirement {
+  return {
+    projectRoot: islands.projectRoot,
+    renderers: islands.renderers.map((renderer) => ({
+      name: renderer.name,
+      clientEntrypoint: renderer.clientEntrypoint,
+      executionName: walk.artifactModule(renderer.server).executionName,
+    })),
+    scripts: islands.scripts,
+  };
 }
 
 /** Claim each plugin's module into the walk and name where the isolate imports it from. */
