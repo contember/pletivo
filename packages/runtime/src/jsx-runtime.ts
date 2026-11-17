@@ -48,9 +48,10 @@ const UNITLESS_CSS_PROPS = new Set([
  * Serialize `style={{ color: "red", fontSize: 12 }}` into a CSS declaration
  * string. camelCase → kebab-case; numeric values for length-like properties
  * get a `px` suffix; custom properties (`--foo`) pass through as-is.
+ * Declarations are joined by `;` with none after the last, as Astro writes them.
  */
 function serializeStyleObject(style: Record<string, unknown>): string {
-  let out = "";
+  const declarations: string[] = [];
   for (const [key, value] of Object.entries(style)) {
     if (value == null || value === false || value === "") continue;
     const prop = key.startsWith("--")
@@ -59,9 +60,9 @@ function serializeStyleObject(style: Record<string, unknown>): string {
     const val = typeof value === "number" && !UNITLESS_CSS_PROPS.has(key)
       ? `${value}px`
       : String(value);
-    out += `${prop}:${val};`;
+    declarations.push(`${prop}:${val}`);
   }
-  return out;
+  return declarations.join(";");
 }
 
 function renderChildren(children: unknown): string | Promise<string> {
