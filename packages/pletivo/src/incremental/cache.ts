@@ -18,12 +18,21 @@ const { version: PLETIVO_VERSION } = require_("../../package.json") as { version
 // would leave its framework components out of the island bundles.
 // Bumped to 7: added per-route `cssHead`. Inlined stylesheets cannot be
 // found in cached HTML by a `<link>` pattern, so the written fragment is kept.
-export const CACHE_SCHEMA_VERSION = 7;
+// Bumped to 8: added per-route `dynamicCss`. A page cached by version 7 would
+// drop the CSS of modules its render imported dynamically.
+export const CACHE_SCHEMA_VERSION = 8;
 
 /** A framework component export an `<astro-island>` hydrates. */
 export interface CachedAstroIsland {
   componentPath: string;
   exportName: string;
+}
+
+/** A stylesheet a page's render reached through a module the page does not import statically. */
+export interface CachedCssRef {
+  file: string;
+  /** The text of a stylesheet that exists only in memory: a compiled framework component's `<style>`. */
+  css?: string;
 }
 
 /** The stylesheet markup `writeHtml` put before `</head>`, so a cached page's can be swapped. */
@@ -114,6 +123,11 @@ export interface RouteCacheEntry {
   cssEntry?: string;
   /** Written by `writeHtml`, like `size`; null when the page has no `</head>`, so no stylesheet reaches it. */
   cssHead: CachedCssHead | null;
+  /**
+   * Stylesheets of modules the render imported dynamically. A cached page is
+   * not rendered, so those modules do not load and their CSS is restored from here.
+   */
+  dynamicCss: CachedCssRef[];
   /**
    * Byte size of the rendered HTML output. Cached so warm builds
    * don't have to stat every cached file just to print the total.

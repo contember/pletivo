@@ -33,14 +33,14 @@ import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
 import { setBase } from "@pletivo/runtime/base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
-import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs, registerCssPageEntry } from "./js-imported-css";
+import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, dynamicCssOf, recordBuildCssOutputs, registerCssPageEntry, restoreDynamicCss } from "./js-imported-css";
 import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-assets";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, paramsToKey, type CachedAstroIsland, type CachedCssHead } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
-import { recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
+import { recordDynamicCss, recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { escapeRegex } from "@pletivo/core/escape-regex";
 import { pageDoctype } from "@pletivo/core/page-doctype";
@@ -1033,6 +1033,14 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // during page rendering, and hoisted-script CSS imports are collected
   // above, so the bundle needs to be computed here to include them.
   const tCss = performance.now();
+  // Before the plan: a cached page's dynamically imported modules did not load this build.
+  if (cache) {
+    for (const result of results) {
+      if (result.source !== "cached" || !result.routeKey) continue;
+      const entry = cache.getRoute(result.routeKey);
+      if (entry) restoreDynamicCss(result.routeKey, entry.dynamicCss);
+    }
+  }
   const cssBundle = await bundleCss(projectRoot, config.srcDir, distDir, inlineStylesheets);
   const cssSheets = [cssBundle.shared, ...cssBundle.groups.map((group) => group.sheet)];
   const cssSheetCount = cssSheets.filter((sheet) => sheet?.type === "external").length;
@@ -1073,6 +1081,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     // swap the markup.
     if (cache && result.routeKey) {
       recordWrittenOutput(cache, result.routeKey, size, cssHead);
+      // After every render, so the module graph holds whatever this page imported dynamically.
+      const deps = Object.keys(cache.getRoute(result.routeKey)?.depFingerprints ?? {});
+      recordDynamicCss(cache, result.routeKey, dynamicCssOf(path.join(pagesDir, result.file), deps));
     }
     console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
   };

@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import fs from "fs/promises";
 import type { BunPlugin } from "bun";
 import { cssAssetBunPlugin, rewriteConfiguredCssAssetUrls, stripCssAssetPlaceholders } from "./css-assets";
+import type { CachedCssRef } from "./incremental/cache";
 
 type BuildCssOutput = {
   path: string;
@@ -94,6 +95,8 @@ const keyToFile = new Map<string, string>();
 /** Detached (hoisted-script) source CSS refs, keyed by collection key. */
 const detachedSourceCss = new Map<string, string[]>();
 const pageEntryFiles = new Set<string>();
+/** Stylesheets restored for pages taken from the incremental cache, keyed by route. */
+const restoredDynamicCss = new Map<string, string[]>();
 const externalCssText = new Map<string, Promise<string>>();
 const cssImportEntries = new Map<string, CssImportEntry>();
 const staticImportCache = new Map<string, Promise<string[]>>();
@@ -168,6 +171,13 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
       kinds.set(item.file, item.kind);
     }
   }
+  for (const files of restoredDynamicCss.values()) {
+    for (const file of files) {
+      if (order.has(file)) continue;
+      shared.add(file);
+      kinds.set(file, cssKind(file));
+    }
+  }
   // Hoisted-script CSS is page-agnostic here: the scripts are bundled as
   // one artifact, so their source CSS cannot be attributed to a page set.
   for (const files of detachedSourceCss.values()) {
@@ -229,6 +239,31 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
   };
 }
 
+/**
+ * Stylesheets reached from `deps` but not through `page`'s static imports: the CSS of
+ * modules the page's render imported dynamically. A page restored from the incremental
+ * cache is not rendered, so those modules do not load; `restoreDynamicCss` keeps their CSS.
+ */
+export function dynamicCssOf(page: string, deps: Iterable<string>): CachedCssRef[] {
+  const visited = new Set<string>();
+  walkCssGraph(path.resolve(page), visited, () => {});
+  const files = new Set<string>();
+  for (const dep of deps) walkCssGraph(dep, visited, (file) => files.add(file));
+  return [...files].sort().map((file) => {
+    const css = virtualCss.get(file);
+    return css === undefined ? { file } : { file, css };
+  });
+}
+
+/** Bring back the stylesheets `dynamicCssOf` recorded for a page that is not rendered this build. */
+export function restoreDynamicCss(key: string, refs: readonly CachedCssRef[]): void {
+  for (const ref of refs) {
+    // A component compiled this build has the current text already.
+    if (ref.css !== undefined && !virtualCss.has(ref.file)) setVirtualCss(ref.file, ref.css);
+  }
+  restoredDynamicCss.set(key, refs.map((ref) => ref.file));
+}
+
 function walkCssGraph(
   file: string,
   visited: Set<string>,
@@ -282,6 +317,7 @@ export function clearJsImportedCss(): void {
   keyToFile.clear();
   detachedSourceCss.clear();
   pageEntryFiles.clear();
+  restoredDynamicCss.clear();
   externalCssText.clear();
   bundledCssMap.clear();
   cssImportEntries.clear();

@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { runWithRuntimeDepCapture } from "./dep-tracker";
 import { collectStaticDeps, isWalkableSourceFile } from "./import-graph";
-import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
+import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedCssRef, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
 
 /**
  * Loaded handle to @nuasite/astro-fragments — resolved once per build
@@ -242,6 +242,8 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			// Populated downstream after writeHtml — we don't know the
 			// final byte length or CSS markup yet (injection happens there).
 			cssHead: null,
+			// Known only once every page has rendered: see `recordDynamicCss`.
+			dynamicCss: [],
 			size: 0,
 		};
 		req.cache.setRoute(req.routeKey, entry);
@@ -277,6 +279,13 @@ export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: n
 		: entry.cssHead.fragment === cssHead.fragment && entry.cssHead.pageCss === cssHead.pageCss;
 	if (entry.size === size && sameCssHead) return;
 	cache.setRoute(routeKey, { ...entry, size, cssHead });
+}
+
+/** Patch the stylesheets a rendered page reached through dynamic imports onto its cache entry. */
+export function recordDynamicCss(cache: CacheStore, routeKey: string, dynamicCss: CachedCssRef[]): void {
+	const entry = cache.getRoute(routeKey);
+	if (!entry) return;
+	cache.setRoute(routeKey, { ...entry, dynamicCss });
 }
 
 async function fileExists(p: string): Promise<boolean> {
