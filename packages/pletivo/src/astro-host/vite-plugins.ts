@@ -286,7 +286,8 @@ function hookHandler<Handler extends (id: string, ...rest: never[]) => unknown>(
   hook: Handler | ObjectHook<Handler> | undefined,
   id: string,
 ): Handler | null {
-  if (hook === undefined) return null;
+  // Integration plugins reach the host unchecked; a `null` hook is skipped, as before.
+  if (hook == null) return null;
   if (typeof hook === "function") return hook;
   const filter = hook.filter?.id;
   return filter === undefined || matchesIdFilter(filter, id) ? hook.handler : null;

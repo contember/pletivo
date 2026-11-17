@@ -73,6 +73,7 @@ export type ResolveIdHandler = (id: string, importer?: string) => ResolveIdResul
 export type LoadHandler = (id: string) => LoadResult | null | undefined | Promise<LoadResult | null | undefined>;
 
 /** A RegExp, or a glob that Vite resolves against the working directory unless it is absolute or starts with `**`. */
+/** A string is a glob matched with `Bun.Glob`, which has no extglobs (`+(a|b)`) unlike Vite's picomatch. */
 export type HookIdPattern = string | RegExp;
 export type HookIdFilter =
   | HookIdPattern
