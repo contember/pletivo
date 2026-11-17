@@ -21,8 +21,6 @@ import { preactResolver } from "./islands-bundle";
 
 const ASTRO_DIR = "_astro";
 
-export { createIslandClientUrls, type IslandClientUrlsOptions };
-
 /** A component export a page hydrates, as `client:component-path` and `client:component-export` name it. */
 export interface AstroIslandComponent {
   /** Absolute, as the compiler resolved a relative import, or a package specifier; may lack an extension. */

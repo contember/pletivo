@@ -3,8 +3,8 @@
  *
  * Island URLs are computed while a page renders, synchronously, on both hosts, and they
  * name files by a SHA-256 prefix. WebCrypto's digest is async and `node:crypto` is not
- * in every isolate, so both hosts name them through this; `tests/unit/sha256.test.ts`
- * holds it to `Bun.CryptoHasher` byte for byte.
+ * in every isolate, so both hosts name them through this; `tests/unit/island-client-urls.test.ts`
+ * holds it to `node:crypto` byte for byte.
  */
 
 const K = new Uint32Array([

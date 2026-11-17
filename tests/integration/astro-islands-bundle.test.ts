@@ -4,9 +4,9 @@ import os from "os";
 import path from "path";
 import type { AstroRendererEntry } from "../../packages/core/src/astro-host/renderers";
 import type { FrameworkCompileTarget, FrameworkCompiler } from "../../packages/core/src/framework-compile/types";
+import { createIslandClientUrls } from "../../packages/core/src/island-urls";
 import {
   bundleAstroIslands,
-  createIslandClientUrls,
   type AstroIslandComponent,
   type VirtualModuleSource,
 } from "../../packages/pletivo/src/astro-islands-bundle";
