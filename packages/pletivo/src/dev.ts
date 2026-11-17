@@ -8,6 +8,7 @@ import { getContentBaseDirs, initCollections, runWithBunContentRuntime } from ".
 import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
 import { runInPage, runWithRenderTracking, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
+import { finalizeIslandScripts } from "@pletivo/runtime/astro-islands/index";
 import { hmrClientScript } from "@pletivo/runtime/hmr-client";
 import { devCss } from "./css";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
@@ -45,6 +46,8 @@ import {
 } from "@pletivo/core/i18n/fallback";
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
 import { registerProjectSourcePlugin } from "./project-source-plugin";
+import { bundleRenderedIslands, setupAstroRenderers, type AstroRenderers } from "./astro-renderers";
+import type { AstroIslandComponent } from "./astro-islands-bundle";
 import { installImportMetaEnv } from "./import-meta-env";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
@@ -222,6 +225,32 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureJsImportedCss(projectRoot, config.srcDir);
+  // Before any project module loads: the renderers decide how its framework components compile.
+  // Rewired after a failed astro:config:setup recovers, which may register renderers.
+  let astroRenderers: AstroRenderers | null = null;
+  let wiredRenderers = "";
+  function rendererNames(): string {
+    return (astroHost?.renderers ?? []).map((renderer) => renderer.name).join(", ");
+  }
+  async function wireAstroRenderers(): Promise<void> {
+    const renderers = astroHost?.renderers ?? [];
+    const names = rendererNames();
+    if (astroRenderers !== null && names === wiredRenderers) return;
+    astroRenderers = await setupAstroRenderers({
+      projectRoot,
+      renderers,
+      base: typeof astroHost?.config.base === "string" ? astroHost.config.base : config.base,
+      beforeHydrationScripts: astroHost?.injectedBeforeHydrationScripts ?? [],
+    });
+    wiredRenderers = names;
+  }
+  // A hook that fails only on a first pass (it needs a later integration's setup) passes on a retry.
+  // Retry once now, so the process starts with the set a retry reaches and does not restart into it.
+  if (astroHost && astroHost.setupErrors.length > 0) {
+    const recovered = await astroHost.retryFailedSetup();
+    if (recovered.length > 0) console.log(`  astro:config:setup recovered → ${recovered.join(", ")}`);
+  }
+  await wireAstroRenderers();
   {
     const vite = astroHost?.config.vite as
       | { css?: { preprocessorOptions?: { scss?: Record<string, unknown> } } }
@@ -253,6 +282,24 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     const recovered = await astroHost.retryFailedSetup();
     if (recovered.length === 0) return;
     console.log(`  astro:config:setup recovered → ${recovered.join(", ")}`);
+    // A recovered hook may have registered a renderer. A process wires one set (its compilers are
+    // Bun plugins), so changing a wired set takes a new process, as a config change does.
+    const names = rendererNames();
+    if (wiredRenderers !== "" && names !== wiredRenderers) {
+      const change = `framework renderers changed (${wiredRenderers} → ${names || "none"})`;
+      if (isSupervisedChild()) {
+        console.log(`\n  ${change} → restarting dev server\n`);
+        void shutdown(RESTART_EXIT_CODE);
+        return;
+      }
+      console.error(`  ${change}; restart \`pletivo dev\` to apply them`);
+    } else {
+      try {
+        await wireAstroRenderers();
+      } catch (error) {
+        console.error(`  ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     // Whatever the hook (re)generated is a module some page already tried to
     // import. Bust the cache so the next render picks it up, and push the
     // browser off the error page.
@@ -456,6 +503,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       } else {
         return null;
       }
+      // Each Astro island carries its scripts; the page keeps the first of each, in document order.
+      html = finalizeIslandScripts(html);
 
       // Inject dev stylesheet link + HMR / hydration scripts + any
       // integration-injected scripts (`injectScript('page', code)` from
@@ -620,6 +669,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     if (typeof result === "string") html = result;
     else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
     else return null;
+    html = finalizeIslandScripts(html);
 
     const astroCss = await getAstroCssForPage({
       entryFile: fullPath,
@@ -1085,6 +1135,63 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     });
   }
 
+  // Astro island bundles, rebuilt on request once a component was hydrated or a file changed.
+  const devIslandsDir = path.join(projectRoot, "node_modules", ".pletivo", "dev-islands");
+  /** What an extensionless component import may resolve to, in Bun's order. */
+  const SCRIPT_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"];
+  /** The hydrated components still on disk, as of a dev version and a count of hydrated ones. */
+  let bundledIslands: { version: number; hydrated: number; components: AstroIslandComponent[] } | null = null;
+  let islandBundle: { key: string; done: Promise<void> } | null = null;
+
+  /**
+   * Whether a component is still on disk. Its path is the import as written, made absolute, so it
+   * may lack an extension or name a directory. Checked on disk each time: Bun's resolver caches
+   * directory listings, so it still finds a file renamed since. A package specifier is left to it.
+   */
+  function componentResolves(componentPath: string): boolean {
+    if (!path.isAbsolute(componentPath)) {
+      try {
+        Bun.resolveSync(componentPath, projectRoot);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    const candidates = [componentPath, ...SCRIPT_EXTENSIONS.flatMap((ext) => [componentPath + ext, path.join(componentPath, `index${ext}`)])];
+    return candidates.some((candidate) => fs.statSync(candidate, { throwIfNoEntry: false })?.isFile() === true);
+  }
+
+  /**
+   * Every component hydrated since start, by a page, an endpoint or the container API, that is
+   * still on disk: a deleted or renamed one cannot be bundled and must not break the others.
+   */
+  function islandComponents(renderers: AstroRenderers): AstroIslandComponent[] {
+    const hydrated = renderers.hydratedComponents();
+    const version = getDevVersion();
+    if (bundledIslands?.version !== version || bundledIslands.hydrated !== hydrated.length) {
+      const components = hydrated.filter((component) => componentResolves(component.componentPath));
+      bundledIslands = { version, hydrated: hydrated.length, components };
+    }
+    return bundledIslands.components;
+  }
+
+  async function serveAstroIslandBundle(renderers: AstroRenderers, pathname: string): Promise<Response | null> {
+    const components = islandComponents(renderers);
+    const ids = components.map((component) => `${component.componentPath}\0${component.exportName}`);
+    const key = `${getDevVersion()}\0${ids.sort().join("\0")}`;
+    if (islandBundle?.key !== key) {
+      islandBundle = { key, done: bundleRenderedIslands(renderers, devIslandsDir, components) };
+    }
+    try {
+      await islandBundle.done;
+    } catch (e) {
+      return new Response(e instanceof Error ? e.message : String(e), { status: 500 });
+    }
+    const file = path.join(devIslandsDir, pathname);
+    if (!file.startsWith(devIslandsDir + path.sep) || !fs.existsSync(file)) return null;
+    return new Response(Bun.file(file), { headers: { "Content-Type": "application/javascript; charset=utf-8" } });
+  }
+
   async function pletivoHandler(req: Request, url: URL, pathname: string): Promise<Response | null> {
     {
       // Serve the morphdom ESM bundle for the HMR client's lazy import.
@@ -1173,6 +1280,11 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         }
         const logs = result.logs.map((l) => String(l)).join("\n");
         return new Response(`Hoisted script bundle failed:\n${logs}`, { status: 500 });
+      }
+
+      if (astroRenderers && pathname.startsWith("/_astro/") && pathname.endsWith(".js")) {
+        const served = await serveAstroIslandBundle(astroRenderers, pathname);
+        if (served) return served;
       }
 
       // Serve island bundles on-the-fly

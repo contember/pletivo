@@ -1,0 +1,11 @@
+---
+import Counter from "../components/Counter.vue";
+import Parent from "../components/Parent.vue";
+---
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Dev</title></head>
+  <body>
+    <Counter start={1} client:load />
+    <Parent client:load />
+  </body>
+</html>

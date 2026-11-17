@@ -1,0 +1,8 @@
+---
+import Counter from "../components/Counter";
+import VueCounter from "../components/VueCounter.vue";
+---
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Late setup</title></head>
+  <body><Counter start={3} client:load /><VueCounter start={4} client:load /></body>
+</html>

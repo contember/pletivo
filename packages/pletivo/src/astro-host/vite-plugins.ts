@@ -134,6 +134,48 @@ export async function materializeViteVirtualImports(
   });
 }
 
+/** Specifiers already served by `serveViteVirtualImports`; a `build.module` is registered once. */
+const servedRuntimeVirtuals = new Set<string>();
+
+/**
+ * Serve the Vite virtual modules the package module `file` imports to Bun's runtime
+ * loader. Bun runs no `onResolve` for a bare specifier imported at run time, and a
+ * package cannot be rewritten like compiled `.astro` output, so each one an integration's
+ * plugin resolves and loads (`astro:react:opts`, `virtual:@astrojs/vue/app`) becomes a
+ * `build.module`. A specifier no plugin loads is left to Bun, whose error names it.
+ */
+export async function serveViteVirtualImports(file: string): Promise<void> {
+  const modules: Array<{ specifier: string; code: string; loader: Loader }> = [];
+  const imports = new Bun.Transpiler({ loader: "js" }).scanImports(await Bun.file(file).text());
+  for (const { path: specifier } of imports) {
+    if (servedRuntimeVirtuals.has(specifier) || resolvesFrom(specifier, path.dirname(file))) continue;
+    const id = (await resolveViteId(specifier, file)) ?? specifier;
+    // Not the errors: a plugin whose `configResolved` never ran (vite-plugin-svelte) throws for every id.
+    const { loaded } = await tryLoadViteId(id);
+    if (!loaded) continue;
+    servedRuntimeVirtuals.add(specifier);
+    modules.push({ specifier, code: loaded.code, loader: loaded.loader });
+  }
+  if (modules.length === 0) return;
+  await Bun.plugin({
+    name: `pletivo-vite-virtual-imports:${file}`,
+    setup(build) {
+      for (const module of modules) {
+        build.module(module.specifier, () => ({ contents: module.code, loader: module.loader }));
+      }
+    },
+  });
+}
+
+function resolvesFrom(specifier: string, dir: string): boolean {
+  try {
+    Bun.resolveSync(specifier, dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function findVirtualSpecifiers(code: string): string[] {
   const out = new Set<string>();
   try {

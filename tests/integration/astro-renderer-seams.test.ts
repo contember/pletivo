@@ -3,7 +3,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { parseAstroRenderer } from "../../packages/core/src/astro-host/renderers";
-import type { FrameworkCompiler } from "../../packages/core/src/framework-compile/types";
+import { offeredSuffix, type FrameworkCompiler } from "../../packages/core/src/framework-compile/types";
 import { __resetForTests, initAstroHost, type AstroHost } from "../../packages/pletivo/src/astro-host/runner";
 import { resolveComponentPath } from "../../packages/pletivo/src/astro-plugin";
 import { frameworkCompilePlugin } from "../../packages/pletivo/src/framework-compile";
@@ -123,6 +123,7 @@ describe("frameworkCompilePlugin", () => {
           frameworkCompilePlugin({
             compilers: [declining, compiling],
             target: "client",
+            loadedByRuntime: false,
             onCss: (filename, text) => css.push(`${path.basename(filename)} ${text}`),
           }),
         ],
@@ -130,6 +131,52 @@ describe("frameworkCompilePlugin", () => {
       expect(result.success).toBe(true);
       expect(await result.outputs[0]!.text()).toContain('"WIDGET:client"');
       expect(css).toEqual(["Widget.fake .widget{}"]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("offeredSuffix", () => {
+  test("picks the longest suffix, case-sensitively", () => {
+    expect(offeredSuffix("/a/count.svelte.js", [".js", ".svelte.js"])).toBe(".svelte.js");
+    expect(offeredSuffix("/a/Count.Svelte.js", [".js", ".svelte.js"])).toBe(".js");
+    expect(offeredSuffix("/a/Card.TSX", [".jsx", ".tsx"])).toBeNull();
+  });
+});
+
+describe("frameworkCompilePlugin matches filename suffixes", () => {
+  test("the longest offered suffix decides, and a declined file loads by its real extension", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-framework-suffix-"));
+    try {
+      await fs.writeFile(path.join(dir, "Widget.fake"), "GENERIC");
+      await fs.writeFile(path.join(dir, "store.fake.ts"), "MODULE");
+      await fs.writeFile(path.join(dir, "plain.fake.mts"), "export default 'plain' as string;");
+      await fs.writeFile(
+        path.join(dir, "entry.js"),
+        'import a from "./Widget.fake"; import b from "./store.fake.ts"; import c from "./plain.fake.mts"; export default [a, b, c];',
+      );
+      const named = (framework: string, extensions: string[]): FrameworkCompiler => ({
+        framework,
+        extensions,
+        compile: async ({ source }) => ({ code: `export default ${JSON.stringify(`${framework}:${source}`)};`, loader: "js", css: null }),
+      });
+      // `.ts` is offered to Generic too, so only the longest suffix keeps store.fake.ts away from it.
+      const generic = named("Generic", [".fake", ".ts"]);
+      const modules = named("Module", [".fake.ts"]);
+      const declining: FrameworkCompiler = { framework: "None", extensions: [".fake.mts"], compile: async () => null };
+      const result = await Bun.build({
+        entrypoints: [path.join(dir, "entry.js")],
+        plugins: [frameworkCompilePlugin({ compilers: [generic, modules, declining], target: "client", loadedByRuntime: false, onCss: () => {} })],
+      });
+      expect(result.success).toBe(true);
+      const output = await result.outputs[0]!.text();
+      expect(output).toContain('"Generic:GENERIC"');
+      expect(output).toContain('"Module:MODULE"');
+      expect(output).not.toContain("Generic:MODULE");
+      // Returned as written, through the `.mts` loader, which strips the type assertion.
+      expect(output).toContain('"plain"');
+      expect(output).not.toContain("as string");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -155,6 +202,7 @@ describe("frameworkCompilePlugin as a runtime plugin", () => {
             },
           ],
           target: "server",
+          loadedByRuntime: true,
           onCss: () => {},
         }),
       );
@@ -175,7 +223,7 @@ describe("frameworkCompilePlugin when every compiler declines", () => {
       await fs.writeFile(path.join(dir, "a.ts"), 'import v from "./plain.ts"; export default v;');
       await fs.writeFile(path.join(dir, "b.ts"), 'import v from "./Odd.w0odd"; export default v;');
       const declining: FrameworkCompiler = { framework: "None", extensions: [".ts", ".w0odd"], compile: async () => null };
-      const plugin = () => frameworkCompilePlugin({ compilers: [declining], target: "client", onCss: () => {} });
+      const plugin = () => frameworkCompilePlugin({ compilers: [declining], target: "client", loadedByRuntime: false, onCss: () => {} });
       const ok = await Bun.build({ entrypoints: [path.join(dir, "a.ts")], plugins: [plugin()] });
       expect(ok.success).toBe(true);
       expect(await ok.outputs[0]!.text()).toContain('"plain"');

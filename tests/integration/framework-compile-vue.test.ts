@@ -7,6 +7,7 @@ import type { BunPlugin } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import path from "path";
 import * as compilerSfc from "vue/compiler-sfc";
+import { bumpDevVersion } from "@pletivo/core/dev-cache";
 import { createVueCompiler } from "@pletivo/core/framework-compile/vue";
 import type { FrameworkCompileTarget, FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 import { frameworkCompilePlugin } from "../../packages/pletivo/src/framework-compile";
@@ -47,7 +48,12 @@ beforeAll(async () => {
   compiler = await loadVueCompiler(FIXTURE);
   for (const target of TARGETS) {
     const css = new Map<string, string>();
-    const plugin = frameworkCompilePlugin({ compilers: [compiler], target, onCss: (file, text) => css.set(file, text) });
+    const plugin = frameworkCompilePlugin({
+      compilers: [compiler],
+      target,
+      loadedByRuntime: false,
+      onCss: (file, text) => css.set(file, text),
+    });
     pletivo.set(target, { module: await bundleHarness(`pletivo-${target}`, plugin), css });
     const referenceCss = new Map<string, string>();
     const referencePlugin = await pluginVueAsAstroRunsIt(target, referenceCss);
@@ -182,6 +188,14 @@ describe("server target", () => {
     expect(output?.css).toContain(".counter-message {");
     expect(output?.css).not.toContain("data-v-");
     expect(output?.code).not.toMatch(/import\s+["'][^"']*\.css/);
+  });
+
+  test("a bundled build resolves a template's asset import after dev bumps its version", async () => {
+    // Dev's `?v=N` cache-bust is for Bun's runtime loader; Bun.build cannot resolve `./pixel.png?v=N`.
+    bumpDevVersion();
+    const plugin = frameworkCompilePlugin({ compilers: [compiler], target: "server", loadedByRuntime: false, onCss: () => {} });
+    const module = await bundleHarness("pletivo-server-after-bump", plugin);
+    expect(await module.render(module.components.AssetImage, {}, {})).toMatch(/<img src="\.\/pixel-[^"]+\.png"/);
   });
 });
 

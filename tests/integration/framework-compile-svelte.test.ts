@@ -123,6 +123,56 @@ describe("Svelte compiler", () => {
   });
 });
 
+describe("Svelte modules", () => {
+  let compiler: FrameworkCompiler;
+  let outDir: string;
+
+  beforeAll(async () => {
+    compiler = await loadSvelteCompiler(FIXTURE);
+    outDir = await fs.mkdtemp(path.join(FIXTURE, ".compiled-"));
+  });
+
+  afterAll(async () => {
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  test("the compiler is offered .svelte.js and .svelte.ts", () => {
+    expect(compiler.extensions).toEqual([".svelte", ".svelte.js", ".svelte.ts"]);
+  });
+
+  for (const file of ["count.svelte.js", "count.svelte.ts"]) {
+    for (const target of ["client", "server"] as const) {
+      test(`${file} compiles its runes for the ${target}, and the state works`, async () => {
+        const filename = path.join(FIXTURE, "src/components", file);
+        const output = await compiler.compile({ source: await Bun.file(filename).text(), filename, target });
+        if (!output) throw new Error(`the Svelte compiler declined ${file}`);
+        expect(output.loader).toBe("js");
+        expect(output.css).toBeNull();
+        expect(output.code).not.toContain("$state");
+        expect(importsOf(output.code)).toEqual([`svelte/internal/${target}`]);
+
+        const modulePath = path.join(outDir, `${file}.${target}.js`);
+        await Bun.write(modulePath, output.code);
+        const mod: unknown = await import(modulePath);
+        const createCount = typeof mod === "object" && mod !== null && "createCount" in mod ? mod.createCount : null;
+        if (typeof createCount !== "function") throw new Error("the compiled module exports no createCount()");
+        const count: unknown = createCount(2);
+        if (typeof count !== "object" || count === null || !("increment" in count) || typeof count.increment !== "function") {
+          throw new Error("createCount() returned no counter");
+        }
+        count.increment();
+        expect("value" in count ? count.value : null).toBe(3);
+      });
+    }
+  }
+
+  test("a module compile error names the file", async () => {
+    const filename = path.join(FIXTURE, "src/components/broken.svelte.js");
+    const compiling = compiler.compile({ source: "export const x = ;", filename, target: "client" });
+    await expect(compiling).rejects.toThrow(`Error while compiling ${filename}`);
+  });
+});
+
 describe("Svelte compiler with a svelte.config.mjs", () => {
   let compiler: FrameworkCompiler;
 

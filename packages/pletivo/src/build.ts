@@ -7,12 +7,14 @@ import { initCollections, getValidationFailures, runWithBunContentRuntime } from
 import { resetIslandRegistry } from "@pletivo/runtime/island";
 import { runInPage, runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
+import { finalizeIslandScripts } from "@pletivo/runtime/astro-islands/index";
 import { bundleCss, cssHrefsForPage, type CssBundle } from "./css";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { generateSitemap } from "./sitemap";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { registerProjectSourcePlugin } from "./project-source-plugin";
+import { bundleRenderedIslands, setupAstroRenderers } from "./astro-renderers";
 import { installImportMetaEnv } from "./import-meta-env";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, inlineHoistedScripts, HOISTED_URL_RE } from "./astro-plugin";
 import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
@@ -32,7 +34,8 @@ import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs, registerCssPageEntry } from "./js-imported-css";
 import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-assets";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
-import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent } from "./incremental/cache";
+import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
+import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, type CachedAstroIsland } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
 import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
@@ -107,6 +110,8 @@ interface PageResult {
   islands?: string[];
   /** Hoisted-script hashes referenced from this page. Same lifecycle as `islands`. */
   hoistedHashes?: string[];
+  /** Framework components the page's `<astro-island>`s hydrate. Same lifecycle as `islands`. */
+  astroIslands?: CachedAstroIsland[];
   /**
    * Persisted byte size, populated only for cached pages (where the
    * orchestrator pulls it from the cache entry — no stat needed).
@@ -172,6 +177,14 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureScss(readScssOptions(astroHost?.config.vite));
   clearJsImportedCss();
+  // Before any project module loads: the renderers decide how its framework components compile.
+  const astroRenderers = await setupAstroRenderers({
+    projectRoot,
+    renderers: astroHost?.renderers ?? [],
+    base: typeof astroHost?.config.base === "string" ? astroHost.config.base : config.base,
+    beforeHydrationScripts: astroHost?.injectedBeforeHydrationScripts ?? [],
+  });
+  const scanAstroIslands = astroRenderers === null ? undefined : (html: string) => astroRenderers.componentsIn(html);
   phase("plugins+astroHost", tPlugins);
   const tColl = performance.now();
   await initCollections(projectRoot);
@@ -620,13 +633,14 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
           cache,
           fragments,
           distFiles,
+          scanAstroIslands,
           doRender: async () => ({
             html: await renderMarkdownFile(fullPath, projectRoot),
             renderedModules: new Set<string>(),
             tsxStyles: [],
           }),
         });
-        return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
+        return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size };
       }
 
       await assertPageLayoutSupported(fullPath, projectRoot);
@@ -665,6 +679,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         cache,
         fragments,
         distFiles,
+        scanAstroIslands,
         doRender: async () => {
           resetIslandRegistry();
           const ctx = makePageContext(pathname, {}, route);
@@ -680,7 +695,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         return null;
       }
       const cssEntry = outcome.cssEntry ?? fullPath;
-      return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size };
+      return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size };
     }),
   );
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
@@ -762,6 +777,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         fragments,
         distFiles,
         assumeDepsValid,
+        scanAstroIslands,
         // Lazy thunk — only invoked on the fresh-render path. Forces
         // getStaticPaths to resolve (just once, memoized across all
         // slugs of this route) so we can read the slug's pathProps
@@ -784,7 +800,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
       const cssEntry = outcome.cssEntry ?? fullPath;
-      results.push({ file: route.file, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, cachedSize: outcome.size });
+      results.push({ file: route.file, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size });
     }
   }
   phase("dynamic routes", tDynamic);
@@ -1067,6 +1083,13 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   if (islandNames.size > 0) {
     await bundleIslands(islandNames, islandsDir, distDir, projectRoot);
   }
+  if (astroRenderers) {
+    // A page restored from the cache rendered nothing this build; its islands still need their bundles.
+    for (const result of dedupedResults) {
+      if (result.source === "cached" && result.astroIslands) astroRenderers.addHydratedComponents(result.astroIslands);
+    }
+    await bundleRenderedIslands(astroRenderers, distDir, astroRenderers.hydratedComponents());
+  }
   phase("islands bundling", tBundle);
   clearHoistedScripts();
 
@@ -1236,7 +1259,7 @@ async function canReuseDeps(deps: Record<string, import("./incremental/cache").D
  * Compute a single hash that captures every input which, if changed,
  * should invalidate ALL cached routes (vs. per-route deps). Includes:
  *   - pletivo config (selected fields)
- *   - astro/pletivo config file contents (if present)
+ *   - astro/pletivo/svelte config file contents (if present)
  *   - bun.lock
  *   - tsconfig.json (path aliases, module resolution → can change which
  *     file a bare specifier resolves to without any source edit)
@@ -1268,6 +1291,7 @@ async function computeProjectConfigHash(
     "astro.config.ts",
     "pletivo.config.ts",
     "pletivo.config.js",
+    ...SVELTE_CONFIG_NAMES,
     "src/content.config.ts",
     "src/content.config.mts",
     "src/content.config.mjs",
@@ -1511,6 +1535,8 @@ async function writeHtml(
   tsxStyles?: string[],
   entryFile?: string,
 ): Promise<number> {
+  // Each Astro island carries its scripts; the page keeps the first of each, in document order.
+  html = finalizeIslandScripts(html);
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
     html = "<!DOCTYPE html>\n" + html;
   }

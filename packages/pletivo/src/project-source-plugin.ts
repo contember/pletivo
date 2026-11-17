@@ -3,7 +3,8 @@
  * transform hook for these extensions, so this `onLoad` is the only place to:
  *
  * - substitute `import.meta.env` with Astro's values, as `.astro` and `.mdx` get it;
- * - compile `.jsx`/`.tsx` written for a framework renderer (see `configureProjectJsxCompiler`);
+ * - compile files a framework renderer's compiler owns: `.jsx`/`.tsx`, Svelte's
+ *   `.svelte.js`/`.svelte.ts` (see `configureProjectCompilers`);
  * - run `applyDevCacheBust` in dev, so the cache-bust chain does not break one hop
  *   past `.astro` pages — a page's transitive `.ts` helper would stay cached and
  *   the JSON/etc. it closes over never reload. A no-op in build.
@@ -16,16 +17,46 @@
 import path from "path";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { escapeRegex } from "@pletivo/core/escape-regex";
-import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
+import { offeredSuffix, type FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 import { substituteImportMetaEnv, type SourceLoader } from "./import-meta-env";
 
 const registeredScopes = new Set<string>();
 
-/** Compiles project `.jsx`/`.tsx` for a JSX framework renderer, or `null` to leave all JSX to Bun. */
-let jsxCompiler: FrameworkCompiler | null = null;
+/** What a path under a `<projectRoot>/<srcDir>` scope starts with. */
+function scopePrefix(srcPath: string): string {
+  return srcPath + path.sep;
+}
 
-export function configureProjectJsxCompiler(compiler: FrameworkCompiler | null): void {
-  jsxCompiler = compiler;
+/** Whether `file` lies in a registered `<projectRoot>/<srcDir>`: the project's own source, which dev cache-busts. */
+export function isProjectSourceFile(file: string): boolean {
+  for (const srcPath of registeredScopes) {
+    if (file.startsWith(scopePrefix(srcPath))) return true;
+  }
+  return false;
+}
+
+/** The server compilers for project files; empty leaves every file to Bun's loader as written. */
+let projectCompilers: readonly FrameworkCompiler[] = [];
+
+/**
+ * The compilers whose suffixes a project file may end in. A file goes to the compilers of its
+ * longest matching suffix, in order; their output CSS must already be imported by the module.
+ */
+export function configureProjectCompilers(compilers: readonly FrameworkCompiler[]): void {
+  projectCompilers = compilers;
+}
+
+async function compileProjectFile(source: string, filename: string): Promise<{ code: string; loader: SourceLoader } | null> {
+  const suffix = offeredSuffix(filename, projectCompilers.flatMap((compiler) => compiler.extensions));
+  if (suffix === null) return null;
+  for (const compiler of projectCompilers) {
+    if (!compiler.extensions.includes(suffix)) continue;
+    const output = await compiler.compile({ source, filename, target: "server" });
+    if (output === null) continue;
+    if (output.css !== null) throw new Error(`${filename}: a compiled project module's CSS must be imported by the module`);
+    return { code: output.code, loader: output.loader };
+  }
+  return null;
 }
 
 // `.js`/`.mjs` load as `jsx`: Bun's native loader accepts JSX in them too.
@@ -47,7 +78,7 @@ export async function registerProjectSourcePlugin(
   registeredScopes.add(srcPath);
 
   const filter = new RegExp(
-    `^${escapeRegex(srcPath + path.sep)}.*\\.(tsx?|jsx?|mts|mjs)(?:\\?.*)?$`,
+    `^${escapeRegex(scopePrefix(srcPath))}.*\\.(tsx?|jsx?|mts|mjs)(?:\\?.*)?$`,
   );
 
   await Bun.plugin({
@@ -62,10 +93,7 @@ export async function registerProjectSourcePlugin(
         const ext = path.extname(cleanPath).toLowerCase();
         const loader = LOADER_FOR_EXT[ext] ?? "ts";
         const source = substituteImportMetaEnv(await Bun.file(cleanPath).text(), loader);
-        const compiled =
-          jsxCompiler !== null && jsxCompiler.extensions.includes(ext)
-            ? await jsxCompiler.compile({ source, filename: cleanPath, target: "server" })
-            : null;
+        const compiled = await compileProjectFile(source, cleanPath);
         return {
           contents: applyDevCacheBust(compiled?.code ?? source, getDevVersion()),
           loader: compiled?.loader ?? loader,

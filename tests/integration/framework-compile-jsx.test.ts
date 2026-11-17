@@ -9,7 +9,7 @@ import { jsx } from "@pletivo/runtime/jsx-runtime";
 import type { ComponentFn } from "@pletivo/runtime/jsx-runtime";
 import type { FrameworkCompileOutput, FrameworkCompileTarget, FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 import { loadJsxCompiler } from "../../packages/pletivo/src/framework-compile/jsx";
-import { configureProjectJsxCompiler, registerProjectSourcePlugin } from "../../packages/pletivo/src/project-source-plugin";
+import { configureProjectCompilers, registerProjectSourcePlugin } from "../../packages/pletivo/src/project-source-plugin";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
 const FIXTURE = path.join(import.meta.dir, "../fixture-framework-jsx");
@@ -93,7 +93,7 @@ async function renderPreact(component: unknown, props: Record<string, unknown>):
 }
 
 afterAll(() => {
-  configureProjectJsxCompiler(null);
+  configureProjectCompilers([]);
   rmSync(OUT_DIR, { recursive: true, force: true });
 });
 
@@ -236,28 +236,58 @@ describe("project-source-plugin", () => {
 
   test("compiles a project .tsx for Preact when the compiler is configured", async () => {
     await registerProjectSourcePlugin(SOURCE_FIXTURE, "src");
-    configureProjectJsxCompiler(await loadJsxCompiler(SOURCE_FIXTURE, [PREACT]));
+    configureProjectCompilers([await loadJsxCompiler(SOURCE_FIXTURE, [PREACT])]);
     expect(await renderPreact(await importSource("Card.tsx"), { name: "Ada" })).toBe('<p class="card">Hello Ada</p>');
     // The compiler declines pletivo's own JSX, which Bun then compiles as before.
     expect(await renderPletivo(await importSource("pletivo/Configured.tsx"))).toBe('<p class="card">Hello Ada</p>');
   });
 
-  test("leaves JSX to Bun when the compiler is null", async () => {
+  test("leaves JSX to Bun when no compiler is configured", async () => {
     await registerProjectSourcePlugin(SOURCE_FIXTURE, "src");
     const compiled: string[] = [];
-    configureProjectJsxCompiler({
+    configureProjectCompilers([{
       framework: "Stub",
       extensions: [".jsx", ".tsx"],
       async compile(input) {
         compiled.push(path.basename(input.filename));
         return null;
       },
-    });
+    }]);
     expect(await renderPletivo(await importSource("pletivo/Stubbed.tsx"))).toBe('<p class="card">Hello Ada</p>');
     expect(compiled).toEqual(["Stubbed.tsx"]);
 
-    configureProjectJsxCompiler(null);
+    configureProjectCompilers([]);
     expect(await renderPletivo(await importSource("pletivo/Card.tsx"))).toBe('<p class="card">Hello Ada</p>');
     expect(compiled).toEqual(["Stubbed.tsx"]);
+  });
+
+  test("runs the compiler of a file's longest suffix", async () => {
+    await registerProjectSourcePlugin(SOURCE_FIXTURE, "src");
+    const stub = (framework: string, extensions: string[]): FrameworkCompiler => ({
+      framework,
+      extensions,
+      compile: async ({ source }) => ({ code: `export default ${JSON.stringify(`${framework}: ${source.trim()}`)};`, loader: "js", css: null }),
+    });
+    // `.js` is offered to Generic too, so only the longest suffix keeps store.w0mod.js away from it.
+    configureProjectCompilers([stub("Generic", [".js"]), stub("Module", [".w0mod.js"])]);
+    try {
+      expect(await importSource("modules/store.w0mod.js")).toBe('Module: export default "as written";');
+      expect(await importSource("modules/plain.js")).toBe('Generic: export default "plain";');
+    } finally {
+      configureProjectCompilers([]);
+    }
+  });
+
+  test("fails by name when a compiled project module leaves CSS for the host", async () => {
+    await registerProjectSourcePlugin(SOURCE_FIXTURE, "src");
+    configureProjectCompilers([
+      { framework: "Styled", extensions: [".w0css.js"], compile: async () => ({ code: "export default 1;", loader: "js", css: ".x{}" }) },
+    ]);
+    try {
+      const file = path.join(SOURCE_FIXTURE, "src/modules/styled.w0css.js");
+      await expect(import(file)).rejects.toThrow(`${file}: a compiled project module's CSS must be imported by the module`);
+    } finally {
+      configureProjectCompilers([]);
+    }
   });
 });

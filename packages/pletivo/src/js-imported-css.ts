@@ -2,7 +2,7 @@ import path from "path";
 import { existsSync } from "fs";
 import fs from "fs/promises";
 import type { BunPlugin } from "bun";
-import { cssAssetBunPlugin, stripCssAssetPlaceholders } from "./css-assets";
+import { cssAssetBunPlugin, rewriteConfiguredCssAssetUrls, stripCssAssetPlaceholders } from "./css-assets";
 
 type BuildCssOutput = {
   path: string;
@@ -97,6 +97,12 @@ const pageEntryFiles = new Set<string>();
 const externalCssText = new Map<string, Promise<string>>();
 const cssImportEntries = new Map<string, CssImportEntry>();
 const staticImportCache = new Map<string, Promise<string[]>>();
+/**
+ * Stylesheets that exist only in memory, by absolute path: a compiled component's `<style>`,
+ * at a path beside the component so its relative `url()` and `@import` resolve from there,
+ * as Vite serves it. Always bundled as external CSS: nothing else processes them.
+ */
+const virtualCss = new Map<string, string>();
 
 const CSS_IMPORT_PREFIX = "pletivo:css-import:";
 const tsTranspiler = new Bun.Transpiler({ loader: "ts" });
@@ -259,7 +265,19 @@ function sortedByKey(map: Map<string, string>): string[] {
     .map(([, value]) => value);
 }
 
+/**
+ * Register (or replace) an in-memory stylesheet. A module that imports `file` in the code
+ * passed to `collectCssSideEffectImports` links it like a CSS file on disk.
+ */
+export function setVirtualCss(file: string, css: string): void {
+  const resolved = path.resolve(file);
+  if (virtualCss.get(resolved) === css) return;
+  virtualCss.set(resolved, css);
+  externalCssText.delete(resolved);
+}
+
 export function clearJsImportedCss(): void {
+  virtualCss.clear();
   fileNodes.clear();
   keyToFile.clear();
   detachedSourceCss.clear();
@@ -387,7 +405,7 @@ function nodeItems(sourceFile: string, imports: string[]): NodeItem[] {
     if (cssPath) {
       if (seen.has(`css\0${cssPath}`)) continue;
       seen.add(`css\0${cssPath}`);
-      items.push({ type: "css", file: cssPath, kind: isSourceCss(cssPath) ? "source" : "external" });
+      items.push({ type: "css", file: cssPath, kind: cssKind(cssPath) });
       continue;
     }
 
@@ -422,7 +440,8 @@ async function buildExternalCss(file: string): Promise<string> {
       format: "esm",
       target: "browser",
       minify: false,
-      plugins: [cssSideEffectBunPlugin(), cssImportBunPlugin(), cssAssetBunPlugin()],
+      // The virtual stylesheets first: the side-effect plugin would empty one that sits under srcDir.
+      plugins: [virtualCssBunPlugin(), cssSideEffectBunPlugin(), cssImportBunPlugin(), cssAssetBunPlugin()],
     });
 
     if (!result.success) {
@@ -459,6 +478,24 @@ export function cssSideEffectBunPlugin(): BunPlugin {
         if (/\.module\.css$/i.test(cleanPath)) return undefined;
         if (!isSourceCss(cleanPath)) return undefined;
         return { contents: "", loader: "css" };
+      });
+    },
+  };
+}
+
+/** Serves the in-memory stylesheets to the external CSS bundle, at their paths beside the component. */
+function virtualCssBunPlugin(): BunPlugin {
+  return {
+    name: "pletivo-virtual-css",
+    setup(build) {
+      build.onResolve({ filter: /\.css$/ }, (args) => {
+        const file = path.isAbsolute(args.path) ? args.path : path.resolve(path.dirname(args.importer), args.path);
+        return virtualCss.has(file) ? { path: file } : undefined;
+      });
+      build.onLoad({ filter: /\.css$/ }, async (args) => {
+        const css = virtualCss.get(args.path);
+        if (css === undefined) return undefined;
+        return { contents: await rewriteConfiguredCssAssetUrls(args.path, css), loader: "css" };
       });
     },
   };
@@ -533,7 +570,7 @@ async function collectCssSpecifiersFromImports(
 
     const cssPath = resolveCssSpecifier(sourceFile, specifier);
     if (cssPath) {
-      if (isSourceCss(cssPath)) {
+      if (cssKind(cssPath) === "source") {
         out.source.add(cssPath);
       } else {
         out.external.add(cssPath);
@@ -569,6 +606,8 @@ async function readStaticImportsForFile(file: string): Promise<string[]> {
 }
 
 async function readTextFile(file: string): Promise<string | null> {
+  const virtual = virtualCss.get(file);
+  if (virtual !== undefined) return virtual;
   try {
     return await fs.readFile(file, "utf8");
   } catch {
@@ -660,7 +699,7 @@ function resolveSpecifier(
 }
 
 function fileExistsSync(file: string): boolean {
-  return existsSync(file);
+  return virtualCss.has(file) || existsSync(file);
 }
 
 function isCssSpecifier(sourceFile: string, specifier: string): boolean {
@@ -679,6 +718,10 @@ function isCssSpecifier(sourceFile: string, specifier: string): boolean {
   }
 
   return /(^|\/)css(\/|$)/i.test(clean);
+}
+
+function cssKind(file: string): CssRefKind {
+  return isSourceCss(file) && !virtualCss.has(file) ? "source" : "external";
 }
 
 function isSourceCss(file: string): boolean {

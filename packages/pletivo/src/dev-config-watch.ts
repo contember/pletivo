@@ -16,6 +16,7 @@
 import fs from "fs";
 import path from "path";
 import { findAstroConfig } from "./astro-host/config-loader";
+import { findSvelteConfig } from "./framework-compile/svelte";
 import { collectStaticDeps, configureImportGraph } from "./incremental/import-graph";
 
 const PLETIVO_CONFIG_NAMES = ["pletivo.config.ts", "pletivo.config.js", "pletivo.config.mjs"];
@@ -38,7 +39,8 @@ function findPletivoConfig(projectRoot: string): string | null {
  * dependency upgrade is not something a dev server can react to anyway.
  */
 export async function resolveConfigWatchFiles(projectRoot: string): Promise<string[]> {
-  const entries = [findAstroConfig(projectRoot), findPletivoConfig(projectRoot)].filter(
+  // `svelte.config.*` too: the Svelte compiler reads it once, when the renderers are set up.
+  const entries = [findAstroConfig(projectRoot), findPletivoConfig(projectRoot), findSvelteConfig(projectRoot)].filter(
     (f): f is string => f !== null,
   );
   if (entries.length === 0) return [];

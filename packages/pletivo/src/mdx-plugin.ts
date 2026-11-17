@@ -31,6 +31,7 @@ import { rehypeAstroIslandMetadata } from "./mdx-island-metadata";
 // (e.g. running from source via `bun ~/pletivo/src/cli.ts build`).
 const pletivoSrcDir = path.dirname(fileURLToPath(import.meta.url));
 const jsxRuntimePath = path.resolve(pletivoSrcDir, "runtime/jsx-runtime.ts");
+const mdxContentPath = path.resolve(pletivoSrcDir, "mdx-content.ts");
 
 // `unified`'s `PluggableList` isn't re-exported by @mdx-js/mdx and `unified`
 // itself isn't a direct dependency (only resolvable transitively), so derive
@@ -285,7 +286,10 @@ export async function compileMdx(source: string, filePath: string): Promise<stri
   // cache busting (same as the astro plugin does for its own output).
   // JSON needs this too so translation dictionaries reload on edit.
   code = applyDevCacheBust(substituteImportMetaEnv(code, "js"), getDevVersion());
-  // pletivo renders an MDX module itself; the runtime never offers it to a framework renderer.
-  code += '\nObject.defineProperty(MDXContent, Symbol.for("pletivo.native-component"), { value: true });\n';
+  // The default export renders natively and hoists its islands' scripts (mdx-content.ts).
+  const exported = "export default function MDXContent(";
+  if (!code.includes(exported)) throw new Error(`MDX compilation of ${rel} produced no default MDXContent export`);
+  code = code.replace(exported, "function MDXContent(");
+  code += `\nimport { mdxContent as __pletivoMdxContent } from ${JSON.stringify(mdxContentPath)};\nexport default __pletivoMdxContent(MDXContent);\n`;
   return code;
 }

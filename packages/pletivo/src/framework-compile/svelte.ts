@@ -10,10 +10,15 @@ import {
 import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 
 /** Looked up in this order in the project root, as the Vite plugin does (minus `.cjs`). */
-const SVELTE_CONFIG_NAMES = ["svelte.config.js", "svelte.config.mjs"];
+export const SVELTE_CONFIG_NAMES = ["svelte.config.js", "svelte.config.mjs"];
+
+/** The project's `svelte.config.*`, as the compiler loads it, or `null`. */
+export function findSvelteConfig(projectRoot: string): string | null {
+  return SVELTE_CONFIG_NAMES.map((name) => path.join(projectRoot, name)).find((candidate) => existsSync(candidate)) ?? null;
+}
 
 async function loadSvelteConfig(projectRoot: string): Promise<SvelteConfig> {
-  const file = SVELTE_CONFIG_NAMES.map((name) => path.join(projectRoot, name)).find((candidate) => existsSync(candidate));
+  const file = findSvelteConfig(projectRoot);
   if (!file) return { preprocess: null, compilerOptions: {} };
   let mod: unknown;
   try {
@@ -25,7 +30,7 @@ async function loadSvelteConfig(projectRoot: string): Promise<SvelteConfig> {
   return parseSvelteConfig(config, file);
 }
 
-/** `.svelte` through the project's `svelte/compiler`, with its `svelte.config.*` preprocessors. */
+/** `.svelte` and Svelte modules through the project's `svelte/compiler`, with its `svelte.config.*` preprocessors. */
 export async function loadSvelteCompiler(projectRoot: string): Promise<FrameworkCompiler> {
   let compilerPath: string;
   try {
@@ -36,9 +41,11 @@ export async function loadSvelteCompiler(projectRoot: string): Promise<Framework
     });
   }
   const compilerModule: unknown = await import(compilerPath);
+  const typescript = new Bun.Transpiler({ loader: "ts" });
   return createSvelteCompiler({
     compiler: parseSvelteCompilerModule(compilerModule),
     config: await loadSvelteConfig(projectRoot),
     projectRoot,
+    stripTypes: (source) => typescript.transformSync(source),
   });
 }

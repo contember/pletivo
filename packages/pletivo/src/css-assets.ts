@@ -98,6 +98,15 @@ export function cssAssetBunPlugin(): BunPlugin {
   };
 }
 
+/**
+ * `rewriteCssAssetUrls` with the configured options, for CSS a plugin serves from memory
+ * (this plugin reads only files on disk). Unchanged while extraction is off.
+ */
+export async function rewriteConfiguredCssAssetUrls(cssFile: string, css: string): Promise<string> {
+  const active = options;
+  return active ? await rewriteCssAssetUrls(cssFile, css, active) : css;
+}
+
 /** `url(x)`, `url("x")`, `url('x')`, with optional surrounding space. */
 const URL_TOKEN_RE = /\burl\(\s*(["']?)([^"'()]+)\1\s*\)/g;
 

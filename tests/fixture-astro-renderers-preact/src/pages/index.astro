@@ -1,0 +1,13 @@
+---
+import Counter from "../components/Counter";
+---
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Preact</title></head>
+  <body>
+    <main>
+      <Counter start={1} client:load><h1>Hello, Preact!</h1></Counter>
+      <Counter start={2} client:visible />
+      <Counter start={3} />
+    </main>
+  </body>
+</html>

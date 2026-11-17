@@ -26,8 +26,20 @@ export interface FrameworkCompileOutput {
 export interface FrameworkCompiler {
   /** For messages, e.g. `Svelte`. */
   framework: string;
-  /** Extensions this compiler is offered, e.g. `[".svelte"]`. */
+  /**
+   * Filename suffixes this compiler is offered, e.g. `[".svelte", ".svelte.js"]`. A file goes
+   * to the compilers of its longest matching suffix (`offeredSuffix`), so `.svelte.js` wins over `.js`.
+   */
   extensions: readonly string[];
   /** `null` when the file is not this compiler's, e.g. a `.tsx` written for pletivo's own JSX. */
   compile(input: FrameworkCompileInput): Promise<FrameworkCompileOutput | null>;
+}
+
+/** The longest of `suffixes` that `filename` ends with, or `null`. Case-sensitive, as Vite's plugin filters are. */
+export function offeredSuffix(filename: string, suffixes: Iterable<string>): string | null {
+  let longest: string | null = null;
+  for (const suffix of suffixes) {
+    if (filename.endsWith(suffix) && (longest === null || suffix.length > longest.length)) longest = suffix;
+  }
+  return longest;
 }
