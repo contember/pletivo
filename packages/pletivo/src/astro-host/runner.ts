@@ -69,6 +69,8 @@ export interface SetupFailure {
 
 export interface AstroHost {
   config: AstroConfig;
+  /** `srcDir` as written in astro.config; undefined when it is not set. */
+  configuredSrcDir: string | undefined;
   server: ServerShim;
   /** Scripts injected via `injectScript('page', code)` — wrapped into <script type="module"> by dev/build */
   injectedPageScripts: string[];
@@ -137,8 +139,9 @@ export async function initAstroHost(
   activeHost = null;
   activeHostRoot = null;
 
-  const config = await loadAstroConfig(projectRoot);
-  if (!config) return null;
+  const loaded = await loadAstroConfig(projectRoot);
+  if (!loaded) return null;
+  const { config, configuredSrcDir } = loaded;
   configureVitePluginHost(projectRoot);
 
   // Seed astro:env virtual module with the env.schema from config
@@ -164,6 +167,7 @@ export async function initAstroHost(
 
   const host: AstroHost = {
     config,
+    configuredSrcDir,
     server,
     injectedPageScripts,
     injectedHeadScripts,

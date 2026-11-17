@@ -30,9 +30,15 @@ export function findAstroConfig(projectRoot: string): string | null {
  * integration. Either way, we pull out `integrations` + other relevant
  * fields and fill the rest with pletivo defaults.
  */
+export interface LoadedAstroConfig {
+  config: AstroConfig;
+  /** `srcDir` as written in astro.config; undefined when it is not set. */
+  configuredSrcDir: string | undefined;
+}
+
 export async function loadAstroConfig(
   projectRoot: string,
-): Promise<AstroConfig | null> {
+): Promise<LoadedAstroConfig | null> {
   const configPath = findAstroConfig(projectRoot);
   if (!configPath) return null;
 
@@ -51,11 +57,13 @@ export async function loadAstroConfig(
 
   const userConfig = raw as Record<string, unknown>;
 
+  const configuredSrcDir = userConfig.srcDir;
+  if (configuredSrcDir !== undefined && typeof configuredSrcDir !== "string") {
+    throw new Error(`${path.basename(configPath)}: srcDir must be a string`);
+  }
+
   const rootUrl = pathToFileURL(projectRoot + path.sep);
-  const srcDir = new URL(
-    (userConfig.srcDir as string | undefined) ?? "src/",
-    rootUrl,
-  );
+  const srcDir = new URL(configuredSrcDir ?? "src/", rootUrl);
   const publicDir = new URL(
     (userConfig.publicDir as string | undefined) ?? "public/",
     rootUrl,
@@ -104,5 +112,22 @@ export async function loadAstroConfig(
     if (!(k in config)) config[k] = v;
   }
 
-  return config;
+  return { config, configuredSrcDir };
+}
+
+/**
+ * pletivo reads pages, styles and collections from its own `srcDir`, so an astro.config
+ * one that differs would be ignored. Returns the error to stop on, or null.
+ */
+export function srcDirMismatch(
+  projectRoot: string,
+  srcDir: string,
+  configuredSrcDir: string | undefined,
+): string | null {
+  if (configuredSrcDir === undefined) return null;
+  if (path.resolve(projectRoot, configuredSrcDir) === path.resolve(projectRoot, srcDir)) return null;
+  return (
+    `astro.config sets srcDir ${JSON.stringify(configuredSrcDir)}, but pletivo reads sources from ` +
+    `${JSON.stringify(srcDir)}. Set srcDir: ${JSON.stringify(configuredSrcDir)} in pletivo.config as well.`
+  );
 }
