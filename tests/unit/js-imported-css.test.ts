@@ -9,6 +9,8 @@ import {
   collectPageModuleCss,
   configureJsImportedCss,
   getJsImportedCssOutput,
+  restoreDynamicCss,
+  setVirtualCss,
 } from "../../packages/pletivo/src/js-imported-css";
 
 let root = "";
@@ -73,5 +75,31 @@ describe("JS-imported CSS collection", () => {
 
     await collectPageModuleCss(path.join(root, "src/pages/index.tsx"), "page:index.tsx");
     expect(await getJsImportedCssOutput()).toBe("");
+  });
+
+  describe("CSS restored for a page taken from the incremental cache", () => {
+    test("ships a recorded stylesheet and the stored text of an in-memory one", async () => {
+      await write("vendor/dyn.css", `.dyn-restored { color: red; }`);
+      const stored = new Map([[path.join(root, "src/Dyn.svelte.pletivo-style.css"), ".svelte-restored{color:blue}"]]);
+      restoreDynamicCss("index::__static__", [path.join(root, "vendor/dyn.css"), ...stored.keys()], (file) => stored.get(file));
+      const css = await getJsImportedCssOutput();
+      expect(css).toContain(".dyn-restored");
+      expect(css).toContain(".svelte-restored");
+    });
+
+    test("drops a recorded stylesheet deleted since, instead of failing the bundle", async () => {
+      await write("vendor/kept.css", `.kept-restored { color: red; }`);
+      restoreDynamicCss("index::__static__", [path.join(root, "vendor/gone.css"), path.join(root, "vendor/kept.css")], () => undefined);
+      expect(await getJsImportedCssOutput()).toContain(".kept-restored");
+    });
+
+    test("keeps the text a component compiled this build over the stored one", async () => {
+      const file = path.join(root, "src/Dyn.svelte.pletivo-style.css");
+      setVirtualCss(file, ".fresh-text{color:blue}");
+      restoreDynamicCss("index::__static__", [file], () => ".stale-text{color:blue}");
+      const css = await getJsImportedCssOutput();
+      expect(css).toContain(".fresh-text");
+      expect(css).not.toContain(".stale-text");
+    });
   });
 });

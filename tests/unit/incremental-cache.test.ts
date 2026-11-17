@@ -34,8 +34,10 @@ describe("CacheStore", () => {
 			tsxStyles: [],
 			fragments: [],
 			cssHead: { fragment: "<style>.a{}</style>\n", pageCss: "" },
+			dynamicCss: ["/abs/dyn.css", "/abs/Dyn.svelte.pletivo-style.css"],
 			size: 0,
 		});
+		s1.setVirtualCss("/abs/Dyn.svelte.pletivo-style.css", ".d{}");
 		await s1.persist();
 
 		const s2 = await CacheStore.load(tmp, "c1");
@@ -45,11 +47,13 @@ describe("CacheStore", () => {
 		expect(r?.depFingerprints["/abs/page.tsx"]?.hash).toBe("h1");
 		expect(r?.astroIslands).toEqual([{ componentPath: "/abs/Counter.vue", exportName: "default" }]);
 		expect(r?.cssHead).toEqual({ fragment: "<style>.a{}</style>\n", pageCss: "" });
+		expect(r?.dynamicCss).toEqual(["/abs/dyn.css", "/abs/Dyn.svelte.pletivo-style.css"]);
+		expect(s2.virtualCss("/abs/Dyn.svelte.pletivo-style.css")).toBe(".d{}");
 	});
 
 	it("ignores the on-disk cache when the configHash differs", async () => {
 		const s1 = await CacheStore.load(tmp, "c1");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
 		await s1.persist();
 
 		const s2 = await CacheStore.load(tmp, "c2");
@@ -58,7 +62,7 @@ describe("CacheStore", () => {
 
 	it("forceClean wipes the on-disk cache", async () => {
 		const s1 = await CacheStore.load(tmp, "c1");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
 		await s1.persist();
 		// Plant a stray file in the cache dir so we can verify forceClean
 		// wipes the whole directory tree.
@@ -72,11 +76,22 @@ describe("CacheStore", () => {
 
 	it("pruneRoutes drops entries whose keys aren't in the keep set", async () => {
 		const s = await CacheStore.load(tmp, "c1");
-		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, size: 0 });
-		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, size: 0 });
-		s.setRoute("c", { outPath: "c.html", outputHash: "3", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, size: 0 });
+		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s.setRoute("c", { outPath: "c.html", outputHash: "3", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
 		s.pruneRoutes(new Set(["a", "c"]));
 		expect(s.routeKeys().sort()).toEqual(["a", "c"]);
+	});
+
+	it("pruneRoutes keeps in-memory stylesheet text only while a kept route lists it", async () => {
+		const s = await CacheStore.load(tmp, "c1");
+		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: ["/abs/A.css"], size: 0 });
+		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: ["/abs/B.css"], size: 0 });
+		s.setVirtualCss("/abs/A.css", ".a{}");
+		s.setVirtualCss("/abs/B.css", ".b{}");
+		s.pruneRoutes(new Set(["a"]));
+		expect(s.virtualCss("/abs/A.css")).toBe(".a{}");
+		expect(s.virtualCss("/abs/B.css")).toBeUndefined();
 	});
 
 });

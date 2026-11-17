@@ -358,3 +358,108 @@ describe("CSS chunking: a rewritten page links the target's CSS", () => {
 		await expectTargetSheets();
 	});
 });
+
+/**
+ * A page whose render imports a component dynamically: the component's CSS
+ * reaches the build only when that import runs, and a page restored from the
+ * incremental cache does not render. Its cache entry must keep that CSS.
+ */
+const DYNAMIC_LAYOUTS = [
+	{ name: "a loader outside src/", loader: "vendor/load.js", component: "vendor/Dyn.astro", css: "vendor/dyn.css" },
+	{ name: "a loader and component inside src/", loader: "src/lib/load.ts", component: "src/components/Dyn.astro", css: "vendor/dyn.css" },
+];
+
+async function setupDynamicImport(layout: (typeof DYNAMIC_LAYOUTS)[number]): Promise<void> {
+	const rel = (from: string, to: string) => {
+		const out = path.relative(path.dirname(from), to);
+		return out.startsWith(".") ? out : `./${out}`;
+	};
+	await write(layout.css, `@import "./dyn-inner.css";\n.dyn-marker { color: rgb(4, 5, 6); }\n`);
+	await write(path.join(path.dirname(layout.css), "dyn-inner.css"), `.dyn-inner-marker { color: rgb(7, 8, 9); }\n`);
+	await write(layout.component, `---\nimport "${rel(layout.component, layout.css)}";\n---\n<p>dyn</p>\n`);
+	await write(
+		layout.loader,
+		`export async function load() {\n\tawait import("${rel(layout.loader, layout.component)}");\n\treturn "loaded";\n}\n`,
+	);
+	await write("vendor/static.css", `.static-marker { color: rgb(1, 1, 1); }\n`);
+	await write(
+		"src/pages/index.astro",
+		`---\nimport "../../vendor/static.css";\nimport { load } from "${rel("src/pages/index.astro", layout.loader)}";\nconst v = await load();\n---\n<html><head><title>Dyn</title></head><body><h1 class="dyn-marker">{v}</h1></body></html>\n`,
+	);
+	await write("src/pages/other.astro", `<html><head><title>Other</title></head><body><h1>Other</h1></body></html>\n`);
+}
+
+/** What each page's cache entry kept, as project-relative paths. */
+async function cachedDynamicCss(): Promise<Record<string, string[]>> {
+	const raw = await fs.readFile(path.join(projectRoot, "node_modules/.pletivo/cache/cache.json"), "utf8");
+	const routes: Record<string, { dynamicCss: string[] }> = JSON.parse(raw).routes;
+	const out: Record<string, string[]> = {};
+	for (const [key, entry] of Object.entries(routes)) {
+		out[key] = entry.dynamicCss.map((file) => path.relative(projectRoot, file));
+	}
+	return out;
+}
+
+/** The CSS each page links, by page: what a browser applies, whatever the chunking. */
+async function linkedCss(): Promise<Record<string, string>> {
+	const sheets = await emittedStylesheets();
+	const out: Record<string, string> = {};
+	for (const page of ["index.html", "other/index.html"]) {
+		out[page] = (await stylesheetsOf(page)).map((href) => sheets.get(href) ?? `missing ${href}`).join("\n");
+	}
+	return out;
+}
+
+/** A full build of the same sources, which the warm build must equal. */
+async function fullBuildCss(): Promise<Record<string, string>> {
+	expect(runBuild().status).toBe(0);
+	return await linkedCss();
+}
+
+describe("CSS chunking: a cached page keeps CSS its render imported dynamically", () => {
+	for (const layout of DYNAMIC_LAYOUTS) {
+		it(`on a no-change warm build, with ${layout.name}`, async () => {
+			await setupDynamicImport(layout);
+			expect(runBuild("--incremental").status).toBe(0);
+			const warm = runBuild("--incremental");
+			expect(warm.status).toBe(0);
+			expect(warm.stdout).toContain("0 rendered + 2 cached");
+
+			const css = await linkedCss();
+			expect(css["index.html"]).toContain(".dyn-marker{");
+			expect(css["index.html"]).toContain(".dyn-inner-marker{");
+			expect(css["index.html"]).toContain(".static-marker{");
+			// The statically imported sheet loads with the page module on every build: not kept.
+			expect(await cachedDynamicCss()).toEqual({
+				"index.astro::__static__": [layout.css],
+				"other.astro::__static__": [],
+			});
+			expect(css).toEqual(await fullBuildCss());
+		});
+	}
+
+	it("picks up a changed stylesheet, whether the page renders again or stays cached", async () => {
+		const layout = DYNAMIC_LAYOUTS[0];
+		await setupDynamicImport(layout);
+		expect(runBuild("--incremental").status).toBe(0);
+
+		// The component's own stylesheet is a dependency of the page: the page renders again.
+		await write(layout.css, `@import "./dyn-inner.css";\n.dyn-marker-v2 { color: rgb(4, 5, 6); }\n`);
+		const changed = runBuild("--incremental");
+		expect(changed.status).toBe(0);
+		expect(changed.stdout).toContain("1 rendered + 1 cached");
+		let css = await linkedCss();
+		expect(css["index.html"]).toContain(".dyn-marker-v2{");
+		expect(css["index.html"]).not.toContain(".dyn-marker{");
+
+		// A stylesheet it `@import`s is not: the page stays cached and its CSS is bundled fresh.
+		await write("vendor/dyn-inner.css", `.dyn-inner-marker-v2 { color: rgb(7, 8, 9); }\n`);
+		const cached = runBuild("--incremental");
+		expect(cached.status).toBe(0);
+		expect(cached.stdout).toContain("0 rendered + 2 cached");
+		css = await linkedCss();
+		expect(css["index.html"]).toContain(".dyn-inner-marker-v2{");
+		expect(css["index.html"]).not.toContain(".dyn-inner-marker{");
+		expect(css).toEqual(await fullBuildCss());
+	});
+});

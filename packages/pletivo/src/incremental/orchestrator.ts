@@ -242,6 +242,8 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			// Populated downstream after writeHtml — we don't know the
 			// final byte length or CSS markup yet (injection happens there).
 			cssHead: null,
+			// Known only once every page has rendered: see `recordDynamicCss`.
+			dynamicCss: [],
 			size: 0,
 		};
 		req.cache.setRoute(req.routeKey, entry);
@@ -277,6 +279,16 @@ export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: n
 		: entry.cssHead.fragment === cssHead.fragment && entry.cssHead.pageCss === cssHead.pageCss;
 	if (entry.size === size && sameCssHead) return;
 	cache.setRoute(routeKey, { ...entry, size, cssHead });
+}
+
+/** Patch the stylesheets a rendered page reached through dynamic imports onto its cache entry; in-memory text is kept once per cache. */
+export function recordDynamicCss(cache: CacheStore, routeKey: string, refs: ReadonlyArray<{ file: string; css?: string }>): void {
+	const entry = cache.getRoute(routeKey);
+	if (!entry) return;
+	for (const ref of refs) {
+		if (ref.css !== undefined) cache.setVirtualCss(ref.file, ref.css);
+	}
+	cache.setRoute(routeKey, { ...entry, dynamicCss: refs.map((ref) => ref.file) });
 }
 
 async function fileExists(p: string): Promise<boolean> {

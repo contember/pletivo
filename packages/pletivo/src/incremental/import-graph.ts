@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { transform as astroTransform } from "@astrojs/compiler";
+import { offeredSuffix, type FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 
 /**
  * Build the per-file static-import graph by parsing each source file's
@@ -11,7 +12,8 @@ import { transform as astroTransform } from "@astrojs/compiler";
  * For each visited file we:
  *   1. Read it
  *   2. Transform `.astro` to JS via @astrojs/compiler (the result is
- *      still TS, but Bun.Transpiler.scanImports handles that)
+ *      still TS, but Bun.Transpiler.scanImports handles that), and a
+ *      `.svelte`/`.vue` file through the project's framework compiler
  *   3. Run `Bun.Transpiler.scanImports` to extract every static
  *      and dynamic import specifier
  *   4. Resolve each specifier against the file's directory
@@ -36,6 +38,13 @@ const jsxTranspiler = new Bun.Transpiler({ loader: "jsx" });
 
 export function configureImportGraph(rootDir: string): void {
 	projectRoot = rootDir;
+}
+
+/** The project's framework compilers, without side effects: a file only they read (`.svelte`, `.vue`) is walked through its compiled module. */
+let frameworkCompilers: readonly FrameworkCompiler[] = [];
+
+export function configureImportGraphCompilers(compilers: readonly FrameworkCompiler[]): void {
+	frameworkCompilers = compilers;
 }
 
 const WALKABLE_SOURCE_EXTS = new Set([".mdx", ".astro", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"]);
@@ -98,6 +107,7 @@ async function scanImportsOf(file: string): Promise<Set<string>> {
 
 	const ext = path.extname(file).toLowerCase();
 	let scanSource = source;
+	let scanExt = ext;
 
 	if (ext === ".astro") {
 		try {
@@ -129,11 +139,23 @@ async function scanImportsOf(file: string): Promise<Set<string>> {
 		} catch {
 			return new Set();
 		}
+	} else if (!WALKABLE_SOURCE_EXTS.has(ext)) {
+		let compiled: { code: string; loader: string } | null;
+		try {
+			compiled = await compileFrameworkSource(source, file);
+		} catch {
+			// Mid-edit or invalid: as with `.astro`, the cache skips on the next valid build.
+			return new Set();
+		}
+		if (compiled) {
+			scanSource = compiled.code;
+			scanExt = `.${compiled.loader}`;
+		}
 	}
 
 	let raw: { path: string; kind?: string }[];
 	try {
-		raw = pickTranspiler(ext).scanImports(scanSource);
+		raw = pickTranspiler(scanExt).scanImports(scanSource);
 	} catch {
 		return new Set();
 	}
@@ -144,6 +166,18 @@ async function scanImportsOf(file: string): Promise<Set<string>> {
 		if (resolved) out.add(resolved);
 	}
 	return out;
+}
+
+/** The server module a framework compiler makes of `file`, or null when none is offered it. */
+async function compileFrameworkSource(source: string, file: string): Promise<{ code: string; loader: string } | null> {
+	const suffix = offeredSuffix(file, frameworkCompilers.flatMap((compiler) => compiler.extensions));
+	if (suffix === null) return null;
+	for (const compiler of frameworkCompilers) {
+		if (!compiler.extensions.includes(suffix)) continue;
+		const output = await compiler.compile({ source, filename: file, target: "server" });
+		if (output !== null) return output;
+	}
+	return null;
 }
 
 function pickTranspiler(ext: string): Bun.Transpiler {

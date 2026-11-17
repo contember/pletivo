@@ -3,9 +3,11 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import type { FrameworkCompiler } from "../../packages/core/src/framework-compile/types";
 import {
 	collectStaticDeps,
 	configureImportGraph,
+	configureImportGraphCompilers,
 	_resetImportGraphForTests,
 } from "../../packages/pletivo/src/incremental/import-graph";
 
@@ -14,6 +16,7 @@ let tmp = "";
 beforeEach(async () => {
 	tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-graph-"));
 	configureImportGraph(tmp);
+	configureImportGraphCompilers([]);
 	_resetImportGraphForTests();
 });
 
@@ -104,6 +107,45 @@ describe("collectStaticDeps", () => {
 		} finally {
 			await fs.rm(outside, { recursive: true, force: true });
 		}
+	});
+
+	describe("a file only a framework compiler reads", () => {
+		// Stands in for Svelte's: its server module keeps the component's own `<script>` imports.
+		const scriptCompiler: FrameworkCompiler = {
+			framework: "Test",
+			extensions: [".comp"],
+			async compile({ source }) {
+				if (source.includes("BROKEN")) throw new Error("syntax error");
+				const script = source.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
+				return { code: `${script}\nexport default {};`, loader: "ts", css: null };
+			},
+		};
+
+		it("is walked through its compiled module", async () => {
+			const css = await write("child.css", `.c{}`);
+			const child = await write("Child.comp", `<script>import "./child.css";</script><p>c</p>`);
+			const parent = await write("Parent.comp", `<script>import Child from "./Child.comp";</script><Child />`);
+			const entry = await write("page.ts", `export const load = () => import("./Parent.comp");`);
+			configureImportGraphCompilers([scriptCompiler]);
+			const deps = await collectStaticDeps(entry);
+			expect([...deps].sort()).toEqual([entry, parent, child, css].sort());
+		});
+
+		it("adds no dependency of its own without a compiler, or when it does not compile", async () => {
+			const child = await write("Child.comp", `<script>import "./other.ts";</script>`);
+			await write("other.ts", `export const o = 1;`);
+			const onlyBroken = await write("only-broken.ts", `export const b = 1;`);
+			const broken = await write("Broken.comp", `<script>import "./only-broken.ts"; BROKEN</script>`);
+			const entry = await write("page.ts", `import "./Child.comp"; import "./Broken.comp";`);
+			expect([...(await collectStaticDeps(entry))].sort()).toEqual([entry, child, broken].sort());
+
+			_resetImportGraphForTests();
+			configureImportGraphCompilers([scriptCompiler]);
+			const deps = await collectStaticDeps(entry);
+			expect(deps.has(path.join(tmp, "other.ts"))).toBe(true);
+			expect(deps.has(broken)).toBe(true);
+			expect(deps.has(onlyBroken)).toBe(false);
+		});
 	});
 
 	it("returns just the entry when the file is unreadable", async () => {
