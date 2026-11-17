@@ -1,10 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import path from "path";
 import { bundlePageScripts } from "../../packages/pletivo/src/astro-host/page-scripts";
 import { __resetForTests, addVitePlugins } from "../../packages/pletivo/src/astro-host/vite-plugins";
 
 /** Has `page-script-lib` installed, and sits under this repo's tsconfig, which maps `preact/hooks`. */
 const projectRoot = path.join(import.meta.dir, "../fixture-astro-page-scripts");
+
+beforeAll(() => {
+  // Bun 1.3.14: `bun test <dir>` caches this directory's listing with an exhausted fd, and the
+  // first Bun.build re-lists through it, finds no node_modules here, and fails to resolve.
+  Bun.resolveSync("page-script-lib", projectRoot);
+});
 
 afterEach(() => {
   __resetForTests();
