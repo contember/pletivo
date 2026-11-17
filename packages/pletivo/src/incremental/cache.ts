@@ -32,8 +32,6 @@ export interface CachedCssHead {
   fragment: string;
   /** The page's own `.astro`/TSX `<style>` CSS, which an adjacent inlined sheet merges with. */
   pageCss: string;
-  /** Whether later injections (CSS modules, scripts) sit between the markup and `</head>`. */
-  injectedAfter: boolean;
 }
 
 export interface CachedFragmentRef {
@@ -114,8 +112,8 @@ export interface RouteCacheEntry {
    * build. Absent means the route's own entry.
    */
   cssEntry?: string;
-  /** Written by `writeHtml`, like `size`. */
-  cssHead: CachedCssHead;
+  /** Written by `writeHtml`, like `size`; null when the page has no `</head>`, so no stylesheet reaches it. */
+  cssHead: CachedCssHead | null;
   /**
    * Byte size of the rendered HTML output. Cached so warm builds
    * don't have to stat every cached file just to print the total.

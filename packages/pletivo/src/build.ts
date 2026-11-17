@@ -39,8 +39,9 @@ import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, paramsToKey, type CachedAstroIsland, type CachedCssHead } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
-import { findCssHead, recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
+import { recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
+import { escapeRegex } from "@pletivo/core/escape-regex";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
 
 /** Shape a dynamic page module is used through: its default export + getStaticPaths. */
@@ -119,8 +120,10 @@ interface PageResult {
    * back via `recordWrittenOutput`.
    */
   cachedSize?: number;
-  /** The stylesheet markup a cached page's HTML carries, from the cache entry. */
-  cachedCssHead?: CachedCssHead;
+  /** The stylesheet markup a cached page's HTML carries, from the cache entry; null for a page with no `</head>`. */
+  cachedCssHead?: CachedCssHead | null;
+  /** A dynamic route's params, so the late pass can render the slug again. */
+  params?: RouteParams;
   /**
    * Emit `html` byte-for-byte, skipping writeHtml's HTML pipeline.
    * Endpoint routes and injected endpoints produce JSON/XML/text, which
@@ -622,63 +625,17 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
   // Static pages — parallel
   const tStatic = performance.now();
-  const staticResults = await Promise.all(
-    staticRoutes.map(async (route): Promise<PageResult | null> => {
-      const fullPath = path.join(pagesDir, route.file);
-      const outFile = routeToOutputPath(route, {});
-      const outPath = path.join(distDir, outFile);
-      const routeKey = `${route.file}::__static__`;
+  /** `forceRender` skips the route's cache entry: the late pass after `bundleCss` uses it. */
+  async function renderStaticRoute(route: Route, forceRender: boolean): Promise<PageResult | null> {
+    const fullPath = path.join(pagesDir, route.file);
+    const outFile = routeToOutputPath(route, {});
+    const outPath = path.join(distDir, outFile);
+    const routeKey = `${route.file}::__static__`;
 
-      // Markdown pages — render directly without module import.
-      // Single-file deps make them cheap; we still gate via the cache
-      // so an unchanged .md doesn't re-emit its HTML file.
-      if (route.file.endsWith(".md")) {
-        const outcome = await runIncrementalRender({
-          routeKey,
-          outFile,
-          pageEntryAbsPath: fullPath,
-          distDir,
-          cache,
-          fragments,
-          distFiles,
-          scanAstroIslands,
-          doRender: async () => ({
-            html: await renderMarkdownFile(fullPath, projectRoot),
-            renderedModules: new Set<string>(),
-            tsxStyles: [],
-          }),
-        });
-        return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
-      }
-
-      await assertPageLayoutSupported(fullPath, projectRoot);
-      const mod = await import(fullPath);
-      // Collect CSS side-effect imports from non-.astro page modules. Runs
-      // unconditionally (even for cached pages) so the global stylesheet
-      // stays complete — mirrors the astro plugin's onLoad collection.
-      registerCssPageEntry(fullPath);
-      await collectPageModuleCss(fullPath, `page:${route.file}`);
-
-      // Endpoint routes (robots.txt.ts, rss.xml.ts, api.ts) emit their GET()
-      // body verbatim. Not incrementally cached: the cache layer is HTML-shaped,
-      // and endpoints are a handful of cheap routes per project.
-      const servedRoute = resolveScriptRoute(route, mod);
-      if (servedRoute.isEndpoint) {
-        const endpointFile = routeToOutputPath(servedRoute, {});
-        const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
-        const body = await renderEndpoint(mod, makeEndpointContext("/" + endpointFile, siteUrl));
-        if (body === null) {
-          console.warn(`  Skipping ${route.file}: endpoint route without an exported GET()`);
-          return null;
-        }
-        return { file: route.file, label: route.file, pageEntry: fullPath, outPath: path.join(distDir, endpointFile), html: body, raw: true };
-      }
-
-      if (typeof mod.default !== "function") {
-        console.warn(`  Skipping ${route.file}: no default export function`);
-        return null;
-      }
-      const pathname = toPathname(outPath, distDir);
+    // Markdown pages — render directly without module import.
+    // Single-file deps make them cheap; we still gate via the cache
+    // so an unchanged .md doesn't re-emit its HTML file.
+    if (route.file.endsWith(".md")) {
       const outcome = await runIncrementalRender({
         routeKey,
         outFile,
@@ -688,24 +645,72 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         fragments,
         distFiles,
         scanAstroIslands,
-        doRender: async () => {
-          resetIslandRegistry();
-          const ctx = makePageContext(pathname, {}, route);
-          const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
-            renderComponent(mod.default, {}, ctx),
-          );
-          warnDroppedSsrWrites(route.file, ctx, mod);
-          return { html: html ?? "", renderedModules, tsxStyles, cssEntry: rewriteEntries.get(ctx.__pageContext) };
-        },
+        forceRender,
+        doRender: async () => ({
+          html: await renderMarkdownFile(fullPath, projectRoot),
+          renderedModules: new Set<string>(),
+          tsxStyles: [],
+        }),
       });
-      if (outcome.source === "rendered" && outcome.html === "") {
-        console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
+      return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
+    }
+
+    await assertPageLayoutSupported(fullPath, projectRoot);
+    const mod = await import(fullPath);
+    // Collect CSS side-effect imports from non-.astro page modules. Runs
+    // unconditionally (even for cached pages) so the global stylesheet
+    // stays complete — mirrors the astro plugin's onLoad collection.
+    registerCssPageEntry(fullPath);
+    await collectPageModuleCss(fullPath, `page:${route.file}`);
+
+    // Endpoint routes (robots.txt.ts, rss.xml.ts, api.ts) emit their GET()
+    // body verbatim. Not incrementally cached: the cache layer is HTML-shaped,
+    // and endpoints are a handful of cheap routes per project.
+    const servedRoute = resolveScriptRoute(route, mod);
+    if (servedRoute.isEndpoint) {
+      const endpointFile = routeToOutputPath(servedRoute, {});
+      const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+      const body = await renderEndpoint(mod, makeEndpointContext("/" + endpointFile, siteUrl));
+      if (body === null) {
+        console.warn(`  Skipping ${route.file}: endpoint route without an exported GET()`);
         return null;
       }
-      const cssEntry = outcome.cssEntry ?? fullPath;
-      return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
-    }),
-  );
+      return { file: route.file, label: route.file, pageEntry: fullPath, outPath: path.join(distDir, endpointFile), html: body, raw: true };
+    }
+
+    if (typeof mod.default !== "function") {
+      console.warn(`  Skipping ${route.file}: no default export function`);
+      return null;
+    }
+    const pathname = toPathname(outPath, distDir);
+    const outcome = await runIncrementalRender({
+      routeKey,
+      outFile,
+      pageEntryAbsPath: fullPath,
+      distDir,
+      cache,
+      fragments,
+      distFiles,
+      scanAstroIslands,
+      forceRender,
+      doRender: async () => {
+        resetIslandRegistry();
+        const ctx = makePageContext(pathname, {}, route);
+        const { value: html, renderedModules, tsxStyles } = await runWithRenderTracking(() =>
+          renderComponent(mod.default, {}, ctx),
+        );
+        warnDroppedSsrWrites(route.file, ctx, mod);
+        return { html: html ?? "", renderedModules, tsxStyles, cssEntry: rewriteEntries.get(ctx.__pageContext) };
+      },
+    });
+    if (outcome.source === "rendered" && outcome.html === "") {
+      console.warn(`  Skipping ${route.file}: default export didn't return HTML`);
+      return null;
+    }
+    const cssEntry = outcome.cssEntry ?? fullPath;
+    return { file: route.file, entryFile: cssEntry, label: route.file, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
+  }
+  const staticResults = await Promise.all(staticRoutes.map((route) => renderStaticRoute(route, false)));
   results.push(...staticResults.filter((r): r is PageResult => r !== null));
   phase("static routes", tStatic);
 
@@ -720,6 +725,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   //     already covered by the route's deps. Cuts ~80% of warm-build
   //     stat calls for content-collection-backed routes.
   const tDynamic = performance.now();
+  // One per dynamic route, not per page: the late pass after `bundleCss` renders a slug again from its params.
+  const dynamicSlugRenderers = new Map<string, (params: RouteParams, forceRender: boolean) => Promise<PageResult | null>>();
   for (const route of dynamicRoutes) {
     // Dynamic endpoints (`[slug].json.ts`) are not supported. Say so loudly —
     // silently emitting nothing is how a broken deploy ships green.
@@ -769,7 +776,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       }
       return (await propsIndexPromise).get(paramsKey);
     };
-    for (const { params } of paramSets) {
+    const renderSlug = async (params: RouteParams, forceRender: boolean): Promise<PageResult | null> => {
       const outFile = routeToOutputPath(route, params);
       const outPath = path.join(distDir, outFile);
       const pathname = toPathname(outPath, distDir);
@@ -785,6 +792,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         fragments,
         distFiles,
         assumeDepsValid,
+        forceRender,
         scanAstroIslands,
         // Lazy thunk — only invoked on the fresh-render path. Forces
         // getStaticPaths to resolve (just once, memoized across all
@@ -804,11 +812,16 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
           return { html: html ?? "", renderedModules, tsxStyles, cssEntry: rewriteEntries.get(ctx.__pageContext) };
         },
       });
-      if (outcome.source === "rendered" && outcome.html === "") continue;
+      if (outcome.source === "rendered" && outcome.html === "") return null;
 
       const label = `${route.file} [${Object.values(params).join("/")}]`;
       const cssEntry = outcome.cssEntry ?? fullPath;
-      results.push({ file: route.file, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead });
+      return { file: route.file, params, entryFile: cssEntry, label, pageEntry: cssEntry, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
+    };
+    dynamicSlugRenderers.set(route.file, renderSlug);
+    for (const { params } of paramSets) {
+      const result = await renderSlug(params, false);
+      if (result) results.push(result);
     }
   }
   phase("dynamic routes", tDynamic);
@@ -1022,43 +1035,63 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   let cachedCount = 0;
   let renderedCount = 0;
   const tWrite = performance.now();
-  await Promise.all(
-    dedupedResults.map(async (result) => {
-      if (result.source === "cached") {
-        if (!result.cachedCssHead) throw new Error(`${result.label}: cached page has no stylesheet markup in the cache`);
-        const { size, cssHead } = await refreshCachedCssHead(result.outPath, result.cachedCssHead, base, stylesheetsForPage(cssBundle, result.pageEntry));
-        totalSize += size;
-        cachedCount++;
-        if (cache && result.routeKey) {
-          recordWrittenOutput(cache, result.routeKey, size, cssHead);
-        }
-        console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)}) [cached]`);
-        return;
-      }
-      if (cache) await removeOtherKindOutput(result.outPath, result.raw === true);
-      if (result.raw) {
-        // Endpoint output — bytes as produced. writeHtml would rewrite asset
-        // refs and, lacking a </head>, prepend the page <style> block.
-        const size = Buffer.byteLength(result.html, "utf-8");
-        await fs.mkdir(path.dirname(result.outPath), { recursive: true });
-        await fs.writeFile(result.outPath, result.html);
-        totalSize += size;
-        renderedCount++;
-        console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
-        return;
-      }
-      const { size, cssHead } = await writeHtml(result.outPath, inlineHoistedScripts(result.html, inlinedScripts), base, stylesheetsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
+  const writePage = async (result: PageResult): Promise<void> => {
+    if (cache) await removeOtherKindOutput(result.outPath, result.raw === true);
+    if (result.raw) {
+      // Endpoint output — bytes as produced. writeHtml would rewrite asset
+      // refs and, lacking a </head>, prepend the page <style> block.
+      const size = Buffer.byteLength(result.html, "utf-8");
+      await fs.mkdir(path.dirname(result.outPath), { recursive: true });
+      await fs.writeFile(result.outPath, result.html);
       totalSize += size;
       renderedCount++;
-      // Now that we know the final byte count and CSS markup, patch them onto
-      // the route's cache entry: the next warm build skips the stat and can
-      // swap the markup.
-      if (cache && result.routeKey) {
-        recordWrittenOutput(cache, result.routeKey, size, cssHead);
-      }
       console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
+      return;
+    }
+    const { size, cssHead } = await writeHtml(result.outPath, inlineHoistedScripts(result.html, inlinedScripts), base, stylesheetsForPage(cssBundle, result.pageEntry), publicManifest, pageScript, result.renderedModules, result.tsxStyles, result.entryFile);
+    totalSize += size;
+    renderedCount++;
+    // Now that we know the final byte count and CSS markup, patch them onto
+    // the route's cache entry: the next warm build skips the stat and can
+    // swap the markup.
+    if (cache && result.routeKey) {
+      recordWrittenOutput(cache, result.routeKey, size, cssHead);
+    }
+    console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
+  };
+  // Cached pages whose stylesheet markup can't be swapped in place.
+  const renderLate: PageResult[] = [];
+  await Promise.all(
+    dedupedResults.map(async (result) => {
+      if (result.source !== "cached") return await writePage(result);
+      if (result.cachedCssHead === undefined) throw new Error(`${result.label}: cached page has no stylesheet markup in the cache`);
+      const refreshed = await refreshCachedCssHead(result.outPath, result.cachedCssHead, result.cachedSize ?? 0, base, stylesheetsForPage(cssBundle, result.pageEntry));
+      if (!refreshed) {
+        renderLate.push(result);
+        return;
+      }
+      totalSize += refreshed.size;
+      cachedCount++;
+      if (cache && result.routeKey) {
+        recordWrittenOutput(cache, result.routeKey, refreshed.size, refreshed.cssHead);
+      }
+      console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(refreshed.size)}) [cached]`);
     }),
   );
+  // Render them again from their route now that the bundle exists, so writeHtml places the markup as a full build does.
+  for (const cached of renderLate) {
+    let fresh: PageResult | null;
+    if (cached.params) {
+      const renderSlug = dynamicSlugRenderers.get(cached.file);
+      if (!renderSlug) throw new Error(`${cached.label}: no dynamic route to render it again from`);
+      fresh = await renderSlug(cached.params, true);
+    } else {
+      const route = staticRoutes.find((r) => r.file === cached.file);
+      if (!route) throw new Error(`${cached.label}: no static route to render it again from`);
+      fresh = await renderStaticRoute(route, true);
+    }
+    if (fresh) await writePage(fresh);
+  }
   phase("writeHtml all pages", tWrite);
   flushProfile("writeHtml");
   clearAstroCss();
@@ -1540,7 +1573,7 @@ async function writeHtml(
   renderedModules?: Set<string>,
   tsxStyles?: string[],
   entryFile?: string,
-): Promise<{ size: number; cssHead: CachedCssHead }> {
+): Promise<{ size: number; cssHead: CachedCssHead | null }> {
   // Each Astro island carries its scripts; the page keeps the first of each, in document order.
   html = finalizeIslandScripts(html);
   if (html.trimStart().startsWith("<html") && !html.trimStart().startsWith("<!")) {
@@ -1564,12 +1597,11 @@ async function writeHtml(
     const pageTsxCss = tsxStyles && tsxStyles.length > 0 ? tsxStyles.join("\n") : "";
     return [pageAstroCss, pageTsxCss].filter(Boolean).join("\n");
   });
-  let cssHead = "";
-  let cssHeadEnd = -1;
+  let cssHead: CachedCssHead | null = null;
   if (html.includes("</head>")) {
-    cssHead = renderCssHead(base, stylesheets, pageCss);
-    html = html.replace("</head>", () => cssHead + "</head>");
-    cssHeadEnd = html.indexOf("</head>");
+    const fragment = renderCssHead(base, stylesheets, pageCss);
+    cssHead = { fragment, pageCss };
+    html = html.replace("</head>", () => fragment + "</head>");
   } else if (pageCss) {
     const styleTag = `<style>${escapeStyleEnd(pageCss)}</style>`;
     if (html.includes("</body>")) {
@@ -1626,8 +1658,7 @@ async function writeHtml(
     await fs.mkdir(path.dirname(outPath), { recursive: true });
     await fs.writeFile(outPath, html);
   });
-  const injectedAfter = cssHeadEnd !== -1 && html.indexOf("</head>") > cssHeadEnd;
-  return { size: bytes, cssHead: { fragment: cssHead, pageCss, injectedAfter } };
+  return { size: bytes, cssHead };
 }
 
 /**
@@ -1672,35 +1703,52 @@ function escapeStyleEnd(css: string): string {
 }
 
 /**
- * Swap a cached page's stylesheet markup for this build's: the sheets' hashes
- * or contents may have changed, and an inlined sheet carries its contents.
+ * Swap a cached page's stylesheet markup for this build's, reading the page only when it changed. Null when it
+ * can't be done in place: the page had none, which goes before later head injections, or a hook rewrote it.
  */
 async function refreshCachedCssHead(
   outPath: string,
-  previous: CachedCssHead,
+  previous: CachedCssHead | null,
+  size: number,
   base: string,
   stylesheets: Stylesheet[],
-): Promise<{ size: number; cssHead: CachedCssHead }> {
+): Promise<{ size: number; cssHead: CachedCssHead | null } | null> {
+  // writeHtml put no stylesheet markup into a page without `</head>`.
+  if (previous === null) return { size, cssHead: null };
+  const fragment = renderCssHead(base, stylesheets, previous.pageCss);
+  if (fragment === previous.fragment) return { size, cssHead: previous };
+  if (previous.fragment === "") return null;
+
   let html: string;
   try {
     html = await fs.readFile(outPath, "utf8");
   } catch {
-    return { size: 0, cssHead: previous };
+    return null;
   }
-
-  const headEnd = html.indexOf("</head>");
-  // writeHtml puts the markup only into a page with a `</head>`.
-  if (headEnd === -1) return { size: Buffer.byteLength(html, "utf-8"), cssHead: previous };
-  const fragment = renderCssHead(base, stylesheets, previous.pageCss);
-  const cssHead = { ...previous, fragment };
-  if (fragment === previous.fragment) return { size: Buffer.byteLength(html, "utf-8"), cssHead };
-
-  // `runIncrementalRender` renders a page fresh when this would fail, and nothing writes it since.
   const at = findCssHead(html, previous.fragment);
-  if (!at) throw new Error(`${outPath}: the page changed during the build; its stylesheet markup is gone`);
+  if (!at) return null;
   const next = html.slice(0, at.start) + fragment + html.slice(at.end);
   await fs.writeFile(outPath, next);
-  return { size: Buffer.byteLength(next, "utf-8"), cssHead };
+  return { size: Buffer.byteLength(next, "utf-8"), cssHead: { fragment, pageCss: previous.pageCss } };
+}
+
+/**
+ * The last match of a page's recorded stylesheet markup before `</head>`, after which come only later injections.
+ * An HTML minifier in `astro:build:done` may have collapsed the whitespace between its tags, so such a run
+ * matches any whitespace; everything else matches exactly.
+ */
+function findCssHead(html: string, fragment: string): { start: number; end: number } | null {
+  const headEnd = html.indexOf("</head>");
+  if (headEnd === -1) return null;
+  const exact = html.lastIndexOf(fragment, headEnd - fragment.length);
+  if (exact !== -1) return { start: exact, end: exact + fragment.length };
+
+  const pattern = new RegExp(fragment.split(/(?<=>)\s+(?=<|$)/).map(escapeRegex).join("\\s*"), "g");
+  let last: { start: number; end: number } | null = null;
+  for (const match of html.slice(0, headEnd).matchAll(pattern)) {
+    last = { start: match.index, end: match.index + match[0].length };
+  }
+  return last;
 }
 
 async function render404Page(

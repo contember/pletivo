@@ -1,6 +1,5 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { escapeRegex } from "@pletivo/core/escape-regex";
 import { runWithRuntimeDepCapture } from "./dep-tracker";
 import { collectStaticDeps, isWalkableSourceFile } from "./import-graph";
 import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
@@ -96,6 +95,8 @@ export interface RenderRequest {
 	 * builds with thousands of slugs.
 	 */
 	assumeDepsValid?: boolean;
+	/** Render even when the cache entry is valid: a cached page whose stylesheet markup can't be swapped in place. */
+	forceRender?: boolean;
 	/**
 	 * Additional file paths that should participate in invalidation for
 	 * this specific render. Pass either the resolved set directly, or a
@@ -132,7 +133,7 @@ export interface RenderOutcome {
 	 */
 	cssEntry?: string;
 	/** The stylesheet markup the cached HTML carries; only on the `cached` path. */
-	cssHead?: CachedCssHead;
+	cssHead?: CachedCssHead | null;
 	/**
 	 * Byte size of the output file. Cached path returns the persisted
 	 * value (no stat); rendered path returns the freshly-emitted size
@@ -143,19 +144,19 @@ export interface RenderOutcome {
 }
 
 export async function runIncrementalRender(req: RenderRequest): Promise<RenderOutcome> {
-	const cached = req.cache?.getRoute(req.routeKey);
+	const cached = req.forceRender ? undefined : req.cache?.getRoute(req.routeKey);
 	const depsValid = cached && (req.assumeDepsValid || (await canReuse(cached)));
 	if (cached && depsValid) {
 		// Persistent-dist mode: the cached HTML file is already on
 		// disk from the previous build. We don't even read it — the
 		// next build pass needs only metadata (island/hoisted lists,
-		// renderedModules for CSS, fragment refs for replay), all of
-		// which we persisted last time. Existence check is either a
+		// renderedModules for CSS, fragment refs for replay, the CSS
+		// head markup to compare), all of which we persisted last time. Existence check is either a
 		// O(1) lookup against the prebuilt inventory or a stat fallback.
 		const exists = req.distFiles
 			? req.distFiles.has(cached.outPath)
 			: await fileExists(path.join(req.distDir, cached.outPath));
-		if (exists && (await cssHeadReplaceable(path.join(req.distDir, cached.outPath), cached.cssHead))) {
+		if (exists) {
 			if (req.fragments && cached.fragments.length > 0) {
 				replayFragments(req.fragments, cached.fragments, normalizeUsedBy(cached.outPath));
 			}
@@ -172,8 +173,8 @@ export async function runIncrementalRender(req: RenderRequest): Promise<RenderOu
 				size: cached.size ?? 0,
 			};
 		}
-		// File was deleted out from under us (manual rm, race), or its
-		// stylesheet markup can't be swapped — fall through to a fresh render.
+		// File was deleted out from under us (manual rm, race) — fall
+		// through to a fresh render.
 	}
 
 	return await freshRender(req, cached);
@@ -239,7 +240,7 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			cssEntry: value.cssEntry,
 			// Populated downstream after writeHtml — we don't know the
 			// final byte length or CSS markup yet (injection happens there).
-			cssHead: { fragment: "", pageCss: "", injectedAfter: false },
+			cssHead: null,
 			size: 0,
 		};
 		req.cache.setRoute(req.routeKey, entry);
@@ -267,51 +268,14 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
  * existing cache entry: the byte size, so the next warm build needn't stat
  * every cached file, and the stylesheet markup, so it can swap it.
  */
-export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: number, cssHead: CachedCssHead): void {
+export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: number, cssHead: CachedCssHead | null): void {
 	const entry = cache.getRoute(routeKey);
 	if (!entry) return;
-	if (
-		entry.size === size &&
-		entry.cssHead.fragment === cssHead.fragment &&
-		entry.cssHead.pageCss === cssHead.pageCss &&
-		entry.cssHead.injectedAfter === cssHead.injectedAfter
-	) return;
+	const sameCssHead = entry.cssHead === null || cssHead === null
+		? entry.cssHead === cssHead
+		: entry.cssHead.fragment === cssHead.fragment && entry.cssHead.pageCss === cssHead.pageCss;
+	if (entry.size === size && sameCssHead) return;
 	cache.setRoute(routeKey, { ...entry, size, cssHead });
-}
-
-/**
- * Where a page's recorded stylesheet markup sits: the last match before `</head>`, after which come only
- * later injections; an empty one at `</head>`. An HTML minifier in `astro:build:done` may have collapsed
- * the whitespace between its tags, so such a run matches any whitespace, and the rest matches exactly.
- */
-export function findCssHead(html: string, fragment: string): { start: number; end: number } | null {
-	const headEnd = html.indexOf("</head>");
-	if (headEnd === -1) return null;
-	if (fragment === "") return { start: headEnd, end: headEnd };
-	const exact = html.lastIndexOf(fragment, headEnd - fragment.length);
-	if (exact !== -1) return { start: exact, end: exact + fragment.length };
-
-	const pattern = new RegExp(fragment.split(/(?<=>)\s+(?=<|$)/).map(escapeRegex).join("\\s*"), "g");
-	let last: { start: number; end: number } | null = null;
-	for (const match of html.slice(0, headEnd).matchAll(pattern)) {
-		last = { start: match.index, end: match.index + match[0].length };
-	}
-	return last;
-}
-
-/**
- * Whether a cached page's stylesheet markup can be swapped in place. A `build:done` hook may have
- * rewritten the page, and markup it never had goes before later injections, at an unknown offset.
- */
-async function cssHeadReplaceable(file: string, cssHead: CachedCssHead): Promise<boolean> {
-	if (cssHead.fragment === "") return !cssHead.injectedAfter;
-	let html: string;
-	try {
-		html = await fs.readFile(file, "utf8");
-	} catch {
-		return false;
-	}
-	return findCssHead(html, cssHead.fragment) !== null;
 }
 
 async function fileExists(p: string): Promise<boolean> {

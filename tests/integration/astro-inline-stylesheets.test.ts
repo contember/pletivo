@@ -42,6 +42,22 @@ function page(css: string, pageRule: string): string {
   return `---\nimport "${css}";\n---\n<html><head><title>t</title><style is:global>${pageRule}</style></head><body><h1>t</h1></body></html>\n`;
 }
 
+/** A tsconfig for a pletivo-native project outside the repo, pointing the JSX runtime at this checkout. */
+function nativeTsconfig(): string {
+  const runtime = path.join(repoRoot, "packages/runtime/src");
+  return JSON.stringify({
+    compilerOptions: {
+      jsx: "react-jsx",
+      jsxImportSource: "pletivo",
+      paths: {
+        "pletivo/jsx-runtime": [path.join(runtime, "jsx-runtime.ts")],
+        "pletivo/jsx-dev-runtime": [path.join(runtime, "jsx-runtime.ts")],
+        "preact/hooks": [path.join(runtime, "hooks.ts")],
+      },
+    },
+  });
+}
+
 const tmpRoots: string[] = [];
 
 async function project(files: Record<string, string | Buffer>): Promise<string> {
@@ -220,6 +236,24 @@ describe("</style inside inlined CSS", () => {
   });
 });
 
+describe("</style in a page's own CSS", () => {
+  test("is escaped in the body fallback and in CSS-modules output", async () => {
+    const root = await project({
+      "tsconfig.json": nativeTsconfig(),
+      "src/styles/box.module.css": `.box::before { content: "</style><b>m</b>"; }\n`,
+      "src/pages/frag.tsx": `export default function Frag() {\n  return <html><body><style>{'.frag::before{content:"</style><b>f</b>"}'}</style><p class="frag">f</p></body></html>;\n}\n`,
+      "src/pages/mod.tsx": `import styles from "../styles/box.module.css";\nexport default function Mod() {\n  return <html><head><title>m</title></head><body><p class={styles.box}>m</p></body></html>;\n}\n`,
+    });
+    await buildProject(root);
+    // No `</head>`: the page's own CSS goes into the body.
+    const frag = await fs.readFile(path.join(root, "dist/frag/index.html"), "utf8");
+    expect(frag).toMatch(/<style>\.frag::before\{content:"<\\\/style><b>f<\/b>"\}<\/style>/);
+    const mod = await fs.readFile(path.join(root, "dist/mod/index.html"), "utf8");
+    expect(mod).toContain(`content: "<\\/style><b>m</b>"`);
+    for (const html of [frag, mod]) expect(html).not.toContain("</style><b>");
+  });
+});
+
 describe("inlineStylesheets: always and never", () => {
   test("always inlines a sheet over the limit and writes no stylesheet", async () => {
     const root = await project({
@@ -339,31 +373,66 @@ describe("incremental build", () => {
     return result.stdout;
   }
 
-  /** Every file under `dist/`, by dist-relative path. */
-  async function distContents(root: string): Promise<Record<string, string>> {
+  /** Every file under `dist/`, dist-relative. */
+  async function distFiles(root: string): Promise<string[]> {
     const dist = path.join(root, "dist");
+    const entries = await fs.readdir(dist, { recursive: true, withFileTypes: true });
+    return entries.filter((e) => e.isFile()).map((e) => path.relative(dist, path.join(e.parentPath, e.name))).sort();
+  }
+
+  /** The pages, and every file they reference through `<link href>`, `<script src>` and CSS `url()`. */
+  async function servedFiles(root: string): Promise<Record<string, string>> {
+    const dist = path.join(root, "dist");
+    const origin = "http://site.invalid";
     const out: Record<string, string> = {};
-    for (const entry of await fs.readdir(dist, { recursive: true, withFileTypes: true })) {
-      if (!entry.isFile()) continue;
-      const file = path.join(entry.parentPath, entry.name);
-      out[path.relative(dist, file)] = await fs.readFile(file, "utf8");
+    const read = async (rel: string): Promise<string | null> => {
+      try {
+        const bytes = await fs.readFile(path.join(dist, rel));
+        return /\.(html|css|js)$/.test(rel) ? bytes.toString("utf8") : bytes.toString("base64");
+      } catch {
+        return null;
+      }
+    };
+    const follow = async (ref: string, from: string): Promise<void> => {
+      const url = new URL(ref, `${origin}/${from}`);
+      if (url.origin !== origin) return;
+      const rel = decodeURIComponent(url.pathname).slice(1);
+      if (rel in out) return;
+      const content = await read(rel);
+      out[rel] = content ?? "<missing>";
+      if (content !== null && rel.endsWith(".css")) await followCss(content, rel);
+    };
+    const followCss = async (css: string, from: string): Promise<void> => {
+      for (const m of css.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)) await follow(m[1], from);
+    };
+    for (const rel of (await distFiles(root)).filter((f) => f.endsWith(".html"))) {
+      const html = await fs.readFile(path.join(dist, rel), "utf8");
+      out[rel] = html;
+      for (const m of html.matchAll(/<link\b[^>]*\bhref="([^"]+)"|<script\b[^>]*\bsrc="([^"]+)"/g)) await follow(m[1] ?? m[2], rel);
+      for (const m of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)) await followCss(m[1], rel);
     }
     return out;
   }
 
-  /** Build a copy of the project's sources from scratch and compare the output. */
-  async function expectSameAsFullBuild(root: string): Promise<void> {
+  /**
+   * Build a copy of the project's sources from scratch and compare what the pages serve. Returns the files only the
+   * incremental `dist/` has: superseded stylesheets, which an incremental build keeps and no page references.
+   */
+  async function expectSameAsFullBuild(root: string): Promise<string[]> {
     const copy = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-inline-css-full-"));
     tmpRoots.push(copy);
     const skip = new Set([path.join(root, "dist"), path.join(root, "node_modules")]);
     await fs.cp(root, copy, { recursive: true, filter: (src) => !skip.has(src) });
     runBuild(copy, false);
-    const incremental = await distContents(root);
-    const full = await distContents(copy);
-    // An incremental build keeps earlier builds' assets; everything a full build writes must match.
-    expect(Object.fromEntries(Object.keys(full).map((rel) => [rel, incremental[rel]]))).toEqual(full);
-    const pages = (files: Record<string, string>) => Object.keys(files).filter((rel) => rel.endsWith(".html")).sort();
-    expect(pages(incremental)).toEqual(pages(full));
+    const served = await servedFiles(root);
+    expect(served).toEqual(await servedFiles(copy));
+    const full = new Set(await distFiles(copy));
+    const orphans = (await distFiles(root)).filter((rel) => !full.has(rel));
+    for (const rel of orphans) {
+      expect(rel).toMatch(/^assets\/styles\.[^/]+\.css$/);
+      expect(served[rel]).toBeUndefined();
+    }
+    return orphans;
   }
 
   // Hoisted-script CSS lands in the shared sheet, which every page gets. It sits
@@ -430,7 +499,7 @@ describe("incremental build", () => {
   }
 
   /** A project whose `astro:build:done` hook rewrites every HTML file with `rewrite` (a JS expression on `html`). */
-  async function hookProject(build: string, rewrite: string): Promise<string> {
+  async function hookProject(build: string, rewrite: string, files: Record<string, string> = {}): Promise<string> {
     return await project({
       "astro.config.mjs": `import fs from "node:fs";
 import path from "node:path";
@@ -449,6 +518,7 @@ export default { ${build}integrations: [{ name: "rewrite", hooks: { "astro:build
       "src/scripts/entry.js": entryScript(`import "../../vendor/hoisted.css";\n`),
       "src/pages/index.astro": indexPage,
       "src/pages/about.astro": aboutPage,
+      ...files,
     });
   }
   const aboutCached = /about\.astro → dist\/about\/index\.html \([^)]*\) \[cached\]/;
@@ -466,16 +536,68 @@ export default { ${build}integrations: [{ name: "rewrite", hooks: { "astro:build
       await expectSameAsFullBuild(root);
     });
 
-    test(`a page whose stylesheet markup a hook rewrote otherwise is rendered fresh (${label})`, async () => {
-      const root = await hookProject(build, String.raw`html.replace(/<(style|link)\b/g, "<$1 data-rewritten")`);
+    test(`a page whose stylesheet markup a hook rewrote otherwise stays cached, then renders again for a new sheet (${label})`, async () => {
+      const root = await hookProject(build, `html.replace(/<style>/g, '<style nonce="n">')`);
       runBuild(root);
-      expect(await fs.readFile(path.join(root, "dist/about/index.html"), "utf8")).toContain("data-rewritten");
+      expect(await fs.readFile(path.join(root, "dist/about/index.html"), "utf8")).toContain('<style nonce="n">');
+      // Nothing changed, so the markup is not looked for.
+      expect(runBuild(root)).toContain("0 rendered + 2 cached");
+      expect(runBuild(root)).toContain("0 rendered + 2 cached");
 
       await fs.writeFile(path.join(root, "vendor/hoisted.css"), ".hoisted-v2 { color: blue; }\n");
       expect(runBuild(root)).not.toMatch(aboutCached);
       await expectSameAsFullBuild(root);
     });
   }
+
+  test("a cached page without CSS gains a sheet when a hook removed its </head>", async () => {
+    const root = await hookProject("", `html.replace("</head>", "")`, {
+      "src/scripts/entry.js": entryScript(""),
+      "src/pages/plain.astro": "<html><head><title>p</title></head><body><h1>p</h1></body></html>\n",
+    });
+    runBuild(root);
+    expect(await fs.readFile(path.join(root, "dist/plain/index.html"), "utf8")).not.toContain("</head>");
+    expect(styles(await sheetsOf(root, "plain/index.html"))).toEqual([]);
+
+    await fs.writeFile(path.join(root, "src/scripts/entry.js"), entryScript(`import "../../vendor/hoisted.css";\n`));
+    expect(runBuild(root)).not.toMatch(/plain\.astro → .* \[cached\]/);
+    expect(styles(await sheetsOf(root, "plain/index.html")).join("")).toContain(".hoisted-v1");
+    await expectSameAsFullBuild(root);
+  });
+
+  test("a CSS-only change leaves dist as a full build writes it, apart from the superseded sheet", async () => {
+    // Shared sheet linked (over the limit, with a url() asset), a page group inlined, a page without `</head>`.
+    const hoisted = (version: string) =>
+      `.hoisted-${version} { font-family: "Probe"; }\n@font-face { font-family: "Probe"; src: url(./files/probe.woff2); }\n${sheetOfSize(`pad-${version}`, 5000)}`;
+    const root = await project({
+      "astro.config.mjs": "export default {};\n",
+      "vendor/hoisted.css": hoisted("v1"),
+      "vendor/files/probe.woff2": noise(5000, 4),
+      "vendor/small.css": ".small-marker { color: rgb(1, 2, 3); }\n",
+      "src/scripts/entry.js": entryScript(`import "../../vendor/hoisted.css";\n`),
+      "src/pages/index.astro": indexPage,
+      "src/pages/about.astro": aboutPage,
+      "src/pages/small.astro": page("../../vendor/small.css", ".small-page{color:blue}"),
+      "src/pages/frag.astro": "<p>no head</p>\n",
+    });
+    runBuild(root);
+    await fs.writeFile(path.join(root, "vendor/hoisted.css"), hoisted("v2"));
+    expect(runBuild(root)).toContain("1 rendered + 3 cached");
+    expect(await linkedCss(root, links(await sheetsOf(root, "about/index.html"))[0])).toContain(".hoisted-v2");
+    expect(await expectSameAsFullBuild(root)).toHaveLength(1);
+  });
+
+  test("a pletivo-native page with an island and no CSS stays cached", async () => {
+    const root = await project({
+      "tsconfig.json": nativeTsconfig(),
+      "src/islands/Counter.tsx": `import { useState } from "preact/hooks";\nexport default function Counter(props: { initial: number }) {\n  const [count, setCount] = useState(props.initial);\n  return <button onClick={() => setCount((c) => c + 1)}>{count}</button>;\n}\n`,
+      "src/pages/index.tsx": `import Counter from "../islands/Counter";\nexport default function Home() {\n  return <html><head><title>i</title></head><body><Counter client="load" initial={0} /></body></html>;\n}\n`,
+    });
+    runBuild(root);
+    // The hydration script follows where the stylesheet markup would go.
+    expect(await fs.readFile(path.join(root, "dist/index.html"), "utf8")).toMatch(/<script[^>]*>[\s\S]*<\/head>/);
+    expect(runBuild(root)).toContain("0 rendered + 1 cached");
+  });
 
   test("only whitespace between the recorded tags is tolerated, not other markup", async () => {
     // With `never` the markup is a `<link>` then the page's `<style>`; the hook puts a comment between them.
