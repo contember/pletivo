@@ -7,7 +7,7 @@ import { __resetForTests, addVitePlugins } from "../../packages/pletivo/src/astr
 const projectRoot = path.join(import.meta.dir, "../fixture-astro-page-scripts");
 
 beforeAll(() => {
-  // Bun 1.3.14: `bun test <dir>` caches this directory's listing with an exhausted fd, and the
+  // Bun < 1.4.2: `bun test <dir>` caches this directory's listing with an exhausted fd, and the
   // first Bun.build re-lists through it, finds no node_modules here, and fails to resolve.
   Bun.resolveSync("page-script-lib", projectRoot);
 });
