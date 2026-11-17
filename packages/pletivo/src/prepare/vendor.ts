@@ -33,8 +33,14 @@ export interface ProjectImportSource {
   source: string;
   /** Processed `<script>` bodies of an `.astro` file, which run in the browser. */
   scripts?: readonly string[];
-  /** Bare specifiers the file's compiled module imports beyond its source's own: an `.md` page's layout. */
-  imports?: readonly string[];
+  /** A `.md` file's bare `layout:`, which its compiled module imports. */
+  markdownLayout?: MarkdownLayoutImport;
+}
+
+export interface MarkdownLayoutImport {
+  specifier: string;
+  /** False where the field may be data: vendored when it resolves, skipped when not. */
+  required: boolean;
 }
 
 export interface FrozenVirtualSource {
@@ -60,6 +66,8 @@ interface ImportRequest {
   relativeViaVite: boolean;
   stylesheet: boolean;
   specifier: string;
+  /** Skipped, not fatal, when it does not resolve. */
+  optional?: boolean;
 }
 
 /** A Tailwind `@plugin` or `@config` rule of a stylesheet in the graph. */
@@ -137,14 +145,15 @@ export async function prepareModuleGraph(
       extensionOf(project.file) === ".css",
       project.source,
     );
-    for (const specifier of project.imports ?? []) {
+    if (project.markdownLayout !== undefined) {
       queue.push({
         importer: project.id,
         importerFile: project.file,
         resolveFrom: path.dirname(project.file),
         relativeViaVite: false,
         stylesheet: false,
-        specifier,
+        specifier: project.markdownLayout.specifier,
+        optional: !project.markdownLayout.required,
       });
     }
   }
@@ -267,6 +276,7 @@ export async function prepareModuleGraph(
         );
       }
     } catch (error) {
+      if (request.optional === true) continue;
       if (error instanceof PrepareError) throw error;
       throw prepareFailure(
         request.importerFile,

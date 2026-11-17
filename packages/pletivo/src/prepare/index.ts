@@ -32,7 +32,8 @@ import { markdownLayoutOf } from "@pletivo/core/content/markdown-module";
 import { isRouteFile } from "@pletivo/core/router";
 import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
-import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
+import { prepareModuleGraph, type MarkdownLayoutImport, type ProjectImportSource } from "./vendor";
+import { classifySpecifier } from "./scan";
 
 export { PrepareError, type PrepareDiagnostic } from "./error";
 
@@ -134,33 +135,38 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
     const file = path.join(physicalBase, rel);
     const source = await Bun.file(file).text();
     const scripts = rel.endsWith(".astro") ? await processedScripts(file, source) : [];
-    const imports = markdownPageImports(rel, source);
+    const markdownLayout = markdownLayoutImport(rel, source);
     sources.push({
       id: `project:${projectPath}`,
       file,
       source,
       ...(scripts.length > 0 ? { scripts } : {}),
-      ...(imports.length > 0 ? { imports } : {}),
+      ...(markdownLayout === null ? {} : { markdownLayout }),
     });
   }
   return sources.sort((left, right) => compareStrings(left.id, right.id));
 }
 
 /**
- * A `.md` page's module imports its `layout:` (`markdownModule`). A layout named as a
- * package is vendored like any import; a project one is carried as a source. Only a
- * route is certain to be compiled: elsewhere a `layout` field may be plain data. An
- * invalid `layout:` is named when the page compiles.
+ * A `.md` file's module imports its `layout:` (`markdownModule`); a project layout is
+ * carried as a source, one named as a package must be vendored. A route page is
+ * compiled, so its layout must resolve. Any other `.md` is compiled only if something
+ * imports it, and its `layout` field may be plain data (a collection entry's), so it is
+ * vendored only when it names a package that resolves. An invalid one is named when
+ * the page compiles.
  */
-function markdownPageImports(rel: string, source: string): string[] {
-  if (!rel.endsWith(".md") || !rel.startsWith("pages/") || !isRouteFile(rel.slice("pages/".length))) return [];
+function markdownLayoutImport(rel: string, source: string): MarkdownLayoutImport | null {
+  if (!rel.endsWith(".md")) return null;
   let layout: string | null;
   try {
     layout = markdownLayoutOf(source, rel);
   } catch {
-    return [];
+    return null;
   }
-  return layout === null || layout.startsWith(".") || layout.startsWith("/") ? [] : [layout];
+  if (layout === null || classifySpecifier(layout) === "relative") return null;
+  const route = rel.startsWith("pages/") && isRouteFile(rel.slice("pages/".length));
+  if (!route && classifySpecifier(layout) !== "vendor") return null;
+  return { specifier: layout, required: route };
 }
 
 function unsupportedProjectSemantics(config: PletivoConfig): PrepareDiagnostic[] {
