@@ -147,6 +147,16 @@ describe("JSX compiled for each framework's server renderer", () => {
   });
 });
 
+test("a Solid compile leaves Error's stack-trace hooks as they were", async () => {
+  const { prepareStackTrace, stackTraceLimit } = Error;
+  const compiler = await loadJsxCompiler(REPO_ROOT, [SOLID]);
+  await compileRequired(compiler, path.join(FIXTURE, "pragma/SolidCounter.tsx"));
+  expect(Error.prepareStackTrace).toBe(prepareStackTrace);
+  expect(Error.stackTraceLimit).toBe(stackTraceLimit);
+  // What Vite's bundled follow-redirects does at import time, and threw under Babel's hook.
+  expect(() => Error.captureStackTrace({})).not.toThrow();
+});
+
 describe("JSX compiled for the browser", () => {
   test("Solid generates DOM code", async () => {
     const compiler = await loadJsxCompiler(REPO_ROOT, [SOLID]);

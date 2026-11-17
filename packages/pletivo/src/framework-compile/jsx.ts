@@ -33,8 +33,9 @@ async function loadSolidTransform(projectRoot: string): Promise<SolidTransform> 
   if (typeof preset !== "function") throw new Error(`babel-preset-solid from ${plugin} exports no preset`);
 
   return async (source, filename, options) => {
+    const { prepareStackTrace, stackTraceLimit } = Error;
     // The options vite-plugin-solid's transform passes (dist/esm/index.mjs, `transform`).
-    const result = await transformAsync(source, {
+    const pending = transformAsync(source, {
       root: projectRoot,
       filename,
       sourceFileName: filename,
@@ -46,6 +47,11 @@ async function loadSolidTransform(projectRoot: string): Promise<SolidTransform> 
       babelrc: false,
       parserOpts: { plugins: options.typescript ? ["jsx", "typescript"] : ["jsx"] },
     });
+    // Babel's first call wraps Error.prepareStackTrace for the whole process, and under Bun the
+    // wrapper throws on Error.captureStackTrace of a non-Error, which Vite does at import time.
+    Error.prepareStackTrace = prepareStackTrace;
+    Error.stackTraceLimit = stackTraceLimit;
+    const result = await pending;
     const code = isRecord(result) ? result.code : undefined;
     if (typeof code !== "string") throw new Error(`babel-preset-solid produced no code for ${filename}`);
     return code;
