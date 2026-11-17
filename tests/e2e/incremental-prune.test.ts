@@ -180,6 +180,19 @@ describe("incremental build prunes stale route outputs", () => {
 		expect(await fs.readFile(path.join(projectRoot, "outside/sub/index.html"), "utf8")).toBe("not dist");
 	});
 
+	it("does not follow a symlinked directory in dist/ onto a live output", async () => {
+		await write("src/pages/old/index.astro", page("Old"));
+		await write("src/pages/new/index.astro", page("New"));
+		runBuild();
+		await fs.rm(path.join(projectRoot, "dist/old"), { recursive: true });
+		await fs.symlink(path.join(projectRoot, "dist/new"), path.join(projectRoot, "dist/old"));
+
+		await fs.rm(path.join(projectRoot, "src/pages/old"), { recursive: true });
+		runBuild();
+
+		expect(await inDist("new/index.html")).toBe(true);
+	});
+
 	it("keeps a symlinked public/ file that took over an endpoint's path", async () => {
 		await write("src/pages/robots.txt.ts", endpoint("route robots"));
 		runBuild();

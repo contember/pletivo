@@ -1286,16 +1286,16 @@ async function pruneStaleRouteOutputs(
   publicWritten: Set<string>,
 ): Promise<void> {
   const realDist = await fs.realpath(distDir);
-  // A symlinked directory in dist/ must not lead the prune outside it.
-  const parentInDist = async (abs: string): Promise<boolean> => {
-    const parent = await fs.realpath(path.dirname(abs)).catch(() => null);
-    return parent !== null && (parent === realDist || parent.startsWith(realDist + path.sep));
+  // No symlinked directory on the path: one could lead outside dist/, or onto a live output inside it.
+  const parentIsReal = async (rel: string): Promise<boolean> => {
+    const parent = await fs.realpath(path.join(distDir, path.dirname(rel))).catch(() => null);
+    return parent === path.join(realDist, path.dirname(rel));
   };
   const removed = await Promise.all(previous.filter((rel) => !current.has(rel)).map(async (rel) => {
     // public/ copied a file to this path this build.
     if (publicWritten.has(rel.split(path.sep).join("/"))) return null;
     const abs = path.join(distDir, rel);
-    if (!(await isFile(abs)) || !(await parentInDist(abs))) return null;
+    if (!(await isFile(abs)) || !(await parentIsReal(rel))) return null;
     await fs.unlink(abs);
     return rel;
   }));
@@ -1307,9 +1307,8 @@ async function pruneStaleRouteOutputs(
   // Deepest first, so a parent is tried after its children; rmdir refuses a non-empty one.
   const depth = (dir: string) => dir.split(path.sep).length;
   for (const dir of [...dirs].sort((a, b) => depth(b) - depth(a))) {
-    const abs = path.join(distDir, dir);
-    if (!(await parentInDist(abs))) continue;
-    await fs.rmdir(abs).catch(() => {});
+    if (!(await parentIsReal(dir))) continue;
+    await fs.rmdir(path.join(distDir, dir)).catch(() => {});
   }
 }
 
