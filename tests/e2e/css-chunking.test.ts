@@ -392,11 +392,14 @@ async function setupDynamicImport(layout: (typeof DYNAMIC_LAYOUTS)[number]): Pro
 /** The stylesheets in the graph modules each page's cache entry kept, as project-relative paths. */
 async function cachedDynamicCss(): Promise<Record<string, string[]>> {
 	const raw = await fs.readFile(path.join(projectRoot, "node_modules/.pletivo/cache/cache.json"), "utf8");
-	const routes: Record<string, { dynamicGraph: Array<{ items: Array<{ type: string; file: string }> }> }> = JSON.parse(raw).routes;
+	const cache: {
+		routes: Record<string, { dynamicModules: string[] }>;
+		dynamicNodes: Record<string, Array<{ type: string; file: string }>>;
+	} = JSON.parse(raw);
 	const out: Record<string, string[]> = {};
-	for (const [key, entry] of Object.entries(routes)) {
-		out[key] = entry.dynamicGraph.flatMap((node) =>
-			node.items.filter((item) => item.type === "css").map((item) => path.relative(projectRoot, item.file)),
+	for (const [key, entry] of Object.entries(cache.routes)) {
+		out[key] = entry.dynamicModules.flatMap((module) =>
+			(cache.dynamicNodes[module] ?? []).filter((item) => item.type === "css").map((item) => path.relative(projectRoot, item.file)),
 		);
 	}
 	return out;
@@ -525,6 +528,37 @@ describe("CSS chunking: CSS reached through a dynamic import", () => {
 		expect(css["other/index.html"]).toBe("");
 
 		await expectWarmEqualsFull(pages);
+	});
+
+	it("equals a full build when a rendered page imports a module statically and a cached one through import()", async () => {
+		await write("vendor/c.css", `.c-marker { color: rgb(3, 2, 1); }\n`);
+		await write("vendor/inner.css", `.inner-marker { color: rgb(5, 5, 5); }\n`);
+		await write("src/components/Inner.astro", `---\nimport "../../vendor/inner.css";\n---\n<p class="inner-marker">inner</p>\n`);
+		await write("src/components/C.astro", `---\nimport "../../vendor/c.css";\nimport Inner from "./Inner.astro";\n---\n<p class="c-marker">c</p><Inner />\n`);
+		await write(
+			"src/pages/dynamic.astro",
+			`---\nconst { default: C } = await import("../components/C.astro");\n---\n<html><head><title>D</title></head><body><C /></body></html>\n`,
+		);
+		const staticPage = (text: string) =>
+			`---\nimport C from "../components/C.astro";\n---\n<html><head><title>S</title></head><body><h1>${text}</h1><C /></body></html>\n`;
+		await write("src/pages/static.astro", staticPage("v1"));
+		await write("src/pages/other.astro", `<html><head><title>Other</title></head><body><h1>Other</h1></body></html>\n`);
+		const pages = ["dynamic/index.html", "static/index.html", "other/index.html"];
+		const html = async (): Promise<string[]> =>
+			await Promise.all(pages.map((page) => fs.readFile(path.join(projectRoot, "dist", page), "utf8")));
+
+		expect(runBuild("--incremental").status).toBe(0);
+		await write("src/pages/static.astro", staticPage("v2"));
+		const warm = runBuild("--incremental");
+		expect(warm.status).toBe(0);
+		expect(warm.stdout).toContain("1 rendered + 2 cached");
+		const warmCss = await linkedCss(pages);
+		const warmHtml = await html();
+		expect(warmCss["dynamic/index.html"]).toContain(".inner-marker{");
+		expect(warmHtml[1]).toContain("v2");
+
+		expect(warmCss).toEqual(await fullBuildCss(pages));
+		expect(warmHtml).toEqual(await html());
 	});
 
 	it("keeps a cached page's import order when its dynamic import sits between static ones", async () => {

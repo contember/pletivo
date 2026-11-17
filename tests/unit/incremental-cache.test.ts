@@ -7,6 +7,12 @@ import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, ha
 
 let tmp = "";
 
+/** The parts of `cache.json` the load tests damage. */
+interface CacheJson {
+	dynamicNodes?: Record<string, unknown>;
+	routes: Record<string, Record<string, unknown>>;
+}
+
 beforeEach(async () => {
 	tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-cache-"));
 });
@@ -34,16 +40,14 @@ describe("CacheStore", () => {
 			tsxStyles: [],
 			fragments: [],
 			cssHead: { fragment: "<style>.a{}</style>\n", pageCss: "" },
-			dynamicGraph: [{
-				file: "/abs/Dyn.svelte",
-				items: [
+			dynamicModules: ["/abs/Dyn.svelte"],
+			size: 0,
+		});
+		s1.setDynamicNode("/abs/Dyn.svelte", [
 					{ type: "css", file: "/abs/Dyn.svelte.pletivo-style.css", dynamic: false },
 					{ type: "dep", file: "/abs/helper.ts", dynamic: true },
 					{ type: "css", file: "/abs/dyn.css", dynamic: false },
-				],
-			}],
-			size: 0,
-		});
+				]);
 		s1.setVirtualCss("/abs/Dyn.svelte.pletivo-style.css", ".d{}");
 		s1.setRouteOutputs(["page/index.html"]);
 		await s1.persist();
@@ -55,20 +59,18 @@ describe("CacheStore", () => {
 		expect(r?.depFingerprints["/abs/page.tsx"]?.hash).toBe("h1");
 		expect(r?.astroIslands).toEqual([{ componentPath: "/abs/Counter.vue", exportName: "default" }]);
 		expect(r?.cssHead).toEqual({ fragment: "<style>.a{}</style>\n", pageCss: "" });
-		expect(r?.dynamicGraph).toEqual([{
-			file: "/abs/Dyn.svelte",
-			items: [
-				{ type: "css", file: "/abs/Dyn.svelte.pletivo-style.css", dynamic: false },
-				{ type: "dep", file: "/abs/helper.ts", dynamic: true },
-				{ type: "css", file: "/abs/dyn.css", dynamic: false },
-			],
-		}]);
+		expect(r?.dynamicModules).toEqual(["/abs/Dyn.svelte"]);
+		expect(s2.dynamicNode("/abs/Dyn.svelte")).toEqual([
+			{ type: "css", file: "/abs/Dyn.svelte.pletivo-style.css", dynamic: false },
+			{ type: "dep", file: "/abs/helper.ts", dynamic: true },
+			{ type: "css", file: "/abs/dyn.css", dynamic: false },
+		]);
 		expect(s2.virtualCss("/abs/Dyn.svelte.pletivo-style.css")).toBe(".d{}");
 	});
 
 	it("ignores the on-disk cache when the configHash differs", async () => {
 		const s1 = await CacheStore.load(tmp, "c1", "dist");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
 		s1.setRouteOutputs(["k.html"]);
 		await s1.persist();
 		expect((await CacheStore.load(tmp, "c1", "dist")).routeKeys()).toEqual(["k"]);
@@ -79,7 +81,7 @@ describe("CacheStore", () => {
 
 	it("forceClean wipes the on-disk cache", async () => {
 		const s1 = await CacheStore.load(tmp, "c1", "dist");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
 		await s1.persist();
 		// Plant a stray file in the cache dir so we can verify forceClean
 		// wipes the whole directory tree.
@@ -93,27 +95,57 @@ describe("CacheStore", () => {
 
 	it("pruneRoutes drops entries whose keys aren't in the keep set", async () => {
 		const s = await CacheStore.load(tmp, "c1", "dist");
-		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
-		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
-		s.setRoute("c", { outPath: "c.html", outputHash: "3", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
+		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
+		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
+		s.setRoute("c", { outPath: "c.html", outputHash: "3", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
 		s.pruneRoutes(new Set(["a", "c"]));
 		expect(s.routeKeys().sort()).toEqual(["a", "c"]);
 	});
 
-	it("pruneRoutes keeps in-memory stylesheet text only while a kept route lists it", async () => {
+	it("pruneRoutes keeps graph nodes and in-memory stylesheet text only while a kept route lists them", async () => {
 		const s = await CacheStore.load(tmp, "c1", "dist");
-		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [{ file: "/abs/A.svelte", items: [{ type: "css", file: "/abs/A.css", dynamic: false }] }], size: 0 });
-		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [{ file: "/abs/B.svelte", items: [{ type: "css", file: "/abs/B.css", dynamic: false }] }], size: 0 });
+		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: ["/abs/A.svelte", "/abs/Shared.svelte"], size: 0 });
+		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: ["/abs/B.svelte", "/abs/Shared.svelte"], size: 0 });
+		s.setDynamicNode("/abs/A.svelte", [{ type: "css", file: "/abs/A.css", dynamic: false }]);
+		s.setDynamicNode("/abs/B.svelte", [{ type: "css", file: "/abs/B.css", dynamic: false }]);
+		s.setDynamicNode("/abs/Shared.svelte", [{ type: "dep", file: "/abs/helper.ts", dynamic: false }]);
 		s.setVirtualCss("/abs/A.css", ".a{}");
 		s.setVirtualCss("/abs/B.css", ".b{}");
 		s.pruneRoutes(new Set(["a"]));
+		expect(s.dynamicNode("/abs/A.svelte")).toEqual([{ type: "css", file: "/abs/A.css", dynamic: false }]);
+		expect(s.dynamicNode("/abs/Shared.svelte")).toEqual([{ type: "dep", file: "/abs/helper.ts", dynamic: false }]);
+		expect(s.dynamicNode("/abs/B.svelte")).toBeUndefined();
 		expect(s.virtualCss("/abs/A.css")).toBe(".a{}");
 		expect(s.virtualCss("/abs/B.css")).toBeUndefined();
 	});
 
+	for (const [name, damage] of [
+		["a graph node that is not a list", (data: CacheJson) => { data.dynamicNodes = { "/abs/Dyn.svelte": { items: [] } }; }],
+		["a graph node item without its flag", (data: CacheJson) => { data.dynamicNodes = { "/abs/Dyn.svelte": [{ type: "css", file: "/abs/dyn.css" }] }; }],
+		["no graph node map", (data: CacheJson) => { delete data.dynamicNodes; }],
+		["a route without its module list", (data: CacheJson) => { for (const entry of Object.values(data.routes)) delete entry.dynamicModules; }],
+	] as const) {
+		it(`loads cold from a cache with ${name}`, async () => {
+			const s1 = await CacheStore.load(tmp, "c1", "dist");
+			s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: ["/abs/Dyn.svelte"], size: 0 });
+			s1.setDynamicNode("/abs/Dyn.svelte", [{ type: "css", file: "/abs/dyn.css", dynamic: false }]);
+			s1.setRouteOutputs(["k.html"]);
+			await s1.persist();
+			const file = path.join(tmp, "node_modules/.pletivo/cache/cache.json");
+			expect((await CacheStore.load(tmp, "c1", "dist")).routeKeys()).toEqual(["k"]);
+
+			const data: CacheJson = JSON.parse(await fs.readFile(file, "utf8"));
+			damage(data);
+			await fs.writeFile(file, JSON.stringify(data));
+			const s2 = await CacheStore.load(tmp, "c1", "dist");
+			expect(s2.routeKeys()).toEqual([]);
+			s2.pruneRoutes(new Set());
+		});
+	}
+
 	it("keeps the route output record when the render cache is invalidated", async () => {
 		const s1 = await CacheStore.load(tmp, "c1", "dist");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
 		s1.setRouteOutputs(["feed.xml", "about/index.html"]);
 		await s1.persist();
 
@@ -130,7 +162,7 @@ describe("CacheStore", () => {
 
 	it("markWriting records the outputs a build is about to write, before it persists", async () => {
 		const s1 = await CacheStore.load(tmp, "c1", "dist");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
 		s1.setRouteOutputs(["k.html"]);
 		await s1.persist();
 		const cacheJson = path.join(tmp, "node_modules", ".pletivo", "cache", "cache.json");
@@ -157,7 +189,7 @@ describe("CacheStore", () => {
 	it("loads cold, without routes or a record, when there is no record for the output directory", async () => {
 		const s1 = await CacheStore.load(tmp, "c1", "dist");
 		expect(s1.routeOutputs()).toBeNull();
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
 		s1.setRouteOutputs(["k.html"]);
 		await s1.persist();
 		expect((await CacheStore.load(tmp, "c1", "dist")).routeKeys()).toEqual(["k"]);
@@ -170,7 +202,7 @@ describe("CacheStore", () => {
 		expect(cleaned.routeOutputs()).toBeNull();
 
 		// A cache written before the record existed.
-		cleaned.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
+		cleaned.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
 		cleaned.setRouteOutputs(["k.html"]);
 		await cleaned.persist();
 		const cacheJson = path.join(tmp, "node_modules", ".pletivo", "cache", "cache.json");
@@ -184,7 +216,7 @@ describe("CacheStore", () => {
 
 	it("voids a route output record naming a path outside the output directory, and loads cold", async () => {
 		const s1 = await CacheStore.load(tmp, "c1", "dist");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicGraph: [], size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicModules: [], size: 0 });
 		s1.setRouteOutputs(["ok.html"]);
 		await s1.persist();
 		const cacheJson = path.join(tmp, "node_modules", ".pletivo", "cache", "cache.json");

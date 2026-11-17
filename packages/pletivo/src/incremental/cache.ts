@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
-import type { GraphNodeRecord } from "../js-imported-css";
+import type { GraphNodeItem } from "../js-imported-css";
 
 const require_ = createRequire(import.meta.url);
 const { version: PLETIVO_VERSION } = require_("../../package.json") as { version: string };
@@ -21,8 +21,8 @@ const { version: PLETIVO_VERSION } = require_("../../package.json") as { version
 // found in cached HTML by a `<link>` pattern, so the written fragment is kept.
 // Bumped to 8: added per-route `dynamicCss` and the cache-level `virtualCss`. A page
 // cached by version 7 would drop the CSS of modules its render imported dynamically.
-// Bumped to 9: `dynamicCss` became `dynamicGraph`, the graph modules themselves, so a
-// cached page's CSS lands in the same group and order as in a full build.
+// Bumped to 9: `dynamicCss` became `dynamicModules` and the cache-level `dynamicNodes`, the
+// graph modules themselves, so a cached page's CSS lands in the same group and order as in a full build.
 export const CACHE_SCHEMA_VERSION = 9;
 
 /** A framework component export an `<astro-island>` hydrates. */
@@ -121,10 +121,10 @@ export interface RouteCacheEntry {
   cssHead: CachedCssHead | null;
   /**
    * CSS-graph modules the render reached only through `import()`. A cached page is
-   * not rendered, so those modules do not load and their graph nodes are restored from here.
-   * A stylesheet that exists only in memory has its text in `PletivoCache.virtualCss`.
+   * not rendered, so those modules do not load and their nodes, in `PletivoCache.dynamicNodes`,
+   * are restored. A stylesheet that exists only in memory has its text in `PletivoCache.virtualCss`.
    */
-  dynamicGraph: GraphNodeRecord[];
+  dynamicModules: string[];
   /**
    * Byte size of the rendered HTML output. Cached so warm builds
    * don't have to stat every cached file just to print the total.
@@ -181,7 +181,9 @@ export interface PletivoCache {
   configHash: string;
   routes: Record<string, RouteCacheEntry>;
   dynamicRoutes: Record<string, DynamicRouteCacheEntry>;
-  /** A compiled framework component's `<style>` text, by its in-memory stylesheet path, once for every route listing it in `dynamicGraph`. */
+  /** A graph module's imports, by module path, once for every route listing it in `dynamicModules`. */
+  dynamicNodes: Record<string, GraphNodeItem[]>;
+  /** A compiled framework component's `<style>` text, by its in-memory stylesheet path, once for every kept node importing it. */
   virtualCss: Record<string, string>;
   /** Kept when the render cache is invalidated: it describes `dist/`, which survives that. */
   routeOutputs: RouteOutputs | null;
@@ -217,6 +219,7 @@ export class CacheStore {
       configHash,
       routes: {},
       dynamicRoutes: {},
+      dynamicNodes: {},
       virtualCss: {},
       routeOutputs: null,
     };
@@ -247,7 +250,12 @@ export class CacheStore {
         if (!parsed.virtualCss || typeof parsed.virtualCss !== "object") {
           parsed.virtualCss = {};
         }
-        return new CacheStore(dir, outDir, { ...parsed, routeOutputs });
+        const dynamicNodes = parseDynamicNodes(parsed.dynamicNodes);
+        const routes: Record<string, unknown> = parsed.routes;
+        // The restore walks these; a malformed one makes the build cold instead of crashing it.
+        if (dynamicNodes !== null && Object.values(routes).every(listsDynamicModules)) {
+          return new CacheStore(dir, outDir, { ...parsed, dynamicNodes, routeOutputs });
+        }
       }
       return new CacheStore(dir, outDir, { ...empty, routeOutputs });
     } catch {
@@ -270,6 +278,7 @@ export class CacheStore {
       configHash,
       routes: {},
       dynamicRoutes: {},
+      dynamicNodes: {},
       virtualCss: {},
       routeOutputs: null,
     });
@@ -303,15 +312,31 @@ export class CacheStore {
         this.dirty = true;
       }
     }
-    const listed = new Set(
-      Object.values(this.data.routes).flatMap((entry) => entry.dynamicGraph.flatMap((node) => node.items.filter((item) => item.type === "css").map((item) => item.file))),
+    const modules = new Set(Object.values(this.data.routes).flatMap((entry) => entry.dynamicModules));
+    for (const file of Object.keys(this.data.dynamicNodes)) {
+      if (!modules.has(file)) {
+        delete this.data.dynamicNodes[file];
+        this.dirty = true;
+      }
+    }
+    const stylesheets = new Set(
+      Object.values(this.data.dynamicNodes).flatMap((items) => items.filter((item) => item.type === "css").map((item) => item.file)),
     );
     for (const file of Object.keys(this.data.virtualCss)) {
-      if (!listed.has(file)) {
+      if (!stylesheets.has(file)) {
         delete this.data.virtualCss[file];
         this.dirty = true;
       }
     }
+  }
+
+  dynamicNode(file: string): GraphNodeItem[] | undefined {
+    return this.data.dynamicNodes[file];
+  }
+
+  setDynamicNode(file: string, items: GraphNodeItem[]): void {
+    this.data.dynamicNodes[file] = items;
+    this.dirty = true;
   }
 
   virtualCss(file: string): string | undefined {
@@ -413,6 +438,30 @@ function parseRouteOutputs(value: unknown): RouteOutputs | null {
     parsed.push(file);
   }
   return { outDir, files: parsed };
+}
+
+function parseDynamicNodes(value: unknown): Record<string, GraphNodeItem[]> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const nodes: Record<string, GraphNodeItem[]> = {};
+  for (const [file, items] of Object.entries(value)) {
+    if (!Array.isArray(items)) return null;
+    const list: unknown[] = items;
+    const parsed: GraphNodeItem[] = [];
+    for (const item of list) {
+      if (typeof item !== "object" || item === null || !("type" in item) || !("file" in item) || !("dynamic" in item)) return null;
+      const { type, file: itemFile, dynamic } = item;
+      if ((type !== "css" && type !== "dep") || typeof itemFile !== "string" || typeof dynamic !== "boolean") return null;
+      parsed.push({ type, file: itemFile, dynamic });
+    }
+    nodes[file] = parsed;
+  }
+  return nodes;
+}
+
+function listsDynamicModules(entry: unknown): boolean {
+  if (typeof entry !== "object" || entry === null || !("dynamicModules" in entry)) return false;
+  const { dynamicModules } = entry;
+  return Array.isArray(dynamicModules) && dynamicModules.every((file) => typeof file === "string");
 }
 
 function isInsideOutDir(rel: string): boolean {

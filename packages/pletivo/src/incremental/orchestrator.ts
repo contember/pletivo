@@ -244,7 +244,7 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			// final byte length or CSS markup yet (injection happens there).
 			cssHead: null,
 			// Known only once every page has rendered: see `recordDynamicGraph`.
-			dynamicGraph: [],
+			dynamicModules: [],
 			size: 0,
 		};
 		req.cache.setRoute(req.routeKey, entry);
@@ -282,12 +282,13 @@ export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: n
 	cache.setRoute(routeKey, { ...entry, size, cssHead });
 }
 
-/** Patch the graph modules a rendered page reached through dynamic imports onto its cache entry; in-memory text is kept once per cache. */
+/** Patch the graph modules a rendered page reached through dynamic imports onto its cache entry; their nodes and in-memory text are kept once per cache. */
 export function recordDynamicGraph(cache: CacheStore, routeKey: string, graph: DynamicGraph): void {
 	const entry = cache.getRoute(routeKey);
 	if (!entry) return;
 	for (const { file, css } of graph.virtualCss) cache.setVirtualCss(file, css);
-	cache.setRoute(routeKey, { ...entry, dynamicGraph: graph.nodes });
+	for (const node of graph.nodes) cache.setDynamicNode(node.file, node.items);
+	cache.setRoute(routeKey, { ...entry, dynamicModules: graph.nodes.map((node) => node.file) });
 }
 
 async function fileExists(p: string): Promise<boolean> {

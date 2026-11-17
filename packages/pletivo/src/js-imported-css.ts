@@ -236,10 +236,17 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
   };
 }
 
+/** One import of a graph module, as the incremental cache keeps it. */
+export interface GraphNodeItem {
+  type: "css" | "dep";
+  file: string;
+  dynamic: boolean;
+}
+
 /** A graph module as the incremental cache keeps it: its imports in source order. */
 export interface GraphNodeRecord {
   file: string;
-  items: Array<{ type: "css" | "dep"; file: string; dynamic: boolean }>;
+  items: GraphNodeItem[];
 }
 
 /** What `dynamicGraphOf` records: the modules, and the text of their in-memory stylesheets. */
@@ -474,23 +481,28 @@ async function expandGraph(file: string, visited: Set<string>): Promise<void> {
 
 function nodeItems(sourceFile: string, imports: ModuleImport[]): NodeItem[] {
   const items: NodeItem[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, NodeItem>();
+  const add = (key: string, item: NodeItem): void => {
+    const existing = seen.get(key);
+    // Imported both ways, in either order: the static import always loads it.
+    if (existing) existing.dynamic = existing.dynamic && item.dynamic;
+    else {
+      seen.set(key, item);
+      items.push(item);
+    }
+  };
   for (const { specifier, dynamic } of imports) {
     const clean = stripQuery(specifier);
     if (!clean || isVirtualOrBuiltin(clean)) continue;
 
     const cssPath = resolveCssSpecifier(sourceFile, specifier);
     if (cssPath) {
-      if (seen.has(`css\0${cssPath}`)) continue;
-      seen.add(`css\0${cssPath}`);
-      items.push({ type: "css", file: cssPath, kind: cssKind(cssPath), dynamic });
+      add(`css\0${cssPath}`, { type: "css", file: cssPath, kind: cssKind(cssPath), dynamic });
       continue;
     }
 
     const modulePath = resolveLocalModule(specifier, sourceFile);
-    if (!modulePath || seen.has(`dep\0${modulePath}`)) continue;
-    seen.add(`dep\0${modulePath}`);
-    items.push({ type: "dep", file: modulePath, dynamic });
+    if (modulePath) add(`dep\0${modulePath}`, { type: "dep", file: modulePath, dynamic });
   }
   return items;
 }

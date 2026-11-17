@@ -10,7 +10,7 @@ The build's CSS graph follows an `import()` with a string specifier the way it
 follows a static import:
 - a full build puts the CSS in the group of every page that reaches it, in import order;
 - a page's cache entry keeps the graph modules it reaches only through `import()`
-  (`dynamicGraph`). A page restored from the cache does not render, so those
+  (`dynamicModules`, with each module's node stored once per cache). A page restored from the cache does not render, so those
   modules do not load. The warm build puts the recorded modules back, and its
   page walk equals a full build's.
 
@@ -69,4 +69,4 @@ The warm build equals the full build here (probed): the import graph resolves th
 
 - **A recorded module no page loads any more:** its node is restored until the recording page renders again, so its CSS still ships. Extra CSS, never missing CSS.
 - **A recorded stylesheet deleted since** through an edge neither graph sees: dropped on restore, not a build error.
-- **Storage:** nodes are stored per route. N routes that dynamically import the same component store its node N times. Only in-memory `<style>` text is stored once per cache.
+- **Storage:** each route lists the paths of the modules it reaches only through `import()`. A site where every page can reach many components through a registry stores that list on every route.

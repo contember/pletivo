@@ -1041,7 +1041,12 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     for (const result of dedupedResults) {
       if (result.source !== "cached" || !result.routeKey) continue;
       const entry = cache.getRoute(result.routeKey);
-      if (entry) restoreDynamicGraph(entry.dynamicGraph, (file) => cache.virtualCss(file));
+      if (!entry) continue;
+      const nodes = entry.dynamicModules.flatMap((file) => {
+        const items = cache.dynamicNode(file);
+        return items ? [{ file, items }] : [];
+      });
+      restoreDynamicGraph(nodes, (file) => cache.virtualCss(file));
     }
   }
   const cssBundle = await bundleCss(projectRoot, config.srcDir, distDir, inlineStylesheets);

@@ -8,6 +8,7 @@ import {
   collectCssSideEffectImports,
   collectPageModuleCss,
   configureJsImportedCss,
+  dynamicGraphOf,
   getJsImportedCssOutput,
   restoreDynamicGraph,
   setVirtualCss,
@@ -109,6 +110,14 @@ describe("JS-imported CSS collection", () => {
       const out = await getJsImportedCssOutput();
       expect(out).toContain(".fresh-text");
       expect(out).not.toContain(".stale-text");
+    });
+
+    test("does not record a module the page imports both ways, whichever comes first", async () => {
+      await write("vendor/d.css", `.both-ways { color: red; }`);
+      await write("src/D.js", `import "../vendor/d.css";\nexport default "d";`);
+      const page = path.join(root, "src/pages/index.astro");
+      await collectCssSideEffectImports(page, `const later = () => import("../D.js");\nimport D from "../D.js";`, "astro:index");
+      expect(dynamicGraphOf(page, []).nodes).toEqual([]);
     });
 
     test("keeps a module loaded this build over the recorded one", async () => {
