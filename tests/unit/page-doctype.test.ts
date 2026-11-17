@@ -32,6 +32,21 @@ describe("pageDoctype, an Astro project", () => {
     expect(pageDoctype("<!-- built -->\n<!DOCTYPE html><html></html>", COMPRESSED)).toBe("");
   });
 
+  test("reads a comment up to its first -->, single and double dashes inside included", () => {
+    expect(pageDoctype("<!-- a-b --><!doctype html><html></html>", COMPRESSED)).toBe("");
+    expect(pageDoctype("<!-- a--b --><!doctype html><html></html>", COMPRESSED)).toBe("");
+    expect(pageDoctype("<!-- a -- b -->\n<!doctype html><html></html>", COMPRESSED)).toBe("");
+    expect(pageDoctype("<!-- a --><p>--></p><!doctype html>", COMPRESSED)).toBe("<!DOCTYPE html>");
+    expect(pageDoctype("<!-- a --> b --><!doctype html>", COMPRESSED)).toBe("<!DOCTYPE html>");
+    expect(pageDoctype("<!-- never closed <!doctype html>", COMPRESSED)).toBe("<!DOCTYPE html>");
+  });
+
+  test("scans many leading comments with no doctype after them in linear time", () => {
+    const comments = "<!-- a - b -- c -->\n".repeat(40);
+    expect(pageDoctype(`${comments}<html></html>`, COMPRESSED)).toBe("<!DOCTYPE html>");
+    expect(pageDoctype(`${comments}<!doctype html><html></html>`, COMPRESSED)).toBe("");
+  }, 500);
+
   test("prefixes a page whose leading whitespace comes before <html>", () => {
     expect(pageDoctype("\n  <html></html>", COMPRESSED)).toBe("<!DOCTYPE html>");
   });

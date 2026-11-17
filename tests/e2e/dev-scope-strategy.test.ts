@@ -38,3 +38,13 @@ describe("dev server - scoped style strategy", () => {
     expect(html).not.toContain(":where(");
   });
 });
+
+describe("dev server - doctype", () => {
+  test("gives a page Astro's doctype under the default compressHTML", async () => {
+    expect(await (await fetch(BASE + "/")).text()).toStartWith("<!DOCTYPE html><");
+  });
+
+  test("gives a partial none", async () => {
+    expect(await (await fetch(BASE + "/partial")).text()).toStartWith("<p>part</p>");
+  });
+});

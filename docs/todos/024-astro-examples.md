@@ -105,6 +105,22 @@ the build, naming the file (#51, #59). blog builds now.
 | with-tailwindcss | no | | | fails by name: `layout:` in a `.md` page's frontmatter |
 | with-vitest | yes | 2/2 | 1/1 | **match** |
 
+## Now (#79)
+
+The full harness, with Astro's DOCTYPE rule: **15 of 18 build, 5 of 18 match**.
+Compared with After, with-nanostores now builds (3/3 routes, 0/1 pages equal;
+its first difference is the CSS text in `<style>`), and with-mdx matches. The
+other matches are basics, container-with-vitest, minimal and with-vitest.
+starlog still fails on `astro:transitions`; with-markdoc and with-tailwindcss
+still fail by name.
+
+First differences, Astro vs pletivo:
+
+- blog, `about/index.html`: the inlined global sheet. Astro keeps
+  `--accent: #2337ff`, pletivo writes `--accent:#2337ff` (Bun's CSS pipeline).
+- portfolio, `404.html`: Astro links the sheet (`<link rel="stylesheet">`),
+  pletivo inlines it as `<style>`.
+
 ## Gaps and what closed them
 
 Ordered by how many examples each one blocked at baseline.

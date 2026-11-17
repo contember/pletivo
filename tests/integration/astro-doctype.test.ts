@@ -33,6 +33,8 @@ const ASTRO_PAGES: Record<string, string> = {
   "src/pages/posts/[slug].astro": `---\nexport function getStaticPaths() {\n  return [{ params: { slug: "one" } }];\n}\n---\n<p>post</p>\n`,
   "src/pages/fragments/[id].astro": `---\nexport const partial = true;\nexport function getStaticPaths() {\n  return [{ params: { id: "one" } }];\n}\n---\n<p>fragment</p>\n`,
   "src/pages/404.astro": `<p>missing</p>\n`,
+  "src/pages/to-partial.astro": `---\nreturn Astro.rewrite("/partial");\n---\n`,
+  "src/pages/partial-to-page.astro": `---\nexport const partial = true;\nreturn Astro.rewrite("/posts/one");\n---\n`,
 };
 
 const PROJECTS = {
@@ -109,6 +111,11 @@ describe("an Astro project's doctype", () => {
   test("is not added to a partial", async () => {
     expect(await page("astro", "partial/index.html")).toBe("<p>part</p>");
     expect(await page("astro", "fragments/one/index.html")).toBe("<p>fragment</p>");
+  });
+
+  test("follows the rewrite target's partial, not the rewriting page's", async () => {
+    expect(await page("astro", "to-partial/index.html")).toBe("<p>part</p>");
+    expect(await page("astro", "partial-to-page/index.html")).toStartWith("<!DOCTYPE html><p");
   });
 });
 

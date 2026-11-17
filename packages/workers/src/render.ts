@@ -343,8 +343,8 @@ const DEFAULT_PAGES_DIR = "src/pages";
 /** Recent enough for `Response.json` and the modern module registry in the isolate. */
 const DEFAULT_COMPATIBILITY_DATE = "2026-01-01";
 const DEFAULT_COMPATIBILITY_FLAGS = ["nodejs_compat"];
-/** Bumped when the isolate protocol changes, so a stale isolate is never reused. v4: warm. */
-const WORKER_HOST_ABI = "pletivo-workers-v4";
+/** Bumped when the isolate protocol changes, so a stale isolate is never reused. v4: warm. v5: `partial`. */
+const WORKER_HOST_ABI = "pletivo-workers-v5";
 const SHARED_NAMESPACE: ExecutionNamespace = {
   tenant: "pletivo-workers-stateless",
   capabilityGeneration: "none",
