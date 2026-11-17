@@ -335,10 +335,10 @@ classes. Two consequences worth naming:
   after the render, so they are not in the HTML that is read. That sidesteps
   `border`, one of the two false candidates in §1, which comes from CSS text
   inside a `<style>`.
-- **The remaining hole:** a class that appears only in a future client bundle, not in
-  rendered HTML or an injected script, is absent. It is theoretical today because this
-  host ships **no client bundles at all**. When islands land, their shipped bundle text
-  must join the candidate source.
+- **Island client bundles** (027): a class only an island's client code applies is
+  found in the project files the page's island modules were bundled from, read as they
+  are now. Not the bundle text: the Bun host scans the project's sources, not the
+  frameworks' runtimes.
 
 Stylesheet ownership is now the compiler's `ResolvedStyleGraph`, shared with executable
 resolution. Project and Artifact V2 package CSS use the same logical module edges; the

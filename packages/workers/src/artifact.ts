@@ -2,6 +2,7 @@ import {
   ANY_PROJECT_IMPORTER,
   ARTIFACT_BUILTIN_EXTERNALS,
   parsePreparedSite,
+  type ArtifactIslandClient,
   type ArtifactIslandScripts,
   type ArtifactModule,
   type ArtifactRenderer,
@@ -56,6 +57,8 @@ export interface ProjectIslands {
   readonly components: ReadonlyMap<string, ModuleId>;
   /** Project-root-relative file -> a compiled component's CSS, which no project file holds. */
   readonly stylesheets: ReadonlyMap<string, string>;
+  /** URL -> a module of the islands' client bundle. */
+  readonly clients: ReadonlyMap<string, ArtifactIslandClient>;
 }
 
 /**
@@ -116,6 +119,7 @@ function islandsOf(prepared: PreparedSite): ProjectIslands | null {
     scripts: islands.scripts,
     components: new Map(islands.components.map((component) => [component.file, component.module])),
     stylesheets: new Map(islands.stylesheets.map((stylesheet) => [stylesheet.file, stylesheet.source])),
+    clients: new Map(islands.clients.map((client) => [client.url, client])),
   };
 }
 

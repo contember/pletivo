@@ -492,6 +492,7 @@ import { helper } from "../lib/util";
           scripts: { island: "", directives: {} },
           components: [{ file: "src/components/Counter.vue", module: COUNTER }],
           stylesheets: [{ file: STYLESHEET, source: ".counter{}" }],
+          clients: [],
         },
       },
     });

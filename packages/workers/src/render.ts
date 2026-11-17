@@ -26,6 +26,7 @@ import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
 import { scriptCandidateSources } from "./browser-modules.ts";
+import { islandCandidateSources, pageIslandClients } from "./island-clients.ts";
 import { attributeValue, htmlTags } from "./html-tags.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
@@ -513,6 +514,8 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   });
   // A `.tsx` `<style>` is page-global, so it goes after the component CSS, as on Bun.
   const styles = [css, rendered.tsxStyles.join("\n")].filter(Boolean).join("\n");
+  const islands = options.artifact?.islands ?? null;
+  const islandSources = islands === null ? [] : islandCandidateSources(pageIslandClients(rendered.html, islands), files, rootDir);
   // After the render: the page's HTML is Tailwind's content.
   const stylesheet = await pageStylesheet({
     // `project.sources`: only the artifact-merged map holds `node_modules` stylesheets.
@@ -523,7 +526,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     entry: projectModuleId(file),
     html: rendered.html,
     scripts,
-    browserSources: scriptCandidateSources(project.scripts, files),
+    browserSources: [...scriptCandidateSources(project.scripts, files), ...islandSources],
     tailwind: options.tailwind,
     tailwindIsolate: tailwindIsolateHost(options),
   });

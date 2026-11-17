@@ -6,6 +6,7 @@ import { Glob } from "bun";
 import {
   ARTIFACT_VERSION,
   type ArtifactConfig,
+  type ArtifactModule,
   type ArtifactInput,
   type ArtifactMarkdownConfig,
   type PreparedSite,
@@ -26,14 +27,14 @@ import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
-import { bundleOnlyFiles, prepareIslands } from "./islands";
+import { bundleOnlyFiles, prepareIslandClients, prepareIslands, type AstroHydrations } from "./islands";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
 import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
 import { markdownLayoutOf } from "@pletivo/core/content/markdown-module";
 import { isRouteFile } from "@pletivo/core/router";
 import { isInsideRoot, normalizePath } from "./paths";
-import { processedScripts } from "./scripts";
+import { astroSourceFacts } from "./scripts";
 import { prepareModuleGraph, type MarkdownLayoutImport, type PreparedGraph, type ProjectImportSource } from "./vendor";
 import { classifySpecifier } from "./scan";
 
@@ -86,6 +87,10 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
     ? []
     : graphSources.filter((source) => islands.bundledFiles.has(source.file)).map((source) => source.file);
   const graph = await prepareSharedGraph(projectRoot, graphSources, shared, pluginModules);
+  // After the graph, which carries the package `.astro` components that may hydrate islands too.
+  const clients = islands === null
+    ? null
+    : await prepareIslandClients(islands, await astroHydrations(projectRoot, srcDir, sources, graph.modules));
   const pageScript = await freezePageScripts(host, projectRoot);
 
   return {
@@ -99,9 +104,9 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
       modules: islands === null ? graph.modules : [...graph.modules, ...islands.modules],
       resolutions: islands === null ? graph.resolutions : [...graph.resolutions, ...islands.resolutions],
       browserResolutions: graph.browserResolutions,
-      ...(islands === null ? {} : { islands: islands.islands }),
+      ...(islands === null || clients === null ? {} : { islands: { ...islands.islands, clients: clients.clients } }),
     },
-    inputs: islands === null ? inputs : withBundleInputs(inputs, islands.inputs),
+    inputs: clients === null ? inputs : withBundleInputs(inputs, clients.inputs),
   };
 }
 
@@ -166,6 +171,46 @@ async function freezePageScripts(host: AstroHost | null, projectRoot: string): P
   }
 }
 
+/**
+ * Every `.astro` file a render can reach and what it hydrates: the sources, the project's own
+ * outside `srcDir` (a layout beside it) and the package components the graph carries.
+ */
+async function astroHydrations(
+  projectRoot: string,
+  srcDir: string,
+  sources: readonly ProjectImportSource[],
+  carried: readonly ArtifactModule[],
+): Promise<AstroHydrations[]> {
+  const files: AstroHydrations[] = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    seen.add(source.file);
+    if (source.hydrated !== undefined) files.push({ file: source.file, hydrated: source.hydrated });
+  }
+  const read = async (file: string, source: string) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const { hydrated } = await astroSourceFacts(file, source);
+    if (hydrated.length > 0) files.push({ file, hydrated });
+  };
+  const srcBase = realpathSync(path.resolve(projectRoot, srcDir));
+  for await (const rel of new Glob("**/*.astro").scan({ cwd: projectRoot, dot: true })) {
+    if (isSkippedPath(rel)) continue;
+    const file = path.join(projectRoot, rel);
+    if (file.startsWith(srcBase + path.sep)) continue;
+    await read(file, await Bun.file(file).text());
+  }
+  for (const module of carried) {
+    if (module.kind === "astro" && module.compilePath !== undefined) await read(path.resolve(projectRoot, module.compilePath), module.source);
+  }
+  return files;
+}
+
+/** A build product, a dependency or a dot entry, which no source walk reads. */
+function isSkippedPath(rel: string): boolean {
+  return rel.split("/").some((segment) => SKIPPED_DIRS.has(segment) || isSkippedDotEntry(segment));
+}
+
 async function readSources(root: string, srcDir: string): Promise<ProjectImportSource[]> {
   const base = path.resolve(root, srcDir);
   const lexicalRelative = normalizePath(path.relative(root, base));
@@ -192,18 +237,18 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
   const sources: ProjectImportSource[] = [];
   // `dot`, so `src/pages/.well-known` (a route directory, as in Astro) is carried; other dot entries are not.
   for await (const rel of new Glob("**/*").scan({ cwd: physicalBase, dot: true })) {
-    const segments = rel.split("/");
-    if (segments.some((segment) => SKIPPED_DIRS.has(segment) || isSkippedDotEntry(segment))) continue;
+    if (isSkippedPath(rel)) continue;
     const projectPath = path.posix.join(physicalRelative, rel);
     const file = path.join(physicalBase, rel);
     const source = await Bun.file(file).text();
-    const scripts = rel.endsWith(".astro") ? await processedScripts(file, source) : [];
+    const facts = rel.endsWith(".astro") ? await astroSourceFacts(file, source) : null;
     const markdownLayout = markdownLayoutImport(rel, source);
     sources.push({
       id: `project:${projectPath}`,
       file,
       source,
-      ...(scripts.length > 0 ? { scripts } : {}),
+      ...(facts !== null && facts.scripts.length > 0 ? { scripts: facts.scripts } : {}),
+      ...(facts !== null && facts.hydrated.length > 0 ? { hydrated: facts.hydrated } : {}),
       ...(markdownLayout === null ? {} : { markdownLayout }),
     });
   }

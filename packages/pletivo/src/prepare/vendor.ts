@@ -17,6 +17,7 @@ import { tailwindModuleRefs, type TailwindModuleRef } from "@pletivo/core/css-im
 import { bundleBrowserGraph } from "./browser-bundle";
 import { prepareFailure, PrepareError } from "./error";
 import { processedScripts } from "./scripts";
+import type { AstroIslandComponent } from "../astro-islands-bundle";
 import { bundleTailwindModule, bundleTailwindRuntime, TailwindModuleBundleError } from "./tailwind-modules";
 import { compareStrings } from "@pletivo/core/compare-strings";
 import { isInsideRoot, isMissingFile, normalizePath } from "./paths";
@@ -33,6 +34,8 @@ export interface ProjectImportSource {
   source: string;
   /** Processed `<script>` bodies of an `.astro` file, which run in the browser. */
   scripts?: readonly string[];
+  /** The components an `.astro` file hydrates, which get island client modules. */
+  hydrated?: readonly AstroIslandComponent[];
   /** A `.md` file's bare `layout:`, which its compiled module imports. */
   markdownLayout?: MarkdownLayoutImport;
 }

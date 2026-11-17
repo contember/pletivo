@@ -154,6 +154,11 @@ describe("byte parity with pletivo build", () => {
       // renderer-url and uid, byte-for-byte against `pletivo build`.
       expect(output).toContain("1/1 byte-identical");
       expect(output).toContain("= 1 enumerated path(s)");
+      // And the islands hydrate from this host: each component-url and renderer-url, and the
+      // chunks they import, served as JavaScript with the bytes `pletivo build` wrote. Prepare
+      // bundled the components the `.astro` sources hydrate, the build those it rendered.
+      expect(output).toContain("= 18 island module(s) served as JavaScript, every import among them");
+      expect(output).toContain("= 18/18 island module(s) byte-identical to pletivo build");
       expect(ok).toBe(true);
     },
     180_000,

@@ -6,8 +6,9 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { BunPlugin, Loader } from "bun";
+import type { BuildMetafile, BunPlugin, Loader } from "bun";
 import type { AstroRendererEntry } from "@pletivo/core/astro-host/renderers";
+import { compareStrings } from "@pletivo/core/compare-strings";
 import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 import {
   astroUrlPrefix,
@@ -148,8 +149,104 @@ function preactPlugin(projectRoot: string): BunPlugin {
   };
 }
 
+/** What Bun loads as source or text; it emits a file of any other extension as an asset. */
+const BUN_SOURCE_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".json", ".jsonc", ".toml", ".yaml", ".yml", ".txt", ".css"];
+
+/**
+ * The files an `onLoad` hook that watches every read may match. Bun 1.3.14 crashes when any `onLoad`
+ * hook, a pass-through too, matches a file it emits as an asset, so an asset is never matched.
+ */
+export function readHookFilter(compilers: readonly FrameworkCompiler[]): RegExp {
+  const extensions = new Set([...BUN_SOURCE_EXTENSIONS, ...compilers.flatMap((compiler) => compiler.extensions)]);
+  return new RegExp(`(${[...extensions].map(escapeRegExp).join("|")})$`);
+}
+
+/**
+ * The imports of the file Bun emitted as the asset `output`, absolute. Bun's metafile lists no asset
+ * output, so its source is found by the default asset name, `[name]-[hash].[ext]`.
+ */
+export function assetImports(metafile: BuildMetafile | undefined, output: string): { importer: string; source: string }[] {
+  const named = /^(.*)-[a-z0-9]{8}(\.[^.]*)?$/.exec(path.basename(output));
+  const sourceName = named === null ? path.basename(output) : `${named[1]}${named[2] ?? ""}`;
+  return Object.entries(metafile?.inputs ?? {}).flatMap(([importer, input]) =>
+    input.imports
+      .filter((imported) => path.basename(imported.path) === sourceName)
+      .map((imported) => ({ importer: path.resolve(importer), source: importedPath(path.resolve(importer), imported.path) })),
+  );
+}
+
+/** Bun's metafile names an import absolute, or as spelled when a plugin loaded the importer. */
+function importedPath(importer: string, imported: string): string {
+  return imported.startsWith("./") || imported.startsWith("../") ? path.resolve(path.dirname(importer), imported) : imported;
+}
+
+/** Calls `beforeRead` for each file on disk, then leaves loading it to the plugins after it. */
+function readTracker(
+  beforeRead: (file: string) => Promise<void>,
+  inMemory: (file: string) => boolean,
+  compilers: readonly FrameworkCompiler[],
+): BunPlugin {
+  return {
+    name: "pletivo-astro-islands-read-tracker",
+    setup(build) {
+      build.onLoad({ filter: readHookFilter(compilers), namespace: "file" }, async (args) => {
+        if (!inMemory(args.path)) await beforeRead(args.path);
+        return undefined;
+      });
+    },
+  };
+}
+
+/** A JavaScript module of the islands' client bundle. */
+export interface AstroIslandModule {
+  /** An entry is an island's `component-url` or `renderer-url`; Bun names a chunk by its content. */
+  kind: "entry-point" | "chunk";
+  /** Root-absolute, under the base's `_astro/`. */
+  url: string;
+  code: string;
+  /**
+   * What Bun's metafile lists as its inputs, resolved against the working directory, less the
+   * in-memory entries and virtual modules. Bun's own browser polyfills are among them.
+   */
+  inputs: string[];
+}
+
+/** A file a module imports that is not JavaScript, such as a font, which Bun emits as it is. */
+export interface AstroIslandAsset {
+  kind: "asset";
+  url: string;
+  bytes: Uint8Array;
+  /** The files it was emitted from, as `AstroIslandModule.inputs`. */
+  inputs: string[];
+  /** The files that import it, absolute. */
+  importers: string[];
+}
+
+export type AstroIslandFile = AstroIslandModule | AstroIslandAsset;
+
+export interface BuildAstroIslandsOptions extends Omit<BundleAstroIslandsOptions, "distDir"> {
+  /** Called with each file on disk before the bundle reads it: what prepare digests as its inputs. */
+  beforeRead?(file: string): Promise<void>;
+  /** How a build failure names a component's entry; prepare adds the `.astro` files that hydrate it. */
+  label?(component: AstroIslandComponent): string;
+}
+
 /** Writes a module at every URL `createIslandClientUrls` returns for the given components, renderers and scripts. */
 export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Promise<void> {
+  const prefix = astroUrlPrefix(options.base);
+  const outDir = path.join(options.distDir, ASTRO_DIR);
+  for (const file of await buildAstroIslands(options)) {
+    const out = path.join(outDir, file.url.slice(prefix.length));
+    await fs.mkdir(path.dirname(out), { recursive: true });
+    await fs.writeFile(out, file.kind === "asset" ? file.bytes : file.code);
+  }
+}
+
+/**
+ * The files `bundleAstroIslands` writes, in memory. No CSS: the server render already put a
+ * hydrated component's CSS on the page; client:only is not covered yet.
+ */
+export async function buildAstroIslands(options: BuildAstroIslandsOptions): Promise<AstroIslandFile[]> {
   const urls = createIslandClientUrls(options);
   const prefix = astroUrlPrefix(options.base);
   // In-memory entries named as their output files, so `naming` can keep the name.
@@ -166,12 +263,14 @@ export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Pr
     labels.set(entryPath, label);
   };
 
-  for (const { componentPath, exportName } of options.components) {
-    addEntry(
-      urls.component(componentPath, exportName),
-      componentEntrySource(options.projectRoot, componentPath, exportName),
-      `island entry for export "${exportName}" of ${componentPath}`,
-    );
+  // Sorted by URL: Bun's cross-chunk export names follow entry order, and the order components
+  // finish rendering in is not the order a host that does not render sees them in.
+  const components = options.components
+    .map((component) => ({ ...component, url: urls.component(component.componentPath, component.exportName) }))
+    .sort((left, right) => compareStrings(left.url, right.url));
+  for (const { componentPath, exportName, url } of components) {
+    const label = options.label?.({ componentPath, exportName }) ?? `export "${exportName}" of ${componentPath}`;
+    addEntry(url, componentEntrySource(options.projectRoot, componentPath, exportName), `island entry for ${label}`);
   }
   for (const renderer of options.renderers) {
     if (renderer.clientEntrypoint === null) continue;
@@ -185,28 +284,30 @@ export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Pr
   if (urls.beforeHydration !== null && beforeHydration !== null) {
     addEntry(urls.beforeHydration, beforeHydration, "before-hydration scripts");
   }
-  if (entrypoints.length === 0) return;
+  if (entrypoints.length === 0) return [];
+  const virtualDir = path.join(options.projectRoot, VIRTUAL_DIR) + path.sep;
+  const inMemory = (file: string) => modules.has(file) || file.startsWith(virtualDir);
 
   const result = await Bun.build({
     entrypoints,
     root: options.projectRoot,
-    outdir: path.join(options.distDir, ASTRO_DIR),
     naming: { entry: "[name].[ext]" },
     splitting: true,
     format: "esm",
     target: "browser",
     minify: true,
+    metafile: true,
     // Bun inlines `development` otherwise, which ships React's dev build.
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     throw: false,
     plugins: [
+      ...(options.beforeRead === undefined ? [] : [readTracker(options.beforeRead, inMemory, options.compilers)]),
       inMemoryPlugin(options.projectRoot, modules, options.virtualModule, labels),
       preactPlugin(options.projectRoot),
       frameworkCompilePlugin({
         compilers: options.compilers,
         target: "client",
         loadedByRuntime: false,
-        // The server render already put a hydrated component's CSS on the page; client:only is not covered yet.
         onCss() {},
       }),
     ],
@@ -214,8 +315,28 @@ export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Pr
   if (!result.success) {
     throw new Error(`Astro island bundling failed:\n${formatBuildLogs(result.logs, labels)}`);
   }
-  // The server render linked the CSS a hydrated component imports; client:only is not covered yet.
+  const metafile = result.metafile;
+  const files: AstroIslandFile[] = [];
   for (const output of result.outputs) {
-    if (output.path.endsWith(".css")) await fs.rm(output.path, { force: true });
+    if (output.path.endsWith(".css")) continue;
+    const url = prefix + output.path.replace(/^\.\//, "");
+    const inputs = Object.keys(metafile?.outputs[output.path]?.inputs ?? {})
+      .map((input) => path.resolve(input))
+      .filter((input) => !inMemory(input));
+    if (output.kind === "entry-point" || output.kind === "chunk") {
+      files.push({ kind: output.kind, url, code: await output.text(), inputs });
+    } else if (output.kind === "asset") {
+      const imports = assetImports(metafile, output.path);
+      files.push({
+        kind: "asset",
+        url,
+        bytes: new Uint8Array(await output.arrayBuffer()),
+        inputs: [...new Set(imports.map((imported) => imported.source))],
+        importers: [...new Set(imports.map((imported) => imported.importer))].filter((importer) => !inMemory(importer)),
+      });
+    } else {
+      throw new Error(`Astro island bundling wrote ${output.path}, a ${output.kind}, which it does not emit`);
+    }
   }
+  return files;
 }

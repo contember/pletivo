@@ -48,7 +48,8 @@ Checked on 2026-11-17:
 - a production site that serves `/_astro/*` as `immutable` builds with Astro.
 
 Either one changing would make the risk real. Until this is fixed, the README
-tells hosts to serve every `/_astro/*.js` except `chunk-<hash>.js` with `no-cache`. A CDN purge alone
+tells hosts to serve every `/_astro/*.js` except `chunk-<hash>.js` (`^chunk-[a-z0-9]{8}\.js$`,
+not `chunk-*`, which also matches an island named `chunk-…`) with `no-cache`. A CDN purge alone
 cannot evict a browser's `immutable` copy.
 
 ## Island `uid` follows the checkout's location, as in Astro

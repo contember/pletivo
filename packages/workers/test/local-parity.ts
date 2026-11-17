@@ -15,6 +15,9 @@ import { parsePreparedSite } from "@pletivo/core/artifact";
 import { minifyCss } from "../../pletivo/src/css-minify.ts";
 import { loadProjectArtifact } from "../src/artifact.ts";
 import { serveImage } from "../src/images.ts";
+import { attributeValue, htmlTags } from "../src/html-tags.ts";
+import { createProjectHost } from "../src/project-host.ts";
+import { createMapProjectStore } from "../src/project-store.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { ContentFiles, createProjectAssetsView } from "../src/content-files.ts";
 import { compileTailwind, extractCandidates } from "../src/tailwind.ts";
@@ -85,6 +88,8 @@ let pages = 0;
 let excepted = 0;
 const problems: string[] = [];
 const builtPathnames = new Set<string>();
+/** Every island client URL a rendered page named, checked through the host afterwards. */
+const islandUrls = new Set<string>();
 /** Every image URL the rendered pages linked to, checked against dist afterwards. */
 const linkedImages = new Set<string>();
 
@@ -235,6 +240,13 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   }
 
   for (const url of imageUrls(page.html)) linkedImages.add(url);
+  for (const tag of htmlTags(page.html)) {
+    if (tag.name !== "astro-island" || tag.closing) continue;
+    for (const attribute of ["component-url", "renderer-url"]) {
+      const url = attributeValue(tag, attribute);
+      if (url !== null) islandUrls.add(url);
+    }
+  }
 
   for (const asset of page.assets) {
     const built = path.join(outDir, asset.path.replace(/^\//, ""));
@@ -267,6 +279,56 @@ for (const url of [...linkedImages].sort()) {
   } else {
     console.log(`  = ${url} (${served.bytes.length} B)`);
   }
+}
+
+// An island that does not hydrate is worse than none: every module its page names, and every
+// module those import, must come from the host as JavaScript. The build wrote its own at the same
+// URLs; whether the bytes agree depends on the set of entries each bundled (docs/todos/027).
+if (islandUrls.size > 0) {
+  const host = createProjectHost({
+    store: createMapProjectStore(files, assetView),
+    artifact: siteFromPrepareOutput(preparedOutput),
+    loader,
+    compiler,
+    pagesDir,
+    content,
+    executionNamespace,
+    tailwind: await tailwindStylesheets(),
+  });
+  const scanner = new Bun.Transpiler({ loader: "js" });
+  const queue = [...islandUrls].sort();
+  const served = new Set<string>(queue);
+  let identicalModules = 0;
+  const differing: string[] = [];
+  const problemsBefore = problems.length;
+  for (let url = queue.shift(); url !== undefined; url = queue.shift()) {
+    const response = await host.fetch(new Request(`http://localhost${url}`));
+    const type = response.headers.get("content-type") ?? "";
+    const code = await response.text();
+    if (!response.ok || !type.startsWith("text/javascript")) {
+      problems.push(`  ! ${url} — an island loads it and the host answers ${response.status} ${type}`);
+      continue;
+    }
+    for (const { path: specifier } of scanner.scanImports(code)) {
+      if (!specifier.startsWith("./")) {
+        problems.push(`  ! ${url} imports ${JSON.stringify(specifier)}, which no island module is`);
+        continue;
+      }
+      const target = new URL(specifier, `http://localhost${url}`).pathname;
+      if (!served.has(target)) {
+        served.add(target);
+        queue.push(target);
+      }
+    }
+    const built = await Bun.file(path.join(outDir, url.replace(/^\//, ""))).text().catch(() => null);
+    if (built === code) identicalModules++;
+    else differing.push(`${url}${built === null ? " (the build wrote no such file)" : ""}`);
+  }
+  if (problems.length === problemsBefore) {
+    console.log(`  = ${served.size} island module(s) served as JavaScript, every import among them`);
+  }
+  console.log(`  = ${identicalModules}/${served.size} island module(s) byte-identical to pletivo build`);
+  for (const url of differing) console.log(`  ~ ${url} differs from pletivo build`);
 }
 
 // The other half of the dynamic-route API, against the only reference it has: the

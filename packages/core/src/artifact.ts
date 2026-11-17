@@ -211,6 +211,36 @@ export interface ArtifactIslandScripts {
   directives: { [directive: string]: string };
 }
 
+/**
+ * A module of the islands' client bundle, built at prepare as `pletivo build` builds it: one per
+ * component export an `.astro` source hydrates, one per renderer client entrypoint, and the chunks
+ * they share. The host serves `source` at `url`.
+ */
+export interface ArtifactIslandClient {
+  /** `/_astro/<file>.js`: an island's `component-url` or `renderer-url`, or a chunk those import. */
+  url: string;
+  source: string;
+  /** Bun named it by its content, so it never changes under its URL; every other module is named by its path. */
+  chunk: boolean;
+  /**
+   * The `url`s of the client modules it imports, each one of `ArtifactIslands.clients`. Prepare
+   * derives the list from `source`; the parser checks the list, not the code.
+   */
+  imports: string[];
+  /** Project-root-relative files whose code it holds: what Tailwind scans for an island that loads it. */
+  sources: string[];
+}
+
+/** Where island client modules are served; `pletivo prepare` refuses any base but `/`. */
+export const ISLAND_CLIENT_URL_PREFIX = "/_astro/";
+
+const ISLAND_CLIENT_FILE = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.js$/;
+
+/** A URL the artifact may carry a client module at: `/_astro/` and one file name, not starting with `.`. */
+export function isIslandClientUrl(url: string): boolean {
+  return url.startsWith(ISLAND_CLIENT_URL_PREFIX) && ISLAND_CLIENT_FILE.test(url.slice(ISLAND_CLIENT_URL_PREFIX.length));
+}
+
 /** Framework components rendered through the project's renderers. See `ISLANDS_BUNDLE_MODULE_PREFIX`. */
 export interface ArtifactIslands {
   /**
@@ -222,6 +252,7 @@ export interface ArtifactIslands {
   scripts: ArtifactIslandScripts;
   components: ArtifactIslandComponent[];
   stylesheets: ArtifactIslandStylesheet[];
+  clients: ArtifactIslandClient[];
 }
 
 /** The complete executable graph produced by `pletivo prepare`. */
@@ -402,7 +433,7 @@ export function serializePreparedSite(value: unknown): string {
 function parseIslands(value: unknown, modules: readonly ArtifactModule[]): ArtifactIslands {
   const at = "$.artifact.islands";
   const islands = requireObject(value, at, "an object");
-  assertExactFields(islands, ["projectRoot", "renderers", "scripts", "components", "stylesheets"], at);
+  assertExactFields(islands, ["projectRoot", "renderers", "scripts", "components", "stylesheets", "clients"], at);
   const bundleModules = new Set(
     modules.filter((module) => module.id.startsWith(ISLANDS_BUNDLE_MODULE_PREFIX)).map((module) => module.id),
   );
@@ -478,7 +509,55 @@ function parseIslands(value: unknown, modules: readonly ArtifactModule[]): Artif
     if (typeof source !== "string") throw new ArtifactFormatError(`${path}.source`, "expected a string");
     return { file: projectFile(stylesheet, path, ".css"), source };
   });
-  return { projectRoot, renderers, scripts: { island, directives }, components, stylesheets };
+  return { projectRoot, renderers, scripts: { island, directives }, components, stylesheets, clients: parseIslandClients(islands, at) };
+}
+
+function parseIslandClients(islands: object, at: string): ArtifactIslandClient[] {
+  const clientsAt = `${at}.clients`;
+  const value = requiredField(islands, "clients", at);
+  if (!Array.isArray(value)) throw new ArtifactFormatError(clientsAt, "expected an array");
+  const urls = new Set<string>();
+  const stringList = (entry: object, field: string, path: string): [string, string][] => {
+    const list = requiredField(entry, field, path);
+    if (!Array.isArray(list)) throw new ArtifactFormatError(`${path}.${field}`, "expected an array");
+    const seen = new Set<string>();
+    return arrayEntries(list, `${path}.${field}`).map(([item, itemPath]): [string, string] => {
+      const text = requireNonEmptyString(item, itemPath);
+      if (seen.has(text)) throw new ArtifactFormatError(itemPath, `duplicate ${JSON.stringify(text)}`);
+      seen.add(text);
+      return [text, itemPath];
+    });
+  };
+  const parsed = arrayEntries(value, clientsAt).map(([entry, path]) => {
+    const client = requireObject(entry, path, "an object");
+    assertExactFields(client, ["url", "source", "chunk", "imports", "sources"], path);
+    const url = requireNonEmptyString(requiredField(client, "url", path), `${path}.url`);
+    if (!isIslandClientUrl(url)) {
+      throw new ArtifactFormatError(`${path}.url`, `expected ${ISLAND_CLIENT_URL_PREFIX}<file>.js`);
+    }
+    if (urls.has(url)) throw new ArtifactFormatError(`${path}.url`, `duplicate client module ${JSON.stringify(url)}`);
+    urls.add(url);
+    const source = requiredField(client, "source", path);
+    if (typeof source !== "string") throw new ArtifactFormatError(`${path}.source`, "expected a string");
+    const chunk = requiredField(client, "chunk", path);
+    if (typeof chunk !== "boolean") throw new ArtifactFormatError(`${path}.chunk`, "expected a boolean");
+    const sources = stringList(client, "sources", path).map(([file, filePath]) => {
+      if (!isProjectRelativePath(file)) throw new ArtifactFormatError(filePath, 'expected a "/"-separated project-relative path');
+      return file;
+    });
+    return { url, source, chunk, imports: stringList(client, "imports", path), sources };
+  });
+  // After every url is known: the listed imports must close, or a browser meets a 404 mid-hydration.
+  return parsed.map(({ url, source, chunk, imports, sources }) => ({
+    url,
+    source,
+    chunk,
+    imports: imports.map(([target, targetPath]) => {
+      if (!urls.has(target)) throw new ArtifactFormatError(targetPath, `imports ${JSON.stringify(target)}, which is not a client module`);
+      return target;
+    }),
+    sources,
+  }));
 }
 
 /** Each entry of a dense array with its path. */
@@ -958,6 +1037,15 @@ function canonicalIslands(islands: ArtifactIslands): ArtifactIslands {
     stylesheets: [...islands.stylesheets]
       .sort((left, right) => compareStrings(left.file, right.file))
       .map((stylesheet) => ({ file: stylesheet.file, source: stylesheet.source })),
+    clients: [...islands.clients]
+      .sort((left, right) => compareStrings(left.url, right.url))
+      .map((client) => ({
+        url: client.url,
+        source: client.source,
+        chunk: client.chunk,
+        imports: [...client.imports].sort(compareStrings),
+        sources: [...client.sources].sort(compareStrings),
+      })),
   };
 }
 

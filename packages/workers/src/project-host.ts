@@ -35,6 +35,7 @@ import {
 } from "./browser-modules.ts";
 import { attributeSpan, htmlTags } from "./html-tags.ts";
 import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
+import { islandClientResponse } from "./island-clients.ts";
 import { publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
@@ -135,8 +136,9 @@ export interface RenderEvent {
 export interface ProjectHost {
   /**
    * Serve one request, first match wins: a generated asset, a processed script and what
-   * it imports, a `public/` file, an image output, then a rendered page. Throws nothing:
-   * failures become status codes. Call `render()` to handle them yourself.
+   * it imports, an island's client module, a `public/` file, an image output, then a
+   * rendered page. Throws nothing: failures become status codes. Call `render()` to
+   * handle them yourself.
    */
   fetch(request: Request): Promise<Response>;
   /** Render one pathname, failures and all. */
@@ -419,6 +421,9 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
 
         return await withSnapshot(async (snapshot) => {
           if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url, snapshot);
+
+          const islandClient = islandClientResponse(request, url.pathname, artifactOf(snapshot)?.islands ?? null);
+          if (islandClient !== null) return islandClient;
 
           // Before routing, as Astro's dev server does: a public file shadows a page.
           const publicFile = publicFileResponse(request, url.pathname, snapshot, projectRoot(renderOptions));
