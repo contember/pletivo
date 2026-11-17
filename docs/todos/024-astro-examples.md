@@ -34,14 +34,18 @@ may disagree on:
 - scope-id hash values, as ordinals, so the element ↔ selector link still counts;
 - page CSS, compared on meaning (`css.ts`): a linked bundled stylesheet is read in
   where it is linked, every bare `<style>` is taken out of the markup, and the page's
-  CSS is compared as one sheet after it. CSS left in the markup (an external or
-  `media=` link, a `<style>` with attributes) leaves a barrier in the sheet, so the
-  order against it still counts; a `<style>` in a comment, `<script>`, `<template>`,
-  `<noscript>` or other text content is not page CSS. Each sheet first goes through
-  the esbuild Astro's Vite minified with, comments dropped. Then:
+  CSS is compared as one sheet after it. Only a link with `rel="stylesheet"` alone, no
+  `media`, `title`, `disabled` or non-CSS `type`, whose sheet has no relative `url()` or
+  `@import`, is read in. CSS left in the markup (any other stylesheet or `preload
+  as=style` link, one that cannot be read, a `<style>` with attributes) leaves a
+  barrier in the sheet, so the order against it still counts. A `<style>` in a
+  comment, an attribute value, `<script>`, `<template>`, `<noscript>` or other text
+  content is not page CSS. Each sheet first goes through the esbuild Astro's Vite
+  minified with, comments dropped. The parser reads a rule list as a browser does:
+  `x;b{…}` is one invalid rule, kept in place. Then:
   - declarations, and rules, may change places only with a neighbour they cannot
     tie with: a different property family (a shorthand shares one with its
-    longhands; `place-*`, `inset`, `page-break`, `gap` and `grid-*-gap`, `columns`,
+    longhands; `place-*`, `inset`, `page-break`, `gap` and `grid-*-gap`, `columns` and `column-break-*`,
     `font`/`line-height`, logical sizes, `white-space`, `word-wrap` and
     `color-adjust` are linked by a short table), scope (style rules, or the
     descriptors of one `@font-face` / `@keyframes x` / `@property --x` …), importance,
@@ -52,7 +56,9 @@ may disagree on:
   - values: whitespace next to `,` and after `)` (not before an operator), a custom
     property's surrounding whitespace, a quoted `format()` keyword, and Bun's
     `system-ui` fallback stack;
-  - every rule is kept, so a rule on one side only is still a difference.
+  - every rule is kept, so a rule on one side only is still a difference;
+  - not caught: an `@import` that is not at the start of its sheet, as merging the
+    sheets hides where each began (neither bundler emits one).
   Bun's other lowerings (`hsla()` to hex, `margin-inline` into longhands) are not
   erased;
 - a trailing `/` on a void element's start tag (`<meta charset="utf-8"/>`):

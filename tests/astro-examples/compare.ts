@@ -80,29 +80,103 @@ const HASHED_URL =
 /** A bundled file's text by its URL path (`/_astro/x.css`), or null when this side has none. */
 export type BundleReader = (urlPath: string) => string | null;
 
-/**
- * Where page CSS can come from, in document order: a `<link>`, a bare `<style>` (Astro and
- * pletivo write page CSS without attributes), any other `<style>`. Comments and elements
- * whose content is inert or text (group 1) are matched whole, so nothing in them is.
- */
-const PAGE_CSS_SOURCES =
-  /<!--[\s\S]*?-->|<(script|template|noscript|textarea|title)\b[^>]*>[\s\S]*?<\/\1\s*>|(<link\b[^>]*>)|<style>([\s\S]*?)<\/style>|(<style\b[^>]*>[\s\S]*?<\/style>)/gi;
+/** A comment, or a start or end tag with its attributes (a quoted value may hold `<` and `>`). */
+const TAG = /<!--[\s\S]*?-->|<(\/?)([a-zA-Z][\w-]*)((?:\s*[^\s=>/"']+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*\/?>/g;
+/** Elements whose content is text up to their end tag. */
+const TEXT_CONTENT = new Set(["script", "style", "textarea", "title"]);
+/** Elements whose content is markup whose CSS does not apply to the page (scripting on). */
+const INERT = new Set(["template", "noscript"]);
 
 /** Stands for CSS left in the markup, so page CSS keeps its order against it. */
 const PINNED_CSS = "@pinned-in-markup;";
 
+/** A `url()` or `@import` target resolved against the sheet's own URL: inlining would change it. */
+const RELATIVE_REFERENCE = /url\(\s*(['"]?)(?![/#]|data:|[a-z][\w+.-]*:)[^)'"\s]|@import\s*(['"])(?!\/|[a-z][\w+.-]*:)/i;
+
 function linkAttribute(tag: string, name: string): string | undefined {
-  const match = new RegExp(`\\s${name}=(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
+  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
   return match?.[1] ?? match?.[2] ?? match?.[3];
 }
 
-/** A stylesheet `<link>` the page loads unconditionally, to a bundled sheet: its URL path. */
-function inlinableSheetPath(tag: string, isBundle: BundleRule): string | null {
-  if (linkAttribute(tag, "media") !== undefined || /\sdisabled(?=[\s=/>])/i.test(tag)) return null;
+/**
+ * What a `<link>` is to page CSS: nothing, a plain stylesheet the page loads unconditionally
+ * (`rel="stylesheet"` alone, CSS type, no `media`, `title` or `disabled`), or another one.
+ */
+function linkKind(tag: string): "none" | "plain" | "other" {
+  const rel = (linkAttribute(tag, "rel") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const preloadsStyle = rel.includes("preload") && linkAttribute(tag, "as")?.toLowerCase() === "style";
+  if (!rel.includes("stylesheet") && !preloadsStyle) return "none";
+  const type = linkAttribute(tag, "type")?.toLowerCase();
+  const plain =
+    rel.length === 1 &&
+    (type === undefined || type === "text/css") &&
+    linkAttribute(tag, "media") === undefined &&
+    linkAttribute(tag, "title") === undefined &&
+    !/\sdisabled(?=[\s=/>])/i.test(tag);
+  return plain ? "plain" : "other";
+}
+
+function bundledSheetPath(tag: string, isBundle: BundleRule): string | null {
   const url = linkAttribute(tag, "href");
   if (!url?.startsWith("/")) return null;
   const dir = /^\/(_astro|_islands|assets)\/.*\.css$/.exec(url)?.[1];
   return dir !== undefined && isBundle(dir, "css") ? url : null;
+}
+
+/**
+ * Takes the page's CSS out of the markup in document order: every bare `<style>` (Astro and
+ * pletivo write page CSS without attributes) and every plain link to a bundled sheet whose text
+ * can be read. CSS that stays in the markup (any other stylesheet link or `<style>`) is a null
+ * entry, so page CSS keeps its order against it. CSS inside `<template>` or `<noscript>` does
+ * not apply, and nothing inside a comment or text element is a tag.
+ */
+function takePageCss(html: string, isBundle: BundleRule, readBundle: BundleReader): { text: string; sheets: Array<string | null> } {
+  const lower = html.toLowerCase();
+  const sheets: Array<string | null> = [];
+  let text = "";
+  let copied = 0;
+  let inert = 0;
+  const regex = new RegExp(TAG.source, "g");
+  for (let match = regex.exec(html); match !== null; match = regex.exec(html)) {
+    const [tag, close, rawName, attributes] = match;
+    if (rawName === undefined) continue;
+    const name = rawName.toLowerCase();
+    if (INERT.has(name)) {
+      inert = Math.max(0, inert + (close === "/" ? -1 : 1));
+      continue;
+    }
+    if (close === "/") continue;
+    if (TEXT_CONTENT.has(name)) {
+      const endTag = lower.indexOf(`</${name}`, regex.lastIndex);
+      const contentEnd = endTag === -1 ? html.length : endTag;
+      const endTagClose = endTag === -1 ? -1 : lower.indexOf(">", endTag);
+      const closeEnd = endTagClose === -1 ? html.length : endTagClose + 1;
+      if (name === "style" && inert === 0) {
+        if ((attributes ?? "").trim() === "") {
+          sheets.push(html.slice(regex.lastIndex, contentEnd));
+          text += html.slice(copied, match.index);
+          copied = closeEnd;
+        } else {
+          sheets.push(null);
+        }
+      }
+      regex.lastIndex = closeEnd;
+      continue;
+    }
+    if (name !== "link" || inert > 0) continue;
+    const kind = linkKind(tag);
+    if (kind === "none") continue;
+    const url = kind === "plain" ? bundledSheetPath(tag, isBundle) : null;
+    const css = url === null ? null : readBundle(url);
+    if (css === null || RELATIVE_REFERENCE.test(css)) {
+      sheets.push(null);
+      continue;
+    }
+    sheets.push(css);
+    text += html.slice(copied, match.index);
+    copied = regex.lastIndex;
+  }
+  return { text: text + html.slice(copied), sheets };
 }
 
 export function createHtmlNormalizer(
@@ -131,22 +205,9 @@ export function createHtmlNormalizer(
     // threshold) do not change the cascade. CSS that stays in the markup leaves a barrier
     // in its place. Taken out first, so the ordinals below number the markup's values
     // before the CSS's, whose rule order differs.
-    const sheets: Array<string | null> = [];
-    text = text.replace(PAGE_CSS_SOURCES, (match, _inert: string | undefined, link: string | undefined, css: string | undefined, kept: string | undefined) => {
-      if (css !== undefined) {
-        sheets.push(css);
-        return "";
-      }
-      if (link !== undefined) {
-        if (linkAttribute(link, "rel")?.toLowerCase() !== "stylesheet") return link;
-        const url = inlinableSheetPath(link, isBundle);
-        const bundled = url === null ? null : readBundle(url);
-        sheets.push(bundled);
-        return bundled === null ? link : "";
-      }
-      if (kept !== undefined) sheets.push(null);
-      return match;
-    });
+    const taken = takePageCss(text, isBundle, readBundle);
+    text = taken.text;
+    const sheets = taken.sheets;
     // Names the tool that built the page.
     text = text.replace(/(<meta name="generator" content=")[^"]*"/g, '$1[generator]"');
     const numberValues = (part: string): string =>

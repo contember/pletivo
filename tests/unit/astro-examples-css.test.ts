@@ -138,6 +138,22 @@ describe("canonicalPageCss: what it keeps", () => {
     differ(["a{color:red}}b{color:blue}"], ["a{color:red}b{color:blue}"]);
   });
 
+  test("the place of a rule a browser drops after a stray `;` in a rule list", () => {
+    differ(["foo;b{color:blue}c{margin:0}"], ["b{color:blue}foo;c{margin:0}"]);
+    differ(["a{color:red}};b{color:blue}c{margin:0}"], ["a{color:red}b{color:blue}};c{margin:0}"]);
+    differ(["@media (x){foo;b{color:blue}c{margin:0}}"], ["@media (x){b{color:blue}foo;c{margin:0}}"]);
+  });
+
+  test("the order of descriptor blocks named in another case, and of @page blocks", () => {
+    differ(["@font-face{font-family:x;src:url(a)}@FONT-FACE{font-family:x;src:url(b)}"], ["@FONT-FACE{font-family:x;src:url(b)}@font-face{font-family:x;src:url(a)}"]);
+    differ(["@page :first{margin:1in}@page :blank{margin:2in}"], ["@page :blank{margin:2in}@page :first{margin:1in}"]);
+  });
+
+  test("the order around :is() with a pseudo-element, and of column-break aliases", () => {
+    differ([":is(.a,#b::before){color:red}.c{color:blue}"], [".c{color:blue}:is(.a,#b::before){color:red}"]);
+    differ(["a{break-before:page;-webkit-column-break-before:auto}"], ["a{-webkit-column-break-before:auto;break-before:page}"]);
+  });
+
   test("a different value", () => {
     differ(["a{color:red}"], ["a{color:blue}"]);
     differ(["html{font-family:system-ui}"], ["html{font-family:system-ui,sans-serif}"]);
@@ -171,6 +187,11 @@ describe("selectorListSpecificity", () => {
 describe("normalizeValue and propertyFamilies", () => {
   test("keeps strings as written", () => {
     expect(normalizeValue("content", '" , "')).toBe('" , "');
+  });
+
+  test("keeps whitespace after an escaped character", () => {
+    expect(normalizeValue("font-family", "Foo\\) Bar")).toBe("Foo\\) Bar");
+    expect(normalizeValue("font-family", "a\\, b")).toBe("a\\, b");
   });
 
   test("keeps whitespace before an operator after a parenthesis", () => {
@@ -211,6 +232,33 @@ describe("the page normaliser", () => {
     for (const [open, close] of [["<template>", "</template>"], ["<!--", "-->"], ['<script>s="', '"</script>']]) {
       expect(await normalize(`${open}${style}${close}`)).not.toBe(await normalize(`${open}${close}${style}`));
     }
+  });
+
+  test("keeps the order against a stylesheet link in any spelling", async () => {
+    const normalize = createHtmlNormalizer(css, astroBundle, () => "a{color:red}");
+    const page = "<style>.x{color:red}</style>";
+    for (const link of [
+      '<link rel="stylesheet preload" href="https://fonts.example/x.css">',
+      `<link rel="preload" as="style" onload="this.rel='stylesheet'" href="https://fonts.example/x.css">`,
+      '<link rel="stylesheet" type="text/plain" href="/_astro/x.Ab12Cd34.css">',
+      '<link rel="stylesheet" title="alt" href="/_astro/x.Ab12Cd34.css">',
+    ]) {
+      expect(await normalize(link + page)).not.toBe(await normalize(page + link));
+    }
+  });
+
+  test("keeps a sheet linked when it has a relative reference", async () => {
+    const normalize = createHtmlNormalizer(css, astroBundle, () => ".a{background:url(f.png)}");
+    const linked = await normalize('<link rel="stylesheet" href="/_astro/r.Ab12Cd34.css">');
+    expect(linked).toContain("<link");
+    expect(linked).not.toBe(await normalize("<style>.a{background:url(f.png)}</style>"));
+  });
+
+  test("leaves a <style> in a nested template or an attribute value", async () => {
+    const normalize = createHtmlNormalizer(css, pletivoBundle, () => null);
+    const style = "<style>.x{color:red}</style>";
+    expect(await normalize(`<template><template></template>${style}</template>`)).not.toBe(await normalize(`<template><template></template></template>${style}`));
+    expect(await normalize(`<div title="${style}"></div>`)).not.toBe(await normalize(`<div title=""></div>${style}`));
   });
 
   test("does not read in a disabled link", async () => {

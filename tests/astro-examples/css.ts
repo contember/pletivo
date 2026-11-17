@@ -27,18 +27,23 @@
  * the full multiset of rules, only reordered.
  */
 
-/** A declaration, or a block: `prelude{…}`. */
+/** A declaration, a block (`prelude{…}`), or text a rule list cannot read as a rule. */
 type CssNode =
   | { kind: "declaration"; property: string; value: string }
-  | { kind: "block"; prelude: string; children: CssNode[] };
+  | { kind: "block"; prelude: string; children: CssNode[] }
+  | { kind: "invalid"; text: string };
 
-/** Parse minified, comment-free CSS: blocks nest, declarations end at `;` or `}`; strings and `(…)` are opaque. */
+/**
+ * Parse minified, comment-free CSS; strings and `(…)` are opaque. In a list of rules (the top
+ * level, or a group at-rule outside a style rule) only an at-rule ends at `;`: other text runs
+ * to `{`, as in a browser, so `x;b{…}` is one invalid rule. In a list of declarations, `;` ends one.
+ */
 export function parseCss(css: string): CssNode[] {
   let at = 0;
-  const parseList = (nested: boolean): CssNode[] => {
+  const parseList = (nested: boolean, rules: boolean, inStyle: boolean): CssNode[] => {
     const nodes: CssNode[] = [];
     while (at < css.length) {
-      while (at < css.length && (css[at] === ";" || /\s/.test(css.charAt(at)))) at++;
+      while (at < css.length && ((!rules && css[at] === ";") || /\s/.test(css.charAt(at)))) at++;
       if (at >= css.length) break;
       const start = at;
       if (css[at] === "}") {
@@ -46,12 +51,19 @@ export function parseCss(css: string): CssNode[] {
         if (nested) return nodes;
         // A stray `}` at the top level is kept as text of the next rule, which it invalidates.
       }
-      const stop = scanTo(css, at, "{;}");
+      const atRule = css[start] === "@";
+      const stop = scanTo(css, at, !rules || atRule ? "{;}" : nested ? "{}" : "{");
       const text = css.slice(start, stop).trim();
       at = stop;
       if (css[at] === "{") {
         at++;
-        nodes.push({ kind: "block", prelude: text, children: parseList(true) });
+        const descriptors = atRule && DESCRIPTORS.test(text);
+        const childRules = atRule && !descriptors && !inStyle;
+        nodes.push({ kind: "block", prelude: text, children: parseList(true, childRules, inStyle || !atRule) });
+        continue;
+      }
+      if (rules && !atRule) {
+        nodes.push({ kind: "invalid", text });
         continue;
       }
       if (css[at] === ";") at++;
@@ -64,7 +76,7 @@ export function parseCss(css: string): CssNode[] {
     }
     return nodes;
   };
-  return parseList(false);
+  return parseList(false, true, false);
 }
 
 /** The index of the first of `stops` at nesting depth 0 outside strings, or the end. */
@@ -118,6 +130,9 @@ const SHORTHAND_FAMILIES: Record<string, string[]> = {
   "grid-row-gap": ["row"],
   "grid-column-gap": ["column"],
   "color-adjust": ["print"],
+  "column-break-before": ["break"],
+  "column-break-after": ["break"],
+  "column-break-inside": ["break"],
   columns: ["column"],
   "inline-size": ["width", "height"],
   "block-size": ["width", "height"],
@@ -146,8 +161,16 @@ const FORMAT_STRING = /format\((["'])(woff2?|truetype|opentype|embedded-opentype
 export function normalizeValue(property: string, value: string): string {
   const name = property.toLowerCase();
   let out = "";
+  // Where the last escape ended: an escaped `,` or `)` is a name character, not a separator.
+  let escapedEnd = -1;
   for (let i = 0; i < value.length; i++) {
     const c = value.charAt(i);
+    if (c === "\\") {
+      out += value.slice(i, i + 2);
+      escapedEnd = out.length;
+      i++;
+      continue;
+    }
     if (c === '"' || c === "'") {
       const end = skipString(value, i);
       out += value.slice(i, end + 1);
@@ -158,7 +181,7 @@ export function normalizeValue(property: string, value: string): string {
       let j = i;
       while (j + 1 < value.length && /\s/.test(value.charAt(j + 1))) j++;
       const next = value[j + 1];
-      const prev = out[out.length - 1];
+      const prev = out.length === escapedEnd ? undefined : out[out.length - 1];
       const dropped = next === "," || prev === "," || (prev === ")" && next !== undefined && !"+-*/".includes(next));
       if (!dropped) out += " ";
       i = j;
@@ -191,7 +214,7 @@ interface Atom {
 interface Canonical {
   text: string;
   atoms: Atom[];
-  /** `@layer` and statement at-rules order the cascade themselves: they keep their place. */
+  /** `@layer`, statement and unknown at-rules, invalid rules, and what holds one keep their place. */
   barrier: boolean;
 }
 
@@ -208,7 +231,14 @@ const CONDITIONAL = /^@(media|supports|container|document|-moz-document)\b/i;
 const DESCRIPTORS =
   /^@(font-face|(-webkit-|-moz-|-o-)?keyframes|property|counter-style|page|font-palette-values|font-feature-values|position-try|view-transition)\b/i;
 
+/** A descriptor block's scope: its prelude with the at-keyword lowercased; every `@page` is one. */
+function descriptorScope(prelude: string): string {
+  if (/^@page\b/i.test(prelude)) return "@page";
+  return prelude.replace(/^@[\w-]+/, (keyword) => keyword.toLowerCase());
+}
+
 function canonicalNode(node: CssNode, context: Context): Canonical {
+  if (node.kind === "invalid") return { text: node.text, atoms: [], barrier: true };
   if (node.kind === "declaration") {
     const verbatim = node.property.startsWith("--") || node.property.startsWith("@");
     const text = `${verbatim ? node.property : node.property.toLowerCase()}:${normalizeValue(node.property, node.value)}`;
@@ -223,7 +253,7 @@ function canonicalNode(node: CssNode, context: Context): Canonical {
   const descriptors = node.prelude.startsWith("@") && DESCRIPTORS.test(node.prelude);
   let inner: Context;
   if (descriptors) {
-    inner = { scope: node.prelude, specificity: new Set(["-"]) };
+    inner = { scope: descriptorScope(node.prelude), specificity: new Set(["-"]) };
   } else if (node.prelude.startsWith("@")) {
     // Any other at-rule (`@scope`, `@starting-style`, unknown ones) is a barrier below; its rules tie with all.
     inner = CONDITIONAL.test(node.prelude) || /^@layer\b/i.test(node.prelude) ? context : { scope: context.scope, specificity: null };
@@ -239,7 +269,7 @@ function canonicalNode(node: CssNode, context: Context): Canonical {
   return {
     text: `${node.prelude}{${canonicalOrder(children).join(";")}}`,
     // The later of two same-named descriptor blocks wins as a whole, whatever they set.
-    atoms: descriptors ? [{ families: new Set([ALL]), scope: node.prelude, important: false, specificity: null }] : children.flatMap((child) => child.atoms),
+    atoms: descriptors ? [{ families: new Set([ALL]), scope: descriptorScope(node.prelude), important: false, specificity: null }] : children.flatMap((child) => child.atoms),
     barrier: opaque || children.some((child) => child.barrier),
   };
 }
@@ -309,6 +339,8 @@ function selectorSpecificity(selector: string): Specificity | null {
         if (name === "where") {
           // Zero, whatever its arguments.
         } else if (name === "is" || name === "not" || name === "has" || name === "matches") {
+          // A forgiving list drops an argument with a pseudo-element; the score would count it.
+          if (/::|:(before|after|first-line|first-letter)\b/i.test(args)) return null;
           let max: Specificity = [0, 0, 0];
           for (const part of splitTopLevel(args, ",")) {
             const score = selectorSpecificity(part.trim());
