@@ -31,8 +31,14 @@ export const collections = { posts: defineCollection({}) };
   "app/pages/index.astro": `---
 import { getCollection } from "astro:content";
 const posts = await getCollection("posts");
+let missing = "";
+try {
+  await getCollection("missing");
+} catch (error) {
+  missing = error.message;
+}
 ---
-<html><body><ul>{posts.map((post) => <li>{post.data.title}</li>)}</ul></body></html>
+<html><body><ul>{posts.map((post) => <li>{post.data.title}</li>)}</ul><p id="missing">{missing}</p></body></html>
 `,
 };
 
@@ -65,6 +71,11 @@ describe("srcDir app/ with a content collection", () => {
     const html = await Bun.file(path.join(root, "dist/index.html")).text();
     expect(html).toContain("<li>First post</li><li>Second post</li>");
     expect(html).not.toContain("Stray post");
+  });
+
+  test("a missing collection's error names the content config under app/", async () => {
+    const html = await Bun.file(path.join(root, "dist/index.html")).text();
+    expect(html).toContain("Define it in app/content.config.ts or app/content/config.ts");
   });
 
   test("integrations see route components under app/pages", async () => {
