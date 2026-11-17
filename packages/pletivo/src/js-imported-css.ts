@@ -3,7 +3,6 @@ import { existsSync } from "fs";
 import fs from "fs/promises";
 import type { BunPlugin } from "bun";
 import { cssAssetBunPlugin, rewriteConfiguredCssAssetUrls, stripCssAssetPlaceholders } from "./css-assets";
-import type { CachedCssRef } from "./incremental/cache";
 
 type BuildCssOutput = {
   path: string;
@@ -239,12 +238,18 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
   };
 }
 
+/** A stylesheet `dynamicCssOf` found, with its text when it exists only in memory. */
+export interface DynamicCssRef {
+  file: string;
+  css?: string;
+}
+
 /**
  * Stylesheets reached from `deps` but not through `page`'s static imports: the CSS of
  * modules the page's render imported dynamically. A page restored from the incremental
  * cache is not rendered, so those modules do not load; `restoreDynamicCss` keeps their CSS.
  */
-export function dynamicCssOf(page: string, deps: Iterable<string>): CachedCssRef[] {
+export function dynamicCssOf(page: string, deps: Iterable<string>): DynamicCssRef[] {
   const visited = new Set<string>();
   walkCssGraph(path.resolve(page), visited, () => {});
   const files = new Set<string>();
@@ -255,13 +260,28 @@ export function dynamicCssOf(page: string, deps: Iterable<string>): CachedCssRef
   });
 }
 
-/** Bring back the stylesheets `dynamicCssOf` recorded for a page that is not rendered this build. */
-export function restoreDynamicCss(key: string, refs: readonly CachedCssRef[]): void {
-  for (const ref of refs) {
-    // A component compiled this build has the current text already.
-    if (ref.css !== undefined && !virtualCss.has(ref.file)) setVirtualCss(ref.file, ref.css);
+/**
+ * Bring back the stylesheets `dynamicCssOf` recorded for a page that is not rendered this
+ * build. `storedCss` gives the recorded text of an in-memory one.
+ */
+export function restoreDynamicCss(
+  key: string,
+  files: readonly string[],
+  storedCss: (file: string) => string | undefined,
+): void {
+  const restored: string[] = [];
+  for (const file of files) {
+    const css = storedCss(file);
+    if (css === undefined) {
+      // Deleted since, through an edge the dependency graph does not see: nothing left to ship.
+      if (!virtualCss.has(file) && !existsSync(file)) continue;
+    } else if (!virtualCss.has(file)) {
+      // A component compiled this build has the current text already.
+      setVirtualCss(file, css);
+    }
+    restored.push(file);
   }
-  restoredDynamicCss.set(key, refs.map((ref) => ref.file));
+  restoredDynamicCss.set(key, restored);
 }
 
 function walkCssGraph(

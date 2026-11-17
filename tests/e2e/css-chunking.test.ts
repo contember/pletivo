@@ -392,10 +392,10 @@ async function setupDynamicImport(layout: (typeof DYNAMIC_LAYOUTS)[number]): Pro
 /** What each page's cache entry kept, as project-relative paths. */
 async function cachedDynamicCss(): Promise<Record<string, string[]>> {
 	const raw = await fs.readFile(path.join(projectRoot, "node_modules/.pletivo/cache/cache.json"), "utf8");
-	const routes: Record<string, { dynamicCss: Array<{ file: string }> }> = JSON.parse(raw).routes;
+	const routes: Record<string, { dynamicCss: string[] }> = JSON.parse(raw).routes;
 	const out: Record<string, string[]> = {};
 	for (const [key, entry] of Object.entries(routes)) {
-		out[key] = entry.dynamicCss.map((ref) => path.relative(projectRoot, ref.file));
+		out[key] = entry.dynamicCss.map((file) => path.relative(projectRoot, file));
 	}
 	return out;
 }

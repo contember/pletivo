@@ -1,4 +1,3 @@
-export async function load(): Promise<string> {
-  await import("../components/Dyn.svelte");
-  return "loaded";
+export async function load() {
+  return (await import("../components/Dyn.svelte")).default;
 }

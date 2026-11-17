@@ -18,21 +18,14 @@ const { version: PLETIVO_VERSION } = require_("../../package.json") as { version
 // would leave its framework components out of the island bundles.
 // Bumped to 7: added per-route `cssHead`. Inlined stylesheets cannot be
 // found in cached HTML by a `<link>` pattern, so the written fragment is kept.
-// Bumped to 8: added per-route `dynamicCss`. A page cached by version 7 would
-// drop the CSS of modules its render imported dynamically.
+// Bumped to 8: added per-route `dynamicCss` and the cache-level `virtualCss`. A page
+// cached by version 7 would drop the CSS of modules its render imported dynamically.
 export const CACHE_SCHEMA_VERSION = 8;
 
 /** A framework component export an `<astro-island>` hydrates. */
 export interface CachedAstroIsland {
   componentPath: string;
   exportName: string;
-}
-
-/** A stylesheet a page's render reached through a module the page does not import statically. */
-export interface CachedCssRef {
-  file: string;
-  /** The text of a stylesheet that exists only in memory: a compiled framework component's `<style>`. */
-  css?: string;
 }
 
 /** The stylesheet markup `writeHtml` put before `</head>`, so a cached page's can be swapped. */
@@ -126,8 +119,9 @@ export interface RouteCacheEntry {
   /**
    * Stylesheets of modules the render imported dynamically. A cached page is
    * not rendered, so those modules do not load and their CSS is restored from here.
+   * One that exists only in memory has its text in `PletivoCache.virtualCss`.
    */
-  dynamicCss: CachedCssRef[];
+  dynamicCss: string[];
   /**
    * Byte size of the rendered HTML output. Cached so warm builds
    * don't have to stat every cached file just to print the total.
@@ -173,6 +167,8 @@ export interface PletivoCache {
   configHash: string;
   routes: Record<string, RouteCacheEntry>;
   dynamicRoutes: Record<string, DynamicRouteCacheEntry>;
+  /** A compiled framework component's `<style>` text, by its in-memory stylesheet path, once for every route listing it in `dynamicCss`. */
+  virtualCss: Record<string, string>;
 }
 
 /** Present while a build writes `dist/`; `persist()` removes it. */
@@ -204,6 +200,7 @@ export class CacheStore {
       configHash,
       routes: {},
       dynamicRoutes: {},
+      virtualCss: {},
     };
 
     const cachePath = path.join(dir, "cache.json");
@@ -224,6 +221,9 @@ export class CacheStore {
         // dynamicRoutes is optional in older caches; default to empty.
         if (!parsed.dynamicRoutes || typeof parsed.dynamicRoutes !== "object") {
           parsed.dynamicRoutes = {};
+        }
+        if (!parsed.virtualCss || typeof parsed.virtualCss !== "object") {
+          parsed.virtualCss = {};
         }
         return new CacheStore(dir, parsed);
       }
@@ -247,6 +247,7 @@ export class CacheStore {
       configHash,
       routes: {},
       dynamicRoutes: {},
+      virtualCss: {},
     });
   }
 
@@ -278,6 +279,23 @@ export class CacheStore {
         this.dirty = true;
       }
     }
+    const listed = new Set(Object.values(this.data.routes).flatMap((entry) => entry.dynamicCss));
+    for (const file of Object.keys(this.data.virtualCss)) {
+      if (!listed.has(file)) {
+        delete this.data.virtualCss[file];
+        this.dirty = true;
+      }
+    }
+  }
+
+  virtualCss(file: string): string | undefined {
+    return this.data.virtualCss[file];
+  }
+
+  setVirtualCss(file: string, css: string): void {
+    if (this.data.virtualCss[file] === css) return;
+    this.data.virtualCss[file] = css;
+    this.dirty = true;
   }
 
   getDynamicRoute(routeFile: string): DynamicRouteCacheEntry | undefined {

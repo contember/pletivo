@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { runWithRuntimeDepCapture } from "./dep-tracker";
 import { collectStaticDeps, isWalkableSourceFile } from "./import-graph";
-import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedCssRef, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
+import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
 
 /**
  * Loaded handle to @nuasite/astro-fragments — resolved once per build
@@ -281,11 +281,14 @@ export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: n
 	cache.setRoute(routeKey, { ...entry, size, cssHead });
 }
 
-/** Patch the stylesheets a rendered page reached through dynamic imports onto its cache entry. */
-export function recordDynamicCss(cache: CacheStore, routeKey: string, dynamicCss: CachedCssRef[]): void {
+/** Patch the stylesheets a rendered page reached through dynamic imports onto its cache entry; in-memory text is kept once per cache. */
+export function recordDynamicCss(cache: CacheStore, routeKey: string, refs: ReadonlyArray<{ file: string; css?: string }>): void {
 	const entry = cache.getRoute(routeKey);
 	if (!entry) return;
-	cache.setRoute(routeKey, { ...entry, dynamicCss });
+	for (const ref of refs) {
+		if (ref.css !== undefined) cache.setVirtualCss(ref.file, ref.css);
+	}
+	cache.setRoute(routeKey, { ...entry, dynamicCss: refs.map((ref) => ref.file) });
 }
 
 async function fileExists(p: string): Promise<boolean> {

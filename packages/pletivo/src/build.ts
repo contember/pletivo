@@ -38,7 +38,7 @@ import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-a
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, paramsToKey, type CachedAstroIsland, type CachedCssHead } from "./incremental/cache";
-import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
+import { configureImportGraph, configureImportGraphCompilers, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
 import { recordDynamicCss, recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
@@ -195,6 +195,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     beforeHydrationScripts: astroHost?.injectedBeforeHydrationScripts ?? [],
   });
   const scanAstroIslands = astroRenderers === null ? undefined : (html: string) => astroRenderers.componentsIn(html);
+  configureImportGraphCompilers(astroRenderers?.compilers ?? []);
   phase("plugins+astroHost", tPlugins);
   const tColl = performance.now();
   await initCollections(projectRoot);
@@ -1035,10 +1036,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const tCss = performance.now();
   // Before the plan: a cached page's dynamically imported modules did not load this build.
   if (cache) {
-    for (const result of results) {
+    for (const result of dedupedResults) {
       if (result.source !== "cached" || !result.routeKey) continue;
       const entry = cache.getRoute(result.routeKey);
-      if (entry) restoreDynamicCss(result.routeKey, entry.dynamicCss);
+      if (entry) restoreDynamicCss(result.routeKey, entry.dynamicCss, (file) => cache.virtualCss(file));
     }
   }
   const cssBundle = await bundleCss(projectRoot, config.srcDir, distDir, inlineStylesheets);
