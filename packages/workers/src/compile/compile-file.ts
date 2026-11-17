@@ -1,8 +1,8 @@
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
-import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
 import { normalizeRootRelativeFilename } from "@pletivo/core/astro-host/compile-options";
+import { markdownModule } from "@pletivo/core/content/markdown-module";
 import { foreignJsxMessage, frameworkOfJsxImportSource, jsxImportSourcePragma } from "@pletivo/core/framework-jsx";
 import { FRAMEWORK_RENDERERS_UNSUPPORTED } from "@pletivo/runtime/framework-components";
 import type { AstroCompiler } from "../astro-compiler.ts";
@@ -11,7 +11,8 @@ import { IMPORT_META_ENV_GLOBAL } from "../env.ts";
 import { collectImports } from "../rewrite-imports.ts";
 import { extractImportMetaGlobs } from "./import-meta-glob.ts";
 import { stripTypes, TranspileError } from "../transpile.ts";
-import { COMPILED } from "./module-kind.ts";
+import { COMPILED, type ModuleKind } from "./module-kind.ts";
+import { MARKDOWN_SPECIFIER } from "../host-aliases.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
 import type { AstroStyles, StyleBlock } from "./types.ts";
 
@@ -79,6 +80,7 @@ async function compileFile(
     }
     return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind, [], compilePath);
   }
+  if (kind === "md") return fileEntry(source, compileMarkdown(source, compilePath), null, kind, [], compilePath);
   if (kind === "tsx" || kind === "jsx") assertPletivoJsx(source, compilePath);
   if (kind === "ts" || kind === "tsx" || kind === "jsx") {
     return fileEntry(
@@ -204,7 +206,7 @@ function fileEntry(
   source: string,
   compiled: string,
   styles: AstroStyles | null,
-  kind: ArtifactModuleKind,
+  kind: ModuleKind,
   scripts: readonly (string | null)[],
   file: string,
 ): CompiledFile {
@@ -226,6 +228,26 @@ function fileEntry(
     compressHTML: undefined,
     globs,
   };
+}
+
+/**
+ * A `.md` file as the module the Bun host loads; its Markdown renders in the isolate,
+ * where the project's plugins run. Paths are project paths: the root is `""`, `base` is `/`.
+ */
+function compileMarkdown(source: string, file: string): string {
+  try {
+    return markdownModule({
+      source,
+      file,
+      label: file,
+      root: "",
+      base: "/",
+      runtime: "pletivo/astro-shim",
+      markdown: MARKDOWN_SPECIFIER,
+    });
+  } catch (error) {
+    throw new UnsupportedFileError(file, error instanceof Error ? error.message : String(error));
+  }
 }
 
 /** `stripTypes`, reported as an unsupported file; for `.astro` the position is in the compiled output. */

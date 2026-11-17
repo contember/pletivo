@@ -1,29 +1,26 @@
 import path from "path";
-import { markdownPageLayoutReason, parseFrontmatter } from "@pletivo/core/content/markdown";
+import { parseFrontmatter } from "@pletivo/core/content/markdown";
 
 /**
- * A `.md`/`.mdx` page's frontmatter and body, refused by its project-relative path when it
- * carries a `layout:` pletivo cannot apply yet. Page routes only: an `.mdx` imported by a
- * page, or a collection entry, keeps `layout` as plain data.
+ * Refuse an `.mdx` page route's `layout:` before the page is imported: the MDX loader does
+ * not apply it, and the page would render without its layout's `<head>` and shell. Other
+ * page kinds pass. Page routes only: an `.mdx` imported by a page, or a collection entry,
+ * keeps `layout` as plain data.
  */
-export async function readMarkdownPage(
-  fullPath: string,
-  projectRoot: string,
-): Promise<{ frontmatter: Record<string, unknown>; body: string }> {
+export async function assertPageLayoutSupported(fullPath: string, projectRoot: string): Promise<void> {
+  if (!fullPath.endsWith(".mdx")) return;
   const file = path.relative(projectRoot, fullPath);
-  let page: { frontmatter: Record<string, unknown>; body: string };
+  let frontmatter: Record<string, unknown>;
   try {
-    page = parseFrontmatter(await Bun.file(fullPath).text());
+    frontmatter = parseFrontmatter(await Bun.file(fullPath).text()).frontmatter;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${file}: invalid frontmatter: ${message}`, { cause: error });
   }
-  const unsupported = markdownPageLayoutReason(file, page.frontmatter);
-  if (unsupported) throw new Error(`${file}: ${unsupported}`);
-  return page;
-}
-
-/** Refuse an `.mdx` page route's `layout:` before the page is imported; other page kinds pass. */
-export async function assertPageLayoutSupported(fullPath: string, projectRoot: string): Promise<void> {
-  if (fullPath.endsWith(".mdx")) await readMarkdownPage(fullPath, projectRoot);
+  if (!frontmatter.layout) return;
+  throw new Error(
+    `${file}: \`layout:\` in frontmatter is not supported by pletivo yet; the page would render without its layout. ` +
+      "Render the content from an .astro page that uses the layout, import the layout and wrap the content in it, " +
+      "or remove `layout:`",
+  );
 }

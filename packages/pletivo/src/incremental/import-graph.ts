@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { transform as astroTransform } from "@astrojs/compiler";
 import { offeredSuffix, type FrameworkCompiler } from "@pletivo/core/framework-compile/types";
+import { compileMdModule } from "../md-plugin";
 
 /**
  * Build the per-file static-import graph by parsing each source file's
@@ -47,7 +48,7 @@ export function configureImportGraphCompilers(compilers: readonly FrameworkCompi
 	frameworkCompilers = compilers;
 }
 
-const WALKABLE_SOURCE_EXTS = new Set([".mdx", ".astro", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"]);
+const WALKABLE_SOURCE_EXTS = new Set([".md", ".mdx", ".astro", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"]);
 
 /**
  * True for file extensions whose contents can pull in further static
@@ -136,6 +137,14 @@ async function scanImportsOf(file: string): Promise<Set<string>> {
 			const { compile } = await import("@mdx-js/mdx");
 			const result = await compile(body, { jsxImportSource: "pletivo" });
 			scanSource = String(result);
+		} catch {
+			return new Set();
+		}
+	} else if (ext === ".md") {
+		try {
+			// The module the loader makes of it: its imports are the `layout:` and pletivo's own.
+			scanSource = compileMdModule(source, file);
+			scanExt = ".js";
 		} catch {
 			return new Set();
 		}

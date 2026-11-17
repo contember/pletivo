@@ -46,8 +46,7 @@ function moduleCode(built: Awaited<ReturnType<typeof compileProject>>, file: str
 
 describe("compileProject", () => {
   test("names a module for every file the entry reaches, and nothing else", () => {
-    // All five are reachable from `index.astro`; the `.md` files and the `README` are
-    // not modules at all, so nothing would name them either way.
+    // All five are reachable from `index.astro`; the `.md` files and the `README` are not.
     expect([...project.styleGraph.modules].sort()).toEqual([
       "project:src/components/Header.astro",
       "project:src/components/Layout.astro",
@@ -388,17 +387,12 @@ describe("compileProject, refusals", () => {
 describe("isExecutableModule", () => {
   test("names the extensions the isolate can be handed code for", () => {
     expect(
-      ["a.astro", "a.tsx", "a.ts", "a.jsx", "a.mts", "a.cts", "a.js", "a.mjs", "a.json"].map(
+      ["a.astro", "a.tsx", "a.ts", "a.jsx", "a.mts", "a.cts", "a.js", "a.mjs", "a.json", "a.md"].map(
         isExecutableModule,
       ),
-    ).toEqual([true, true, true, true, true, true, true, true, true]);
-    // `.css` becomes a resolvable stub, not code; `.md` never becomes a module.
-    expect(["a.css", "a.md", "a.mdx", "a.png"].map(isExecutableModule)).toEqual([
-      false,
-      false,
-      false,
-      false,
-    ]);
+    ).toEqual([true, true, true, true, true, true, true, true, true, true]);
+    // `.css` becomes a resolvable stub, not code.
+    expect(["a.css", "a.mdx", "a.png"].map(isExecutableModule)).toEqual([false, false, false]);
   });
 });
 

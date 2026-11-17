@@ -1,5 +1,8 @@
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 
+/** What a module is compiled as: an artifact's kinds, and a project's `.md`, which no package ships. */
+export type ModuleKind = ArtifactModuleKind | "md";
+
 /** Compiled to JavaScript by `@astrojs/compiler`. */
 export const COMPILED = ".astro";
 /** Already JavaScript: carried into the bundle untouched. */
@@ -13,9 +16,10 @@ export function isExecutableModule(file: string): boolean {
   return kind !== null && kind !== "css";
 }
 
-export function projectModuleKind(file: string): ArtifactModuleKind | null {
+export function projectModuleKind(file: string): ModuleKind | null {
   const extension = extensionOf(file);
   if (extension === COMPILED) return "astro";
+  if (extension === ".md") return "md";
   if (VERBATIM.includes(extension)) return "js";
   if (extension === ".ts" || extension === ".mts" || extension === ".cts") return "ts";
   if (extension === ".tsx") return "tsx";

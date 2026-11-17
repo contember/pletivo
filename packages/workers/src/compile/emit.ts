@@ -26,7 +26,7 @@ export function emitProject(
   if (walk.usesI18n) walk.modules[I18N_MODULE_NAME] = GENERATED_MODULES[I18N_MODULE_NAME];
   const { content } = walk;
   // The Markdown pipeline lives in the content module.
-  if (content !== null || markdown !== null) {
+  if (content !== null || markdown !== null || walk.usesMarkdown) {
     walk.modules[CONTENT_MODULE_NAME] = GENERATED_MODULES[CONTENT_MODULE_NAME];
   }
   // The content runtime needs it too: an `image()` schema names the output file.

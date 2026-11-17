@@ -155,8 +155,9 @@ async function resolveEdges(file: string): Promise<string[]> {
  *
  * A `.astro` file with no recorded specifiers never reached the loader, so it
  * holds no CSS and neither can anything it imports — the walk stops there.
- * `.md` / `.mdx` are not scanned; their imports need the markdown pipeline to
- * be visible, and the caller has a fallback for what the walk cannot reach.
+ * `.mdx` is not scanned; its imports need the MDX compiler to be visible, and
+ * the caller has a fallback for what the walk cannot reach. A `.md` module's
+ * imports are recorded by its loader (`md-plugin.ts`).
  */
 async function scanFile(file: string): Promise<string[]> {
   const loader = LOADERS[path.extname(file).toLowerCase()];

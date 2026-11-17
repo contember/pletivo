@@ -418,8 +418,8 @@ export function jsOutputFromBuild(outputs: BuildCssOutput[]): BuildCssOutput | u
 
 // Page modules that are NOT `.astro` (`.tsx`/`.ts`/`.mdx`/…) don't pass
 // through the astro plugin's onLoad, so their CSS side-effect imports aren't
-// collected there. Read the source and collect from it directly. `.astro`
-// (handled by the plugin) and `.md` (no JS imports) are intentionally skipped.
+// collected there. Read the source and collect from it directly. `.astro` and
+// `.md` are skipped: their loaders collect from the compiled module.
 const PAGE_MODULE_CSS_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mdx",
 ]);

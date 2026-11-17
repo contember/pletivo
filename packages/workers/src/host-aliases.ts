@@ -15,6 +15,7 @@ import { JSX_IMPORT_SPECIFIER } from "./transpile.ts";
 export type HostAlias =
   | { kind: "fixed"; executionName: string }
   | { kind: "content" }
+  | { kind: "markdown" }
   | { kind: "assets" }
   | { kind: "image" }
   | { kind: "i18n" }
@@ -24,6 +25,9 @@ export type HostAlias =
  * Every supported public spelling converges on one generated singleton module.
  * Its keys are also the only externals an artifact may bind to.
  */
+/** What a compiled `.md` module imports `renderMarkdown` from. Internal: no project spells it. */
+export const MARKDOWN_SPECIFIER = "pletivo:markdown";
+
 export const HOST_ALIASES: ReadonlyMap<string, HostAlias> = new Map([
   [JSX_IMPORT_SPECIFIER, { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
   ["pletivo/jsx-dev-runtime", { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
@@ -33,6 +37,7 @@ export const HOST_ALIASES: ReadonlyMap<string, HostAlias> = new Map([
   ["astro:content", { kind: "content" }],
   ["astro/loaders", { kind: "content" }],
   ["pletivo/content", { kind: "content" }],
+  [MARKDOWN_SPECIFIER, { kind: "markdown" }],
   [ASSETS_SPECIFIER, { kind: "assets" }],
   [IMAGE_RUNTIME_SPECIFIER, { kind: "image" }],
   ["astro:i18n", { kind: "i18n" }],

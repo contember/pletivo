@@ -64,13 +64,6 @@ export interface IsolatePathsRequest extends IsolateRequestBase {
   routes: IsolatePathRoute[];
 }
 
-/** Render a `.md` page with the program's Markdown pipeline. */
-export interface IsolateMarkdownRequest extends IsolateRequestBase {
-  op: "markdown";
-  file: string;
-  source: string;
-}
-
 /** Import a page module, so its graph is compiled and linked, and render nothing. */
 export interface IsolateWarmRequest extends IsolateRequestBase {
   op: "warm";
@@ -80,7 +73,6 @@ export interface IsolateWarmRequest extends IsolateRequestBase {
 export type IsolateRequest =
   | IsolateRenderRequest
   | IsolatePathsRequest
-  | IsolateMarkdownRequest
   | IsolateWarmRequest;
 
 export interface IsolateRenderedResponse {

@@ -16,7 +16,6 @@ import {
   type Route,
   type RouteParams,
 } from "@pletivo/core/router";
-import { markdownPageLayoutReason, parseFrontmatter, parseMarkdown } from "@pletivo/core/content/markdown";
 import type { ResolvedI18nConfig } from "@pletivo/core/i18n/config";
 import { resolveFallbackRoute } from "@pletivo/core/i18n/fallback";
 import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
@@ -27,7 +26,6 @@ import type { AstroCompiler } from "./astro-compiler.ts";
 import type { CompileCache } from "./compile-cache.ts";
 import { compileProject, isExecutableModule, type CompiledProject } from "./compile-project.ts";
 import { scriptCandidateSources } from "./browser-modules.ts";
-import { markdownPageHtml } from "./markdown-page.ts";
 import { attributeValue, htmlTags } from "./html-tags.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
@@ -489,43 +487,8 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     throw new UnsupportedRouteError(file, "endpoint routes are not implemented");
   }
 
-  const source = files.get(file);
-  if (source === undefined) throw new RouteNotFoundError(pathname);
+  if (files.get(file) === undefined) throw new RouteNotFoundError(pathname);
 
-  if (file.endsWith(".md")) {
-    // A markdown page has no module, so a dynamic one can never declare its paths.
-    if (match.route.isDynamic) {
-      throw new RoutePathNotFoundError(pathname, file, "not-enumerable");
-    }
-    // `prepare` refuses this too, but a file map can change after it or skip it.
-    const unsupported = markdownPageLayoutReason(file, parseFrontmatter(source).frontmatter);
-    if (unsupported) throw new UnsupportedRouteError(file, unsupported);
-    const markdown = options.artifact?.prepared.artifact.config.markdown === undefined
-      ? { html: await renderMarkdownPage(source), bundleId: "", logs: NO_LOGS }
-      : await isolateMarkdownPage(file, source, options);
-    const { html } = markdown;
-    // A `.md` page has no module graph, so its CSS needs no compile and no merged map.
-    const stylesheet = await pageStylesheet({
-      files,
-      srcDir,
-      rootDir,
-      styleGraph: EMPTY_STYLE_GRAPH,
-      entry: projectModuleId(file),
-      html,
-      scripts,
-      tailwind: options.tailwind,
-      tailwindIsolate: tailwindIsolateHost(options),
-    });
-    return {
-      html: finalizeHtml(html, { compressHTML, partial: false }, [stylesheet ?? ""], scripts),
-      file,
-      bundleId: markdown.bundleId,
-      assets: [],
-      scriptUrls: [],
-      staleArtifactInputs: [],
-      logs: markdown.logs,
-    };
-  }
   if (!isExecutableModule(file)) {
     throw new UnsupportedRouteError(file, "only .astro, .tsx and .md pages render here");
   }
@@ -596,7 +559,7 @@ export interface WarmPageOptions extends ProjectOptions {
 
 /**
  * The cold half of `renderPage`: compile the page's module graph and import the page in
- * the isolate its render will use, rendering nothing. A `.md` page has no module to warm.
+ * the isolate its render will use, rendering nothing.
  * Returns the URLs of every processed script the page's program can load.
  */
 export async function warmPage(options: WarmPageOptions): Promise<string[]> {
@@ -618,8 +581,6 @@ export async function warmPage(options: WarmPageOptions): Promise<string[]> {
   return [...new Set(Object.values(project.program.scripts))];
 }
 
-const NO_LOGS: IsolateLogs = { logs: [], droppedLogs: 0 };
-
 /** The program's script URLs a `<script src>` in `html` loads, in document order. */
 function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>>): string[] {
   const known = new Set(Object.values(scripts));
@@ -631,8 +592,6 @@ function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>
   }
   return [...loaded];
 }
-
-const EMPTY_STYLE_GRAPH = { modules: [], executionEdges: [], styleEdges: [], styles: [], tailwindModules: [] };
 
 function assetsOf(urlAssets: ReadonlyMap<string, string>): RenderedAsset[] {
   const assets: RenderedAsset[] = [];
@@ -659,45 +618,6 @@ function urlAssetContentType(path: string): string {
     ".xml": "application/xml; charset=utf-8",
   };
   return known[extension] ?? "application/octet-stream";
-}
-
-/** A `.md` page, rendered as `build.ts` renders one. No isolate involved. */
-export async function renderMarkdownPage(source: string): Promise<string> {
-  const { html, frontmatter } = await parseMarkdown(source);
-  return markdownPageHtml(html, frontmatter);
-}
-
-/**
- * A `.md` page of a project with configured Markdown plugins. The plugins are code from
- * the artifact, so they run where project code runs: in the isolate.
- */
-async function isolateMarkdownPage(
-  file: string,
-  source: string,
-  options: RenderPageOptions,
-): Promise<{ html: string; bundleId: string; logs: IsolateLogs }> {
-  const project = await compileProject({
-    files: options.files,
-    entries: [],
-    srcDir: srcDirOf(options),
-    compiler: options.compiler,
-    artifact: options.artifact,
-    assets: options.assets,
-    cache: options.compileCache,
-    annotateSourceFile: options.annotateSourceFile,
-    tailwind: options.tailwind,
-    markdown: true,
-  });
-  const { bundleId, payload, logs } = await callIsolate({
-    project,
-    options,
-    label: `rendering ${file}`,
-    body: { op: "markdown", file, source, site: siteOf(options) },
-  });
-  if (payload.status !== "rendered") {
-    throw new Error("[pletivo-workers] the render isolate returned an unexpected Markdown payload");
-  }
-  return { html: payload.html, bundleId, logs };
 }
 
 interface IsolateRender {

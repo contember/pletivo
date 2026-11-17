@@ -1,9 +1,10 @@
-import type { ArtifactModuleKind, ModuleId } from "@pletivo/core/artifact";
+import type { ModuleId } from "@pletivo/core/artifact";
+import type { ModuleKind } from "./module-kind.ts";
 
 /** A module the walk has claimed a bundle name for. */
 export interface SourceModule {
   id: ModuleId;
-  kind: ArtifactModuleKind;
+  kind: ModuleKind;
   source: string;
   compilePath: string;
   executionName: string;

@@ -939,6 +939,54 @@ export function redirectPageHtml(response: Response): string {
   );
 }
 
+// ── Markdown modules ────────────────────────────────────────────────
+
+/** What a compiled `.md` module exports about itself; see `@pletivo/core/content/markdown-module`. */
+export interface MarkdownPage {
+  frontmatter: Record<string, unknown>;
+  file: string;
+  url: string | undefined;
+  rawContent(): string;
+  compiledContent(): Promise<string>;
+  getHeadings(): unknown[];
+}
+
+/**
+ * A `.md` module's `Content`: its HTML, inside `Layout` when the frontmatter names one,
+ * with the props Astro gives a Markdown layout.
+ */
+export function markdownContent(page: MarkdownPage, Layout: unknown): AstroComponentFactory {
+  return createComponent(async (result) => {
+    const html = createHtml(await page.compiledContent());
+    if (Layout === null) return html;
+    const { layout: _layout, ...content } = page.frontmatter;
+    content.file = page.file;
+    content.url = page.url;
+    const props = {
+      file: page.file,
+      url: page.url,
+      content,
+      frontmatter: content,
+      headings: page.getHeadings(),
+      rawContent: page.rawContent,
+      compiledContent: page.compiledContent,
+    };
+    return renderComponent(result, "Layout", Layout, props, { default: () => html });
+  });
+}
+
+/** A `.md` page without a layout: its HTML in a minimal document titled by `frontmatter.title`. */
+export function markdownDocument(page: MarkdownPage): AstroComponentFactory {
+  return createComponent(async () => {
+    const html = await page.compiledContent();
+    const title = page.frontmatter.title ? String(page.frontmatter.title) : "";
+    return createHtml(
+      `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head>` +
+        `<body>${html}</body></html>`,
+    );
+  });
+}
+
 export function isAstroComponent(x: unknown): x is AstroComponentFactory {
   return (
     typeof x === "function" &&
