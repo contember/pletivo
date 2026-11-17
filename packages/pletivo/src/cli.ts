@@ -6,6 +6,7 @@ import { isSupervisedChild, superviseDev } from "./dev-supervisor";
 import { loadConfig } from "./config";
 import { applyCliOverrides, readArgvOptions, readFlag } from "./cli-args";
 import { createRequire } from "module";
+import { ProjectConfigError } from "./astro-host/config-loader";
 
 const require_ = createRequire(import.meta.url);
 const { version } = require_("../package.json");
@@ -21,9 +22,20 @@ try {
   process.exit(1);
 }
 
+/** Print a project config error as one line and exit; anything else keeps its stack. */
+async function exitOnConfigError(run: () => Promise<unknown>): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    if (!(error instanceof ProjectConfigError)) throw error;
+    console.error(`\n  ${error.message}\n`);
+    process.exit(1);
+  }
+}
+
 switch (command) {
   case "build":
-    await build(projectRoot, config, { incremental, clean });
+    await exitOnConfigError(() => build(projectRoot, config, { incremental, clean }));
     break;
 
   case "prepare": {
@@ -67,7 +79,7 @@ switch (command) {
     if (!isSupervisedChild() && !noRestart) {
       process.exit(await superviseDev());
     }
-    await dev(projectRoot, config);
+    await exitOnConfigError(() => dev(projectRoot, config));
     break;
 
   // Bare, so `$(pletivo --version)` needs no stripping.

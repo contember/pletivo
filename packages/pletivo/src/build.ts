@@ -23,6 +23,7 @@ import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@plet
 import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
+import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
 import { bundlePageScripts } from "./astro-host/page-scripts";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
 import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
@@ -180,6 +181,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   await registerScssPlugin(projectRoot);
   await registerProjectSourcePlugin(projectRoot, config.srcDir);
   const astroHost = await initAstroHost(projectRoot, "build");
+  const srcDirError = srcDirMismatch(projectRoot, config.srcDir, astroHost?.configuredSrcDir);
+  if (srcDirError) throw new ProjectConfigError(srcDirError);
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
   // Before initCollections: content.config.ts is the first project module imported.
   installImportMetaEnv({ mode: "build", base: config.base, astroConfig: astroHost?.config });

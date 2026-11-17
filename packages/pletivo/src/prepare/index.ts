@@ -18,6 +18,7 @@ import {
 } from "@pletivo/core/astro-host/scoped-style";
 import { invalidCompressHTML, resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
+import { srcDirMismatch } from "../astro-host/config-loader";
 import { bundlePageScripts } from "../astro-host/page-scripts";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
@@ -59,6 +60,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const fatal = [
     ...unsupportedProjectSemantics(projectConfig),
     ...unsupportedSemantics(host),
+    ...srcDirDiagnostics(projectRoot, srcDir, host),
     ...markdown.diagnostics,
     ...routing.diagnostics,
     ...scopedStyle.diagnostics,
@@ -286,6 +288,11 @@ function unsupportedSemantics(host: AstroHost | null): PrepareDiagnostic[] {
   addScriptDiagnostic(diagnostics, "before-hydration", host.injectedBeforeHydrationScripts.length);
   addScriptDiagnostic(diagnostics, "page-ssr", host.injectedPageSsrScripts.length);
   return diagnostics;
+}
+
+function srcDirDiagnostics(projectRoot: string, srcDir: string, host: AstroHost | null): PrepareDiagnostic[] {
+  const reason = srcDirMismatch(projectRoot, srcDir, host?.configuredSrcDir);
+  return reason === null ? [] : [{ source: "astro.config", hook: "srcDir", reason }];
 }
 
 function addConfigDiagnostic(

@@ -18,6 +18,7 @@ import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
 import { pageDoctype } from "@pletivo/core/page-doctype";
 import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import { bundlePageScripts } from "./astro-host/page-scripts";
+import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
 import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
 import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
@@ -229,6 +230,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });
+  const srcDirError = srcDirMismatch(projectRoot, config.srcDir, astroHost?.configuredSrcDir);
+  if (srcDirError) throw new ProjectConfigError(srcDirError);
   // Before initCollections: content.config.ts is the first project module imported.
   installImportMetaEnv({ mode: "dev", base: config.base, astroConfig: astroHost?.config });
 
