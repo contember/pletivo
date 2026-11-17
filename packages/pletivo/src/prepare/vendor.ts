@@ -33,6 +33,17 @@ export interface ProjectImportSource {
   source: string;
   /** Processed `<script>` bodies of an `.astro` file, which run in the browser. */
   scripts?: readonly string[];
+  /** A `.md` file's bare `layout:`, which its compiled module imports. */
+  markdownLayout?: MarkdownLayoutImport;
+}
+
+export interface MarkdownLayoutImport {
+  specifier: string;
+  /**
+   * A route page is compiled, so its layout is imported up front. Any other `.md` only
+   * when a project module imports it: until then the field may be data (a collection entry's).
+   */
+  route: boolean;
 }
 
 export interface FrozenVirtualSource {
@@ -98,6 +109,23 @@ export async function prepareModuleGraph(
   const seenRequests = new Map<ModuleId, Set<string>>();
   const tailwindRequests: TailwindModuleRequest[] = [];
 
+  const enqueueMarkdownLayout = (project: ProjectImportSource, layout: MarkdownLayoutImport): void => {
+    queue.push({
+      importer: project.id,
+      importerFile: project.file,
+      resolveFrom: path.dirname(project.file),
+      relativeViaVite: false,
+      stylesheet: false,
+      specifier: layout.specifier,
+    });
+  };
+  const markdownSources = new Map<string, { project: ProjectImportSource; layout: MarkdownLayoutImport }>();
+  for (const project of projectSources) {
+    if (project.markdownLayout !== undefined) {
+      markdownSources.set(await canonicalFile(project.file), { project, layout: project.markdownLayout });
+    }
+  }
+
   const enqueueImports = (
     importer: ModuleId,
     importerFile: string,
@@ -135,6 +163,7 @@ export async function prepareModuleGraph(
       extensionOf(project.file) === ".css",
       project.source,
     );
+    if (project.markdownLayout?.route === true) enqueueMarkdownLayout(project, project.markdownLayout);
   }
 
   for (const specifier of configImports) {
@@ -273,7 +302,12 @@ export async function prepareModuleGraph(
 
     // Project-relative imports remain owned by the caller's source map. Relative
     // imports inside carried npm/virtual modules must be closed into the artifact.
-    if (kind === "relative" && request.importer.startsWith("project:")) continue;
+    if (kind === "relative" && request.importer.startsWith("project:")) {
+      // An imported `.md` is compiled, so its layout is now an import (`?raw` is its text).
+      const markdown = request.specifier.includes("?") ? undefined : markdownSources.get(await canonicalFile(resolved));
+      if (markdown !== undefined) enqueueMarkdownLayout(markdown.project, markdown.layout);
+      continue;
+    }
     const id = await addPhysicalModule(resolved);
     resolutions.push({
       importer: request.importer,

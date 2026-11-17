@@ -61,6 +61,7 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
           annotateSourceFile: options.annotateSourceFile === true,
           scopedStyleStrategy: options.artifact?.prepared.artifact.config.scopedStyleStrategy,
           compressHTML: options.artifact?.prepared.artifact.config.compressHTML,
+          trailingSlash: options.artifact?.prepared.artifact.config.trailingSlash,
         });
         await linkModule(walk, resolver, module, compiled);
       }
@@ -68,9 +69,9 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
   };
   await link();
 
-  // Known only now: whether a collection entry can render Markdown in this program.
+  // Known only now: whether a collection entry or a `.md` module renders Markdown in this program.
   const markdownConfig = options.artifact?.prepared.artifact.config.markdown;
-  const rendersMarkdown = options.markdown === true || walk.content !== null;
+  const rendersMarkdown = walk.content !== null || walk.usesMarkdown;
   const markdown = markdownConfig !== undefined && rendersMarkdown
     ? markdownRequirement(walk, artifact, markdownConfig)
     : null;

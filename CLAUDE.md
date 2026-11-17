@@ -113,7 +113,7 @@ gh run watch $(gh run list --workflow=release.yml --limit=1 --json databaseId -q
 
 `build` is a full rebuild by default; pass `--incremental` to opt into the cache (which lives in `node_modules/.pletivo/cache/`). Two layers feed the dep tracker:
 
-1. **Static ESM graph** (`incremental/import-graph.ts`) — parses page source with Bun's transpiler + `@astrojs/compiler` for `.astro` + `@mdx-js/mdx` for `.mdx` + the project's framework compiler for `.svelte`/`.vue` (the server module, so nested components and their imports are deps). Catches any module reachable through a static `import` / `import()`.
+1. **Static ESM graph** (`incremental/import-graph.ts`) — parses page source with Bun's transpiler + `@astrojs/compiler` for `.astro` + `@mdx-js/mdx` for `.mdx` + the compiled module for `.md` (its `layout:`) + the project's framework compiler for `.svelte`/`.vue` (the server module, so nested components and their imports are deps). Catches any module reachable through a static `import` / `import()`.
 2. **Runtime capture** (`incremental/dep-tracker.ts`) — AsyncLocalStorage-scoped `recordRuntimeDep(path)` calls fired from `getCollection`, `probeAndRegisterImage`, and the `glob()` loader.
 
 **What is NOT tracked (known limitation, only relevant under `--incremental`):** direct `Bun.file()` / `fs.readFile()` / `import()` calls in user components that read an arbitrary data file. There is no general-purpose way to intercept these without monkey-patching globals. Workarounds:

@@ -1,7 +1,16 @@
 ---
-const { content } = Astro.props;
+import "../styles/base.css";
+import Badge from "../components/Badge.astro";
+
+const { frontmatter, url } = Astro.props;
 ---
 <html lang="en">
-  <head><title>{content.title}</title></head>
-  <body><slot /></body>
+  <head><title>{frontmatter.title}</title></head>
+  <body><Badge /><main class="shell" data-url={url}><slot /></main></body>
 </html>
+<style>
+  .shell { color: rgb(1, 2, 3); }
+</style>
+<script>
+  document.documentElement.dataset.mdLayout = "ran";
+</script>

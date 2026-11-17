@@ -255,6 +255,10 @@ export class ImportResolver {
       this.#walk.useContent();
       return externalResolution(external, CONTENT_MODULE_NAME);
     }
+    if (alias.kind === "markdown") {
+      this.#walk.usesMarkdown = true;
+      return externalResolution(external, CONTENT_MODULE_NAME);
+    }
     if (alias.kind === "assets") {
       this.#walk.usesImages = true;
       this.#walk.addAssetSources();

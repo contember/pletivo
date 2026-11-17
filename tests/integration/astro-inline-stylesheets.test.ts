@@ -137,6 +137,8 @@ describe("inlineStylesheets: auto (the default)", () => {
       "src/pages/shared-a.astro": page("../../vendor/shared.css", ".shared-a-page{color:blue}"),
       "src/pages/shared-b.astro": page("../../vendor/shared.css", ".shared-b-page{color:blue}"),
       "src/pages/deep/font.astro": page("../../../vendor/font.css", ".font-page{color:blue}"),
+      "src/pages/both.astro":
+        '---\nimport "../../vendor/small.css";\nimport "../../vendor/shared.css";\n---\n<html><head><title>t</title><style is:global>.both-page{color:blue}</style></head><body><h1>t</h1></body></html>\n',
       "src/pages/notes.md": "# Notes\n",
     });
     await buildProject(root);
@@ -205,17 +207,16 @@ describe("inlineStylesheets: auto (the default)", () => {
     expect(written.equals(noise(5000, 1))).toBe(true);
   });
 
-  test("a page with unknown CSS reach gets every group, each inlined or linked as decided", async () => {
-    const sheets = await sheetsOf(root, "notes/index.html");
-    const inline = styles(sheets).join("");
-    for (const marker of [".small-marker", ".below-marker", ".shared-marker", ".font-marker"]) {
-      expect(inline).toContain(marker);
-    }
-    const linked = await Promise.all(links(sheets).map((href) => linkedCss(root, href)));
-    expect(linked.join("\n")).toContain(".big-marker");
-    expect(linked.join("\n")).toContain(".at-marker");
-    // Inline groups that sit next to each other share one <style>.
-    expect(styles(sheets).length).toBeLessThan(4);
+  test("two inlined groups on one page share one <style> with the page's own CSS", async () => {
+    const sheets = await sheetsOf(root, "both/index.html");
+    expect(links(sheets)).toEqual([]);
+    expect(styles(sheets)).toHaveLength(1);
+    const [css] = styles(sheets);
+    for (const marker of [".small-marker", ".shared-marker", ".both-page"]) expect(css).toContain(marker);
+  });
+
+  test("a .md page that imports no stylesheet gets none of the groups", async () => {
+    expect(await sheetsOf(root, "notes/index.html")).toEqual([]);
   });
 });
 

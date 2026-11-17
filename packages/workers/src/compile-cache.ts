@@ -5,9 +5,10 @@
  */
 
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
-import type { ArtifactModuleKind } from "@pletivo/core/artifact";
+import type { ArtifactTrailingSlash } from "@pletivo/core/artifact";
 import { BoundedLru } from "./bounded-lru.ts";
 import type { ImportMetaGlob } from "./compile/import-meta-glob.ts";
+import type { ModuleKind } from "./compile/module-kind.ts";
 import type { AstroStyles } from "./compile/types.ts";
 
 /** One file's compile, everything the file set decides left out. */
@@ -15,7 +16,7 @@ export interface CompiledFile {
   /** The source this was built from; comparing it is the whole freshness check. */
   source: string;
   /** Source interpretation; resolution is deliberately not cached with it. */
-  kind: ArtifactModuleKind;
+  kind: ModuleKind;
   /**
    * The JavaScript `rewriteImports` runs over, after `import.meta.env` substitution.
    * `null` means "the source itself", so an unchanged module is not stored twice.
@@ -43,6 +44,8 @@ export interface CompiledFile {
   scopedStyleStrategy: ScopedStyleStrategy | undefined;
   /** The `.astro` `compact` it compiled with; `undefined` for every other kind. */
   compressHTML: boolean | undefined;
+  /** The `trailingSlash` a `.md` module's `url` was built with; `undefined` for every other kind. */
+  trailingSlash: ArtifactTrailingSlash | undefined;
   /** `import.meta.glob` calls, replaced by placeholders in `code`; linking expands them. */
   globs: readonly ImportMetaGlob[];
 }

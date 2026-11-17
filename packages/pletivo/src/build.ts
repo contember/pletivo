@@ -24,9 +24,10 @@ import { registerProjectSourcePlugin } from "./project-source-plugin";
 import { bundleRenderedIslands, setupAstroRenderers } from "./astro-renderers";
 import { installImportMetaEnv } from "./import-meta-env";
 import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, clearAstroCss, getAllHoistedScripts, clearHoistedScripts, hoistedScriptBunPlugin, hoistedEntrypoint, inlineHoistedScripts, HOISTED_URL_RE } from "./astro-plugin";
-import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
-import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
+import { configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
+import { assertPageLayoutSupported } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
+import { configureMdModules, registerMdPlugin } from "./md-plugin";
 import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./astro-host";
 import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
 import { bundlePageScripts } from "./astro-host/page-scripts";
@@ -182,6 +183,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const tPlugins = performance.now();
   await registerAstroPlugin();
   await registerMdxPlugin();
+  await registerMdPlugin();
   await registerCssModulesPlugin();
   await registerScssPlugin(projectRoot);
   await registerProjectSourcePlugin(projectRoot, config.srcDir);
@@ -189,6 +191,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const srcDirError = srcDirMismatch(projectRoot, config.srcDir, astroHost?.configuredSrcDir);
   if (srcDirError) throw new ProjectConfigError(srcDirError);
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
+  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash);
   // Before initCollections: content.config.ts is the first project module imported.
   installImportMetaEnv({ mode: "build", base: config.base, astroConfig: astroHost?.config });
   configureMdx(resolveMdxOptions(config, astroHost?.config));
@@ -379,13 +382,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       // incremental cache would serve stale HTML for the rewriting page
       // after the target's source changed.
       recordRuntimeDep(fullPath);
-      // Markdown pages have no module to import: same special case the
-      // main render loop makes.
-      if (route.file.endsWith(".md")) {
-        rewriteEntries.set(from, fullPath);
-        rewritePartials.set(from, false);
-        return htmlResponse(await renderMarkdownFile(fullPath, projectRoot));
-      }
       await assertPageLayoutSupported(fullPath, projectRoot);
       const mod = await import(fullPath);
       if (typeof mod.default !== "function") continue;
@@ -655,29 +651,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     const outFile = routeToOutputPath(route, {});
     const outPath = path.join(distDir, outFile);
     const routeKey = `${route.file}::__static__`;
-
-    // Markdown pages — render directly without module import.
-    // Single-file deps make them cheap; we still gate via the cache
-    // so an unchanged .md doesn't re-emit its HTML file.
-    if (route.file.endsWith(".md")) {
-      const outcome = await runIncrementalRender({
-        routeKey,
-        outFile,
-        pageEntryAbsPath: fullPath,
-        distDir,
-        cache,
-        fragments,
-        distFiles,
-        scanAstroIslands,
-        forceRender,
-        doRender: async () => ({
-          html: await renderMarkdownFile(fullPath, projectRoot),
-          renderedModules: new Set<string>(),
-          tsxStyles: [],
-        }),
-      });
-      return { file: route.file, entryFile: fullPath, label: route.file, outPath, html: outcome.html, renderedModules: outcome.renderedModules, tsxStyles: outcome.tsxStyles, source: outcome.source, routeKey, islands: outcome.islands, hoistedHashes: outcome.hoistedHashes, astroIslands: outcome.astroIslands, cachedSize: outcome.size, cachedCssHead: outcome.cssHead };
-    }
 
     await assertPageLayoutSupported(fullPath, projectRoot);
     const mod = await import(fullPath);
@@ -1575,15 +1548,6 @@ function htmlResponse(html: string): Response {
   return new Response(html, {
     headers: { "content-type": "text/html; charset=utf-8" },
   });
-}
-
-/** Render a `.md` page. It has no module to import, so the main render loop and
- * `Astro.rewrite` both go through here. */
-async function renderMarkdownFile(fullPath: string, projectRoot: string): Promise<string> {
-  const { frontmatter, body: markdown } = await readMarkdownPage(fullPath, projectRoot);
-  const body = await renderMarkdown(markdown);
-  const title = (frontmatter.title as string) || "";
-  return `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>`;
 }
 
 async function renderComponent(

@@ -1,0 +1,21 @@
+---
+import Badge from "../components/Badge.astro";
+
+const { frontmatter, url } = Astro.props;
+---
+<html lang="en">
+  <head>
+    <meta name="viewport" content="width=device-width">
+    <title>{frontmatter.title}</title>
+  </head>
+  <body>
+    <article class="post" data-url={url}>
+      <h1>{frontmatter.title}</h1>
+      <Badge />
+      <slot />
+    </article>
+  </body>
+</html>
+<style>
+  .post { color: rgb(1, 2, 3); }
+</style>

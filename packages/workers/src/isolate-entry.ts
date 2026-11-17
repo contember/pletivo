@@ -37,7 +37,6 @@ import {
   CONTENT_BINDING,
   decodeParams,
   encodeParams,
-  type IsolateMarkdownRequest,
   type IsolateParamPair,
   type IsolatePathRoute,
   type IsolatePathsResponse,
@@ -51,7 +50,6 @@ import {
   type IsolateReply,
   type IsolateResponse,
 } from "./isolate-protocol.ts";
-import { markdownPageHtml } from "./markdown-page.ts";
 import { normalizeProjectPath } from "./project-path.ts";
 import type { UnresolvedReason } from "./render.ts";
 
@@ -81,7 +79,7 @@ export interface ContentModules {
 }
 
 /** The content module's Markdown half; the same module record collections render with. */
-export type MarkdownModule = Pick<typeof Markdown, "configureMarkdown" | "parseMarkdown">;
+export type MarkdownModule = Pick<typeof Markdown, "configureMarkdown">;
 
 /** One configured plugin: the Loader module namespace it is exported from. */
 export interface IsolateMarkdownPlugin {
@@ -190,7 +188,6 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
     }
     return withContent(program, env[CONTENT_BINDING], { texts: contentCache, frontmatter: frontmatterCache }, body, () => {
       if (body.op === "paths") return listPaths(program, body.routes);
-      if (body.op === "markdown") return renderMarkdownPage(program, body);
       if (body.op === "warm") return warmPage(program, body.file);
       return render(program, body);
     });
@@ -243,19 +240,6 @@ function configureMarkdown(markdown: IsolateMarkdown): void {
     remarkRehype: markdown.remarkRehype ?? {},
     gfm: markdown.gfm ?? true,
   });
-}
-
-async function renderMarkdownPage(program: IsolateProgram, request: IsolateMarkdownRequest): Promise<IsolatePayload> {
-  if (program.markdown === null) throw new Error("[pletivo-workers] this program has no Markdown pipeline");
-  const { html, frontmatter } = await program.markdown.module.parseMarkdown(request.source);
-  const response: IsolateRenderedResponse = {
-    status: "rendered",
-    html: markdownPageHtml(html, frontmatter),
-    renderedModules: [],
-    tsxStyles: [],
-    partial: false,
-  };
-  return response;
 }
 
 function loadPage(program: IsolateProgram, file: string): Promise<PageModule> | null {

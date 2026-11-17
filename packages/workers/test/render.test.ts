@@ -318,8 +318,8 @@ describe("the isolate response boundary", () => {
   });
 });
 
-describe("renderPage, .md on the host", () => {
-  test("matches what build.ts emits for a markdown page", async () => {
+describe("renderPage, .md through the Worker Loader", () => {
+  test("matches what build.ts emits for a markdown page without a layout", async () => {
     const page = await render("/about");
     expect(page.file).toBe("src/pages/about.md");
     expect(page.html).toBe(
@@ -328,8 +328,64 @@ describe("renderPage, .md on the host", () => {
     );
   });
 
-  test("never reaches the isolate", async () => {
-    expect((await render("/about")).bundleId).toBe("");
+  const LAYOUT_SITE = new Map<string, string>([
+    [
+      "src/layouts/Post.astro",
+      `---
+import "../styles/post.css";
+const { frontmatter, url } = Astro.props;
+---
+<html lang="en">
+  <head><title>{frontmatter.title}</title></head>
+  <body><article class="post" data-url={url}><slot /></article></body>
+</html>
+<style>.post { color: teal; }</style>
+<script>console.log("post layout");</script>
+`,
+    ],
+    ["src/styles/post.css", "body { background: olive; }\n"],
+    ["src/pages/post.md", "---\ntitle: Post\nlayout: ../layouts/Post.astro\n---\n\nInside **the** layout.\n"],
+    ["src/pages/rooted.md", "---\ntitle: Rooted\nlayout: /src/layouts/Post.astro\n---\n\nRooted.\n"],
+    ["src/pages/bad.md", "---\nlayout: 3\n---\n\nBad.\n"],
+  ]);
+  const renderLayout = (pathname: string) => renderPage({ files: LAYOUT_SITE, pathname, loader, compiler });
+
+  test("renders a page inside the layout its frontmatter names, with the layout's props", async () => {
+    const { html } = await renderLayout("/post");
+    expect(html).toStartWith("<!DOCTYPE html>");
+    expect(html).toContain('<html lang="en"');
+    expect(html).toContain("<title>Post</title>");
+    expect(html).toMatch(/<article class="post astro-[a-z0-9]+" data-url="\/post"><p>Inside <strong>the<\/strong> layout.<\/p>/);
+  });
+
+  test("carries the layout's CSS into the head and its script", async () => {
+    const page = await renderLayout("/post");
+    expect(page.html).toMatch(/<style>[^<]*\.post[^{]*\{color:teal\}[^<]*<\/style>[^]*<\/head>/);
+    expect(page.html).toMatch(/<style>[^<]*background: olive[^<]*<\/style>[^]*<\/head>/);
+    expect(page.scriptUrls).toHaveLength(1);
+  });
+
+  test("resolves a root-relative layout path", async () => {
+    const { html } = await renderLayout("/rooted");
+    expect(html).toContain('<html lang="en"');
+    expect(html).toContain("<p>Rooted.</p>");
+  });
+
+  test("names a page whose layout: is not a path", async () => {
+    await expect(renderLayout("/bad")).rejects.toThrow("src/pages/bad.md: `layout:` in frontmatter must be a path");
+  });
+
+  test("renders the page again from an edited layout through a shared compile cache", async () => {
+    const compileCache = createCompileCache();
+    const before = await renderPage({ files: LAYOUT_SITE, pathname: "/post", loader, compiler, compileCache });
+    const edited = new Map(LAYOUT_SITE);
+    const layout = LAYOUT_SITE.get("src/layouts/Post.astro") ?? "";
+    edited.set("src/layouts/Post.astro", layout.replace("color: teal", "color: maroon").replace('lang="en"', 'lang="cs"'));
+    const after = await renderPage({ files: edited, pathname: "/post", loader, compiler, compileCache });
+    expect(before.html).toContain("{color:teal}");
+    expect(after.html).toContain("{color:maroon}");
+    expect(after.html).toContain('<html lang="cs"');
+    expect(after.html).toContain("<p>Inside <strong>the</strong> layout.</p>");
   });
 
   test("rejects a wrong-version direct artifact before any render", () => {
@@ -758,7 +814,7 @@ describe("renderPage, the page's stylesheet", () => {
     expect(page.html).toBe("<p>no head at all</p>");
   });
 
-  test("inlines the source tree into a .md page without compiling the project", async () => {
+  test("gives a .md page without a layout no CSS and compiles no .astro for it", async () => {
     let transforms = 0;
     const counting: AstroCompiler = {
       transform: (source, transformOptions) => {
@@ -769,10 +825,8 @@ describe("renderPage, the page's stylesheet", () => {
     };
     const page = await renderPage({ files: styled, pathname: "/note", loader, compiler: counting });
 
-    // The whole reason the wasm compiler used to run for a markdown page was the
-    // project-wide stylesheet. There is none now, and a `.md` page has no graph.
+    // Its module graph is its own module: no project-wide stylesheet, no `.astro` to compile.
     expect(transforms).toBe(0);
-    expect(page.bundleId).toBe("");
     expect(page.assets).toEqual([]);
     expect(page.html).not.toContain("<style>");
     expect(page.html).not.toContain(".from-index");
@@ -859,16 +913,6 @@ describe("renderPage, refusals", () => {
     const error = await rejection(renderPage({ files, pathname: "/rss.xml", loader, compiler }));
     expect(error).toBeInstanceOf(UnsupportedRouteError);
     expect(String(error)).toContain("endpoint routes are not implemented");
-  });
-
-  test("refuses a .md page with a layout: it cannot apply, naming the page", async () => {
-    const files = new Map([
-      ["src/pages/about.md", "---\ntitle: About\nlayout: ../layouts/Base.astro\n---\n\ntext\n"],
-    ]);
-    const error = await rejection(renderPage({ files, pathname: "/about", loader, compiler }));
-    expect(error).toBeInstanceOf(UnsupportedRouteError);
-    expect(String(error)).toContain('"src/pages/about.md"');
-    expect(String(error)).toContain("`layout:` in frontmatter is not supported by pletivo yet");
   });
 
   test("404s a dynamic route that never said what its paths are", async () => {

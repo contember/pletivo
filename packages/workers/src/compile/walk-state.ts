@@ -61,6 +61,8 @@ export class CompileWalk {
   usesImportMetaEnv = false;
   usesImages = false;
   usesI18n = false;
+  /** A compiled `.md` module renders Markdown, so the pipeline's module joins the program. */
+  usesMarkdown = false;
 
   readonly #projectFiles: NormalizedProjectFiles;
   readonly #artifact: ArtifactResolver;

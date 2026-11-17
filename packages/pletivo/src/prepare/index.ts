@@ -27,11 +27,13 @@ import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
+import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
+import { markdownLayoutOf } from "@pletivo/core/content/markdown-module";
 import { isRouteFile } from "@pletivo/core/router";
-import { astroMarkdownSettings, markdownPageLayoutReason, parseFrontmatter } from "@pletivo/core/content/markdown";
 import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
-import { prepareModuleGraph, type ProjectImportSource } from "./vendor";
+import { prepareModuleGraph, type MarkdownLayoutImport, type ProjectImportSource } from "./vendor";
+import { classifySpecifier } from "./scan";
 
 export { PrepareError, type PrepareDiagnostic } from "./error";
 
@@ -69,8 +71,6 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   if (fatal.length > 0) throw new PrepareError(fatal);
 
   const sources = await readSources(projectRoot, srcDir);
-  const pageLayouts = markdownPageLayouts(projectRoot, srcDir, sources);
-  if (pageLayouts.length > 0) throw new PrepareError(pageLayouts);
   const pluginModules = markdown.config === null
     ? []
     : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
@@ -135,32 +135,33 @@ async function readSources(root: string, srcDir: string): Promise<ProjectImportS
     const file = path.join(physicalBase, rel);
     const source = await Bun.file(file).text();
     const scripts = rel.endsWith(".astro") ? await processedScripts(file, source) : [];
+    const markdownLayout = markdownLayoutImport(rel, source);
     sources.push({
       id: `project:${projectPath}`,
       file,
       source,
       ...(scripts.length > 0 ? { scripts } : {}),
+      ...(markdownLayout === null ? {} : { markdownLayout }),
     });
   }
   return sources.sort((left, right) => compareStrings(left.id, right.id));
 }
 
-/** `.md` pages carrying a `layout:` no host applies yet. Content entries live outside `pages/`. */
-function markdownPageLayouts(
-  root: string,
-  srcDir: string,
-  sources: readonly ProjectImportSource[],
-): PrepareDiagnostic[] {
-  const pagesDir = path.join(realpathSync(path.resolve(root, srcDir)), "pages") + path.sep;
-  const diagnostics: PrepareDiagnostic[] = [];
-  for (const { file, source } of sources) {
-    if (!file.startsWith(pagesDir) || !file.endsWith(".md")) continue;
-    if (!isRouteFile(normalizePath(file.slice(pagesDir.length)))) continue;
-    const page = normalizePath(path.relative(root, file));
-    const reason = markdownPageLayoutReason(page, parseFrontmatter(source).frontmatter);
-    if (reason) diagnostics.push({ source: page, hook: "layout", reason });
+/**
+ * A `.md` file's bare `layout:`, which its compiled module imports (`markdownModule`).
+ * A project layout is carried as a source; one named as a package must be vendored.
+ * An invalid one is named when the file compiles.
+ */
+function markdownLayoutImport(rel: string, source: string): MarkdownLayoutImport | null {
+  if (!rel.endsWith(".md")) return null;
+  let layout: string | null;
+  try {
+    layout = markdownLayoutOf(source, rel);
+  } catch {
+    return null;
   }
-  return diagnostics;
+  if (layout === null || classifySpecifier(layout) === "relative") return null;
+  return { specifier: layout, route: rel.startsWith("pages/") && isRouteFile(rel.slice("pages/".length)) };
 }
 
 function unsupportedProjectSemantics(config: PletivoConfig): PrepareDiagnostic[] {

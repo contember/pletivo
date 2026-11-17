@@ -19,9 +19,10 @@ import { pageDoctype } from "@pletivo/core/page-doctype";
 import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import { bundlePageScripts } from "./astro-host/page-scripts";
 import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
-import { configureMarkdown, renderMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
-import { assertPageLayoutSupported, readMarkdownPage } from "./markdown-page";
+import { configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
+import { assertPageLayoutSupported } from "./markdown-page";
 import { registerMdxPlugin, configureMdx, resolveMdxOptions } from "./mdx-plugin";
+import { configureMdModules, registerMdPlugin } from "./md-plugin";
 import {
   initAstroHost,
   dispatchMiddlewares,
@@ -223,6 +224,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   await Promise.all([
     registerAstroPlugin(),
     registerMdxPlugin(),
+    registerMdPlugin(),
     registerCssModulesPlugin(),
     registerScssPlugin(projectRoot),
     registerProjectSourcePlugin(projectRoot, config.srcDir),
@@ -238,6 +240,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
+  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash);
   configureJsImportedCss(projectRoot, config.srcDir);
   // Before any project module loads: the renderers decide how its framework components compile.
   // Rewired after a failed astro:config:setup recovers, which may register renderers.
@@ -426,14 +429,6 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     const fullPath = path.join(pagesDir, route.file);
 
     try {
-      // Markdown pages — render directly without module import
-      if (route.file.endsWith(".md")) {
-        const { frontmatter, body: markdown } = await readMarkdownPage(fullPath, projectRoot);
-        const body = await renderMarkdown(markdown);
-        const title = (frontmatter.title as string) || "";
-        return { ok: true, html: `<!DOCTYPE html><html><head><meta charset="utf-8">${title ? `<title>${title}</title>` : ""}</head><body>${body}</body></html>` };
-      }
-
       await assertPageLayoutSupported(fullPath, projectRoot);
       const importPath = fullPath + `?v=${getDevVersion()}`;
       const mod = await import(importPath);

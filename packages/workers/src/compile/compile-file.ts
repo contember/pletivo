@@ -1,8 +1,9 @@
 import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
-import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import type { ArtifactTrailingSlash } from "@pletivo/core/artifact";
 import { normalizeRootRelativeFilename } from "@pletivo/core/astro-host/compile-options";
+import { markdownModule } from "@pletivo/core/content/markdown-module";
 import { foreignJsxMessage, frameworkOfJsxImportSource, jsxImportSourcePragma } from "@pletivo/core/framework-jsx";
 import { FRAMEWORK_RENDERERS_UNSUPPORTED } from "@pletivo/runtime/framework-components";
 import type { AstroCompiler } from "../astro-compiler.ts";
@@ -11,11 +12,12 @@ import { IMPORT_META_ENV_GLOBAL } from "../env.ts";
 import { collectImports } from "../rewrite-imports.ts";
 import { extractImportMetaGlobs } from "./import-meta-glob.ts";
 import { stripTypes, TranspileError } from "../transpile.ts";
-import { COMPILED } from "./module-kind.ts";
+import { COMPILED, type ModuleKind } from "./module-kind.ts";
+import { MARKDOWN_SPECIFIER } from "../host-aliases.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
 import type { AstroStyles, StyleBlock } from "./types.ts";
 
-/** The `.astro` compiler options a project sets; all are part of a cached file's identity. */
+/** The compile options a project sets; all are part of a cached file's identity. */
 export interface AstroCompileOptions {
   /** See `ProjectOptions.annotateSourceFile`. */
   annotateSourceFile: boolean;
@@ -23,6 +25,8 @@ export interface AstroCompileOptions {
   scopedStyleStrategy: ScopedStyleStrategy | undefined;
   /** The artifact's `config.compressHTML`, passed as `compact`; absent leaves the compiler's default. */
   compressHTML: boolean | undefined;
+  /** The artifact's `config.trailingSlash`, which a `.md` page's `url` follows; absent is `"ignore"`. */
+  trailingSlash?: ArtifactTrailingSlash;
 }
 
 /**
@@ -40,6 +44,7 @@ export async function compileCached(
   const annotate = options.annotateSourceFile && astro;
   const scopedStyleStrategy = astro ? options.scopedStyleStrategy : undefined;
   const compressHTML = astro ? options.compressHTML : undefined;
+  const trailingSlash = module.kind === "md" ? options.trailingSlash : undefined;
   const held = cache?.get(module.compilePath);
   if (
     held !== undefined &&
@@ -47,11 +52,12 @@ export async function compileCached(
     held.kind === module.kind &&
     held.annotated === annotate &&
     held.scopedStyleStrategy === scopedStyleStrategy &&
-    held.compressHTML === compressHTML
+    held.compressHTML === compressHTML &&
+    held.trailingSlash === trailingSlash
   ) {
     return held;
   }
-  const entry = await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy, compressHTML });
+  const entry = await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy, compressHTML, trailingSlash });
   cache?.set(module.compilePath, entry);
   return entry;
 }
@@ -63,7 +69,7 @@ export async function compileCached(
 async function compileFile(
   module: SourceModule,
   compiler: AstroCompiler,
-  { annotateSourceFile, scopedStyleStrategy, compressHTML }: AstroCompileOptions,
+  { annotateSourceFile, scopedStyleStrategy, compressHTML, trailingSlash }: AstroCompileOptions,
 ): Promise<CompiledFile> {
   const { source, compilePath, kind } = module;
   if (kind === "js") return fileEntry(source, source, null, kind, [], compilePath);
@@ -78,6 +84,9 @@ async function compileFile(
       );
     }
     return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind, [], compilePath);
+  }
+  if (kind === "md") {
+    return { ...fileEntry(source, compileMarkdown(source, compilePath, trailingSlash), null, kind, [], compilePath), trailingSlash };
   }
   if (kind === "tsx" || kind === "jsx") assertPletivoJsx(source, compilePath);
   if (kind === "ts" || kind === "tsx" || kind === "jsx") {
@@ -204,7 +213,7 @@ function fileEntry(
   source: string,
   compiled: string,
   styles: AstroStyles | null,
-  kind: ArtifactModuleKind,
+  kind: ModuleKind,
   scripts: readonly (string | null)[],
   file: string,
 ): CompiledFile {
@@ -224,8 +233,30 @@ function fileEntry(
     annotated: false,
     scopedStyleStrategy: undefined,
     compressHTML: undefined,
+    trailingSlash: undefined,
     globs,
   };
+}
+
+/**
+ * A `.md` file as the module the Bun host loads; its Markdown renders in the isolate,
+ * where the project's plugins run. Paths are project paths: the root is `""`, `base` is `/`.
+ */
+function compileMarkdown(source: string, file: string, trailingSlash: ArtifactTrailingSlash | undefined): string {
+  try {
+    return markdownModule({
+      source,
+      file,
+      label: file,
+      root: "",
+      base: "/",
+      trailingSlash,
+      runtime: "pletivo/astro-shim",
+      markdown: MARKDOWN_SPECIFIER,
+    });
+  } catch (error) {
+    throw new UnsupportedFileError(file, error instanceof Error ? error.message : String(error));
+  }
 }
 
 /** `stripTypes`, reported as an unsupported file; for `.astro` the position is in the compiled output. */

@@ -206,17 +206,3 @@ export async function parseMarkdown(content: string): Promise<ParsedMarkdown> {
   const html = await renderMarkdown(body);
   return { frontmatter, body, html };
 }
-
-/**
- * Why a `.md`/`.mdx` *page* at `file` cannot render, or null. No host applies `layout:`
- * yet, and rendering without it ships the page without its layout's `<head>` and shell.
- * Content-collection entries never come through here: their `layout` is plain data.
- */
-export function markdownPageLayoutReason(file: string, frontmatter: Record<string, unknown>): string | null {
-  if (!frontmatter.layout) return null;
-  const wrap = file.endsWith(".mdx") ? ", import the layout and wrap the content in it," : "";
-  return (
-    "`layout:` in frontmatter is not supported by pletivo yet; the page would render without its layout. " +
-    `Render the content from an .astro page that uses the layout${wrap} or remove \`layout:\``
-  );
-}
