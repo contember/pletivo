@@ -464,6 +464,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
   const site = siteOf(options);
   const scripts = options.artifact?.prepared.artifact.scripts;
+  const compressHTML = options.artifact?.prepared.artifact.config.compressHTML;
   const srcDir = srcDirOf(options);
   const rootDir = projectRoot(options);
 
@@ -502,7 +503,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
       tailwindIsolate: tailwindIsolateHost(options),
     });
     return {
-      html: finalizeHtml(html, [stylesheet ?? ""], scripts),
+      html: finalizeHtml(html, { compressHTML, partial: false }, [stylesheet ?? ""], scripts),
       file,
       bundleId: markdown.bundleId,
       assets: [],
@@ -549,7 +550,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     tailwindIsolate: tailwindIsolateHost(options),
   });
   return {
-    html: finalizeHtml(rendered.html, [stylesheet ?? "", styles], scripts),
+    html: finalizeHtml(rendered.html, { compressHTML, partial: rendered.partial }, [stylesheet ?? "", styles], scripts),
     file,
     bundleId: rendered.bundleId,
     assets: assetsOf(project.urlAssets),
@@ -690,6 +691,7 @@ interface IsolateRender {
   html: string;
   renderedModules: string[];
   tsxStyles: string[];
+  partial: boolean;
   bundleId: string;
   logs: IsolateLogs;
 }

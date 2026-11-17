@@ -410,6 +410,7 @@ describe("injected scripts and strict parsing", () => {
   test("emits the two supported script stages after page CSS", () => {
     const html = finalizeHtml(
       "<html><head><title>t</title></head><body><p>x</p></body></html>",
+      { compressHTML: undefined, partial: false },
       [".site{color:blue}"],
       PREPARED.artifact.scripts,
     );

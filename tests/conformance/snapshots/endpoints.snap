@@ -38,8 +38,7 @@ robots.txt
 <rss version="2.0"><channel><title>Feed</title></channel></rss>
 
 --- pletivo:conformance index.html ---
-<!DOCTYPE html>
-<html data-astro-cid-[scope:1]> <head><title>Home Page</title><style>h1[data-astro-cid-[scope:1]]{color:rebeccapurple}</style>
+<!DOCTYPE html><html data-astro-cid-[scope:1]> <head><title>Home Page</title><style>h1[data-astro-cid-[scope:1]]{color:rebeccapurple}</style>
 </head> <body data-astro-cid-[scope:1]> <h1 data-astro-cid-[scope:1]>Home Page</h1></body></html>
 
 --- pletivo:conformance plain/index.html ---

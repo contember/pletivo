@@ -60,6 +60,7 @@ export interface PageModule {
   default?: unknown;
   getStaticPaths?: unknown;
   prerender?: unknown;
+  partial?: unknown;
 }
 
 export interface ContentConfigModule {
@@ -252,6 +253,7 @@ async function renderMarkdownPage(program: IsolateProgram, request: IsolateMarkd
     html: markdownPageHtml(html, frontmatter),
     renderedModules: [],
     tsxStyles: [],
+    partial: false,
   };
   return response;
 }
@@ -411,6 +413,7 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
     html: value,
     renderedModules: [...renderedModules],
     tsxStyles,
+    partial: Boolean(module.partial),
   };
   return response;
 }

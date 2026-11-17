@@ -2,6 +2,7 @@
 
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
 import { extractAstroScopes } from "@pletivo/core/astro-host/scoped-style";
+import { pageDoctype, type PageDoctypeOptions } from "@pletivo/core/page-doctype";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 
 export interface PageCssOptions {
@@ -82,15 +83,16 @@ export function adjacency(
   return byImporter;
 }
 
+/** `doctypeOptions.compressHTML` is the artifact's, absent for a pletivo-native project. */
 export function finalizeHtml(
   html: string,
+  doctypeOptions: PageDoctypeOptions,
   css: readonly string[],
   scripts?: InjectedScripts,
 ): string {
   let out = html;
-  if (out.trimStart().startsWith("<html") && !out.trimStart().startsWith("<!")) {
-    out = "<!DOCTYPE html>\n" + out;
-  }
+  // Prepended last: the CSS below may be prepended to a page without `<head>`.
+  const doctype = pageDoctype(html, doctypeOptions);
   const parts = css.filter(Boolean);
   if (parts.length > 0) {
     const tag = parts.map((part) => `<style>${escapeInlineStyle(part)}</style>`).join("\n");
@@ -100,7 +102,7 @@ export function finalizeHtml(
   }
   const injected = injectedScriptTags(scripts);
   if (injected && out.includes("</head>")) out = out.replace("</head>", () => injected + "\n</head>");
-  return out;
+  return doctype + out;
 }
 
 function escapeInlineStyle(css: string): string {

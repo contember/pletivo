@@ -60,13 +60,13 @@ async function normalizedPage(name: Fixture, file: string): Promise<string> {
 
 describe("an MDX page in an Astro project", () => {
   test("starts its content with <meta charset>", async () => {
-    expect(await normalizedPage("astro", "index.html")).toStartWith('<meta charset="utf-8">\n<h1 ');
+    expect(await normalizedPage("astro", "index.html")).toStartWith('<!DOCTYPE html><meta charset="utf-8">\n<h1 ');
   });
 
   test("gets no <meta charset> when partial, led by a layout component, outside src/pages or _-prefixed", async () => {
     expect(await page("astro", "partial/index.html")).toBe('<h1 id="partial">Partial</h1>');
     expect(await page("astro", "wrapped/index.html")).toBe(
-      '<!DOCTYPE html>\n<html><head><title>Layout</title></head><body><h1 id="wrapped">Wrapped</h1></body></html>',
+      '<!DOCTYPE html><html><head><title>Layout</title></head><body><h1 id="wrapped">Wrapped</h1></body></html>',
     );
     const caller = await page("astro", "caller/index.html");
     expect(caller).not.toContain("charset");
@@ -74,7 +74,7 @@ describe("an MDX page in an Astro project", () => {
   });
 
   test("renders its elements through its components export, with Fragment provided, and ids on its headings", async () => {
-    const content = (await normalizedPage("astro", "index.html")).replace('<meta charset="utf-8">\n', "");
+    const content = (await normalizedPage("astro", "index.html")).replace('<!DOCTYPE html><meta charset="utf-8">\n', "");
     // `# Hello world!` renders through Title, which drops the id it is given. The fixture's
     // rehype plugin sets the `Preset` id before the heading ids run, which keep it.
     expect(content).toBe(
@@ -97,7 +97,7 @@ describe("an MDX page in an Astro project", () => {
   });
 
   test("experimental.headingIdCompat keeps a slug's trailing dash", async () => {
-    expect(await normalizedPage("compat", "index.html")).toBe('<meta charset="utf-8"><h2 id="step-1-">Step 1 —</h2>');
+    expect(await normalizedPage("compat", "index.html")).toBe('<!DOCTYPE html><meta charset="utf-8"><h2 id="step-1-">Step 1 —</h2>');
   });
 
   test("an experimental.headingIdCompat that is not a boolean is refused", () => {
@@ -119,7 +119,7 @@ describe("an MDX page in a project without an Astro config", () => {
   });
 });
 
-/** What Astro 5.16.11 with `@astrojs/mdx` 4.3.13 builds from the fixture, `<!DOCTYPE html>` left out. */
+/** What Astro 5.16.11 with `@astrojs/mdx` 4.3.13 builds from the fixture. */
 async function expectAstroOutput(name: Fixture, astro: string): Promise<void> {
   // `data-seen=""` and `&quot;` here, `data-seen` and `&#34;` in Astro's: the harness normaliser makes them one.
   const same = (html: string) => normalizeAttributeSpelling(normalizeVoidElements(html));
@@ -131,7 +131,7 @@ describe("a code block in an Astro project's MDX", () => {
     // The fixture's rehype plugin marks a `<pre>` that is already highlighted with `data-seen`.
     await expectAstroOutput(
       "shiki",
-      '<meta charset="utf-8"/><pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8;overflow-x:auto" tabindex="0" data-language="js" data-seen><code><span class="line"><span style="color:#F97583">const</span><span style="color:#79B8FF"> answer</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 42</span><span style="color:#E1E4E8">;</span></span></code></pre>\n' +
+      '<!DOCTYPE html><meta charset="utf-8"/><pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8;overflow-x:auto" tabindex="0" data-language="js" data-seen><code><span class="line"><span style="color:#F97583">const</span><span style="color:#79B8FF"> answer</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 42</span><span style="color:#E1E4E8">;</span></span></code></pre>\n' +
         '<pre><code class="language-math">x^2\n</code></pre>\n' +
         '<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8;overflow-x:auto" tabindex="0" data-language="plaintext" data-seen><code><span class="line"><span>plain text</span></span></code></pre>',
     );
@@ -140,7 +140,7 @@ describe("a code block in an Astro project's MDX", () => {
   test("follows markdown.shikiConfig and syntaxHighlight.excludeLangs", async () => {
     await expectAstroOutput(
       "shikiTheme",
-      '<meta charset="utf-8"/><pre class="astro-code nord" style="background-color:#2e3440ff;color:#d8dee9ff;overflow-x:auto;white-space:pre-wrap;word-wrap:break-word" tabindex="0" data-language="js"><code><span class="line"><span style="color:#81A1C1">const</span><span style="color:#D8DEE9"> answer</span><span style="color:#81A1C1"> =</span><span style="color:#B48EAD"> 42</span><span style="color:#81A1C1">;</span></span></code></pre>\n' +
+      '<!DOCTYPE html><meta charset="utf-8"/><pre class="astro-code nord" style="background-color:#2e3440ff;color:#d8dee9ff;overflow-x:auto;white-space:pre-wrap;word-wrap:break-word" tabindex="0" data-language="js"><code><span class="line"><span style="color:#81A1C1">const</span><span style="color:#D8DEE9"> answer</span><span style="color:#81A1C1"> =</span><span style="color:#B48EAD"> 42</span><span style="color:#81A1C1">;</span></span></code></pre>\n' +
         '<pre><code class="language-text">left alone\n</code></pre>',
     );
   });
@@ -148,14 +148,14 @@ describe("a code block in an Astro project's MDX", () => {
   test("is left as is with syntaxHighlight: false, its fence meta kept as metastring", async () => {
     await expectAstroOutput(
       "shikiOff",
-      '<meta charset="utf-8"/><pre><code class="language-js" metastring="title=&#34;a/b.js&#34;">const answer = 42;\n</code></pre>',
+      '<!DOCTYPE html><meta charset="utf-8"/><pre><code class="language-js" metastring="title=&#34;a/b.js&#34;">const answer = 42;\n</code></pre>',
     );
   });
 
   test("is highlighted by Astro's Prism with syntaxHighlight: \"prism\"", async () => {
     await expectAstroOutput(
       "prism",
-      '<meta charset="utf-8"/><pre class="language-js" data-language="js"><code is:raw class="language-js"><span class="token keyword">const</span> answer <span class="token operator">=</span> <span class="token number">42</span><span class="token punctuation">;</span>\n</code></pre>',
+      '<!DOCTYPE html><meta charset="utf-8"/><pre class="language-js" data-language="js"><code is:raw class="language-js"><span class="token keyword">const</span> answer <span class="token operator">=</span> <span class="token number">42</span><span class="token punctuation">;</span>\n</code></pre>',
     );
   });
 
@@ -263,7 +263,7 @@ export default {
 };`);
     expect(same(html)).toBe(
       same(
-        '<meta charset="utf-8"/><pre class="astro-code nord" style="background-color:#2e3440ff;color:#d8dee9ff;overflow-x:auto" tabindex="0" data-language="js"><code><span class="line"><span style="color:#81A1C1">const</span><span style="color:#D8DEE9"> answer</span><span style="color:#81A1C1"> =</span><span style="color:#B48EAD"> 42</span><span style="color:#81A1C1">;</span></span></code></pre>\n' +
+        '<!DOCTYPE html><meta charset="utf-8"/><pre class="astro-code nord" style="background-color:#2e3440ff;color:#d8dee9ff;overflow-x:auto" tabindex="0" data-language="js"><code><span class="line"><span style="color:#81A1C1">const</span><span style="color:#D8DEE9"> answer</span><span style="color:#81A1C1"> =</span><span style="color:#B48EAD"> 42</span><span style="color:#81A1C1">;</span></span></code></pre>\n' +
           math,
       ),
     );
@@ -277,7 +277,7 @@ export default {
 };`);
     expect(same(html)).toBe(
       same(
-        '<meta charset="utf-8"/><pre class="language-js" data-language="js"><code is:raw class="language-js"><span class="token keyword">const</span> answer <span class="token operator">=</span> <span class="token number">42</span><span class="token punctuation">;</span>\n</code></pre>\n' +
+        '<!DOCTYPE html><meta charset="utf-8"/><pre class="language-js" data-language="js"><code is:raw class="language-js"><span class="token keyword">const</span> answer <span class="token operator">=</span> <span class="token number">42</span><span class="token punctuation">;</span>\n</code></pre>\n' +
           math,
       ),
     );
@@ -309,10 +309,10 @@ export default {
         `Install \`${missing}\`, or set \`syntaxHighlight: false\` in \`markdown\` or in \`mdx()\` to silence this warning.`,
       );
       expect(same(await Bun.file(path.join(result.root, "dist/page-2/index.html")).text())).toBe(
-        same('<meta charset="utf-8"/><pre><code class="language-js">const answer = 42;\n</code></pre>\n' + math),
+        same('<!DOCTYPE html><meta charset="utf-8"/><pre><code class="language-js">const answer = 42;\n</code></pre>\n' + math),
       );
       expect(same(await Bun.file(path.join(result.root, "dist/plain/index.html")).text())).toBe(
-        same('<meta charset="utf-8"/><h1 id="plain">Plain</h1>'),
+        same('<!DOCTYPE html><meta charset="utf-8"/><h1 id="plain">Plain</h1>'),
       );
     });
   }

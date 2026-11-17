@@ -17,8 +17,7 @@
 index.html
 
 --- pletivo:conformance index.html ---
-<!DOCTYPE html>
-<html> <head><title>Scripts Test</title><script>const injectedHeadValue = "head-ok";
+<!DOCTYPE html><html> <head><title>Scripts Test</title><script>const injectedHeadValue = "head-ok";
 document.documentElement.dataset.injectedHead = injectedHeadValue;
 </script>
 <script type="module">document.documentElement.dataset.injectedPage=String(42);</script>

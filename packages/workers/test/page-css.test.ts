@@ -3,6 +3,8 @@ import type { ModuleId } from "@pletivo/core/artifact";
 import type { ResolvedStyleGraph } from "../src/compiled-program.ts";
 import { finalizeHtml, moduleOrder, pageCss } from "../src/page-css.ts";
 
+/** A pletivo-native project's page. */
+const NATIVE = { compressHTML: undefined, partial: false };
 const PAGE = "project:page.astro";
 const LAYOUT = "npm:layout/Layout.astro";
 const HEADER = "npm:layout/Header.astro";
@@ -93,6 +95,7 @@ describe("finalizeHtml", () => {
   test("keeps CSS and injected-script ordering", () => {
     expect(finalizeHtml(
       "<html><head></head><body>x</body></html>",
+      NATIVE,
       ["site{}", "scoped{}"],
       { headInline: ["headOne()", "headTwo()"], page: ["pageOne()"] },
     )).toBe(
@@ -105,6 +108,7 @@ describe("finalizeHtml", () => {
   test("escapes every case-insensitive literal style end sequence", () => {
     const html = finalizeHtml(
       "<html><head></head><body><p>safe</p></body></html>",
+      NATIVE,
       ['a::after{content:"</StYlE><script>bad()</script>"}'],
     );
     expect(html.match(/<style>/g)).toHaveLength(1);
@@ -116,7 +120,7 @@ describe("finalizeHtml", () => {
   test("inserts CSS and scripts verbatim, `$` replacement patterns included", () => {
     const dollars = "$$|$&|$'|$`";
     for (const html of ["<html><head></head><body>x</body></html>", "<html><body>x</body></html>"]) {
-      const out = finalizeHtml(html, [`a::after{content:"${dollars}"}`], {
+      const out = finalizeHtml(html, NATIVE, [`a::after{content:"${dollars}"}`], {
         headInline: [`head("${dollars}")`],
         page: [`page("${dollars}")`],
       });
@@ -130,9 +134,18 @@ describe("finalizeHtml", () => {
 
   test("falls back to body then front without reversing CSS", () => {
     const ordered = "<style>site{}</style>\n<style>scoped{}</style>";
-    expect(finalizeHtml("<html><body>x</body></html>", ["site{}", "scoped{}"]))
+    expect(finalizeHtml("<html><body>x</body></html>", NATIVE, ["site{}", "scoped{}"]))
       .toBe(`<!DOCTYPE html>\n<html><body>x${ordered}\n</body></html>`);
-    expect(finalizeHtml("<p>x</p>", ["site{}", "scoped{}"]))
+    expect(finalizeHtml("<p>x</p>", NATIVE, ["site{}", "scoped{}"]))
       .toBe(`${ordered}\n<p>x</p>`);
+  });
+
+  test("puts an Astro project's doctype before CSS prepended to a page without <head>", () => {
+    expect(finalizeHtml("<p>x</p>", { compressHTML: true, partial: false }, ["site{}"]))
+      .toBe("<!DOCTYPE html><style>site{}</style>\n<p>x</p>");
+    expect(finalizeHtml("<p>x</p>", { compressHTML: false, partial: false }, ["site{}"]))
+      .toBe("<!DOCTYPE html>\n<style>site{}</style>\n<p>x</p>");
+    expect(finalizeHtml("<p>x</p>", { compressHTML: true, partial: true }, ["site{}"]))
+      .toBe("<style>site{}</style>\n<p>x</p>");
   });
 });

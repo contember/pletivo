@@ -16,8 +16,7 @@
 index.html
 
 --- pletivo:conformance index.html ---
-<!DOCTYPE html>
-<html> <head><title>Hoisted Imports</title><style>.local-side-effect-css{color:#040506}.hoisted-entry-side-effect-css{display:flex}.hoisted-transitive-side-effect-css{align-items:stretch}
+<!DOCTYPE html><html> <head><title>Hoisted Imports</title><style>.local-side-effect-css{color:#040506}.hoisted-entry-side-effect-css{display:flex}.hoisted-transitive-side-effect-css{align-items:stretch}
 .frontmatter-side-effect-css{color:#0a141e}.frontmatter-transitive-side-effect-css{color:#010203}
 </style>
 </head> <body> <h1>Hoisted Imports</h1> <script type="module">var e="external-marker-from-disk";document.documentElement.dataset.externalLoaded=e;</script></body></html>
