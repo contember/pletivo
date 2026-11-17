@@ -63,15 +63,9 @@ export async function loadAstroConfig(
   }
 
   const rootUrl = pathToFileURL(projectRoot + path.sep);
-  const srcDir = new URL(configuredSrcDir ?? "src/", rootUrl);
-  const publicDir = new URL(
-    (userConfig.publicDir as string | undefined) ?? "public/",
-    rootUrl,
-  );
-  const outDir = new URL(
-    (userConfig.outDir as string | undefined) ?? "dist/",
-    rootUrl,
-  );
+  const srcDir = resolveDirAsUrl(projectRoot, configuredSrcDir ?? "src");
+  const publicDir = resolveDirAsUrl(projectRoot, (userConfig.publicDir as string | undefined) ?? "public");
+  const outDir = resolveDirAsUrl(projectRoot, (userConfig.outDir as string | undefined) ?? "dist");
 
   const integrations = Array.isArray(userConfig.integrations)
     ? (userConfig.integrations as AstroIntegration[])
@@ -114,6 +108,15 @@ export async function loadAstroConfig(
 
   return { config, configuredSrcDir };
 }
+
+/** A directory as Astro resolves one: absolute, with a trailing slash so URLs resolve inside it. */
+function resolveDirAsUrl(projectRoot: string, location: string): URL {
+  const resolved = path.resolve(projectRoot, location);
+  return pathToFileURL(resolved.endsWith(path.sep) ? resolved : resolved + path.sep);
+}
+
+/** A project setting pletivo cannot honour; the CLI prints its message without a stack. */
+export class ProjectConfigError extends Error {}
 
 /**
  * pletivo reads pages, styles and collections from its own `srcDir`, so an astro.config

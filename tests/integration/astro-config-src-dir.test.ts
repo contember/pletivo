@@ -53,6 +53,7 @@ describe("srcDir set only in astro.config", () => {
     const result = await runCli(root, ["build"]);
     expect(result.exitCode).not.toBe(0);
     expect(result.output).toContain(EXPECTED_ERROR);
+    expect(result.output).not.toContain("    at ");
     expect(await Bun.file(path.join(root, "dist/index.html")).exists()).toBe(false);
   }, 60_000);
 
@@ -62,6 +63,7 @@ describe("srcDir set only in astro.config", () => {
     const result = await runCli(root, ["dev", String(port), "--no-restart"]);
     expect(result.exitCode).not.toBe(0);
     expect(result.output).toContain(EXPECTED_ERROR);
+    expect(result.output).not.toContain("    at ");
   }, 60_000);
 
   test("prepare reports it as a diagnostic", async () => {
