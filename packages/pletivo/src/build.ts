@@ -33,14 +33,14 @@ import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
 import { setBase } from "@pletivo/runtime/base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
-import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, dynamicCssOf, recordBuildCssOutputs, registerCssPageEntry, restoreDynamicCss } from "./js-imported-css";
+import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, dynamicGraphOf, recordBuildCssOutputs, registerCssPageEntry, restoreDynamicGraph } from "./js-imported-css";
 import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-assets";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, paramsToKey, type CachedAstroIsland, type CachedCssHead } from "./incremental/cache";
 import { configureImportGraph, configureImportGraphCompilers, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
-import { recordDynamicCss, recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
+import { recordDynamicGraph, recordWrittenOutput, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
 import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { escapeRegex } from "@pletivo/core/escape-regex";
 import { pageDoctype } from "@pletivo/core/page-doctype";
@@ -1041,7 +1041,12 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     for (const result of dedupedResults) {
       if (result.source !== "cached" || !result.routeKey) continue;
       const entry = cache.getRoute(result.routeKey);
-      if (entry) restoreDynamicCss(result.routeKey, entry.dynamicCss, (file) => cache.virtualCss(file));
+      if (!entry) continue;
+      const nodes = entry.dynamicModules.flatMap((file) => {
+        const items = cache.dynamicNode(file);
+        return items ? [{ file, items }] : [];
+      });
+      restoreDynamicGraph(nodes, (file) => cache.virtualCss(file));
     }
   }
   const cssBundle = await bundleCss(projectRoot, config.srcDir, distDir, inlineStylesheets);
@@ -1087,7 +1092,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       recordWrittenOutput(cache, result.routeKey, size, cssHead);
       // After every render, so the module graph holds whatever this page imported dynamically.
       const deps = Object.keys(cache.getRoute(result.routeKey)?.depFingerprints ?? {});
-      recordDynamicCss(cache, result.routeKey, dynamicCssOf(path.join(pagesDir, result.file), deps));
+      recordDynamicGraph(cache, result.routeKey, dynamicGraphOf(path.join(pagesDir, result.file), deps));
     }
     console.log(`  ${result.label} → ${path.relative(projectRoot, result.outPath)} (${formatSize(size)})`);
   };

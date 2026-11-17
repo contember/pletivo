@@ -40,10 +40,17 @@ type CssRefKind = "external" | "source";
  * One entry of a module's import list, in source order. Keeping CSS and
  * module edges interleaved is what lets the group walk emit rules in
  * import order (spec item 4) rather than "all deps, then all CSS".
+ * `dynamic` marks an `import()` edge; a cached page does not load what it reaches.
  */
 type NodeItem =
-  | { type: "css"; file: string; kind: CssRefKind }
-  | { type: "dep"; file: string };
+  | { type: "css"; file: string; kind: CssRefKind; dynamic: boolean }
+  | { type: "dep"; file: string; dynamic: boolean };
+
+/** A module's import, as the scanner reports it. */
+interface ModuleImport {
+  specifier: string;
+  dynamic: boolean;
+}
 
 interface GraphNode {
   items: NodeItem[];
@@ -94,11 +101,9 @@ const keyToFile = new Map<string, string>();
 /** Detached (hoisted-script) source CSS refs, keyed by collection key. */
 const detachedSourceCss = new Map<string, string[]>();
 const pageEntryFiles = new Set<string>();
-/** Stylesheets restored for pages taken from the incremental cache, keyed by route. */
-const restoredDynamicCss = new Map<string, string[]>();
 const externalCssText = new Map<string, Promise<string>>();
 const cssImportEntries = new Map<string, CssImportEntry>();
-const staticImportCache = new Map<string, Promise<string[]>>();
+const moduleImportCache = new Map<string, Promise<ModuleImport[]>>();
 /**
  * Stylesheets that exist only in memory, by absolute path: a compiled component's `<style>`,
  * at a path beside the component so its relative `url()` and `@import` resolve from there,
@@ -170,13 +175,6 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
       kinds.set(item.file, item.kind);
     }
   }
-  for (const files of restoredDynamicCss.values()) {
-    for (const file of files) {
-      if (order.has(file)) continue;
-      shared.add(file);
-      kinds.set(file, cssKind(file));
-    }
-  }
   // Hoisted-script CSS is page-agnostic here: the scripts are bundled as
   // one artifact, so their source CSS cannot be attributed to a page set.
   for (const files of detachedSourceCss.values()) {
@@ -238,63 +236,95 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
   };
 }
 
-/** A stylesheet `dynamicCssOf` found, with its text when it exists only in memory. */
-export interface DynamicCssRef {
+/** One import of a graph module, as the incremental cache keeps it. */
+export interface GraphNodeItem {
+  type: "css" | "dep";
   file: string;
-  css?: string;
+  dynamic: boolean;
+}
+
+/** A graph module as the incremental cache keeps it: its imports in source order. */
+export interface GraphNodeRecord {
+  file: string;
+  items: GraphNodeItem[];
+}
+
+/** What `dynamicGraphOf` records: the modules, and the text of their in-memory stylesheets. */
+export interface DynamicGraph {
+  nodes: GraphNodeRecord[];
+  virtualCss: Array<{ file: string; css: string }>;
 }
 
 /**
- * Stylesheets reached from `deps` but not through `page`'s static imports: the CSS of
- * modules the page's render imported dynamically. A page restored from the incremental
- * cache is not rendered, so those modules do not load; `restoreDynamicCss` keeps their CSS.
+ * The graph modules reached from `page` and its `deps` but not through the page's static
+ * imports. A page restored from the incremental cache is not rendered, so those modules do
+ * not load; `restoreDynamicGraph` puts them back so the page walk equals a full build's.
  */
-export function dynamicCssOf(page: string, deps: Iterable<string>): DynamicCssRef[] {
-  const visited = new Set<string>();
-  walkCssGraph(path.resolve(page), visited, () => {});
-  const files = new Set<string>();
-  for (const dep of deps) walkCssGraph(dep, visited, (file) => files.add(file));
-  return [...files].sort().map((file) => {
-    const css = virtualCss.get(file);
-    return css === undefined ? { file } : { file, css };
-  });
+export function dynamicGraphOf(page: string, deps: Iterable<string>): DynamicGraph {
+  const entry = path.resolve(page);
+  const staticModules = new Set<string>();
+  walkCssGraph(entry, staticModules, () => {}, true);
+  const reached = new Set<string>();
+  walkCssGraph(entry, reached, () => {});
+  for (const dep of deps) walkCssGraph(dep, reached, () => {});
+  const nodes: GraphNodeRecord[] = [];
+  const texts = new Map<string, string>();
+  for (const file of [...reached].sort()) {
+    const node = fileNodes.get(file);
+    if (!node || staticModules.has(file)) continue;
+    nodes.push({ file, items: node.items.map((item) => ({ type: item.type, file: item.file, dynamic: item.dynamic })) });
+    for (const item of node.items) {
+      const css = item.type === "css" ? virtualCss.get(item.file) : undefined;
+      if (css !== undefined) texts.set(item.file, css);
+    }
+  }
+  return { nodes, virtualCss: [...texts].map(([file, css]) => ({ file, css })) };
 }
 
 /**
- * Bring back the stylesheets `dynamicCssOf` recorded for a page that is not rendered this
- * build. `storedCss` gives the recorded text of an in-memory one.
+ * Put back the modules `dynamicGraphOf` recorded for a page that is not rendered this build,
+ * where no module loaded this build. `storedCss` gives the recorded text of an in-memory stylesheet.
  */
-export function restoreDynamicCss(
-  key: string,
-  files: readonly string[],
+export function restoreDynamicGraph(
+  nodes: readonly GraphNodeRecord[],
   storedCss: (file: string) => string | undefined,
 ): void {
-  const restored: string[] = [];
-  for (const file of files) {
-    const css = storedCss(file);
-    if (css === undefined) {
-      // Deleted since, through an edge the dependency graph does not see: nothing left to ship.
-      if (!virtualCss.has(file) && !existsSync(file)) continue;
-    } else if (!virtualCss.has(file)) {
-      // A component compiled this build has the current text already.
-      setVirtualCss(file, css);
+  for (const node of nodes) {
+    if (fileNodes.get(node.file)?.authoritative) continue;
+    const items: NodeItem[] = [];
+    for (const item of node.items) {
+      if (item.type === "dep") {
+        items.push({ type: "dep", file: item.file, dynamic: item.dynamic });
+        continue;
+      }
+      const css = storedCss(item.file);
+      if (css === undefined) {
+        // Deleted since, through an edge the dependency graph does not see: nothing left to ship.
+        if (!virtualCss.has(item.file) && !existsSync(item.file)) continue;
+      } else if (!virtualCss.has(item.file)) {
+        // A component compiled this build has the current text already.
+        setVirtualCss(item.file, css);
+      }
+      items.push({ type: "css", file: item.file, kind: cssKind(item.file), dynamic: item.dynamic });
     }
-    restored.push(file);
+    fileNodes.set(node.file, { items, authoritative: true });
   }
-  restoredDynamicCss.set(key, restored);
 }
 
+/** Emit the CSS reachable from `file` in import order. `staticOnly` skips `import()` edges. */
 function walkCssGraph(
   file: string,
   visited: Set<string>,
   emit: (file: string, kind: CssRefKind) => void,
+  staticOnly = false,
 ): void {
   if (visited.has(file)) return;
   visited.add(file);
   const node = fileNodes.get(file);
   if (!node) return;
   for (const item of node.items) {
-    if (item.type === "dep") walkCssGraph(item.file, visited, emit);
+    if (staticOnly && item.dynamic) continue;
+    if (item.type === "dep") walkCssGraph(item.file, visited, emit, staticOnly);
     else emit(item.file, item.kind);
   }
 }
@@ -337,15 +367,14 @@ export function clearJsImportedCss(): void {
   keyToFile.clear();
   detachedSourceCss.clear();
   pageEntryFiles.clear();
-  restoredDynamicCss.clear();
   externalCssText.clear();
   bundledCssMap.clear();
   cssImportEntries.clear();
-  staticImportCache.clear();
+  moduleImportCache.clear();
 }
 
 export function clearJsImportedCssImportCache(): void {
-  staticImportCache.clear();
+  moduleImportCache.clear();
 }
 
 export function clearCollectedCss(prefix: string): void {
@@ -419,7 +448,7 @@ export async function collectCssSideEffectImports(
   const file = path.resolve(sourceFile);
   keyToFile.set(key, file);
   fileNodes.set(file, {
-    items: nodeItems(file, staticImportsFromCode(file, code)),
+    items: nodeItems(file, moduleImportsFromCode(file, code)),
     authoritative: true,
   });
   await expandGraph(file, new Set<string>([file]));
@@ -442,7 +471,7 @@ async function expandGraph(file: string, visited: Set<string>): Promise<void> {
     const existing = fileNodes.get(dep);
     if (!existing?.authoritative) {
       fileNodes.set(dep, {
-        items: nodeItems(dep, await staticImportsForFile(dep)),
+        items: nodeItems(dep, await moduleImportsForFile(dep)),
         authoritative: false,
       });
     }
@@ -450,25 +479,30 @@ async function expandGraph(file: string, visited: Set<string>): Promise<void> {
   }
 }
 
-function nodeItems(sourceFile: string, imports: string[]): NodeItem[] {
+function nodeItems(sourceFile: string, imports: ModuleImport[]): NodeItem[] {
   const items: NodeItem[] = [];
-  const seen = new Set<string>();
-  for (const specifier of imports) {
+  const seen = new Map<string, NodeItem>();
+  const add = (key: string, item: NodeItem): void => {
+    const existing = seen.get(key);
+    // Imported both ways, in either order: the static import always loads it.
+    if (existing) existing.dynamic = existing.dynamic && item.dynamic;
+    else {
+      seen.set(key, item);
+      items.push(item);
+    }
+  };
+  for (const { specifier, dynamic } of imports) {
     const clean = stripQuery(specifier);
     if (!clean || isVirtualOrBuiltin(clean)) continue;
 
     const cssPath = resolveCssSpecifier(sourceFile, specifier);
     if (cssPath) {
-      if (seen.has(`css\0${cssPath}`)) continue;
-      seen.add(`css\0${cssPath}`);
-      items.push({ type: "css", file: cssPath, kind: cssKind(cssPath) });
+      add(`css\0${cssPath}`, { type: "css", file: cssPath, kind: cssKind(cssPath), dynamic });
       continue;
     }
 
     const modulePath = resolveLocalModule(specifier, sourceFile);
-    if (!modulePath || seen.has(`dep\0${modulePath}`)) continue;
-    seen.add(`dep\0${modulePath}`);
-    items.push({ type: "dep", file: modulePath });
+    if (modulePath) add(`dep\0${modulePath}`, { type: "dep", file: modulePath, dynamic });
   }
   return items;
 }
@@ -604,7 +638,7 @@ async function collectCssImports(sourceFile: string, code: string): Promise<CssI
   const out = { source: new Set<string>(), external: new Set<string>() };
   await collectCssSpecifiersFromImports(
     sourceFile,
-    staticImportsFromCode(sourceFile, code),
+    staticSpecifiers(moduleImportsFromCode(sourceFile, code)),
     out,
     new Set<string>(),
   );
@@ -639,26 +673,30 @@ async function collectCssSpecifiersFromImports(
     visited.add(modulePath);
     await collectCssSpecifiersFromImports(
       modulePath,
-      await staticImportsForFile(modulePath),
+      staticSpecifiers(await moduleImportsForFile(modulePath)),
       out,
       visited,
     );
   }
 }
 
-async function staticImportsForFile(file: string): Promise<string[]> {
-  let promise = staticImportCache.get(file);
+async function moduleImportsForFile(file: string): Promise<ModuleImport[]> {
+  let promise = moduleImportCache.get(file);
   if (!promise) {
-    promise = readStaticImportsForFile(file);
-    staticImportCache.set(file, promise);
+    promise = readModuleImportsForFile(file);
+    moduleImportCache.set(file, promise);
   }
   return await promise;
 }
 
-async function readStaticImportsForFile(file: string): Promise<string[]> {
+async function readModuleImportsForFile(file: string): Promise<ModuleImport[]> {
   const code = await readTextFile(file);
   if (code === null) return [];
-  return staticImportsFromCode(file, code);
+  return moduleImportsFromCode(file, code);
+}
+
+function staticSpecifiers(imports: ModuleImport[]): string[] {
+  return imports.filter((entry) => !entry.dynamic).map((entry) => entry.specifier);
 }
 
 async function readTextFile(file: string): Promise<string | null> {
@@ -671,14 +709,17 @@ async function readTextFile(file: string): Promise<string | null> {
   }
 }
 
-function staticImportsFromCode(sourceFile: string, code: string): string[] {
+/** Static imports and `import()` calls with a string specifier; a computed one is not reported. */
+function moduleImportsFromCode(sourceFile: string, code: string): ModuleImport[] {
   try {
-    return pickTranspiler(path.extname(sourceFile).toLowerCase())
-      .scanImports(code)
-      .filter((entry) => entry.kind === "import-statement")
-      .map((entry) => entry.path);
+    const imports: ModuleImport[] = [];
+    for (const entry of pickTranspiler(path.extname(sourceFile).toLowerCase()).scanImports(code)) {
+      if (entry.kind === "import-statement") imports.push({ specifier: entry.path, dynamic: false });
+      else if (entry.kind === "dynamic-import") imports.push({ specifier: entry.path, dynamic: true });
+    }
+    return imports;
   } catch {
-    return extractCssSideEffectImports(sourceFile, code);
+    return extractCssSideEffectImports(sourceFile, code).map((specifier) => ({ specifier, dynamic: false }));
   }
 }
 

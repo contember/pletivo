@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { runWithRuntimeDepCapture } from "./dep-tracker";
 import { collectStaticDeps, isWalkableSourceFile } from "./import-graph";
+import type { DynamicGraph } from "../js-imported-css";
 import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedCssHead, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
 
 /**
@@ -242,8 +243,8 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			// Populated downstream after writeHtml — we don't know the
 			// final byte length or CSS markup yet (injection happens there).
 			cssHead: null,
-			// Known only once every page has rendered: see `recordDynamicCss`.
-			dynamicCss: [],
+			// Known only once every page has rendered: see `recordDynamicGraph`.
+			dynamicModules: [],
 			size: 0,
 		};
 		req.cache.setRoute(req.routeKey, entry);
@@ -281,14 +282,13 @@ export function recordWrittenOutput(cache: CacheStore, routeKey: string, size: n
 	cache.setRoute(routeKey, { ...entry, size, cssHead });
 }
 
-/** Patch the stylesheets a rendered page reached through dynamic imports onto its cache entry; in-memory text is kept once per cache. */
-export function recordDynamicCss(cache: CacheStore, routeKey: string, refs: ReadonlyArray<{ file: string; css?: string }>): void {
+/** Patch the graph modules a rendered page reached through dynamic imports onto its cache entry; their nodes and in-memory text are kept once per cache. */
+export function recordDynamicGraph(cache: CacheStore, routeKey: string, graph: DynamicGraph): void {
 	const entry = cache.getRoute(routeKey);
 	if (!entry) return;
-	for (const ref of refs) {
-		if (ref.css !== undefined) cache.setVirtualCss(ref.file, ref.css);
-	}
-	cache.setRoute(routeKey, { ...entry, dynamicCss: refs.map((ref) => ref.file) });
+	for (const { file, css } of graph.virtualCss) cache.setVirtualCss(file, css);
+	for (const node of graph.nodes) cache.setDynamicNode(node.file, node.items);
+	cache.setRoute(routeKey, { ...entry, dynamicModules: graph.nodes.map((node) => node.file) });
 }
 
 async function fileExists(p: string): Promise<boolean> {
