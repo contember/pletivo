@@ -145,6 +145,20 @@ describe("byte parity with pletivo build", () => {
     60_000,
   );
 
+  test(
+    "the multi-renderer fixture renders each framework's islands as the build does",
+    async () => {
+      const { ok, output } = await localParity("tests/fixture-astro-renderers-multi");
+      // Preact, Solid, React, Svelte and Vue islands on one page, through the server bundle
+      // `prepare` built: the markup, Astro's island scripts and every component-url,
+      // renderer-url and uid, byte-for-byte against `pletivo build`.
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    180_000,
+  );
+
   test.skipIf(!HAS_TAILWIND)(
     "the Tailwind fixture agrees on every byte except how the CSS is delivered",
     async () => {
