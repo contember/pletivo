@@ -9,9 +9,8 @@ import type { PletivoConfig } from "../../packages/pletivo/src/config";
 import { normalizeFilename, normalizeRootRelativeFilename, resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import type { AstroConfig } from "@pletivo/core/astro-host/types";
 
-// An Astro project compiles `.astro` with the options Astro passes: `compact`
-// from `compressHTML` (default true), and a root-relative `normalizedFilename`,
-// which the compiler hashes into the scope id. Both fixtures hold the same
+// `.astro` compiles with Astro's options: `compact` from `compressHTML` (default true) and a
+// root-relative `normalizedFilename`, hashed into the scope id. Both fixtures hold the same
 // `src/components/Subject.astro`; one sets `compressHTML: false`.
 const compressedRoot = path.join(import.meta.dir, "../fixture-astro-compile-options");
 const uncompressedRoot = path.join(import.meta.dir, "../fixture-astro-compile-options-uncompressed");

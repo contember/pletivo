@@ -31,7 +31,8 @@ function normalizePath(id: string): string {
  */
 export function normalizeFilename(filename: string, root: URL): string {
   const normalizedFilename = normalizePath(filename);
-  const rootPath = fileURLToPath(root);
+  // `.href`: under workerd's types the global `URL` is not `node:url`'s.
+  const rootPath = fileURLToPath(root.href);
   const normalizedRoot = normalizePath(rootPath);
   if (normalizedFilename.startsWith(normalizedRoot)) {
     return normalizedFilename.slice(normalizedRoot.length - 1);
