@@ -35,7 +35,7 @@ export interface FrameworkCompiler {
   compile(input: FrameworkCompileInput): Promise<FrameworkCompileOutput | null>;
 }
 
-/** The longest of `suffixes` that `filename` ends with, or `null`. */
+/** The longest of `suffixes` that `filename` ends with, or `null`. Case-sensitive, as Vite's plugin filters are. */
 export function offeredSuffix(filename: string, suffixes: Iterable<string>): string | null {
   let longest: string | null = null;
   for (const suffix of suffixes) {

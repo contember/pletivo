@@ -48,6 +48,15 @@ describe("config watch set", () => {
     expect(files).toContain("lib/helper.mjs");
   });
 
+  test("covers svelte.config.* and what it imports, which the Svelte compiler reads once", async () => {
+    const project = path.join(fixtureRoot, "svelte");
+    await fs.mkdir(project, { recursive: true });
+    await fs.writeFile(path.join(project, "svelte.config.mjs"), `import { options } from './svelte-options.mjs'\nexport default options\n`);
+    await fs.writeFile(path.join(project, "svelte-options.mjs"), `export const options = {}\n`);
+    const files = (await resolveConfigWatchFiles(project)).map((f) => path.relative(project, f));
+    expect(files).toEqual(["svelte-options.mjs", "svelte.config.mjs"]);
+  });
+
   test("leaves src/ and bare specifiers to the other watchers", async () => {
     const files = (await resolveConfigWatchFiles(fixtureRoot)).map((f) => path.relative(fixtureRoot, f));
     expect(files.some((f) => f.startsWith("src/"))).toBe(false);

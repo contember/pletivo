@@ -10,10 +10,15 @@ import {
 import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 
 /** Looked up in this order in the project root, as the Vite plugin does (minus `.cjs`). */
-const SVELTE_CONFIG_NAMES = ["svelte.config.js", "svelte.config.mjs"];
+export const SVELTE_CONFIG_NAMES = ["svelte.config.js", "svelte.config.mjs"];
+
+/** The project's `svelte.config.*`, as the compiler loads it, or `null`. */
+export function findSvelteConfig(projectRoot: string): string | null {
+  return SVELTE_CONFIG_NAMES.map((name) => path.join(projectRoot, name)).find((candidate) => existsSync(candidate)) ?? null;
+}
 
 async function loadSvelteConfig(projectRoot: string): Promise<SvelteConfig> {
-  const file = SVELTE_CONFIG_NAMES.map((name) => path.join(projectRoot, name)).find((candidate) => existsSync(candidate));
+  const file = findSvelteConfig(projectRoot);
   if (!file) return { preprocess: null, compilerOptions: {} };
   let mod: unknown;
   try {

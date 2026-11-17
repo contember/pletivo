@@ -10,5 +10,6 @@
 </div>
 
 <style>
-  .svelte-counter { color: rgb(10, 11, 12); }
+  @import "../../styles/imported.css";
+  .svelte-counter { color: rgb(10, 11, 12); background: url(./bg.svg); }
 </style>

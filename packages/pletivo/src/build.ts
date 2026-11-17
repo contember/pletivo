@@ -34,6 +34,7 @@ import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, recordBuildCssOutputs, registerCssPageEntry } from "./js-imported-css";
 import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-assets";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
+import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
 import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, type CachedAstroIsland } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
@@ -1087,7 +1088,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     for (const result of dedupedResults) {
       if (result.source === "cached" && result.astroIslands) astroRenderers.addHydratedComponents(result.astroIslands);
     }
-    await bundleRenderedIslands(astroRenderers, distDir);
+    await bundleRenderedIslands(astroRenderers, distDir, astroRenderers.hydratedComponents());
   }
   phase("islands bundling", tBundle);
   clearHoistedScripts();
@@ -1258,7 +1259,7 @@ async function canReuseDeps(deps: Record<string, import("./incremental/cache").D
  * Compute a single hash that captures every input which, if changed,
  * should invalidate ALL cached routes (vs. per-route deps). Includes:
  *   - pletivo config (selected fields)
- *   - astro/pletivo config file contents (if present)
+ *   - astro/pletivo/svelte config file contents (if present)
  *   - bun.lock
  *   - tsconfig.json (path aliases, module resolution → can change which
  *     file a bare specifier resolves to without any source edit)
@@ -1290,6 +1291,7 @@ async function computeProjectConfigHash(
     "astro.config.ts",
     "pletivo.config.ts",
     "pletivo.config.js",
+    ...SVELTE_CONFIG_NAMES,
     "src/content.config.ts",
     "src/content.config.mts",
     "src/content.config.mjs",

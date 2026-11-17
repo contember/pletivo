@@ -3,7 +3,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { parseAstroRenderer } from "../../packages/core/src/astro-host/renderers";
-import type { FrameworkCompiler } from "../../packages/core/src/framework-compile/types";
+import { offeredSuffix, type FrameworkCompiler } from "../../packages/core/src/framework-compile/types";
 import { __resetForTests, initAstroHost, type AstroHost } from "../../packages/pletivo/src/astro-host/runner";
 import { resolveComponentPath } from "../../packages/pletivo/src/astro-plugin";
 import { frameworkCompilePlugin } from "../../packages/pletivo/src/framework-compile";
@@ -133,6 +133,14 @@ describe("frameworkCompilePlugin", () => {
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("offeredSuffix", () => {
+  test("picks the longest suffix, case-sensitively", () => {
+    expect(offeredSuffix("/a/count.svelte.js", [".js", ".svelte.js"])).toBe(".svelte.js");
+    expect(offeredSuffix("/a/Count.Svelte.js", [".js", ".svelte.js"])).toBe(".js");
+    expect(offeredSuffix("/a/Card.TSX", [".jsx", ".tsx"])).toBeNull();
   });
 });
 

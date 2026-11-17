@@ -3,7 +3,7 @@
  * each loading the compiler package installed in the project.
  */
 import path from "path";
-import { stripQuery } from "@pletivo/core/dev-cache";
+import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import type { BunPlugin } from "bun";
 import type { AstroRendererEntry } from "@pletivo/core/astro-host/renderers";
 import { offeredSuffix, type FrameworkCompileTarget, type FrameworkCompiler } from "@pletivo/core/framework-compile/types";
@@ -60,6 +60,8 @@ const FALLBACK_LOADERS: Readonly<Record<string, "js" | "jsx" | "ts" | "tsx">> = 
  * cache-bust query is allowed and stripped. A Bun runtime plugin must return a module,
  * so a file every compiler declines is returned as written, by its real extension, or
  * fails by name: no later plugin sees it. Pass it the server-target compilers without the JSX one.
+ * On the server target its relative imports carry dev's cache-bust, as `project-source-plugin`
+ * gives project modules, so an edit to a file a component imports reaches the next render.
  */
 export function frameworkCompilePlugin(options: FrameworkCompilePluginOptions): BunPlugin {
   const extensions = [...new Set(options.compilers.flatMap((c) => c.extensions))];
@@ -72,16 +74,17 @@ export function frameworkCompilePlugin(options: FrameworkCompilePluginOptions): 
         const filename = stripQuery(args.path);
         const suffix = offeredSuffix(filename, extensions);
         const source = await Bun.file(filename).text();
+        const bust = (code: string) => (options.target === "server" ? applyDevCacheBust(code, getDevVersion()) : code);
         for (const compiler of options.compilers) {
           if (suffix === null || !compiler.extensions.includes(suffix)) continue;
           const output = await compiler.compile({ source, filename, target: options.target });
           if (!output) continue;
           if (output.css !== null) options.onCss(filename, output.css);
-          return { contents: output.code, loader: output.loader };
+          return { contents: bust(output.code), loader: output.loader };
         }
         const loader = FALLBACK_LOADERS[path.extname(filename)];
         if (!loader) throw new Error(`${filename}: no framework compiler accepted this file`);
-        return { contents: source, loader };
+        return { contents: bust(source), loader };
       });
     },
   };

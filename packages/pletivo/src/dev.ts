@@ -47,6 +47,7 @@ import {
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
 import { registerProjectSourcePlugin } from "./project-source-plugin";
 import { bundleRenderedIslands, setupAstroRenderers, type AstroRenderers } from "./astro-renderers";
+import type { AstroIslandComponent } from "./astro-islands-bundle";
 import { installImportMetaEnv } from "./import-meta-env";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
@@ -225,12 +226,22 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureJsImportedCss(projectRoot, config.srcDir);
   // Before any project module loads: the renderers decide how its framework components compile.
-  const astroRenderers = await setupAstroRenderers({
-    projectRoot,
-    renderers: astroHost?.renderers ?? [],
-    base: typeof astroHost?.config.base === "string" ? astroHost.config.base : config.base,
-    beforeHydrationScripts: astroHost?.injectedBeforeHydrationScripts ?? [],
-  });
+  // Rewired after a failed astro:config:setup recovers, which may register renderers.
+  let astroRenderers: AstroRenderers | null = null;
+  let wiredRenderers = "";
+  async function wireAstroRenderers(): Promise<void> {
+    const renderers = astroHost?.renderers ?? [];
+    const names = renderers.map((renderer) => renderer.name).join(", ");
+    if (astroRenderers !== null && names === wiredRenderers) return;
+    astroRenderers = await setupAstroRenderers({
+      projectRoot,
+      renderers,
+      base: typeof astroHost?.config.base === "string" ? astroHost.config.base : config.base,
+      beforeHydrationScripts: astroHost?.injectedBeforeHydrationScripts ?? [],
+    });
+    wiredRenderers = names;
+  }
+  await wireAstroRenderers();
   {
     const vite = astroHost?.config.vite as
       | { css?: { preprocessorOptions?: { scss?: Record<string, unknown> } } }
@@ -262,6 +273,13 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     const recovered = await astroHost.retryFailedSetup();
     if (recovered.length === 0) return;
     console.log(`  astro:config:setup recovered → ${recovered.join(", ")}`);
+    // A recovered hook may have registered a renderer. A process wires one set (its compilers are
+    // Bun plugins), so a set that changes once wired fails here, by name, and needs a restart.
+    try {
+      await wireAstroRenderers();
+    } catch (error) {
+      console.error(`  ${error instanceof Error ? error.message : String(error)}`);
+    }
     // Whatever the hook (re)generated is a module some page already tried to
     // import. Bust the cache so the next render picks it up, and push the
     // browser off the error page.
@@ -467,6 +485,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       }
       // Each Astro island carries its scripts; the page keeps the first of each, in document order.
       html = finalizeIslandScripts(html);
+      recordPageIslands(`page:${pathname}`, html);
 
       // Inject dev stylesheet link + HMR / hydration scripts + any
       // integration-injected scripts (`injectScript('page', code)` from
@@ -632,6 +651,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
     else return null;
     html = finalizeIslandScripts(html);
+    recordPageIslands(`component:${fullPath}`, html);
 
     const astroCss = await getAstroCssForPage({
       entryFile: fullPath,
@@ -1099,16 +1119,50 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
 
   // Astro island bundles, rebuilt on request once a page hydrated a new component or a file changed.
   const devIslandsDir = path.join(projectRoot, "node_modules", ".pletivo", "dev-islands");
+  /** What an extensionless component import may resolve to, in Bun's order. */
+  const SCRIPT_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"];
+  /** The components each page hydrated when it last rendered, by page: what the island bundles cover. */
+  const pageIslands = new Map<string, AstroIslandComponent[]>();
+  function recordPageIslands(page: string, html: string): void {
+    if (astroRenderers !== null) pageIslands.set(page, astroRenderers.componentsIn(html));
+  }
   let islandBundle: { key: string; done: Promise<void> } | null = null;
 
+  /**
+   * Whether a component is still on disk. Its path is the import as written, made absolute, so it
+   * may lack an extension or name a directory. Checked on disk each time: Bun's resolver caches
+   * directory listings, so it still finds a file renamed since. A package specifier is left to it.
+   */
+  function componentResolves(componentPath: string): boolean {
+    if (!path.isAbsolute(componentPath)) {
+      try {
+        Bun.resolveSync(componentPath, projectRoot);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    const candidates = [componentPath, ...SCRIPT_EXTENSIONS.flatMap((ext) => [componentPath + ext, path.join(componentPath, `index${ext}`)])];
+    return candidates.some((candidate) => fs.statSync(candidate, { throwIfNoEntry: false })?.isFile() === true);
+  }
+
   async function serveAstroIslandBundle(renderers: AstroRenderers, pathname: string): Promise<Response | null> {
-    const components = renderers.hydratedComponents().map((c) => `${c.componentPath}\0${c.exportName}`);
-    const key = `${getDevVersion()}\0${components.join("\0")}`;
-    if (islandBundle?.key !== key) islandBundle = { key, done: bundleRenderedIslands(renderers, devIslandsDir) };
+    // A deleted or renamed component leaves records behind until its pages render again; it can no
+    // longer be bundled, and must not take the other islands down with it.
+    const components = new Map<string, AstroIslandComponent>();
+    for (const islands of pageIslands.values()) {
+      for (const island of islands) {
+        if (componentResolves(island.componentPath)) components.set(`${island.componentPath}\0${island.exportName}`, island);
+      }
+    }
+    const key = `${getDevVersion()}\0${[...components.keys()].sort().join("\0")}`;
+    if (islandBundle?.key !== key) {
+      islandBundle = { key, done: bundleRenderedIslands(renderers, devIslandsDir, [...components.values()]) };
+    }
     try {
       await islandBundle.done;
     } catch (e) {
-      return new Response(`Astro island bundling failed:\n${e instanceof Error ? e.message : String(e)}`, { status: 500 });
+      return new Response(e instanceof Error ? e.message : String(e), { status: 500 });
     }
     const file = path.join(devIslandsDir, pathname);
     if (!file.startsWith(devIslandsDir + path.sep) || !fs.existsSync(file)) return null;

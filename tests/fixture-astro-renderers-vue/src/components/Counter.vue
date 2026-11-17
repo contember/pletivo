@@ -12,5 +12,6 @@ const count = ref(props.start);
 </script>
 
 <style scoped>
-.vue-counter { color: rgb(13, 14, 15); }
+@import "../../styles/imported.css";
+.vue-counter { color: rgb(13, 14, 15); background: url(./bg.svg); }
 </style>

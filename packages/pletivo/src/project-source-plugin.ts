@@ -34,7 +34,7 @@ export function configureProjectCompilers(compilers: readonly FrameworkCompiler[
 }
 
 async function compileProjectFile(source: string, filename: string): Promise<{ code: string; loader: SourceLoader } | null> {
-  const suffix = offeredSuffix(filename.toLowerCase(), projectCompilers.flatMap((compiler) => compiler.extensions));
+  const suffix = offeredSuffix(filename, projectCompilers.flatMap((compiler) => compiler.extensions));
   if (suffix === null) return null;
   for (const compiler of projectCompilers) {
     if (!compiler.extensions.includes(suffix)) continue;

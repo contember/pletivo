@@ -6,9 +6,7 @@
  * Set up after `astro:config:setup`. A project without renderers changes nothing: no
  * compiler, no plugin, and the runtime's islands stay off.
  */
-import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import fs from "node:fs/promises";
 import path from "node:path";
 import type { AstroRendererEntry } from "@pletivo/core/astro-host/renderers";
 import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
@@ -18,7 +16,7 @@ import { bundleAstroIslands, createIslandClientUrls, type AstroIslandComponent, 
 import { resolveViteId, serveViteVirtualImports, tryLoadViteId } from "./astro-host/vite-plugins";
 import { frameworkCompilePlugin, loadFrameworkCompilers } from "./framework-compile";
 import { configureRegisteredRenderers } from "./framework-components";
-import { collectCssSideEffectImports } from "./js-imported-css";
+import { collectCssSideEffectImports, setVirtualCss } from "./js-imported-css";
 import { configureProjectCompilers } from "./project-source-plugin";
 
 /** The project's renderers, loaded once per process. */
@@ -123,9 +121,12 @@ export async function setupAstroRenderers(options: SetupAstroRenderersOptions): 
   };
 }
 
-/** Write the client bundles of every component hydrated so far, at the URLs the pages reference. */
-export async function bundleRenderedIslands(renderers: AstroRenderers, distDir: string): Promise<void> {
-  const components = renderers.hydratedComponents();
+/** Write the client bundles of `components`, at the URLs the pages reference. */
+export async function bundleRenderedIslands(
+  renderers: AstroRenderers,
+  distDir: string,
+  components: readonly AstroIslandComponent[],
+): Promise<void> {
   if (components.length === 0) return;
   await bundleAstroIslands({
     projectRoot: renderers.projectRoot,
@@ -165,7 +166,7 @@ async function loadProject(projectRoot: string, entries: readonly AstroRendererE
   const scripts = await readIslandScripts(projectRoot);
 
   // Last, once nothing above can fail: a registered plugin stays for the life of the process.
-  const others = compilers.filter((compiler) => !isJsxCompiler(compiler)).map((compiler) => importingItsCss(compiler, projectRoot));
+  const others = compilers.filter((compiler) => !isJsxCompiler(compiler)).map(registeringItsCss);
   if (others.length > 0) {
     await Bun.plugin(
       frameworkCompilePlugin({
@@ -194,32 +195,28 @@ function isJsxCompiler(compiler: FrameworkCompiler): boolean {
 }
 
 /**
- * A compiler whose server module imports its CSS, as Vite's `?vue&type=style` import does:
- * the CSS is written to a file and the JS-imported-CSS graph links it to every page that
- * reaches the module.
+ * A server compiler whose module links its CSS the way Vite's `?vue&type=style` import does.
+ * The CSS is an in-memory stylesheet beside the component, never written, so its relative
+ * `url()` and `@import` resolve from the component's directory. The JS-imported-CSS graph
+ * gets the compiled code with an import of it, and links it to every page that reaches the
+ * module; the module Bun runs has no such import, since the file does not exist.
  */
-function importingItsCss(compiler: FrameworkCompiler, projectRoot: string): FrameworkCompiler {
-  const cssDir = path.join(projectRoot, "node_modules", ".pletivo", "framework-css");
+function registeringItsCss(compiler: FrameworkCompiler): FrameworkCompiler {
   return {
     framework: compiler.framework,
     extensions: compiler.extensions,
     async compile(input) {
       const output = await compiler.compile(input);
-      if (output === null || output.css === null) return output;
-      // Named by the component's absolute path and its CSS, under this project's own node_modules,
-      // so another project or an edited component never shares a file.
-      const hash = createHash("sha256").update(input.filename).update("\0").update(output.css).digest("hex").slice(0, 16);
-      const cssFile = path.join(cssDir, `${path.basename(input.filename)}.${hash}.css`);
-      await fs.mkdir(cssDir, { recursive: true });
-      // Renamed into place: a concurrent build of the same project never reads a half-written file.
-      const partial = `${cssFile}.${process.pid}.${randomUUID()}.tmp`;
-      await fs.writeFile(partial, output.css);
-      await fs.rename(partial, cssFile);
-      // On line 1 without a newline, so line numbers hold.
-      const code = `import ${JSON.stringify(cssFile)}; ${output.code}`;
-      // The page walk reads a module's source otherwise, which for a `.vue` file has no import of its CSS.
-      await collectCssSideEffectImports(input.filename, code, `framework:${input.filename}`);
-      return { code, loader: output.loader, css: null };
+      if (output === null) return null;
+      let graphCode = output.code;
+      if (output.css !== null) {
+        const cssFile = `${input.filename}.pletivo-style.css`;
+        setVirtualCss(cssFile, output.css);
+        graphCode = `import ${JSON.stringify(cssFile)};\n${output.code}`;
+      }
+      // Every compile, so an edit that drops the `<style>` or an import also drops its edge.
+      await collectCssSideEffectImports(input.filename, graphCode, `framework:${input.filename}`);
+      return { code: output.code, loader: output.loader, css: null };
     },
   };
 }

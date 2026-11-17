@@ -92,6 +92,18 @@ async function pageCss(name: Fixture, html: string): Promise<string> {
   return [...inline, ...linked].join("\n");
 }
 
+/**
+ * A component's `<style>` resolves relative references from the component's directory, as under
+ * Vite: its `@import` (of a stylesheet outside srcDir, so only the import can bring it) is inlined,
+ * and its `url(./bg.svg)`, above the 4 kB inline limit, becomes a file the build wrote.
+ */
+async function expectStyleReferencesResolved(name: Fixture, css: string): Promise<void> {
+  expect(css).toContain(`.${name}-imported{color:#1f2021}`);
+  const image = css.match(/url\((\/assets\/bg\.[0-9a-f]+\.svg)\)/)?.[1];
+  if (image === undefined) throw new Error(`no emitted bg.svg url() in the page CSS:\n${css}`);
+  expect(await Bun.file(path.join(fixtureRoot(name), "dist", image)).exists()).toBe(true);
+}
+
 function expectScriptsOnceBeforeFirstIsland(html: string, directives: readonly string[]): void {
   expect(count(html, ISLAND_STYLE)).toBe(1);
   expect(count(html, ISLAND_SCRIPT)).toBe(1);
@@ -154,7 +166,9 @@ describe("a single-framework page", () => {
     expect(html).toContain("<button>svelte 1</button>");
     expectScriptsOnceBeforeFirstIsland(html, ["load"]);
     await expectBundles("svelte", html);
-    expect(await pageCss("svelte", html)).toMatch(new RegExp(`\\.svelte-counter\\.${scope}\\s*\\{`));
+    const css = await pageCss("svelte", html);
+    expect(css).toMatch(new RegExp(`\\.svelte-counter\\.${scope}\\s*\\{`));
+    await expectStyleReferencesResolved("svelte", css);
   });
 
   test("Vue: the island carries Vue's prefix and the scoped style reaches the page", async () => {
@@ -166,7 +180,32 @@ describe("a single-framework page", () => {
     expect(html).toContain("vue 1</button>");
     expectScriptsOnceBeforeFirstIsland(html, ["load"]);
     await expectBundles("vue", html);
-    expect(await pageCss("vue", html)).toContain(`.vue-counter[${scope}]`);
+    const css = await pageCss("vue", html);
+    expect(css).toContain(`.vue-counter[${scope}]`);
+    await expectStyleReferencesResolved("vue", css);
+  });
+});
+
+describe("component CSS across pages", () => {
+  test("each page links the CSS of the components it renders, and only those", async () => {
+    const index = page("vue");
+    const other = await Bun.file(path.join(fixtureRoot("vue"), "dist/other/index.html")).text();
+    const [indexCss, otherCss] = [await pageCss("vue", index), await pageCss("vue", other)];
+    // Counter is on both pages; Other only on the second.
+    expect(indexCss).toContain(".vue-counter[");
+    expect(otherCss).toContain(".vue-counter[");
+    expect(otherCss).toContain(".vue-other[");
+    expect(indexCss).not.toContain(".vue-other");
+  });
+});
+
+describe("the container API", () => {
+  test("renderToString settles its islands' scripts: once each, ahead of the first island, no sentinel", async () => {
+    page("preact");
+    // An endpoint's body is written as is, so only the container can have settled them.
+    const html = await Bun.file(path.join(fixtureRoot("preact"), "dist/widget.html")).text();
+    expect(islands(html)).toHaveLength(2);
+    expectScriptsOnceBeforeFirstIsland(html, ["load"]);
   });
 });
 
