@@ -1,0 +1,22 @@
+import Counter from '../components/Counter.jsx';
+import { Toggle, Toggle as Switch } from '../components/ui.jsx';
+import * as UI from '../components/ui.jsx';
+import Widget from '../components/Widget.jsx';
+
+# Islands
+
+<Counter id="default" client:load count={1} />
+
+<Toggle id="named" client:idle />
+
+<Switch id="renamed" client:media="(max-width: 600px)" />
+
+<UI.Counter id="namespace" client:visible />
+
+<Counter id="only" client:only="preact" />
+
+<Widget id="tsx-fallback" client:load />
+
+<Counter id="static" count={2} />
+
+Inline <Toggle id="inline" client:load /> in a paragraph.

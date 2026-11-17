@@ -24,6 +24,7 @@ import type { PletivoConfig } from "./config";
 import { substituteImportMetaEnv } from "./import-meta-env";
 import type { AstroIntegration } from "@pletivo/core/astro-host/types";
 import { astroMarkdownSettings, splitFrontmatter, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
+import { rehypeAstroIslandMetadata } from "./mdx-island-metadata";
 
 // Resolve absolute path to pletivo's jsx-runtime so compiled MDX can
 // import it even when pletivo isn't installed as a node_modules dep
@@ -233,53 +234,58 @@ export async function registerMdxPlugin(): Promise<void> {
 
       build.onLoad({ filter: /\.mdx(\?.*)?$/ }, async (args) => {
         const cleanPath = stripQuery(args.path);
-        const rel = path.relative(process.cwd(), cleanPath);
         const source = await Bun.file(cleanPath).text();
-
-        // Strip YAML frontmatter before MDX compilation; the same split the page `layout:` check reads.
-        const { body } = splitFrontmatter(source);
-
-        let code: string;
-        try {
-          const compileOptions: CompileOptions = {
-            jsxImportSource: "pletivo",
-            development: false,
-          };
-          // Mirror @astrojs/mdx: GFM on by default (remark-gfm prepended),
-          // then the user's remark plugins.
-          compileOptions.remarkPlugins = buildRemarkPlugins(
-            userOptions.remarkPlugins,
-            userOptions.gfm !== false,
-          );
-          // A managed `rehype-raw` (passing MDX nodes through) always runs,
-          // with the user's rehype plugins after it.
-          compileOptions.rehypePlugins = buildRehypePlugins(userOptions.rehypePlugins);
-          const result = await compile(body, compileOptions);
-          code = String(result);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          throw new Error(`MDX compilation error in ${rel}:\n${msg}`);
-        }
-
-        // Rewrite bare `pletivo/jsx-runtime` to an absolute path so the
-        // import resolves even when pletivo is run from source.
-        code = code.replace(
-          /(from\s+["'])pletivo\/jsx-runtime(["'])/g,
-          (_match, open: string, close: string) => open + jsxRuntimePath + close,
-        );
-
-        // In dev mode, append version query to .astro and .json imports for
-        // cache busting (same as the astro plugin does for its own output).
-        // JSON needs this too so translation dictionaries reload on edit.
-        code = applyDevCacheBust(substituteImportMetaEnv(code, "js"), getDevVersion());
-        // pletivo renders an MDX module itself; the runtime never offers it to a framework renderer.
-        code += '\nObject.defineProperty(MDXContent, Symbol.for("pletivo.native-component"), { value: true });\n';
-
         return {
-          contents: code,
+          contents: await compileMdx(source, cleanPath),
           loader: "js",
         };
       });
     },
   });
+}
+
+/** Compile one `.mdx` file's source to the JS module the Bun loader returns. */
+export async function compileMdx(source: string, filePath: string): Promise<string> {
+  const rel = path.relative(process.cwd(), filePath);
+
+  // Strip YAML frontmatter before MDX compilation; the same split the page `layout:` check reads.
+  const { body } = splitFrontmatter(source);
+
+  let code: string;
+  try {
+    const compileOptions: CompileOptions = {
+      jsxImportSource: "pletivo",
+      development: false,
+    };
+    // Mirror @astrojs/mdx: GFM on by default (remark-gfm prepended),
+    // then the user's remark plugins.
+    compileOptions.remarkPlugins = buildRemarkPlugins(
+      userOptions.remarkPlugins,
+      userOptions.gfm !== false,
+    );
+    // A managed `rehype-raw` (passing MDX nodes through) always runs, with the user's
+    // rehype plugins after it; the island metadata runs last, as in @astrojs/mdx.
+    compileOptions.rehypePlugins = [...buildRehypePlugins(userOptions.rehypePlugins), rehypeAstroIslandMetadata];
+    // The path lets the island metadata resolve relative imports, as Astro's does.
+    const result = await compile({ value: body, path: filePath }, compileOptions);
+    code = String(result);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`MDX compilation error in ${rel}:\n${msg}`);
+  }
+
+  // Rewrite bare `pletivo/jsx-runtime` to an absolute path so the
+  // import resolves even when pletivo is run from source.
+  code = code.replace(
+    /(from\s+["'])pletivo\/jsx-runtime(["'])/g,
+    (_match, open: string, close: string) => open + jsxRuntimePath + close,
+  );
+
+  // In dev mode, append version query to .astro and .json imports for
+  // cache busting (same as the astro plugin does for its own output).
+  // JSON needs this too so translation dictionaries reload on edit.
+  code = applyDevCacheBust(substituteImportMetaEnv(code, "js"), getDevVersion());
+  // pletivo renders an MDX module itself; the runtime never offers it to a framework renderer.
+  code += '\nObject.defineProperty(MDXContent, Symbol.for("pletivo.native-component"), { value: true });\n';
+  return code;
 }

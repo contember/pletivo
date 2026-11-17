@@ -23,6 +23,7 @@
     "@pletivo/core": "workspace:*",
     "@pletivo/runtime": "workspace:*",
     "@types/bun": "^1.3.14",
+    "astro": "5.16.11",
     "morphdom": "^2.7.8",
     "pletivo": "workspace:*",
     "preact": "^10",

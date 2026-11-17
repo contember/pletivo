@@ -3,6 +3,7 @@
  * transform hook for these extensions, so this `onLoad` is the only place to:
  *
  * - substitute `import.meta.env` with Astro's values, as `.astro` and `.mdx` get it;
+ * - compile `.jsx`/`.tsx` written for a framework renderer (see `configureProjectJsxCompiler`);
  * - run `applyDevCacheBust` in dev, so the cache-bust chain does not break one hop
  *   past `.astro` pages — a page's transitive `.ts` helper would stay cached and
  *   the JSON/etc. it closes over never reload. A no-op in build.
@@ -15,9 +16,17 @@
 import path from "path";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { escapeRegex } from "@pletivo/core/escape-regex";
+import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 import { substituteImportMetaEnv, type SourceLoader } from "./import-meta-env";
 
 const registeredScopes = new Set<string>();
+
+/** Compiles project `.jsx`/`.tsx` for a JSX framework renderer, or `null` to leave all JSX to Bun. */
+let jsxCompiler: FrameworkCompiler | null = null;
+
+export function configureProjectJsxCompiler(compiler: FrameworkCompiler | null): void {
+  jsxCompiler = compiler;
+}
 
 // `.js`/`.mjs` load as `jsx`: Bun's native loader accepts JSX in them too.
 const LOADER_FOR_EXT: Record<string, SourceLoader> = {
@@ -50,11 +59,16 @@ export async function registerProjectSourcePlugin(
         // Bun doesn't try to execute `declare` statements.
         if (/\.d\.m?ts$/.test(cleanPath)) return { contents: "", loader: "ts" };
 
-        const loader = LOADER_FOR_EXT[path.extname(cleanPath).toLowerCase()] ?? "ts";
+        const ext = path.extname(cleanPath).toLowerCase();
+        const loader = LOADER_FOR_EXT[ext] ?? "ts";
         const source = substituteImportMetaEnv(await Bun.file(cleanPath).text(), loader);
+        const compiled =
+          jsxCompiler !== null && jsxCompiler.extensions.includes(ext)
+            ? await jsxCompiler.compile({ source, filename: cleanPath, target: "server" })
+            : null;
         return {
-          contents: applyDevCacheBust(source, getDevVersion()),
-          loader,
+          contents: applyDevCacheBust(compiled?.code ?? source, getDevVersion()),
+          loader: compiled?.loader ?? loader,
         };
       });
     },
