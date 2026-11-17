@@ -215,21 +215,22 @@ async function resolveSpecifier(specifier: string, importer: string): Promise<st
 	if (projectRoot && !candidate.startsWith(projectRoot)) return null;
 
 	// Relative imports that omit the extension (`./Layout`) need to be
-	// resolved to a real file. Try common extensions.
-	if (await exists(candidate)) return candidate;
+	// resolved to a real file. Like Bun and Node: the file itself, then
+	// extensions, then a directory index — `./blocks` is `blocks.ts` even
+	// when a `blocks/` directory sits beside it.
+	if (await isFile(candidate)) return candidate;
 	for (const ext of [".ts", ".tsx", ".js", ".jsx", ".astro", ".mjs", ".cjs", ".css", ".scss", ".sass"]) {
-		if (await exists(candidate + ext)) return candidate + ext;
+		if (await isFile(candidate + ext)) return candidate + ext;
 	}
 	for (const ext of ["/index.ts", "/index.tsx", "/index.js", "/index.jsx", "/index.css", "/index.scss", "/index.sass"]) {
-		if (await exists(candidate + ext)) return candidate + ext;
+		if (await isFile(candidate + ext)) return candidate + ext;
 	}
 	return null;
 }
 
-async function exists(p: string): Promise<boolean> {
+async function isFile(p: string): Promise<boolean> {
 	try {
-		await fs.access(p);
-		return true;
+		return (await fs.stat(p)).isFile();
 	} catch {
 		return false;
 	}
