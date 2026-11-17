@@ -10,6 +10,7 @@
 
 import {
   findRoute,
+  isRouteFile,
   parseRoute,
   routeToOutputPath,
   type Route,
@@ -366,7 +367,9 @@ export function projectRoutes(
   for (const file of files.keys()) {
     if (!file.startsWith(prefix)) continue;
     if (!PAGE_EXTENSIONS.some((extension) => file.endsWith(extension))) continue;
-    routes.push(parseRoute(file.slice(prefix.length)));
+    const page = file.slice(prefix.length);
+    if (!isRouteFile(page)) continue;
+    routes.push(parseRoute(page));
   }
   routes.sort((a, b) => {
     if (a.isDynamic !== b.isDynamic) return (a.isDynamic ? 1 : 0) - (b.isDynamic ? 1 : 0);

@@ -26,6 +26,7 @@ import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
+import { isRouteFile } from "@pletivo/core/router";
 import { astroMarkdownSettings, markdownPageLayoutReason, parseFrontmatter } from "@pletivo/core/content/markdown";
 import { isInsideRoot, normalizePath } from "./paths";
 import { processedScripts } from "./scripts";
@@ -146,6 +147,7 @@ function markdownPageLayouts(
   const diagnostics: PrepareDiagnostic[] = [];
   for (const { file, source } of sources) {
     if (!file.startsWith(pagesDir) || !file.endsWith(".md")) continue;
+    if (!isRouteFile(normalizePath(file.slice(pagesDir.length)))) continue;
     const page = normalizePath(path.relative(root, file));
     const reason = markdownPageLayoutReason(page, parseFrontmatter(source).frontmatter);
     if (reason) diagnostics.push({ source: page, hook: "layout", reason });

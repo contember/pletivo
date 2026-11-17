@@ -140,6 +140,16 @@ export default defineConfig({
     expect(html).toContain("Imported MDX note text.");
   });
 
+  test("a _-prefixed .md under src/pages is not a page, so its layout field passes build and prepare", async () => {
+    const root = await fixtureWithout(MD_PAGE, MDX_PAGE);
+    await fs.mkdir(path.join(root, "src/pages/_drafts"));
+    await fs.writeFile(path.join(root, "src/pages/_drafts/next.md"), "---\nlayout: ../../layouts/Base.astro\n---\n\nDraft.\n");
+    await build(root, config);
+    expect(await Bun.file(path.join(root, "dist/_drafts/next/index.html")).exists()).toBe(false);
+    __resetForTests();
+    await expect(prepare(root)).resolves.toBeDefined();
+  });
+
   test("a collection entry with a layout field passes prepare", async () => {
     const root = await fixtureWithout(MD_PAGE, MDX_PAGE);
     await expect(prepare(root)).resolves.toBeDefined();

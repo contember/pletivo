@@ -1,5 +1,5 @@
 import { Glob } from "bun";
-import { parseRoute, type Route } from "@pletivo/core/router";
+import { isRouteFile, parseRoute, type Route } from "@pletivo/core/router";
 
 export * from "@pletivo/core/router";
 
@@ -11,6 +11,7 @@ export async function scanRoutes(pagesDir: string): Promise<Route[]> {
   const routes: Route[] = [];
 
   for await (const file of glob.scan(pagesDir)) {
+    if (!isRouteFile(file)) continue;
     routes.push(parseRoute(file));
   }
 
