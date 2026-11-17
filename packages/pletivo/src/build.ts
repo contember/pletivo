@@ -147,8 +147,8 @@ export interface BuildOptions {
    */
   incremental?: boolean;
   /**
-   * Wipe `node_modules/.pletivo/cache/` and the prior dist snapshot,
-   * then build incrementally from a clean slate. Implies `incremental`.
+   * Wipe `node_modules/.pletivo/cache/` and `dist/`, then build
+   * incrementally from a clean slate. Implies `incremental`.
    * Equivalent to deleting `node_modules/.pletivo/cache/` before running.
    */
   clean?: boolean;
@@ -286,7 +286,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // references inside rendered HTML.
   const tPublic = performance.now();
   const hashAssets = config.hashAssets ?? astroHost === null;
-  const publicManifest = hashAssets
+  const { manifest: publicManifest, written: publicWritten } = hashAssets
     ? await hashPublicAssets(publicDir, distDir)
     : await copyPublicAssets(publicDir, distDir);
   phase("public assets", tPublic);
@@ -1058,7 +1058,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // Cached pages skip writeHtml() — their HTML is already in dist, and running
   // it again would inject CSS / hydration scripts twice. Only their stylesheet
   // markup is refreshed; one that can't be swapped in place is rendered again below.
-  if (cache) await cache.markWriting();
+  const routeOutputs = new Set(dedupedResults.map((r) => path.relative(distDir, r.outPath)));
+  if (cache) await cache.markWriting(routeOutputs);
   let totalSize = 0;
   let cachedCount = 0;
   let renderedCount = 0;
@@ -1129,8 +1130,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // Before integrations write: a path a removed route wrote may be theirs now.
   if (cache) {
     const tPrune = performance.now();
-    const routeOutputs = new Set(dedupedResults.map((r) => path.relative(distDir, r.outPath)));
-    await pruneStaleRouteOutputs(distDir, cache.routeOutputs() ?? [], routeOutputs, publicDir, publicManifest);
+    await pruneStaleRouteOutputs(distDir, cache.routeOutputs() ?? [], routeOutputs, publicWritten);
     cache.setRouteOutputs(routeOutputs);
     phase("prune stale route outputs", tPrune);
   }
@@ -1283,15 +1283,19 @@ async function pruneStaleRouteOutputs(
   distDir: string,
   previous: string[],
   current: Set<string>,
-  publicDir: string,
-  publicManifest: Map<string, string>,
+  publicWritten: Set<string>,
 ): Promise<void> {
+  const realDist = await fs.realpath(distDir);
+  // A symlinked directory in dist/ must not lead the prune outside it.
+  const parentInDist = async (abs: string): Promise<boolean> => {
+    const parent = await fs.realpath(path.dirname(abs)).catch(() => null);
+    return parent !== null && (parent === realDist || parent.startsWith(realDist + path.sep));
+  };
   const removed = await Promise.all(previous.filter((rel) => !current.has(rel)).map(async (rel) => {
-    // A public/ file copied under its own name this build took over the path.
-    const publicKey = "/" + rel.split(path.sep).join("/");
-    if (!publicManifest.has(publicKey) && (await isFile(path.join(publicDir, rel)))) return null;
+    // public/ copied a file to this path this build.
+    if (publicWritten.has(rel.split(path.sep).join("/"))) return null;
     const abs = path.join(distDir, rel);
-    if (!(await isFile(abs))) return null;
+    if (!(await isFile(abs)) || !(await parentInDist(abs))) return null;
     await fs.unlink(abs);
     return rel;
   }));
@@ -1303,7 +1307,9 @@ async function pruneStaleRouteOutputs(
   // Deepest first, so a parent is tried after its children; rmdir refuses a non-empty one.
   const depth = (dir: string) => dir.split(path.sep).length;
   for (const dir of [...dirs].sort((a, b) => depth(b) - depth(a))) {
-    await fs.rmdir(path.join(distDir, dir)).catch(() => {});
+    const abs = path.join(distDir, dir);
+    if (!(await parentInDist(abs))) continue;
+    await fs.rmdir(abs).catch(() => {});
   }
 }
 

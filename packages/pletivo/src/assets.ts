@@ -36,6 +36,14 @@ const SKIP_HASH_EXTS = new Set([
   ".html", ".htm", ".xml", ".txt", ".json", ".webmanifest",
 ]);
 
+/** What copying `public/` produced. */
+export interface PublicAssets {
+  /** Original absolute path (`/style.css`) → hashed (`/style.abcd1234.css`); empty when nothing is hashed. */
+  manifest: Map<string, string>;
+  /** Every file written, POSIX and relative to `distDir`. */
+  written: Set<string>;
+}
+
 interface FileEntry {
   absPath: string;
   relPath: string; // POSIX, relative to publicRoot
@@ -54,11 +62,12 @@ async function collectPublicFiles(publicDir: string): Promise<FileEntry[]> {
 }
 
 /** Copy entries into `distDir` verbatim, creating parent directories as needed. */
-async function copyEntries(entries: FileEntry[], distDir: string): Promise<void> {
+async function copyEntries(entries: FileEntry[], distDir: string, written: Set<string>): Promise<void> {
   for (const entry of entries) {
     const outPath = path.join(distDir, entry.relPath);
     await fs.mkdir(path.dirname(outPath), { recursive: true });
     await fs.copyFile(entry.absPath, outPath);
+    written.add(entry.relPath);
   }
 }
 
@@ -69,16 +78,18 @@ async function copyEntries(entries: FileEntry[], distDir: string): Promise<void>
 export async function copyPublicAssets(
   publicDir: string,
   distDir: string,
-): Promise<Map<string, string>> {
-  await copyEntries(await collectPublicFiles(publicDir), distDir);
-  return new Map<string, string>();
+): Promise<PublicAssets> {
+  const written = new Set<string>();
+  await copyEntries(await collectPublicFiles(publicDir), distDir, written);
+  return { manifest: new Map<string, string>(), written };
 }
 
 export async function hashPublicAssets(
   publicDir: string,
   distDir: string,
-): Promise<Map<string, string>> {
+): Promise<PublicAssets> {
   const manifest = new Map<string, string>();
+  const written = new Set<string>();
 
   const all = await collectPublicFiles(publicDir);
 
@@ -96,7 +107,7 @@ export async function hashPublicAssets(
   // 1. Media assets first — they have no outgoing references.
   for (const entry of media) {
     const content = await fs.readFile(entry.absPath);
-    await writeHashed(entry, content, distDir, manifest);
+    await writeHashed(entry, content, distDir, manifest, written);
   }
 
   // 2. Text assets — rewrite refs against current manifest, then hash.
@@ -106,17 +117,17 @@ export async function hashPublicAssets(
   for (const entry of text) {
     let content = await fs.readFile(entry.absPath, "utf-8");
     content = rewriteRefs(content, manifest);
-    await writeHashed(entry, Buffer.from(content, "utf-8"), distDir, manifest);
+    await writeHashed(entry, Buffer.from(content, "utf-8"), distDir, manifest, written);
   }
 
   // 3. Non-hashable files — copy as-is.
-  await copyEntries(skip, distDir);
+  await copyEntries(skip, distDir, written);
 
   // Defensive: anything unknown ext that isn't in either set falls through
   // to skip above (we classified unknown as skip).
   void SKIP_HASH_EXTS;
 
-  return manifest;
+  return { manifest, written };
 }
 
 async function walk(current: string, root: string, out: FileEntry[]) {
@@ -137,6 +148,7 @@ async function writeHashed(
   content: Buffer,
   distDir: string,
   manifest: Map<string, string>,
+  written: Set<string>,
 ): Promise<void> {
   const hasher = new Bun.CryptoHasher("md5");
   hasher.update(content);
@@ -152,6 +164,7 @@ async function writeHashed(
   await fs.writeFile(outPath, content);
 
   manifest.set("/" + entry.relPath, "/" + hashedRel);
+  written.add(hashedRel);
 }
 
 /**

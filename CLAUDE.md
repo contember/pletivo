@@ -122,4 +122,4 @@ gh run watch $(gh run list --workflow=release.yml --limit=1 --json databaseId -q
 - Use static ESM `import` for JSON / data modules (`import data from "./data.json"` is in the static graph).
 - For one-off external data changes, run a plain `pletivo build` (full rebuild) or `pletivo build --incremental --clean`.
 
-Run `--incremental --clean` after upgrading pletivo or after any environment change you suspect the cache isn't catching.
+Run `--incremental --clean` after upgrading pletivo or after any environment change you suspect the cache isn't catching. It clears `dist/` as well as the cache and renders everything, as a plain build does, then leaves a fresh cache behind.

@@ -55,7 +55,9 @@ describe("CacheStore", () => {
 	it("ignores the on-disk cache when the configHash differs", async () => {
 		const s1 = await CacheStore.load(tmp, "c1", "dist");
 		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s1.setRouteOutputs(["k.html"]);
 		await s1.persist();
+		expect((await CacheStore.load(tmp, "c1", "dist")).routeKeys()).toEqual(["k"]);
 
 		const s2 = await CacheStore.load(tmp, "c2", "dist");
 		expect(s2.routeKeys()).toEqual([]);
@@ -106,10 +108,36 @@ describe("CacheStore", () => {
 		expect(s2.routeOutputs()).toEqual(["about/index.html", "feed.xml"]);
 
 		// A build that did not persist leaves the marker; dist/ still holds what was recorded.
-		await s2.markWriting();
+		await s2.markWriting(["feed.xml"]);
 		const marked = await CacheStore.load(tmp, "c1", "dist");
 		expect(marked.routeKeys()).toEqual([]);
 		expect(marked.routeOutputs()).toEqual(["about/index.html", "feed.xml"]);
+	});
+
+	it("markWriting records the outputs a build is about to write, before it persists", async () => {
+		const s1 = await CacheStore.load(tmp, "c1", "dist");
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], cssHead: null, dynamicCss: [], size: 0 });
+		s1.setRouteOutputs(["k.html"]);
+		await s1.persist();
+		const cacheJson = path.join(tmp, "node_modules", ".pletivo", "cache", "cache.json");
+		// Nothing new to write: no JSON write. The trailing newline marks the file as not rewritten.
+		const persisted = (await fs.readFile(cacheJson, "utf8")) + "\n";
+		await fs.writeFile(cacheJson, persisted);
+		const s2 = await CacheStore.load(tmp, "c1", "dist");
+		await s2.markWriting(["k.html"]);
+		expect(await fs.readFile(cacheJson, "utf8")).toBe(persisted);
+
+		// A new output is on disk before any page is written; the build then crashes.
+		const s3 = await CacheStore.load(tmp, "c1", "dist");
+		await s3.markWriting(["draft/index.html"]);
+		const crashed = await CacheStore.load(tmp, "c1", "dist");
+		expect(crashed.routeOutputs()).toEqual(["draft/index.html", "k.html"]);
+		expect(crashed.routeKeys()).toEqual([]);
+
+		// A cold build records what it writes too.
+		const cold = await CacheStore.forceClean(tmp, "c1", "dist");
+		await cold.markWriting(["a.html"]);
+		expect((await CacheStore.load(tmp, "c1", "dist")).routeOutputs()).toEqual(["a.html"]);
 	});
 
 	it("loads cold, without routes or a record, when there is no record for the output directory", async () => {

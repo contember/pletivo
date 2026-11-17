@@ -364,12 +364,21 @@ export class CacheStore {
   }
 
   /**
-   * Call before writing `dist/`. Until `persist()` succeeds, the next load starts empty: an interrupted build may
-   * have changed pages the cache records as unchanged. A marker, so a no-op warm build still skips the JSON write.
+   * Call before writing `dist/`, with the route outputs this build will write. Until `persist()` succeeds, the next
+   * load has no routes: an interrupted build may have changed pages the cache records as unchanged. It keeps the
+   * route output record, widened here so a crash after any write leaves that output prunable. A marker, and JSON
+   * only when the record grows, so a no-op warm build still skips the JSON write.
    */
-  async markWriting(): Promise<void> {
+  async markWriting(outputs: Iterable<string>): Promise<void> {
     await fs.mkdir(this.dir, { recursive: true });
+    // The marker goes first: with it, the next load reads nothing from cache.json but the record.
     await fs.writeFile(path.join(this.dir, WRITING_MARKER), "");
+    const previous = this.data.routeOutputs?.files ?? [];
+    const widened = new Set([...previous, ...outputs]);
+    if (this.data.routeOutputs !== null && widened.size === previous.length) return;
+    this.data.routeOutputs = { outDir: this.outDir, files: [...widened].sort() };
+    await fs.writeFile(path.join(this.dir, "cache.json"), JSON.stringify(this.data, null, 2));
+    this.dirty = true;
   }
 
   async persist(): Promise<void> {

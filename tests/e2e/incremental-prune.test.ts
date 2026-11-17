@@ -25,7 +25,12 @@ import { fileURLToPath } from "node:url";
 export default {
 	integrations: [{
 		name: "llms",
-		hooks: { "astro:build:done": ({ dir }) => fs.writeFileSync(path.join(fileURLToPath(dir), "llms.txt"), "llms") },
+		hooks: {
+			"astro:build:done": ({ dir }) => {
+				if (process.env.FAIL_BUILD_DONE) process.exit(1);
+				fs.writeFileSync(path.join(fileURLToPath(dir), "llms.txt"), "llms");
+			},
+		},
 	}],
 };
 `);
@@ -46,12 +51,16 @@ async function rename(from: string, to: string): Promise<void> {
 	await fs.rename(path.join(projectRoot, from), path.join(projectRoot, to));
 }
 
-function runBuild(incremental = true): void {
-	const result = spawnSync("bun", ["run", cliPath, "build", ...(incremental ? ["--incremental"] : [])], {
+function spawnBuild(incremental: boolean, env: Record<string, string>): { status: number | null; stderr: string } {
+	return spawnSync("bun", ["run", cliPath, "build", ...(incremental ? ["--incremental"] : [])], {
 		cwd: projectRoot,
 		encoding: "utf8",
-		env: { ...process.env, NODE_ENV: "production" },
+		env: { ...process.env, NODE_ENV: "production", ...env },
 	});
+}
+
+function runBuild(incremental = true): void {
+	const result = spawnBuild(incremental, {});
 	if (result.status !== 0) throw new Error(`build exited with ${result.status}:\n${result.stderr}`);
 }
 
@@ -143,4 +152,63 @@ describe("incremental build prunes stale route outputs", () => {
 			expect(await inDist("llms.txt")).toBe(true);
 		});
 	}
+
+	it("removes an output written by a build that failed after its page writes", async () => {
+		runBuild();
+		await write("src/pages/draft.astro", page("Draft"));
+		expect(spawnBuild(true, { FAIL_BUILD_DONE: "1" }).status).not.toBe(0);
+		expect(await inDist("draft/index.html")).toBe(true);
+
+		await rename("src/pages/draft.astro", "src/pages/final.astro");
+		runBuild();
+		expect(await inDist("draft")).toBe(false);
+		expect(await inDist("final/index.html")).toBe(true);
+		runBuild();
+		expect(await inDist("draft")).toBe(false);
+	});
+
+	it("does not follow a symlinked directory in dist/ out of it", async () => {
+		await write("src/pages/media/sub/index.astro", page("Sub"));
+		runBuild();
+		await write("outside/sub/index.html", "not dist");
+		await fs.rm(path.join(projectRoot, "dist/media"), { recursive: true });
+		await fs.symlink(path.join(projectRoot, "outside"), path.join(projectRoot, "dist/media"));
+
+		await fs.rm(path.join(projectRoot, "src/pages/media"), { recursive: true });
+		runBuild();
+
+		expect(await fs.readFile(path.join(projectRoot, "outside/sub/index.html"), "utf8")).toBe("not dist");
+	});
+
+	it("keeps a symlinked public/ file that took over an endpoint's path", async () => {
+		await write("src/pages/robots.txt.ts", endpoint("route robots"));
+		runBuild();
+
+		await fs.rm(path.join(projectRoot, "src/pages/robots.txt.ts"));
+		await write("robots-source.txt", "public robots");
+		await fs.mkdir(path.join(projectRoot, "public"), { recursive: true });
+		await fs.symlink(path.join(projectRoot, "robots-source.txt"), path.join(projectRoot, "public/robots.txt"));
+		for (let i = 0; i < 2; i++) {
+			runBuild();
+			expect(await fs.readFile(path.join(projectRoot, "dist/robots.txt"), "utf8")).toBe("public robots");
+		}
+	});
+
+	// A pletivo-native project hashes public/ assets, so public/logo.svg is written as logo.<hash>.svg.
+	it("removes an endpoint's output whose path a hashed public/ file does not take", async () => {
+		await fs.rm(path.join(projectRoot, "astro.config.mjs"));
+		await fs.rm(path.join(projectRoot, "src/pages/index.astro"));
+		await write("src/pages/index.ts", `export default function Home() {\n\treturn { __html: ${JSON.stringify(page("Home"))} };\n}\n`);
+		await write("src/pages/logo.svg.ts", endpoint("<svg/>"));
+		runBuild();
+		expect(await inDist("logo.svg")).toBe(true);
+
+		await fs.rm(path.join(projectRoot, "src/pages/logo.svg.ts"));
+		await write("public/logo.svg", "<svg/>");
+		runBuild();
+
+		expect(await inDist("logo.svg")).toBe(false);
+		const hashed = (await fs.readdir(path.join(projectRoot, "dist"))).filter((f) => /^logo\.[0-9a-f]{8}\.svg$/.test(f));
+		expect(hashed).toHaveLength(1);
+	});
 });

@@ -29,12 +29,13 @@ describe("public asset copy/hash", () => {
 
   describe("copyPublicAssets", () => {
     test("returns an empty manifest (rewriteRefs becomes a no-op)", async () => {
-      const manifest = await copyPublicAssets(pub, dist);
+      const { manifest } = await copyPublicAssets(pub, dist);
       expect(manifest.size).toBe(0);
     });
 
     test("copies every file verbatim, preserving names and nested dirs", async () => {
-      await copyPublicAssets(pub, dist);
+      const { written } = await copyPublicAssets(pub, dist);
+      expect([...written].sort()).toEqual(["index.html", "logo.png", "nested/app.css"]);
       expect(readdirSync(dist).sort()).toEqual(["index.html", "logo.png", "nested"]);
       expect(readdirSync(path.join(dist, "nested"))).toEqual(["app.css"]);
       // Content is byte-identical, original filename retained (no content hash).
@@ -46,21 +47,26 @@ describe("public asset copy/hash", () => {
 
     test("returns an empty manifest and does not throw when publicDir is absent", async () => {
       const missing = path.join(pub, "does-not-exist");
-      const manifest = await copyPublicAssets(missing, dist);
+      const { manifest, written } = await copyPublicAssets(missing, dist);
       expect(manifest.size).toBe(0);
+      expect(written.size).toBe(0);
       expect(readdirSync(dist)).toEqual([]);
     });
   });
 
   describe("hashPublicAssets", () => {
     test("hashes media + text assets and maps original → hashed in the manifest", async () => {
-      const manifest = await hashPublicAssets(pub, dist);
+      const { manifest, written } = await hashPublicAssets(pub, dist);
       // logo.png (media) and nested/app.css (text) are hashed; index.html is not.
       expect(manifest.get("/logo.png")).toMatch(/^\/logo\.[0-9a-f]{8}\.png$/);
       expect(manifest.get("/nested/app.css")).toMatch(
         /^\/nested\/app\.[0-9a-f]{8}\.css$/,
       );
       expect(manifest.has("/index.html")).toBe(false);
+      // What was written is the hashed name, not the original one.
+      const hashed = [...manifest.values()].map((url) => url.slice(1));
+      expect(hashed).toHaveLength(2);
+      expect([...written].sort()).toEqual(["index.html", ...hashed].sort());
     });
 
     test("copies non-hashable files (html) through with their original name", async () => {
@@ -69,7 +75,7 @@ describe("public asset copy/hash", () => {
     });
 
     test("returns an empty manifest when publicDir is absent", async () => {
-      const manifest = await hashPublicAssets(path.join(pub, "nope"), dist);
+      const { manifest } = await hashPublicAssets(path.join(pub, "nope"), dist);
       expect(manifest.size).toBe(0);
     });
   });
