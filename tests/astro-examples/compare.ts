@@ -13,6 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { canonicalPageCss } from "./css";
 
 export interface Comparison {
   routes: {
@@ -76,7 +77,31 @@ export const pletivoBundle: BundleRule = (dir, ext) => dir === "_astro" || dir =
 const HASHED_URL =
   /\/(_astro|_islands|assets)\/(?:[\w-]+\/)*([\w.-]+?)\.[\w-]{8}(?:_[\w-]+)?\.(css|js|mjs|png|jpe?g|webp|avif|gif|svg|woff2?|ttf|otf)\b/g;
 
-export function createHtmlNormalizer(canonicalCss: CssCanonicalizer, isBundle: BundleRule): (html: string) => Promise<string> {
+/** A bundled file's text by its URL path (`/_astro/x.css`), or null when this side has none. */
+export type BundleReader = (urlPath: string) => string | null;
+
+/** A `<link rel="stylesheet">` to a bundled sheet, without `media`: what the page loads unconditionally. */
+const STYLESHEET_LINK = /<link\b[^>]*>/gi;
+
+function linkedSheetPath(tag: string, isBundle: BundleRule): string | null {
+  const attribute = (name: string) => new RegExp(`\\s${name}=(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag);
+  const rel = attribute("rel");
+  if ((rel?.[1] ?? rel?.[2] ?? rel?.[3])?.toLowerCase() !== "stylesheet" || attribute("media")) return null;
+  const href = attribute("href");
+  const url = href?.[1] ?? href?.[2] ?? href?.[3];
+  if (!url?.startsWith("/")) return null;
+  const match = /^\/(_astro|_islands|assets)\/.*\.(css)$/.exec(url);
+  return match && isBundle(match[1]!, match[2]!) ? url : null;
+}
+
+/** A bare `<style>`: Astro and pletivo write page CSS without attributes. */
+const PAGE_STYLE = /<style>([\s\S]*?)<\/style>/g;
+
+export function createHtmlNormalizer(
+  canonicalCss: CssCanonicalizer,
+  isBundle: BundleRule,
+  readBundle: BundleReader = () => null,
+): (html: string) => Promise<string> {
   // Per side and across all its pages: the n-th distinct value of a kind becomes n.
   const ordinals = new Map<string, number>();
   const counts = new Map<string, number>();
@@ -93,6 +118,12 @@ export function createHtmlNormalizer(canonicalCss: CssCanonicalizer, isBundle: B
 
   return async (html) => {
     let text = html.replace(/\r\n/g, "\n");
+    // A linked bundled sheet counts as if inlined where it is linked: inlining is a size threshold.
+    text = text.replace(STYLESHEET_LINK, (tag) => {
+      const url = linkedSheetPath(tag, isBundle);
+      const css = url === null ? null : readBundle(url);
+      return css === null ? tag : `<style>${css}</style>`;
+    });
     // Names the tool that built the page.
     text = text.replace(/(<meta name="generator" content=")[^"]*"/g, '$1[generator]"');
     // Bundled asset URLs: the directory and hash are bundler output, and so is the
@@ -108,12 +139,24 @@ export function createHtmlNormalizer(canonicalCss: CssCanonicalizer, isBundle: B
     // the element ↔ selector link checkable. `data-astro-template` is not one.
     text = text.replace(/data-astro-cid-([a-z0-9]{8})/g, (_m, id: string) => `data-astro-cid-c${ordinal("cid", id)}`);
     text = text.replace(/(?<![\w-])astro-([a-z0-9]{8})(?![\w-])/g, (_m, id: string) => `astro-s${ordinal("scope", id)}`);
-    // Minifiers spell equal CSS differently (`0.25em` / `.25em`, `white` / `#fff`):
-    // both sides go through the same one.
+    // Page CSS is compared as one sheet, after the markup: where a `<style>` sits and how
+    // the CSS is split into sheets do not change the cascade. Minifiers spell equal CSS
+    // differently (`0.25em` / `.25em`, `white` / `#fff`): every sheet goes through the
+    // same one, then `canonicalPageCss` (see css.ts).
+    const sheets: string[] = [];
+    text = text.replace(PAGE_STYLE, (_m, css: string) => {
+      sheets.push(css);
+      return "";
+    });
+    // A `<style>` with attributes is not page CSS this rule knows; it stays, minified, in place.
     text = await replaceAsync(text, /(<style[^>]*>)([\s\S]*?)(<\/style>)/g, async (open, css, close) => `${open}${await canonicalCss(css)}${close}`);
     text = normalizeVoidElements(text);
     text = normalizeAttributeSpelling(text);
     text = collapseWhitespace(text);
+    if (sheets.length > 0) {
+      const minified = await Promise.all(sheets.map((css) => canonicalCss(css)));
+      text += `\n<style>\n${canonicalPageCss(minified).join("\n")}\n</style>`;
+    }
     return text;
   };
 }
@@ -379,8 +422,12 @@ export async function compareOutputs(
   const extra = pletivoRoutes.filter((r) => !astroSet.has(r));
   const astroPages = astroRoutes.filter((r) => r.endsWith(".html"));
 
-  const normalizeAstro = createHtmlNormalizer(canonicalCss, astroBundle);
-  const normalizePletivo = createHtmlNormalizer(canonicalCss, pletivoBundle);
+  const reader = (dir: string): BundleReader => (url) => {
+    const file = path.join(dir, url);
+    return file.startsWith(dir + path.sep) && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+  };
+  const normalizeAstro = createHtmlNormalizer(canonicalCss, astroBundle, reader(astroDir));
+  const normalizePletivo = createHtmlNormalizer(canonicalCss, pletivoBundle, reader(pletivoDir));
   const matchingPages: string[] = [];
   const diffs: Comparison["diffs"] = [];
   for (const route of common) {
