@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createHtmlNormalizer, normalizeVoidElements } from "../astro-examples/compare";
+import { createHtmlNormalizer, normalizeAttributeSpelling, normalizeVoidElements } from "../astro-examples/compare";
 
 const VOID = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"];
 
@@ -62,5 +62,58 @@ describe("normalizeVoidElements", () => {
   test("is part of the page normaliser", async () => {
     const normalize = createHtmlNormalizer(async (css) => css, () => false);
     expect(await normalize('<meta charset="utf-8"/><p>x</p>')).toBe(await normalize('<meta charset="utf-8"><p>x</p>'));
+  });
+});
+
+describe("normalizeAttributeSpelling", () => {
+  test("writes an empty attribute value as a bare attribute", () => {
+    expect(normalizeAttributeSpelling('<pre data-seen="">x</pre>')).toBe("<pre data-seen>x</pre>");
+    expect(normalizeAttributeSpelling("<code is:raw='' class=\"a\">x</code>")).toBe('<code is:raw class="a">x</code>');
+    expect(normalizeAttributeSpelling('<input disabled = "" >')).toBe("<input disabled >");
+    expect(normalizeAttributeSpelling('<img alt=""/>')).toBe("<img alt/>");
+    expect(normalizeAttributeSpelling("<pre data-seen>x</pre>")).toBe("<pre data-seen>x</pre>");
+    expect(normalizeAttributeSpelling('<a download title="" data-x="" href="/">x</a>')).toBe('<a download title data-x href="/">x</a>');
+  });
+
+  test("leaves a non-empty value, and a value that only looks empty, as written", () => {
+    expect(normalizeAttributeSpelling('<a title=" ">x</a>')).toBe('<a title=" ">x</a>');
+    expect(normalizeAttributeSpelling('<a title=\'""\'>x</a>')).toBe('<a title=\'""\'>x</a>');
+    expect(normalizeAttributeSpelling('<a title="x=&quot;&quot;">x</a>')).toBe('<a title="x=&quot;&quot;">x</a>');
+  });
+
+  test("writes a quote character reference in a value as &quot;", () => {
+    expect(normalizeAttributeSpelling('<code metastring="title=&#34;a/b.js&#34;">x</code>')).toBe(
+      '<code metastring="title=&quot;a/b.js&quot;">x</code>',
+    );
+    expect(normalizeAttributeSpelling("<a title='&#34;' data-x=&#34;y>x</a>")).toBe("<a title='&quot;' data-x=&quot;y>x</a>");
+    expect(normalizeAttributeSpelling('<a title="&#345;">x</a>')).toBe('<a title="&#345;">x</a>');
+  });
+
+  test("reads quoted values that hold > or /", () => {
+    expect(normalizeAttributeSpelling('<img alt="a>b" title="" src="x/y">')).toBe('<img alt="a>b" title src="x/y">');
+    expect(normalizeAttributeSpelling('<a href="/x" title="&#34;>">t</a>')).toBe('<a href="/x" title="&quot;>">t</a>');
+  });
+
+  test("leaves text content, comments and text-content elements as written", () => {
+    const text = [
+      '<p>data-seen="" and &#34;</p>',
+      '<!-- <a title=""> -->',
+      '<script>const a = "<b data-x=\\"\\">&#34;";</script>',
+      '<style>a[title=""]::after{content:"&#34;"}</style>',
+      '<textarea><b title=""></b></textarea>',
+    ].join("");
+    expect(normalizeAttributeSpelling(text)).toBe(text);
+    expect(normalizeAttributeSpelling('<script data-x="">a=""</script><b title="">')).toBe('<script data-x>a=""</script><b title>');
+  });
+
+  test("rewrites tags inside <pre>, whose content is markup", () => {
+    expect(normalizeAttributeSpelling('<pre><code is:raw="" title="&#34;">x=""</code></pre>')).toBe(
+      '<pre><code is:raw title="&quot;">x=""</code></pre>',
+    );
+  });
+
+  test("is part of the page normaliser", async () => {
+    const normalize = createHtmlNormalizer(async (css) => css, () => false);
+    expect(await normalize('<pre data-seen="" title="&#34;">x</pre>')).toBe(await normalize('<pre data-seen title="&quot;">x</pre>'));
   });
 });
