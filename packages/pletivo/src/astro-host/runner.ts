@@ -215,12 +215,13 @@ export async function initAstroHost(
         return config;
       },
       addRenderer(renderer) {
-        if (dedupe) return;
         const parsed = parseAstroRenderer(renderer);
         if ("error" in parsed) {
-          logger.warn(`addRenderer() ignored: ${parsed.error}`);
+          if (!dedupe) logger.warn(`addRenderer() ignored: ${parsed.error}`);
           return;
         }
+        // A retried hook registers again: keep the first registration and its order.
+        if (renderers.some((r) => r.name === parsed.name)) return;
         renderers.push(parsed);
         // Recorded for the renderer work in progress; nothing renders through them yet.
         logger.warn(`renderer "${parsed.name}" ignored: pletivo does not implement Astro framework renderers`);

@@ -3,6 +3,7 @@ import { pushTsxStyle } from "./render-context";
 import { HtmlString, createHtml, isHtmlString } from "./html-string";
 import { assertElementName, assertNotForeignElement, unrenderableComponent } from "./framework-components";
 import { currentPageResult, renderFrameworkComponent } from "./astro-islands";
+import { hasPletivoClientProp, isNativeComponent, markNativeComponent } from "./astro-islands/native";
 export { HtmlString };
 
 const VOID_ELEMENTS = new Set([
@@ -198,7 +199,7 @@ export function jsx(
 
 export { jsx as jsxs, jsx as jsxDEV };
 
-export function Fragment(
+export const Fragment = markNativeComponent(function Fragment(
   props: { children?: unknown },
 ): HtmlString | Promise<HtmlString> {
   const inner = renderChildren(props.children);
@@ -206,7 +207,7 @@ export function Fragment(
     return inner.then((resolved) => createHtml(resolved));
   }
   return createHtml(inner);
-}
+});
 
 const CLIENT_DIRECTIVE_KEYS = ["client:load", "client:idle", "client:visible", "client:media", "client:only"] as const;
 
@@ -242,6 +243,7 @@ function isClientDirectiveKey(key: string): boolean {
 function offerToRenderers(tag: ComponentFn, props: Props): Promise<HtmlString | null> | null {
   // An `.astro` component called from JSX renders itself, joining the page.
   if ("isAstroComponentFactory" in tag && tag.isAstroComponentFactory === true) return null;
+  if (isNativeComponent(tag) || hasPletivoClientProp(props)) return null;
   const result = currentPageResult();
   if (!result) return null;
   return renderFrameworkComponent({

@@ -7,9 +7,11 @@ import type { FrameworkCompiler } from "../../packages/core/src/framework-compil
 import { __resetForTests, initAstroHost, type AstroHost } from "../../packages/pletivo/src/astro-host/runner";
 import { resolveComponentPath } from "../../packages/pletivo/src/astro-plugin";
 import { frameworkCompilePlugin } from "../../packages/pletivo/src/framework-compile";
-import { renderFrameworkComponent, renderValueToString } from "../../packages/runtime/src/astro-islands";
+import { configureAstroIslands, renderFrameworkComponent, renderValueToString } from "../../packages/runtime/src/astro-islands";
+import { markNativeComponent } from "../../packages/runtime/src/astro-islands/native";
 import { createHtml } from "../../packages/runtime/src/html-string";
-import "../../packages/runtime/src/astro-shim";
+import { Fragment as ShimFragment, renderComponent, runInPage, type AstroResult } from "../../packages/runtime/src/astro-shim";
+import { Fragment as JsxFragment, jsx } from "../../packages/runtime/src/jsx-runtime";
 
 describe("parseAstroRenderer", () => {
   test("reads a name and string entrypoints", () => {
@@ -87,6 +89,11 @@ describe("resolveComponentPath", () => {
     expect(resolveComponentPath("./Gone.jsx", path.join(dir, "page.astro"))).toBe(path.join(dir, "Gone.jsx"));
   });
 
+  test("keeps the compiler's script ids, even for a file outside the cwd", () => {
+    const id = "../../packages/ui/src/Card.astro?astro&type=script&index=0&lang.ts";
+    expect(resolveComponentPath(id, "/repo/packages/ui/src/Card.astro")).toBe(id);
+  });
+
   test("keeps a bare specifier", () => {
     expect(resolveComponentPath("some-package/Comp", path.join(dir, "page.astro"))).toBe("some-package/Comp");
   });
@@ -124,6 +131,95 @@ describe("frameworkCompilePlugin", () => {
       expect(css).toEqual(["Widget.fake .widget{}"]);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("frameworkCompilePlugin as a runtime plugin", () => {
+  test("compiles an import with dev's cache-bust query", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-framework-runtime-"));
+    try {
+      await fs.writeFile(path.join(dir, "Widget.w0seam"), "WIDGET");
+      Bun.plugin(
+        frameworkCompilePlugin({
+          compilers: [
+            {
+              framework: "Fake",
+              extensions: [".w0seam"],
+              compile: async ({ source, filename, target }) => ({
+                code: `export default ${JSON.stringify(`${source}:${target}:${path.basename(filename)}`)};`,
+                loader: "js",
+                css: null,
+              }),
+            },
+          ],
+          target: "server",
+          onCss: () => {},
+        }),
+      );
+      const mod = await import(path.join(dir, "Widget.w0seam") + "?v=3");
+      expect(mod.default).toBe("WIDGET:server:Widget.w0seam");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("frameworkCompilePlugin when every compiler declines", () => {
+  test("returns a script file as written and fails by name for any other file", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-framework-decline-"));
+    try {
+      await fs.writeFile(path.join(dir, "plain.ts"), "export default 'plain' as string;");
+      await fs.writeFile(path.join(dir, "Odd.w0odd"), "x");
+      await fs.writeFile(path.join(dir, "a.ts"), 'import v from "./plain.ts"; export default v;');
+      await fs.writeFile(path.join(dir, "b.ts"), 'import v from "./Odd.w0odd"; export default v;');
+      const declining: FrameworkCompiler = { framework: "None", extensions: [".ts", ".w0odd"], compile: async () => null };
+      const plugin = () => frameworkCompilePlugin({ compilers: [declining], target: "client", onCss: () => {} });
+      const ok = await Bun.build({ entrypoints: [path.join(dir, "a.ts")], plugins: [plugin()] });
+      expect(ok.success).toBe(true);
+      expect(await ok.outputs[0]!.text()).toContain('"plain"');
+      const failed = await Bun.build({ entrypoints: [path.join(dir, "b.ts")], plugins: [plugin()], throw: false });
+      expect(failed.success).toBe(false);
+      expect(failed.logs.map((log) => log.message).join("\n")).toContain("Odd.w0odd: no framework compiler accepted this file");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the island hook in its callers", () => {
+  const notImplemented = /renderFrameworkComponent is not implemented yet/;
+  const Widget = () => createHtml("<i>w</i>");
+  const NativeContent = markNativeComponent(() => createHtml("<p>content</p>"));
+
+  test("offers framework components once configured, and never pletivo's own", async () => {
+    configureAstroIslands({
+      renderers: [{ name: "fake", clientEntrypoint: null, ssr: { check: () => true, renderToStaticMarkup: () => ({ html: "" }) } }],
+      urls: { component: () => "", renderer: () => "", beforeHydration: null },
+      scripts: { island: "", directives: {} },
+    });
+    try {
+      const result: AstroResult = {
+        createAstro: () => {
+          throw new Error("not used");
+        },
+        pageContext: {},
+      };
+      const page = { url: new URL("https://example.com/") };
+      await expect(renderComponent(result, "Widget", Widget, {}, {})).rejects.toThrow(notImplemented);
+      expect(String(await renderComponent(result, "Fragment", ShimFragment, {}, { default: () => "f" }))).toBe("f");
+      expect(String(await renderComponent(result, "Content", NativeContent, {}, {}))).toBe("<p>content</p>");
+      expect(String(await renderComponent(result, "Widget", Widget, { client: "load" }, {}))).toBe("<i>w</i>");
+      await runInPage(page, async () => {
+        expect(() => jsx(Widget, {})).toThrow(notImplemented);
+        expect(String(await jsx(JsxFragment, { children: "j" }))).toBe("j");
+        expect(String(await jsx(NativeContent, {}))).toBe("<p>content</p>");
+        expect(String(await jsx(Widget, { client: "load" }))).toContain("<pletivo-island");
+      });
+      // Outside a page there is no result to key renderers on.
+      expect(String(await jsx(Widget, {}))).toBe("<i>w</i>");
+    } finally {
+      configureAstroIslands(null);
     }
   });
 });

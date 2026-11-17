@@ -908,11 +908,17 @@ export async function render(entry: CollectionEntry | null | undefined): Promise
   return astroRenderResult(entry ? (components) => entry.render(components) : null);
 }
 
+/** pletivo renders `Content` itself; the runtime never offers it to a framework renderer. */
+function nativeComponent<T extends object>(component: T): T {
+  Object.defineProperty(component, Symbol.for("pletivo.native-component"), { value: true });
+  return component;
+}
+
 function astroRenderResult(renderHtml: CollectionEntry["render"] | null): AstroRenderResult {
-  const Content = (props?: { components?: Record<string, unknown> }) => {
+  const Content = nativeComponent((props?: { components?: Record<string, unknown> }) => {
     if (!renderHtml) return { __html: "" };
     return renderHtml(props?.components).then((result) => ({ __html: result.html }));
-  };
+  });
   return { Content, headings: [], remarkPluginFrontmatter: {} };
 }
 
@@ -943,7 +949,9 @@ function withLegacyRender(entry: InternalCollectionEntry, isMdx: boolean): void 
     const rendered = astroRenderResult(renderHtml);
     return {
       ...rendered,
-      Content: (props) => (props?.components === undefined ? { __html: html() } : rendered.Content(props)),
+      Content: nativeComponent((props?: { components?: Record<string, unknown> }) =>
+        props?.components === undefined ? { __html: html() } : rendered.Content(props),
+      ),
       get html() {
         return html();
       },

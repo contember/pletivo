@@ -15,13 +15,15 @@ export interface RendererMarkup {
   attrs?: Record<string, string>;
 }
 
-/** The fourth argument Astro passes to `check` and `renderToStaticMarkup`. */
+/** The fourth argument Astro passes to `check` and `renderToStaticMarkup` (Astro's `AstroComponentMetadata`). */
 export interface RendererMetadata {
-  /** True when the component carries a `client:*` directive. */
-  hydrate?: string | false;
-  /** Astro's `astroStaticSlot` flag, set when the renderer supports static slots. */
-  astroStaticSlot?: boolean;
-  [key: string]: unknown;
+  displayName: string;
+  /** The directive, absent for a static render. */
+  hydrate?: "load" | "idle" | "visible" | "media" | "only";
+  hydrateArgs?: unknown;
+  componentUrl?: string;
+  componentExport?: { value: string; namespace?: boolean };
+  astroStaticSlot: true;
 }
 
 /** The module an integration's `serverEntrypoint` default-exports (Astro's `SSRLoadedRendererValue`). */
@@ -56,14 +58,16 @@ export interface LoadedRenderer {
 }
 
 /**
- * Client-side URLs the host serves. Both are pure and deterministic, so the page can be
- * rendered before the bundles are written; the host must emit a file at every URL it returns.
+ * Client-side URLs the host serves, base path included. Pure and deterministic, so the page
+ * can be rendered before the bundles are written; the host must emit a file at every URL it returns.
  */
 export interface IslandClientUrls {
   /** URL of the client module that exports `exportName` of the component at `componentPath`. */
   component(componentPath: string, exportName: string): string;
   /** URL of the renderer's client entrypoint. */
   renderer(rendererName: string): string;
+  /** Astro's `before-hydration-url`: the bundle of `injectScript("before-hydration")` scripts, or `null` when there are none. */
+  beforeHydration: string | null;
 }
 
 /** Astro's prebuilt hydration scripts, read by the host from the project's `astro` package. */
@@ -84,12 +88,17 @@ export interface AstroIslandsConfig {
  * One component call that may belong to a framework renderer.
  *
  * - `astro`: from `$$renderComponent` in a compiled `.astro` file. `props` are the
- *   compiler's props with `class:list` normalised to `class`, including the
- *   `client:*` keys; `client:component-path` is the absolute path of the imported
- *   file (no extension added) and `client:component-export` its export name.
+ *   compiler's props as passed, `class:list` and the `client:*` keys included;
+ *   `client:component-path` is the absolute path of the imported file (no
+ *   extension added) and `client:component-export` its export name.
  *   `Component` is `null` for `client:only`.
  * - `jsx`: from the JSX runtime (MDX content and `.tsx` pages). `props` are the
- *   JSX props, `children` included; `slots` is empty.
+ *   JSX props, `children` included; `slots` is empty. MDX adds the same
+ *   `client:component-path` and `client:component-export` keys to a hydrated
+ *   element, as `@astrojs/mdx` does.
+ *
+ * Never offered: `.astro` components, pletivo's native components
+ * (`./native.ts`), and calls with pletivo's own `client` island prop.
  */
 export interface FrameworkComponentCall {
   source: "astro" | "jsx";

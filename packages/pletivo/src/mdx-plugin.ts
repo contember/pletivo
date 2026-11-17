@@ -272,6 +272,8 @@ export async function registerMdxPlugin(): Promise<void> {
         // cache busting (same as the astro plugin does for its own output).
         // JSON needs this too so translation dictionaries reload on edit.
         code = applyDevCacheBust(substituteImportMetaEnv(code, "js"), getDevVersion());
+        // pletivo renders an MDX module itself; the runtime never offers it to a framework renderer.
+        code += '\nObject.defineProperty(MDXContent, Symbol.for("pletivo.native-component"), { value: true });\n';
 
         return {
           contents: code,

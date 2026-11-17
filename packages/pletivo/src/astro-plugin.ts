@@ -105,7 +105,8 @@ const HOISTED_PREFIX = "pletivo:hoisted:";
  * Astro's `resolvePath` does. The island's uid hashes this string.
  */
 export function resolveComponentPath(specifier: string, importer: string): string {
-  if (!specifier.startsWith(".")) return specifier;
+  // The compiler also passes its `$$renderScript` ids here; they must stay keyed as `hoistedScriptId` built them.
+  if (!specifier.startsWith(".") || specifier.includes("?astro&type=script")) return specifier;
   const absolute = path.resolve(path.dirname(importer), specifier).replaceAll("\\", "/");
   if (absolute.endsWith(".jsx") && !existsSync(absolute)) {
     const tsx = absolute.slice(0, -4) + ".tsx";
