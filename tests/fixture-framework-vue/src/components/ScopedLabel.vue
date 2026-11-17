@@ -15,3 +15,9 @@ defineProps<{ label: string }>();
 	color: rebeccapurple;
 }
 </style>
+
+<style>
+.label + .label {
+	margin-top: 0;
+}
+</style>

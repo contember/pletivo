@@ -5,7 +5,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BunPlugin } from "bun";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import os from "os";
 import path from "path";
 import * as compilerSfc from "vue/compiler-sfc";
 import { createVueCompiler } from "@pletivo/core/framework-compile/vue";
@@ -43,7 +42,8 @@ const pletivo = new Map<FrameworkCompileTarget, Harness>();
 const reference = new Map<FrameworkCompileTarget, Harness>();
 
 beforeAll(async () => {
-  outDir = mkdtempSync(path.join(os.tmpdir(), "pletivo-vue-compile-"));
+  // Inside the fixture, so the bundles' external `vue` imports resolve to the repo's copy.
+  outDir = mkdtempSync(path.join(FIXTURE, "tmp-"));
   compiler = await loadVueCompiler(FIXTURE);
   for (const target of TARGETS) {
     const css = new Map<string, string>();
@@ -65,18 +65,17 @@ function harness(builds: Map<FrameworkCompileTarget, Harness>, target: Framework
   return built;
 }
 
-/** Bundles the fixture's render harness with `.vue` files compiled by `plugin`, and imports it. */
+/**
+ * Bundles the fixture's render harness with `.vue` files compiled by `plugin`, and imports it.
+ * Vue stays external, as in Astro's server build. Bundling it also breaks on Bun 1.3.14: once the
+ * runtime has loaded vue/compiler-sfc, a second Bun.build fails to read its CommonJS dependencies.
+ */
 async function bundleHarness(name: string, plugin: BunPlugin): Promise<HarnessModule> {
   const result = await Bun.build({
     entrypoints: [path.join(FIXTURE, "render.mjs")],
     target: "bun",
     plugins: [plugin],
-    define: {
-      "process.env.NODE_ENV": JSON.stringify("production"),
-      __VUE_OPTIONS_API__: "true",
-      __VUE_PROD_DEVTOOLS__: "false",
-      __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: "false",
-    },
+    external: ["vue", "vue/server-renderer"],
   });
   if (!result.success) throw new AggregateError(result.logs, `${name} harness build failed`);
   const entry = result.outputs.find((output) => output.kind === "entry-point");
@@ -85,6 +84,9 @@ async function bundleHarness(name: string, plugin: BunPlugin): Promise<HarnessMo
   writeFileSync(file, await entry.text());
   return import(file);
 }
+
+/** A plugin-vue style request, `<file>.vue?vue&type=style&index=<n>…`. */
+const STYLE_REQUEST = /\.vue\?vue&type=style&index=(\d+)(?:&|$)/;
 
 /**
  * @vitejs/plugin-vue, resolved through @astrojs/vue, with @astrojs/vue's options, hosted
@@ -119,13 +121,13 @@ async function pluginVueAsAstroRunsIt(target: FrameworkCompileTarget, css: Map<s
   return {
     name: "plugin-vue-reference",
     setup(build) {
-      build.onResolve({ filter: /\?vue&type=style/ }, (args) => ({ path: args.path, namespace: "plugin-vue-style" }));
-      build.onLoad({ filter: /.*/, namespace: "plugin-vue-style" }, async (args) => {
+      build.onResolve({ filter: STYLE_REQUEST }, (args) => ({ path: args.path, namespace: "plugin-vue-style" }));
+      build.onLoad({ filter: STYLE_REQUEST, namespace: "plugin-vue-style" }, async (args) => {
         const block: { code: string } = plugin.load.call(context, args.path, { ssr });
         const style: { code: string } = await plugin.transform.call(context, block.code, args.path, { ssr });
         const file = args.path.slice(0, args.path.indexOf("?"));
         const blocks = styles.get(file) ?? [];
-        blocks[Number(/[?&]index=(\d+)/.exec(args.path)?.[1])] = style.code;
+        blocks[Number(STYLE_REQUEST.exec(args.path)?.[1])] = style.code;
         styles.set(file, blocks);
         css.set(file, blocks.join("\n"));
         return { contents: "", loader: "js" };
@@ -134,11 +136,11 @@ async function pluginVueAsAstroRunsIt(target: FrameworkCompileTarget, css: Map<s
         path: "export-helper",
         namespace: "plugin-vue-helper",
       }));
-      build.onLoad({ filter: /.*/, namespace: "plugin-vue-helper" }, () => ({
+      build.onLoad({ filter: /^export-helper$/, namespace: "plugin-vue-helper" }, () => ({
         contents: plugin.load.call(context, "\0plugin-vue:export-helper"),
         loader: "js",
       }));
-      build.onLoad({ filter: /\.vue$/ }, async (args) => {
+      build.onLoad({ filter: /\.vue$/, namespace: "file" }, async (args) => {
         const source = await Bun.file(args.path).text();
         const main: { code: string } = await plugin.transform.call(context, source, args.path, { ssr });
         return { contents: main.code, loader: "js" };
@@ -191,8 +193,10 @@ describe("scoped <style>", () => {
     expect(ids.size).toBe(1);
     const [id] = [...ids];
     expect(html).toBe(`<p class="label" ${id}><span ${id}>Hi</span><!--[--><astro-slot><b>slot</b></astro-slot><!--]--></p>`);
+    // Both <style> blocks, in source order; only the scoped one carries the id.
     expect(css.get(path.join(COMPONENTS, "ScopedLabel.vue"))).toBe(
-      `\n.label[${id}] {\n\tfont-weight: bold;\n}\n.label span[${id}] {\n\tcolor: rebeccapurple;\n}\n`,
+      `\n.label[${id}] {\n\tfont-weight: bold;\n}\n.label span[${id}] {\n\tcolor: rebeccapurple;\n}\n` +
+        `\n\n.label + .label {\n\tmargin-top: 0;\n}\n`,
     );
   });
 });
@@ -268,6 +272,16 @@ describe("client target", () => {
       expect(typeof counter?.render).toBe("function");
     });
   }
+
+  test("the client's CSS variable names equal the ones in the CSS (v-bind in <style>)", async () => {
+    const filename = path.join(COMPONENTS, "ThemedLabel.vue");
+    const output = await compiler.compile({ source: await Bun.file(filename).text(), filename, target: "client" });
+    const cssVars = /_useCssVars\(_ctx => \(\{([^}]*)\}\)\)/.exec(output?.code ?? "")?.[1] ?? "";
+    const clientNames = [...cssVars.matchAll(/"([^"]+)":/g)].map((match) => match[1]);
+    const cssNames = [...(output?.css ?? "").matchAll(/var\(--([^)]+)\)/g)].map((match) => match[1]);
+    expect(clientNames.length).toBe(1);
+    expect(clientNames).toEqual(cssNames);
+  });
 
   test("the module imports no server renderer", async () => {
     const filename = path.join(COMPONENTS, "Counter.vue");
