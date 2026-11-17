@@ -107,15 +107,32 @@ describe("pletivo prepare, framework islands", () => {
     );
   });
 
-  test("keeps node:async_hooks and node:crypto, bare or not, as imports the render isolate answers", async () => {
+  test("refuses an allowed built-in by its bare name or through require(), naming the importer", async () => {
+    const bare = await reactProject({
+      "src/components/Counter.jsx":
+        'import { createHash } from "crypto";\nexport function Counter() { return <b>{typeof createHash}</b>; }\n',
+    });
+    expect(await prepareError(bare)).toContain(
+      'src/components/Counter.jsx (islands): imports the Node built-in "crypto"',
+    );
+    const required = await reactProject({
+      "src/components/Counter.jsx":
+        'const crypto = require("node:crypto");\nexport function Counter() { return <b>{typeof crypto}</b>; }\n',
+    });
+    expect(await prepareError(required)).toContain(
+      'src/components/Counter.jsx (islands): requires the Node built-in "node:crypto"',
+    );
+  });
+
+  test("keeps node:async_hooks and node:crypto as imports the bundle runs with", async () => {
     const root = await reactProject({
       "src/components/Counter.jsx": [
-        'import { AsyncLocalStorage } from "async_hooks";',
-        'import { webcrypto } from "node:crypto";',
-        "export function Counter() {",
-        '  void import("node:async_hooks");',
-        "  return <b>{typeof AsyncLocalStorage}{typeof webcrypto}</b>;",
-        "}",
+        'import { AsyncLocalStorage } from "node:async_hooks";',
+        'import { createHash } from "node:crypto";',
+        'export const digest = createHash("sha256").update("x").digest("hex");',
+        "export const storage = new AsyncLocalStorage().run(1, () => 2);",
+        'export const lazy = async () => typeof (await import("node:crypto")).webcrypto;',
+        "export function Counter() { return <b>{digest}</b>; }",
         "",
       ].join("\n"),
     });
@@ -124,6 +141,39 @@ describe("pletivo prepare, framework islands", () => {
     const bundle = site.artifact.modules.filter((module) => module.id.startsWith(ISLANDS_BUNDLE_MODULE_PREFIX));
     // Neither stubbed to `{}` nor polyfilled by the browser target.
     expect(bundle.some((module) => module.source.includes("crypto-browserify"))).toBe(false);
+
+    // And the bundle loads: every binding the component imported is live.
+    const directory = path.join(root, "bundle");
+    await fs.mkdir(directory);
+    for (const module of bundle) {
+      await fs.writeFile(path.join(directory, module.id.slice(module.id.indexOf("/") + 1)), module.source);
+    }
+    const component = site.artifact.islands?.components[0]?.module ?? "";
+    const entry = path.join(directory, component.slice(component.indexOf("/") + 1));
+    const child = Bun.spawn(
+      ["bun", "-e", `const m = await import(${JSON.stringify(entry)}); console.log(JSON.stringify([m.digest, m.storage, await m.lazy(), typeof m.Counter]));`],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual([createHash("sha256").update("x").digest("hex"), 2, "object", "function"]);
+  });
+
+  test("records a file the project and the bundle both read once", async () => {
+    const root = await reactProject({
+      "package.json": '{ "name": "site", "version": "1.2.3" }\n',
+      "src/components/Counter.jsx":
+        'import pkg from "../../package.json";\nexport function Counter() { return <b>{pkg.version}</b>; }\n',
+    });
+    const site = await prepare(root);
+    expect((site.inputs ?? []).filter((input) => input.path === "package.json")).toEqual([
+      { path: "package.json", digest: digest('{ "name": "site", "version": "1.2.3" }\n') },
+    ]);
   });
 
   test("keeps a helper only components import out of the vendor graph, and records what the bundle read", async () => {
@@ -141,16 +191,19 @@ describe("pletivo prepare, framework islands", () => {
     expect(paths).toEqual([...paths].sort());
   });
 
-  test("refuses, by name, a helper a page shares with a component when the page's copy cannot be carried", async () => {
+  test("refuses, by name, only the shared helper whose live copy cannot be carried", async () => {
     const root = await reactProject({
       "src/components/Counter.jsx":
-        'import { useCount } from "../hooks/useCount";\nexport function Counter({ start }) { const [n] = useCount(start); return <b>{n}</b>; }\n',
-      "src/hooks/useCount.ts": 'import { useState } from "react";\nexport function useCount(start: number) { return useState(start); }\n',
-      "src/pages/index.astro": `---\nimport { Counter } from "../components/Counter";\nimport { useCount } from "../hooks/useCount";\n---\n<Counter start={1} client:load /><p>{typeof useCount}</p>\n`,
+        'import { a } from "../lib/a";\nimport { b } from "../lib/b";\nexport function Counter() { return <b>{a}{b}</b>; }\n',
+      // React is CommonJS, which the live graph cannot carry; Preact is ESM, which it can.
+      "src/lib/a.ts": 'import { useState } from "react";\nexport const a = typeof useState;\n',
+      "src/lib/b.ts": 'import { h } from "preact";\nexport const b = typeof h;\n',
+      "src/pages/index.astro": `---\nimport { Counter } from "../components/Counter";\nimport { a } from "../lib/a";\nimport { b } from "../lib/b";\n---\n<Counter client:load /><p>{a}{b}</p>\n`,
     });
     const output = await prepareError(root);
     expect(output).toContain(
-      "src/hooks/useCount.ts (islands): framework components and the project's live modules both import it",
+      "src/lib/a.ts (islands): framework components and the project's live modules both import it",
     );
+    expect(output).not.toContain("src/lib/b.ts (islands)");
   });
 });

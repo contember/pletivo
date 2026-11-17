@@ -6,6 +6,7 @@ import { Glob } from "bun";
 import {
   ARTIFACT_VERSION,
   type ArtifactConfig,
+  type ArtifactInput,
   type ArtifactMarkdownConfig,
   type PreparedSite,
 } from "@pletivo/core/artifact";
@@ -100,13 +101,21 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
       browserResolutions: graph.browserResolutions,
       ...(islands === null ? {} : { islands: islands.islands }),
     },
-    inputs: islands === null ? inputs : [...inputs, ...islands.inputs].sort((left, right) => compareStrings(left.path, right.path)),
+    inputs: islands === null ? inputs : withBundleInputs(inputs, islands.inputs),
   };
 }
 
+/** A file both record, such as a `package.json` a component imports, keeps the digest read first. */
+function withBundleInputs(inputs: readonly ArtifactInput[], bundle: readonly ArtifactInput[]): ArtifactInput[] {
+  const recorded = new Set(inputs.map((input) => input.path));
+  return [...inputs, ...bundle.filter((input) => !recorded.has(input.path))].sort((left, right) =>
+    compareStrings(left.path, right.path),
+  );
+}
+
 /**
- * The vendor graph. When it fails and builds without the files framework components share with
- * live modules, the failure is theirs: refuse them by name rather than the package they import.
+ * The vendor graph. When it fails only because of files framework components share with live
+ * modules, each that fails it on its own is refused by name, rather than the package it imports.
  */
 async function prepareSharedGraph(
   projectRoot: string,
@@ -114,25 +123,36 @@ async function prepareSharedGraph(
   shared: readonly string[],
   pluginModules: readonly string[],
 ): Promise<PreparedGraph> {
+  const graphOf = (files: readonly ProjectImportSource[]) =>
+    prepareModuleGraph(projectRoot, files, freezeViteVirtualModule, pluginModules);
   try {
-    return await prepareModuleGraph(projectRoot, sources, freezeViteVirtualModule, pluginModules);
+    return await graphOf(sources);
   } catch (error) {
     if (!(error instanceof PrepareError) || shared.length === 0) throw error;
     const sharedFiles = new Set(shared);
+    const unshared = sources.filter((source) => !sharedFiles.has(source.file));
     try {
-      await prepareModuleGraph(projectRoot, sources.filter((source) => !sharedFiles.has(source.file)), freezeViteVirtualModule, pluginModules);
+      await graphOf(unshared);
     } catch {
+      // It fails without them too: not theirs.
       throw error;
     }
-    throw new PrepareError(
-      shared.map((file) => ({
-        source: normalizePath(path.relative(projectRoot, file)),
-        hook: "islands",
-        reason:
-          "framework components and the project's live modules both import it, and its imports cannot be carried " +
-          `for the live ones on the Workers host: ${error.message}`,
-      })),
-    );
+    const diagnostics: PrepareDiagnostic[] = [];
+    for (const file of shared) {
+      try {
+        await graphOf([...unshared, ...sources.filter((source) => source.file === file)]);
+      } catch (fileError) {
+        if (!(fileError instanceof PrepareError)) throw fileError;
+        diagnostics.push({
+          source: normalizePath(path.relative(projectRoot, file)),
+          hook: "islands",
+          reason:
+            "framework components and the project's live modules both import it, and its imports cannot be carried " +
+            `for the live ones on the Workers host: ${fileError.message}`,
+        });
+      }
+    }
+    throw diagnostics.length === 0 ? error : new PrepareError(diagnostics);
   }
 }
 

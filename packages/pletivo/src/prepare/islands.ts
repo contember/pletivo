@@ -46,7 +46,6 @@ const HOOK = "islands";
 const ENTRY_PREFIX = "pletivo-islands-entry-";
 const ENTRY_NAMESPACE = "pletivo-islands-entry";
 const STYLESHEET_NAMESPACE = "pletivo-islands-stylesheet";
-const BUILTIN_NAMESPACE = "pletivo-islands-builtin";
 const NODE_BUILTINS = new Set(builtinModules.map((specifier) => specifier.replace(/^node:/, "")));
 /** Never on disk. In the project root, so a virtual module's own imports resolve from its `node_modules`. */
 const VIRTUAL_DIR = "__pletivo_islands_virtual__";
@@ -144,7 +143,7 @@ export async function prepareIslands(
   }
 
   const { files, loaded } = await build(projectRoot, entries, bundling);
-  const bundledFiles = new Set([...loaded].filter((file) => isProjectFile(projectRoot, file)));
+  const bundledFiles = new Set(loaded.keys());
   const reached = bundleImports(files);
   const names = [...reached.keys()].sort(compareStrings);
   const digest = new Bun.CryptoHasher("sha256");
@@ -183,7 +182,7 @@ export async function prepareIslands(
     resolutions,
     componentFiles: new Set(components.map((component) => component.file)),
     bundledFiles,
-    inputs: await bundleInputs(projectRoot, bundledFiles),
+    inputs: [...loaded].map(([file, digest]) => ({ path: normalizePath(path.relative(projectRoot, file)), digest })),
   };
 }
 
@@ -242,14 +241,6 @@ function isProjectFile(projectRoot: string, file: string): boolean {
   return isInsideRoot(relative) && !segments.includes("node_modules") && segments[0] !== VIRTUAL_DIR;
 }
 
-async function bundleInputs(projectRoot: string, files: ReadonlySet<string>): Promise<ArtifactInput[]> {
-  const inputs: ArtifactInput[] = [];
-  for (const file of files) {
-    inputs.push({ path: normalizePath(path.relative(projectRoot, file)), digest: await digestArtifactInput(await fs.readFile(file)) });
-  }
-  return inputs;
-}
-
 /**
  * The bundled project files no live module imports: those stay out of the vendor graph, which would
  * otherwise carry their framework imports. One a live module imports too is compiled twice, once
@@ -291,8 +282,8 @@ async function build(
   projectRoot: string,
   entries: readonly Entry[],
   compilers: readonly FrameworkCompiler[],
-): Promise<{ files: Map<string, string>; loaded: Set<string> }> {
-  const loaded = new Set<string>();
+): Promise<{ files: Map<string, string>; loaded: Map<string, string> }> {
+  const loaded = new Map<string, string>();
   let failure: PrepareError | null = null;
   const refuse = (source: string, reason: string): never => {
     const refusal = prepareFailure(source, HOOK, reason);
@@ -315,7 +306,7 @@ async function build(
       define: { "process.env.NODE_ENV": JSON.stringify("production") },
       throw: false,
       plugins: [
-        loadTracker(loaded),
+        loadTracker(projectRoot, loaded),
         entryPlugin(entries),
         builtinPlugin(projectRoot, refuse),
         stylesheetPlugin(projectRoot, refuse),
@@ -350,13 +341,18 @@ async function build(
   return { files, loaded };
 }
 
-/** Records every file bundling reads, and leaves loading it to the plugins after it. */
-function loadTracker(loaded: Set<string>): BunPlugin {
+/**
+ * Digests every project file bundling reads, then leaves loading it to the plugins after it. Before
+ * they read it, so an edit racing prepare reads as stale rather than current.
+ */
+function loadTracker(projectRoot: string, loaded: Map<string, string>): BunPlugin {
   return {
     name: "pletivo-islands-load-tracker",
     setup(build) {
-      build.onLoad({ filter: /.*/, namespace: "file" }, (args) => {
-        loaded.add(args.path);
+      build.onLoad({ filter: /.*/, namespace: "file" }, async (args) => {
+        if (isProjectFile(projectRoot, args.path) && !loaded.has(args.path)) {
+          loaded.set(args.path, await digestArtifactInput(await fs.readFile(args.path)));
+        }
         return undefined;
       });
     },
@@ -396,31 +392,31 @@ function entryPlugin(entries: readonly Entry[]): BunPlugin {
 }
 
 /**
- * Every Node built-in the bundle reaches, before the browser target stubs or polyfills it: one the
- * render isolate provides stays an import of it, by its `node:` name; any other is refused.
+ * Every Node built-in the bundle names with a string literal, before the browser target stubs or
+ * polyfills it. An allowed one stays an external ESM import by its `node:` name. Its bare name or a
+ * `require()` of it is refused: Bun would emit a dropped binding or a `require` workerd lacks.
  */
 function builtinPlugin(projectRoot: string, refuse: (source: string, reason: string) => never): BunPlugin {
+  const allowed = [...ARTIFACT_BUILTIN_EXTERNALS].join(", ");
   return {
     name: "pletivo-islands-builtins",
     setup(build) {
       build.onResolve({ filter: /.*/ }, (args) => {
-        const name = args.path.replace(/^node:/, "");
-        if (!NODE_BUILTINS.has(name)) return undefined;
-        const specifier = `node:${name}`;
-        if (!ARTIFACT_BUILTIN_EXTERNALS.has(specifier)) {
+        if (!NODE_BUILTINS.has(args.path.replace(/^node:/, ""))) return undefined;
+        const importer = displayPath(projectRoot, args.importer);
+        const builtin = JSON.stringify(args.path);
+        if (!ARTIFACT_BUILTIN_EXTERNALS.has(args.path)) {
+          const named = ARTIFACT_BUILTIN_EXTERNALS.has(`node:${args.path}`) ? `; import it as "node:${args.path}"` : "";
           return refuse(
-            displayPath(projectRoot, args.importer),
-            `imports the Node built-in ${JSON.stringify(args.path)}, which the Workers host does not give framework ` +
-              `components and renderers (only ${[...ARTIFACT_BUILTIN_EXTERNALS].join(", ")})`,
+            importer,
+            `imports the Node built-in ${builtin}, which the Workers host does not give framework components and ` +
+              `renderers (only ${allowed}, by those names)${named}`,
           );
         }
-        if (args.path === specifier) return { path: specifier, external: true };
-        // Bun prints an external import as written: a stub module spells the bare name the `node:` way.
-        return { path: name, namespace: BUILTIN_NAMESPACE };
-      });
-      build.onLoad({ filter: /.*/, namespace: BUILTIN_NAMESPACE }, (args) => {
-        const specifier = JSON.stringify(`node:${args.path}`);
-        return { contents: `export * from ${specifier};\nexport { default } from ${specifier};\n`, loader: "js" };
+        if (args.kind === "require-call") {
+          return refuse(importer, `requires the Node built-in ${builtin}; on the Workers host it must be imported, as a module has no require()`);
+        }
+        return { path: args.path, external: true };
       });
     },
   };
