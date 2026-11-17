@@ -100,6 +100,19 @@ describe("byte parity with pletivo build", () => {
   );
 
   test(
+    "the outside-root fixture scopes a component above the site root the same way",
+    async () => {
+      const { ok, output } = await localParity("packages/workers/test/fixture-outside-root/site");
+      // The site is `site/`; its one component sits in a `node_modules` above it, as a
+      // workspace hoists it. Its scoped style's id is hashed from a `../` path on both hosts.
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test(
     "the image fixture names every file the same way, and serves what it names",
     async () => {
       const { ok, output } = await localParity("packages/workers/test/fixture-images");

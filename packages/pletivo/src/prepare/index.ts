@@ -16,6 +16,7 @@ import {
   resolveScopedStyleStrategy,
   type ScopedStyleStrategy,
 } from "@pletivo/core/astro-host/scoped-style";
+import { invalidCompressHTML, resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
 import { bundlePageScripts } from "../astro-host/page-scripts";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
@@ -49,12 +50,14 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const markdown = freezeMarkdown(astroMarkdownSettings(host?.config));
   const routing = freezeRouting(host?.config);
   const scopedStyle = freezeScopedStyle(host?.config);
+  const compressHTML = freezeCompressHTML(host?.config);
   const fatal = [
     ...unsupportedProjectSemantics(projectConfig),
     ...unsupportedSemantics(host),
     ...markdown.diagnostics,
     ...routing.diagnostics,
     ...scopedStyle.diagnostics,
+    ...compressHTML.diagnostics,
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
@@ -70,7 +73,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   return {
     artifact: {
       version: ARTIFACT_VERSION,
-      config: freezeConfig(host?.config, markdown.config, routing, scopedStyle.strategy),
+      config: freezeConfig(host?.config, markdown.config, routing, scopedStyle.strategy, compressHTML.value),
       scripts: {
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: pageScript === null ? [] : [pageScript],
@@ -211,11 +214,26 @@ function freezeScopedStyle(config: AstroConfig | undefined): {
   return { strategy: resolveScopedStyleStrategy(config), diagnostics: [] };
 }
 
+function freezeCompressHTML(config: AstroConfig | undefined): {
+  value: boolean | undefined;
+  diagnostics: PrepareDiagnostic[];
+} {
+  const configured = config?.compressHTML;
+  if (configured !== undefined && typeof configured !== "boolean") {
+    return {
+      value: undefined,
+      diagnostics: [{ source: "astro.config", hook: "compressHTML", reason: invalidCompressHTML(configured) }],
+    };
+  }
+  return { value: resolveCompressHTML(config), diagnostics: [] };
+}
+
 function freezeConfig(
   config: AstroConfig | undefined,
   markdown: ArtifactMarkdownConfig | null,
   routing: FrozenRouting,
   scopedStyleStrategy: ScopedStyleStrategy | undefined,
+  compressHTML: boolean | undefined,
 ): ArtifactConfig {
   const frozen: ArtifactConfig = {};
   if (config?.site) frozen.site = config.site;
@@ -224,6 +242,7 @@ function freezeConfig(
   if (routing.trailingSlash !== null) frozen.trailingSlash = routing.trailingSlash;
   if (routing.redirects.length > 0) frozen.redirects = routing.redirects;
   if (scopedStyleStrategy !== undefined) frozen.scopedStyleStrategy = scopedStyleStrategy;
+  if (compressHTML !== undefined) frozen.compressHTML = compressHTML;
   return frozen;
 }
 

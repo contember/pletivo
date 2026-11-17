@@ -11,7 +11,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
-import { parsePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
+import { parsePreparedSite } from "@pletivo/core/artifact";
 import { minifyCss } from "../../pletivo/src/css-minify.ts";
 import { loadProjectArtifact } from "../src/artifact.ts";
 import { serveImage } from "../src/images.ts";
@@ -34,15 +34,15 @@ if (!fixture) {
   process.exit(2);
 }
 const root = path.resolve(REPO_ROOT, fixture);
-const prefix = path.relative(REPO_ROOT, root);
 
 const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-local-parity-"));
-/** The child writes the prepare result here — see `parity.ts` for why it is prefixed. */
+/** The child writes the prepare result here. */
 const artifactPath = path.join(outDir, "..", `${path.basename(outDir)}-artifact.json`);
 const build = Bun.spawn(
-  ["bun", path.join(import.meta.dir, "parity.ts"), "--build", root, outDir, artifactPath, prefix],
+  ["bun", path.join(import.meta.dir, "parity.ts"), "--build", root, outDir, artifactPath],
   {
-    cwd: REPO_ROOT,
+    // From the fixture root, as in `parity.ts`.
+    cwd: root,
     env: { ...process.env, NODE_ENV: "production" },
     stdout: "inherit",
     stderr: "inherit",
@@ -54,13 +54,13 @@ if ((await build.exited) !== 0) {
 }
 
 const sources = await readSources(root);
-const files = new Map([...sources.text].map(([rel, text]) => [`${prefix}/${rel}`, text]));
-const assets = new Map([...sources.binary].map(([rel, bytes]) => [`${prefix}/${rel}`, bytes]));
+const files = new Map(sources.text);
+const assets = new Map(sources.binary);
 const assetView = createProjectAssetsView(assets);
 
 const preparedOutput: unknown = JSON.parse(await Bun.file(artifactPath).text());
 const artifact = loadProjectArtifact(
-  prefixProjectImporters(parsePreparedSite(siteFromPrepareOutput(preparedOutput)), prefix),
+  parsePreparedSite(siteFromPrepareOutput(preparedOutput)),
 );
 
 function siteFromPrepareOutput(value: unknown): unknown {
@@ -70,23 +70,6 @@ function siteFromPrepareOutput(value: unknown): unknown {
   return Reflect.get(value, "site");
 }
 
-/** Match the harness's repo-relative file-map namespace without changing producer IDs. */
-function prefixProjectImporters(site: PreparedSite, projectPrefix: string): PreparedSite {
-  if (projectPrefix === "") return site;
-  return {
-    ...site,
-    artifact: {
-      ...site.artifact,
-      resolutions: site.artifact.resolutions.map((resolution) => ({
-        ...resolution,
-        importer: resolution.importer.startsWith("project:")
-          ? `project:${path.posix.join(projectPrefix, resolution.importer.slice("project:".length))}`
-          : resolution.importer,
-      })),
-    },
-  };
-}
-
 const compiler = createAstroCompiler(await astroWasmModule());
 const loader = new FileLoader();
 const executionNamespace = { tenant: "local-parity", capabilityGeneration: "content-v1" };
@@ -94,7 +77,7 @@ const executionNamespace = { tenant: "local-parity", capabilityGeneration: "cont
 // cross. In workerd they are two halves; see `example/src/index.ts`.
 const contentFiles = new ContentFiles();
 const content = { binding: contentFiles, store: contentFiles };
-const srcDir = `${prefix}/src`;
+const srcDir = "src";
 const pagesDir = `${srcDir}/pages`;
 let identical = 0;
 let pages = 0;

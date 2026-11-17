@@ -148,6 +148,8 @@ export interface ArtifactConfig {
   redirects?: ArtifactRedirect[];
   /** What `.astro` compiles with; absent leaves the compiler's default (`where`). */
   scopedStyleStrategy?: ScopedStyleStrategy;
+  /** `.astro` compiles with `compact` set to it; absent leaves the compiler's default (off). */
+  compressHTML?: boolean;
 }
 
 /** Injected scripts the Workers host currently emits, in semantic order. */
@@ -318,7 +320,7 @@ export function serializePreparedSite(value: unknown): string {
 function parseConfig(value: unknown): ArtifactConfig {
   const at = "$.artifact.config";
   const config = requireObject(value, at, "an object");
-  assertExactFields(config, ["site", "markdown", "i18n", "trailingSlash", "redirects", "scopedStyleStrategy"], at);
+  assertExactFields(config, ["site", "markdown", "i18n", "trailingSlash", "redirects", "scopedStyleStrategy", "compressHTML"], at);
   const parsed: ArtifactConfig = {};
   if (hasOwn(config, "site")) {
     const site = Reflect.get(config, "site");
@@ -341,6 +343,11 @@ function parseConfig(value: unknown): ArtifactConfig {
       throw new ArtifactFormatError(`${at}.scopedStyleStrategy`, 'expected "where", "class" or "attribute"');
     }
     parsed.scopedStyleStrategy = strategy;
+  }
+  if (hasOwn(config, "compressHTML")) {
+    const compressHTML = Reflect.get(config, "compressHTML");
+    if (typeof compressHTML !== "boolean") throw new ArtifactFormatError(`${at}.compressHTML`, "expected a boolean");
+    parsed.compressHTML = compressHTML;
   }
   return parsed;
 }
@@ -711,6 +718,7 @@ function canonicalConfig(config: ArtifactConfig): ArtifactConfig {
     }));
   }
   if (config.scopedStyleStrategy !== undefined) canonical.scopedStyleStrategy = config.scopedStyleStrategy;
+  if (config.compressHTML !== undefined) canonical.compressHTML = config.compressHTML;
   return canonical;
 }
 

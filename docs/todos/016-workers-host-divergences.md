@@ -42,6 +42,21 @@ These contracts landed after the measurements below. They are the current baseli
   did not bump the artifact version: a host older than this field rejects an Astro
   project's new artifact as malformed at `$.artifact.config`, and an artifact prepared
   before it renders with `where` until it is prepared again.
+- `.astro` also compiles with Astro's `compact` and `normalizedFilename`. `prepare`
+  freezes `config.compressHTML` for every Astro project (its configured value, else
+  Astro's `true`); the Workers host passes it as `compact`, and only when it is present
+  passes `normalizedFilename`, the module's root-relative path with a leading `/`, as
+  the Bun host does for a project with an `astro.config.*`. Both hosts then hash the
+  same `data-astro-cid-*` scope ids as Astro, independent of the cwd. Like
+  `scopedStyleStrategy`, the field did not bump the artifact version: a host older than
+  it rejects the new artifact as malformed at `$.artifact.config`, and an artifact
+  prepared before it compiles as it did (no `compact`, scope ids hashed from the compile
+  path) until it is prepared again. For a carried `.astro` file outside the project root
+  (`compilePath` starting `../`, e.g. a workspace's hoisted `node_modules`) both hosts
+  deliberately diverge from Astro: Astro hashes the absolute path, which the Workers host
+  does not know, so both pass the root-relative `../` path instead. The hosts agree with
+  each other, and the scope id no longer depends on where the checkout lives
+  (`test/fixture-outside-root`).
 - The isolate's logic is a typed module, `src/isolate-entry.ts`, bundled by
   `scripts/build-runtime.ts` into the committed `src/generated/runtime-modules.ts` with
   the runtime and protocol kept external; `test/runtime-modules.test.ts` fails when the

@@ -7,6 +7,8 @@ import {
   type ArtifactModule,
   type ArtifactResolution,
   type PreparedSite,
+  parsePreparedSite,
+  serializePreparedSite,
 } from "@pletivo/core/artifact";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { createCompileCache } from "../src/compile-cache.ts";
@@ -380,6 +382,30 @@ describe("Artifact V2 compiler consumer", () => {
   });
 });
 
+describe("the artifact's compressHTML", () => {
+  const files = new Map([["src/pages/spaced.astro", "<div>\n  <p>a</p>\n</div>\n"]]);
+
+  async function compiledWith(config: PreparedSite["artifact"]["config"] | null): Promise<string> {
+    const artifact = config === null
+      ? undefined
+      : loadProjectArtifact({
+          artifact: { version: ARTIFACT_VERSION, config, scripts: { headInline: [], page: [] }, modules: [], resolutions: [] },
+        });
+    const compiled = await compileProject({ files, entries: ["src/pages/spaced.astro"], compiler, artifact });
+    return bodyOf(compiled, "src/pages/spaced.astro");
+  }
+
+  test("reaches the compile as compact", async () => {
+    expect(await compiledWith({ compressHTML: true })).toContain("<div> <p>a</p> </div>");
+    expect(await compiledWith({ compressHTML: false })).toContain("<div>\n  <p>a</p>\n</div>");
+  });
+
+  test("absent, leaves the compiler's default", async () => {
+    expect(await compiledWith({})).toContain("<div>\n  <p>a</p>\n</div>");
+    expect(await compiledWith(null)).toContain("<div>\n  <p>a</p>\n</div>");
+  });
+});
+
 describe("injected scripts and strict parsing", () => {
   test("emits the two supported script stages after page CSS", () => {
     const html = finalizeHtml(
@@ -395,6 +421,23 @@ describe("injected scripts and strict parsing", () => {
 
   test("round-trips the V2 fixture", () => {
     expect(loadProjectArtifact(JSON.parse(JSON.stringify(PREPARED))).prepared).toEqual(PREPARED);
+  });
+
+  test("round-trips compressHTML and rejects a value that is not a boolean, by name", () => {
+    const prepared: PreparedSite = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: { scopedStyleStrategy: "attribute", compressHTML: false },
+        scripts: { headInline: [], page: [] },
+        modules: [],
+        resolutions: [],
+      },
+    };
+    expect(parsePreparedSite(JSON.parse(serializePreparedSite(prepared)))).toEqual(prepared);
+
+    const invalid = JSON.parse(JSON.stringify(prepared));
+    invalid.artifact.config.compressHTML = "false";
+    expect(() => parsePreparedSite(invalid)).toThrow("$.artifact.config.compressHTML: expected a boolean");
   });
 
   async function unresolvedImportOf(source: string): Promise<UnresolvedImportError> {

@@ -41,6 +41,8 @@ export interface CompiledFile {
   annotated: boolean;
   /** The `.astro` scoped-style strategy it compiled with; `undefined` for every other kind. */
   scopedStyleStrategy: ScopedStyleStrategy | undefined;
+  /** The `.astro` `compact` it compiled with; `undefined` for every other kind. */
+  compressHTML: boolean | undefined;
   /** `import.meta.glob` calls, replaced by placeholders in `code`; linking expands them. */
   globs: readonly ImportMetaGlob[];
 }

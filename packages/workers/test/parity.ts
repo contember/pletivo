@@ -14,12 +14,11 @@
  * value of this script is the list of places the two disagree.
  */
 
-import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Glob } from "bun";
-import { parsePreparedSite, serializePreparedSite, type PreparedSite } from "@pletivo/core/artifact";
+import { parsePreparedSite, serializePreparedSite } from "@pletivo/core/artifact";
 import { withoutCdnCgi } from "../src/images.ts";
 import { builtPathname } from "./built-pathname.ts";
 import { imageUrls, readSources, sameBytes, SKIPPED } from "./sources.ts";
@@ -29,7 +28,7 @@ const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 // ── Child mode: one `pletivo build`, into a directory outside the fixture ──
 
 if (process.argv[2] === "--build") {
-  const [, , , root, outDir, artifactPath, pathPrefix] = process.argv;
+  const [, , , root, outDir, artifactPath] = process.argv;
   // The config/integration phase, in the same child and before the build: it registers
   // the same Bun plugins the build needs, and a fixture that cannot be prepared should
   // say so before 200 pages are written.
@@ -38,7 +37,7 @@ if (process.argv[2] === "--build") {
     const site = await prepare(root);
     await Bun.write(
       artifactPath,
-      serializePreparedSite(prefixCompilePaths(site, root, pathPrefix ?? "")),
+      serializePreparedSite(site),
     );
   }
   const { build } = await import("../../pletivo/src/build.ts");
@@ -73,14 +72,14 @@ const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-parity-"));
 /**
  * Where the child leaves the site artifact — the frozen `astro:config:setup`, the
  * vendored npm modules and the `node_modules` sources. Outside the fixture, because
- * it is a build product; keyed with `prefix`, for the reason below.
+ * it is a build product.
  */
 const artifactPath = path.join(outDir, "..", `${path.basename(outDir)}-artifact.json`);
-const prefix = path.relative(REPO_ROOT, root);
-const child = Bun.spawn(["bun", import.meta.path, "--build", root, outDir, artifactPath, prefix], {
-  // From the repo root, so the fixture's TSX resolves the same JSX runtime the
-  // conformance harness gives it, and production so no dev-only path is taken.
-  cwd: REPO_ROOT,
+const child = Bun.spawn(["bun", import.meta.path, "--build", root, outDir, artifactPath], {
+  // From the fixture root, as a real build runs: the Bun host names a module by its path
+  // relative to the cwd, and the Workers host by its path in the root-keyed file map.
+  // Production, so no dev-only path is taken.
+  cwd: root,
   env: { ...process.env, NODE_ENV: "production" },
   stdout: "inherit",
   stderr: "inherit",
@@ -90,22 +89,14 @@ if ((await child.exited) !== 0) {
   process.exit(1);
 }
 
-/**
- * Both hosts must see the same `filename` for a component, because the Astro
- * compiler derives the `astro-{scope}` hash from it. The Bun host names a module by
- * its path relative to `process.cwd()`, and the build above runs from the repo root
- * — so the virtual file map is keyed the same way, and so is the artifact
- * (`prefixCompilePaths`). In real use both sides sit at the project root and this
- * prefix is empty.
- */
 const artifact = parsePreparedSite(JSON.parse(await Bun.file(artifactPath).text()));
 const sources = await readSources(root);
-const files = new Map([...sources.text].map(([rel, source]) => [`${prefix}/${rel}`, source]));
+const files = new Map(sources.text);
 /** The fixture's binaries, base64 so they survive the JSON body. */
 const assets = Object.fromEntries(
-  [...sources.binary].map(([rel, bytes]) => [`${prefix}/${rel}`, Buffer.from(bytes).toString("base64")]),
+  [...sources.binary].map(([rel, bytes]) => [rel, Buffer.from(bytes).toString("base64")]),
 );
-const pagesDir = `${prefix}/src/pages`;
+const pagesDir = "src/pages";
 const bunPages = await readBuiltHtml(outDir);
 
 let identical = 0;
@@ -199,17 +190,6 @@ function pathnamesOf(body: unknown): Set<string> {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-/** Move compile paths of files on disk under `prefix`; a virtual id names no file and keeps its own. */
-function prefixCompilePaths(site: PreparedSite, root: string, prefix: string): PreparedSite {
-  if (prefix === "") return site;
-  const modules = site.artifact.modules.map((module) =>
-    module.compilePath !== undefined && existsSync(path.resolve(root, module.compilePath))
-      ? { ...module, compilePath: path.posix.join(prefix, module.compilePath) }
-      : module,
-  );
-  return { ...site, artifact: { ...site.artifact, modules } };
-}
 
 /** Every HTML file `pletivo build` emitted, keyed by output path. */
 async function readBuiltHtml(dir: string): Promise<Map<string, string>> {

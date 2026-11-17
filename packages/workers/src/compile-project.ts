@@ -60,6 +60,7 @@ export async function compileProject(options: CompileProjectOptions): Promise<Co
         const compiled = await compileCached(module, compiler, cache, {
           annotateSourceFile: options.annotateSourceFile === true,
           scopedStyleStrategy: options.artifact?.prepared.artifact.config.scopedStyleStrategy,
+          compressHTML: options.artifact?.prepared.artifact.config.compressHTML,
         });
         await linkModule(walk, resolver, module, compiled);
       }

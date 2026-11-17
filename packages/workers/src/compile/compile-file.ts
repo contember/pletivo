@@ -2,6 +2,7 @@ import { is } from "@astrojs/compiler/utils";
 import type { Node } from "@astrojs/compiler/types";
 import type { ArtifactModuleKind } from "@pletivo/core/artifact";
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import { normalizeRootRelativeFilename } from "@pletivo/core/astro-host/compile-options";
 import { foreignJsxMessage, frameworkOfJsxImportSource, jsxImportSourcePragma } from "@pletivo/core/framework-jsx";
 import { FRAMEWORK_RENDERERS_UNSUPPORTED } from "@pletivo/runtime/framework-components";
 import type { AstroCompiler } from "../astro-compiler.ts";
@@ -14,12 +15,14 @@ import { COMPILED } from "./module-kind.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
 import type { AstroStyles, StyleBlock } from "./types.ts";
 
-/** The `.astro` compiler options a project sets; both are part of a cached file's identity. */
+/** The `.astro` compiler options a project sets; all are part of a cached file's identity. */
 export interface AstroCompileOptions {
   /** See `ProjectOptions.annotateSourceFile`. */
   annotateSourceFile: boolean;
   /** The artifact's `config.scopedStyleStrategy`; absent leaves the compiler's default. */
   scopedStyleStrategy: ScopedStyleStrategy | undefined;
+  /** The artifact's `config.compressHTML`, passed as `compact`; absent leaves the compiler's default. */
+  compressHTML: boolean | undefined;
 }
 
 /**
@@ -36,17 +39,19 @@ export async function compileCached(
   const astro = module.kind === "astro";
   const annotate = options.annotateSourceFile && astro;
   const scopedStyleStrategy = astro ? options.scopedStyleStrategy : undefined;
+  const compressHTML = astro ? options.compressHTML : undefined;
   const held = cache?.get(module.compilePath);
   if (
     held !== undefined &&
     held.source === module.source &&
     held.kind === module.kind &&
     held.annotated === annotate &&
-    held.scopedStyleStrategy === scopedStyleStrategy
+    held.scopedStyleStrategy === scopedStyleStrategy &&
+    held.compressHTML === compressHTML
   ) {
     return held;
   }
-  const entry = await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy });
+  const entry = await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy, compressHTML });
   cache?.set(module.compilePath, entry);
   return entry;
 }
@@ -58,7 +63,7 @@ export async function compileCached(
 async function compileFile(
   module: SourceModule,
   compiler: AstroCompiler,
-  { annotateSourceFile, scopedStyleStrategy }: AstroCompileOptions,
+  { annotateSourceFile, scopedStyleStrategy, compressHTML }: AstroCompileOptions,
 ): Promise<CompiledFile> {
   const { source, compilePath, kind } = module;
   if (kind === "js") return fileEntry(source, source, null, kind, [], compilePath);
@@ -88,6 +93,9 @@ async function compileFile(
 
   const result = await compiler.transform(source, {
     filename: compilePath,
+    // `compressHTML` is present exactly for an Astro project, the only kind the Bun host normalizes.
+    normalizedFilename: compressHTML === undefined ? undefined : normalizeRootRelativeFilename(compilePath),
+    compact: compressHTML,
     internalURL: "pletivo/astro-shim",
     sourcemap: false,
     resolvePath: async (specifier) => specifier,
@@ -122,6 +130,7 @@ async function compileFile(
     ),
     annotated: annotateSourceFile,
     scopedStyleStrategy,
+    compressHTML,
   };
 }
 
@@ -214,6 +223,7 @@ function fileEntry(
     scripts,
     annotated: false,
     scopedStyleStrategy: undefined,
+    compressHTML: undefined,
     globs,
   };
 }
