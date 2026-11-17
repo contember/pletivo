@@ -192,6 +192,7 @@ describe("normalizeValue and propertyFamilies", () => {
   test("keeps whitespace after an escaped character", () => {
     expect(normalizeValue("font-family", "Foo\\) Bar")).toBe("Foo\\) Bar");
     expect(normalizeValue("font-family", "a\\, b")).toBe("a\\, b");
+    expect(normalizeValue("font-family", "\\31  b")).toBe("\\31  b");
   });
 
   test("keeps whitespace before an operator after a parenthesis", () => {
@@ -252,6 +253,34 @@ describe("the page normaliser", () => {
     const linked = await normalize('<link rel="stylesheet" href="/_astro/r.Ab12Cd34.css">');
     expect(linked).toContain("<link");
     expect(linked).not.toBe(await normalize("<style>.a{background:url(f.png)}</style>"));
+  });
+
+  test("keeps a sheet with a relative image-set() string linked", async () => {
+    const normalize = createHtmlNormalizer(css, astroBundle, () => '.a{background-image:image-set("f.png" 1x)}');
+    expect(await normalize('<link rel="stylesheet" href="/_astro/i.Ab12Cd34.css">')).toContain("<link");
+  });
+
+  test("reads every attribute spelling HTML accepts", async () => {
+    const normalize = createHtmlNormalizer(css, pletivoBundle, () => null);
+    const blue = "<style>.a{color:blue}</style>";
+    for (const kept of ["<style x=`1`>.a{color:red}</style>", '<link/rel="stylesheet" href="https://e.x/a.css">', '<link data-x=" rel=icon" rel=stylesheet href="https://e.x/a.css">']) {
+      expect(await normalize(kept + blue)).not.toBe(await normalize(blue + kept));
+    }
+    const started = performance.now();
+    await normalize(`<div ${"a".repeat(400)}"></div>${blue}`);
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+
+  test("reads <style> where the HTML parser does", async () => {
+    const normalize = createHtmlNormalizer(css, pletivoBundle, () => null);
+    const style = "<style>.x{color:red}</style>";
+    for (const [open, close] of [["<iframe>", "</iframe>"], ["<xmp>", "</xmp>"], ["<noembed>", "</noembed>"], ["<svg><title>", "</title></svg>"]]) {
+      expect(await normalize(`${open}${style}${close}`)).not.toBe(await normalize(`${open}${close}${style}`));
+    }
+    // `<!-->` is a whole comment, so the <style> after it applies.
+    expect(await normalize(`<!-->${style}<p>-->`)).toContain("<style>\n.x{color:red}\n</style>");
+    // `</stylex>` does not end a <style>.
+    expect(await normalize("<style>.x{color:red}</stylex>.y{color:blue}</style>")).toContain("</stylex>.y{color:blue}");
   });
 
   test("leaves a <style> in a nested template or an attribute value", async () => {

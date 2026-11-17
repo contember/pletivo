@@ -36,7 +36,8 @@ type CssNode =
 /**
  * Parse minified, comment-free CSS; strings and `(…)` are opaque. In a list of rules (the top
  * level, or a group at-rule outside a style rule) only an at-rule ends at `;`: other text runs
- * to `{`, as in a browser, so `x;b{…}` is one invalid rule. In a list of declarations, `;` ends one.
+ * to `{`, so `x;b{…}` is one invalid rule. At the top level a browser reads it so; in a group it
+ * drops only `x`, and this reading keeps more apart. In a list of declarations, `;` ends one.
  */
 export function parseCss(css: string): CssNode[] {
   let at = 0;
@@ -166,9 +167,12 @@ export function normalizeValue(property: string, value: string): string {
   for (let i = 0; i < value.length; i++) {
     const c = value.charAt(i);
     if (c === "\\") {
-      out += value.slice(i, i + 2);
+      // A hex escape takes up to six digits and one whitespace after them.
+      const hex = /^[0-9a-fA-F]{1,6}\s?/.exec(value.slice(i + 1, i + 8))?.[0];
+      const length = hex === undefined ? 2 : 1 + hex.length;
+      out += value.slice(i, i + length);
       escapedEnd = out.length;
-      i++;
+      i += length - 1;
       continue;
     }
     if (c === '"' || c === "'") {

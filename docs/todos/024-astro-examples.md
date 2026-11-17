@@ -34,19 +34,23 @@ may disagree on:
 - scope-id hash values, as ordinals, so the element ↔ selector link still counts;
 - page CSS, compared on meaning (`css.ts`): a linked bundled stylesheet is read in
   where it is linked, every bare `<style>` is taken out of the markup, and the page's
-  CSS is compared as one sheet after it. Only a link with `rel="stylesheet"` alone, no
-  `media`, `title`, `disabled` or non-CSS `type`, whose sheet has no relative `url()` or
-  `@import`, is read in. CSS left in the markup (any other stylesheet or `preload
-  as=style` link, one that cannot be read, a `<style>` with attributes) leaves a
-  barrier in the sheet, so the order against it still counts. A `<style>` in a
-  comment, an attribute value, `<script>`, `<template>`, `<noscript>` or other text
-  content is not page CSS. Each sheet first goes through the esbuild Astro's Vite
-  minified with, comments dropped. The parser reads a rule list as a browser does:
-  `x;b{…}` is one invalid rule, kept in place. Then:
+  CSS is compared as one sheet after it.
+  - Read in: only a link with `rel="stylesheet"` alone, no `media`, `title`,
+    `disabled` or non-CSS `type`, whose sheet has no relative `url()`, `image-set()`
+    or `@import` target.
+  - Left in the markup, with a barrier in its place in the sheet so the order against
+    it still counts: any other stylesheet or `preload as=style` link, one that cannot
+    be read, a `<style>` with attributes, a `<style>` in `<svg>`.
+  - Not page CSS: a `<style>` in a comment, an attribute value, `<template>`,
+    `<noscript>` or text content (`<script>`, `<iframe>`, `<xmp>` …).
+  - Each sheet first goes through the esbuild Astro's Vite minified with, comments
+    dropped. The parser reads `x;b{…}` in a rule list as one invalid rule, kept in
+    place: a browser does so at the top level; in a group it drops only `x`, and the
+    parser's reading keeps more apart.
   - declarations, and rules, may change places only with a neighbour they cannot
     tie with: a different property family (a shorthand shares one with its
-    longhands; `place-*`, `inset`, `page-break`, `gap` and `grid-*-gap`, `columns` and `column-break-*`,
-    `font`/`line-height`, logical sizes, `white-space`, `word-wrap` and
+    longhands; `place-*`, `inset`, `page-break`, `gap` and `grid-*-gap`, `columns`
+    and `column-break-*`, `font`/`line-height`, logical sizes, `white-space`, `word-wrap` and
     `color-adjust` are linked by a short table), scope (style rules, or the
     descriptors of one `@font-face` / `@keyframes x` / `@property --x` …), importance,
     or a specificity neither selector can have. A selector the scorer does not read
