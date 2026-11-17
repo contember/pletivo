@@ -214,10 +214,8 @@ async function resolveSpecifier(specifier: string, importer: string): Promise<st
 	if (candidate.includes("/node_modules/")) return null;
 	if (projectRoot && !candidate.startsWith(projectRoot)) return null;
 
-	// Relative imports that omit the extension (`./Layout`) need to be
-	// resolved to a real file. Like Bun and Node: the file itself, then
-	// extensions, then a directory index — `./blocks` is `blocks.ts` even
-	// when a `blocks/` directory sits beside it.
+	// Like Bun: the file, then extensions, then a directory index
+	// (`./blocks` → `blocks.ts` beside `blocks/`).
 	if (await isFile(candidate)) return candidate;
 	for (const ext of [".ts", ".tsx", ".js", ".jsx", ".astro", ".mjs", ".cjs", ".css", ".scss", ".sass"]) {
 		if (await isFile(candidate + ext)) return candidate + ext;
