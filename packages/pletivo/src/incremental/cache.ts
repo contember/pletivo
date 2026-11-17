@@ -120,10 +120,11 @@ export interface RouteCacheEntry {
 export interface DynamicRouteCacheEntry {
   /**
    * The param sets `getStaticPaths()` produced last build — just the
-   * params, not props. Always JSON-safe (params are strings), so this
-   * cache works for every dynamic route, including collection-backed
-   * ones whose props carry non-serializable values (`render()`
-   * methods, Dates, etc.).
+   * params, not props, so this cache works for every dynamic route,
+   * including collection-backed ones whose props carry non-serializable
+   * values (`render()` methods, Dates, etc.). JSON drops an `undefined`
+   * param (the first page of a `[...page]` route), so compare param sets
+   * through `paramsToKey`, which treats it as absent.
    *
    * Props are fetched on demand: when one or more slugs of this route
    * actually need to re-render, the build calls getStaticPaths again
@@ -391,6 +392,17 @@ async function collectDirListing(dir: string): Promise<string[]> {
   await walk(dir, "");
   out.sort();
   return out;
+}
+
+/**
+ * Identity of one param set of a dynamic route, used in route cache keys and
+ * to find a slug's props among `getStaticPaths()` results.
+ */
+export function paramsToKey(params: Record<string, string | undefined>): string {
+  // `routeToOutputPath` treats a missing, `undefined` or empty param alike, and
+  // a cached param set has lost its `undefined` keys to JSON.
+  const present = Object.keys(params).filter((k) => params[k] !== undefined && params[k] !== "");
+  return present.sort().map((k) => `${k}=${params[k]}`).join("&");
 }
 
 export function cacheDir(projectRoot: string): string {

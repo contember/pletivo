@@ -35,7 +35,7 @@ import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, 
 import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-assets";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
-import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, type CachedAstroIsland } from "./incremental/cache";
+import { CacheStore, canReuseFingerprint, computeConfigHash, fingerprintFile, hashFileContent, paramsToKey, type CachedAstroIsland } from "./incremental/cache";
 import { configureImportGraph, collectStaticDeps, isWalkableSourceFile } from "./incremental/import-graph";
 import { configureDepTracker, runWithRuntimeDepCapture, recordRuntimeDep } from "./incremental/dep-tracker";
 import { recordRenderedSize, resolveFragmentsHelper, runIncrementalRender, type FragmentsHelper, type RenderProducts, type RenderSource } from "./incremental/orchestrator";
@@ -1242,11 +1242,6 @@ async function walkDist(root: string, current: string, visit: (rel: string) => P
       await visit(path.relative(root, full));
     }
   }));
-}
-
-function paramsToKey(params: Record<string, string | undefined>): string {
-  const sorted = Object.keys(params).sort();
-  return sorted.map((k) => `${k}=${params[k] ?? ""}`).join("&");
 }
 
 async function canReuseDeps(deps: Record<string, import("./incremental/cache").DepFingerprint>): Promise<boolean> {
