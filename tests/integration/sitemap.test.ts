@@ -86,3 +86,36 @@ describe("sitemap.xml of a pletivo-native project", () => {
     expect(await sitemapUrls()).toEqual(["/", "/about", "/blog/_private", "/blog/post"]);
   });
 });
+
+describe("sitemap.xml of an --incremental build", () => {
+  let incrementalRoot = "";
+
+  async function buildIncremental(): Promise<string[]> {
+    const child = Bun.spawn(["bun", cli, "build", "--incremental"], { cwd: incrementalRoot, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    if ((await child.exited) !== 0) throw new Error(`the project failed to build:\n${stdout}${stderr}`);
+    const xml = await Bun.file(path.join(incrementalRoot, "dist/sitemap.xml")).text();
+    return [...xml.matchAll(/<loc>([^<]*)<\/loc>/g)].map((match) => match[1]);
+  }
+
+  beforeAll(async () => {
+    incrementalRoot = await fs.mkdtemp(path.join(import.meta.dir, "tmp-sitemap-incremental-"));
+    for (const [file, source] of Object.entries(PROJECT)) {
+      await fs.mkdir(path.dirname(path.join(incrementalRoot, file)), { recursive: true });
+      await fs.writeFile(path.join(incrementalRoot, file), source);
+    }
+  });
+
+  afterAll(async () => {
+    if (incrementalRoot) await fs.rm(incrementalRoot, { recursive: true, force: true });
+  });
+
+  test("keeps pages restored from the cache and drops a deleted page", async () => {
+    const pages = ["/", "/about", "/blog/_private", "/blog/post"];
+    expect(await buildIncremental()).toEqual(pages);
+    // Nothing changed: every page comes from the cache.
+    expect(await buildIncremental()).toEqual(pages);
+    await fs.rm(path.join(incrementalRoot, "src/pages/about.tsx"));
+    expect(await buildIncremental()).toEqual(["/", "/blog/_private", "/blog/post"]);
+  }, 180_000);
+});
