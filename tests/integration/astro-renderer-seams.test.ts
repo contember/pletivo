@@ -189,13 +189,13 @@ describe("frameworkCompilePlugin when every compiler declines", () => {
 });
 
 describe("the island hook in its callers", () => {
-  const notImplemented = /renderFrameworkComponent is not implemented yet/;
+  const claimed = "<b>framework</b>";
   const Widget = () => createHtml("<i>w</i>");
   const NativeContent = markNativeComponent(() => createHtml("<p>content</p>"));
 
   test("offers framework components once configured, and never pletivo's own", async () => {
     configureAstroIslands({
-      renderers: [{ name: "fake", clientEntrypoint: null, ssr: { check: () => true, renderToStaticMarkup: () => ({ html: "" }) } }],
+      renderers: [{ name: "fake", clientEntrypoint: null, ssr: { check: () => true, renderToStaticMarkup: () => ({ html: claimed }) } }],
       urls: { component: () => "", renderer: () => "", beforeHydration: null },
       scripts: { island: "", directives: {} },
     });
@@ -207,18 +207,18 @@ describe("the island hook in its callers", () => {
         pageContext: {},
       };
       const page = { url: new URL("https://example.com/") };
-      await expect(renderComponent(result, "Widget", Widget, {}, {})).rejects.toThrow(notImplemented);
+      expect(String(await renderComponent(result, "Widget", Widget, {}, {}))).toBe(claimed);
       expect(String(await renderComponent(result, "Fragment", ShimFragment, {}, { default: () => "f" }))).toBe("f");
       expect(String(await renderComponent(result, "Content", NativeContent, {}, {}))).toBe("<p>content</p>");
       // `.astro` has no pletivo island syntax: a `client` prop is the component's own.
-      await expect(renderComponent(result, "Widget", Widget, { client: "load" }, {})).rejects.toThrow(notImplemented);
+      expect(String(await renderComponent(result, "Widget", Widget, { client: "load" }, {}))).toBe(claimed);
       await runInPage(page, async () => {
-        expect(() => jsx(Widget, {})).toThrow(notImplemented);
+        expect(String(await jsx(Widget, {}))).toBe(claimed);
         expect(String(await jsx(JsxFragment, { children: "j" }))).toBe("j");
         expect(String(await jsx(NativeContent, {}))).toBe("<p>content</p>");
         expect(String(await jsx(Widget, { client: "load" }))).toContain("<pletivo-island");
         // A provider's `client={queryClient}` is not pletivo's island syntax.
-        expect(() => jsx(Widget, { client: { query: true } })).toThrow(notImplemented);
+        expect(String(await jsx(Widget, { client: { query: true } }))).toBe(claimed);
       });
       // Outside a page there is no result to key renderers on.
       expect(String(await jsx(Widget, {}))).toBe("<i>w</i>");
