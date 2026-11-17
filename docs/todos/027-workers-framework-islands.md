@@ -1,7 +1,7 @@
 # 027 — Framework islands on the Workers host
 
 **Priority:** A-tier
-**Status:** server render done (W1). Client bundles (W2) and the framework examples' parity (W3) are open.
+**Status:** server render (W1) and client bundles (W2) done. The framework examples' parity (W3) is open.
 **Area:** Workers host, Astro islands, prepare
 
 ## What W1 built
@@ -39,10 +39,55 @@ directive scripts, and the same `component-url`, `renderer-url` and `uid`.
   Editing a component's script or template needs a new prepare: every project file the
   bundle compiled is a prepare input, so a stale bundle is reported like a stale config.
 
+## What W2 built
+
+The JavaScript at every island URL a Workers render emits, served by the host.
+
+- **Which components get a client module.** Prepare renders no page, so it takes what the
+  `.astro` sources hydrate: it compiles each with the Astro compiler and the Bun host's
+  `resolvePath` (`resolveComponentPath`), and reads `hydratedComponents` and
+  `clientOnlyComponents`. A `component-url` hashes the import **as spelled**
+  (`../components/Counter`, `.jsx` falling back to `.tsx`, a directory for an `index`), so the
+  entry set is (spelling, export) pairs, not files. Enumerating every export of every claimed
+  file instead names URLs no page asks for: both measured projects import without extensions.
+- **The same bundler.** `buildAstroIslands` (`astro-islands-bundle.ts`) is `pletivo build`'s
+  island bundler, in memory: same compilers (client target), Bun.build options, Vite plugins.
+  Its entries are sorted by URL on both hosts. Bun names cross-chunk exports in entry order, and
+  the order components finish rendering in is one prepare cannot see; unsorted,
+  framework-multiple matched 11 of 18 modules, sorted 18 of 18.
+- **The rule, and its failure.** A later `.astro` edit that moves, adds or removes islands of
+  components already hydrated somewhere stays live. One that hydrates a component, an export or
+  an import spelling no `.astro` hydrated at prepare fails its render with
+  `MissingIslandClientError`, naming the missing URL and asking for a new prepare
+  (`packages/workers/test/island-clients.test.ts`). A framework component's own edit needed a new
+  prepare already.
+- **Artifact.** `islands.clients`: each module's `url` (`/_astro/<file>.js`), `source`, the
+  client `imports` it loads and the project `sources` it was bundled from. Required, and parsed
+  strictly: unique URLs, and every import another client module, so the graph closes where the
+  artifact enters. `ARTIFACT_VERSION` stays 2: a W1 host refuses the unknown field, this host the
+  missing one. The client build's project reads are digested before it reads them, as the server
+  bundle's are, so an edit racing prepare reads as stale.
+- **Serving.** `island-clients.ts`, after the browser modules and before `public/`. A
+  `chunk-<hash>.js` is content-named and `immutable`; every other client module is named by its
+  path (025) and goes out `no-cache`, as it changes under its URL with the next prepare.
+- **Tailwind (016's remaining hole).** A page's islands, their imports and the project files
+  those were bundled from: those files' current text joins the page's candidates. That is what
+  the Bun host's scan reads, the project's sources and no `node_modules`; the bundle text would
+  add about 3 300 candidates from the frameworks' runtimes on the multi fixture.
+- **Evidence.** `fixture-astro-renderers-multi`: the page byte-identical, its 18 island modules
+  served, their import graph closed, 18/18 byte-identical to `pletivo build`. The four
+  single-renderer fixtures (react, solid, svelte, vue) give 3/3 each, and Astro's
+  framework-multiple 18/18, by hand; their HTML waits on the CSS decision below.
+
 ## What is left
 
-- **W2, client bundles.** The URLs are right and point at nothing on this host.
 - **W3, parity for the framework examples.**
+- **The CSS delivery decision** below, which the single-renderer fixtures' HTML waits on.
+- **Prepare's working directory.** Bun names a shared chunk by its path relative to the working
+  directory (025). The CLI runs both `pletivo build` and `pletivo prepare` from the project
+  root, so they agree. Calling `prepare(root)` from another directory names every chunk, and so
+  every module importing one, differently: 1 of 18 matched on the multi fixture. `build(root)`
+  does the same.
 - **CSS delivery in an Astro project.** `pletivo build` inlines a small sheet minified,
   with `@import` flattened and `url()` rewritten to `/assets/<name>.<hash>.<ext>`; this
   host inlines the per-page sheet as written, labelled per file (023 §5). The harness
@@ -67,5 +112,5 @@ directive scripts, and the same `component-url`, `renderer-url` and `uid`.
   bundled and kept out of the vendor graph. One a live module imports too is bundled and
   also compiled live, so module state is not shared between the two; when its imports
   cannot be carried for the live copy, prepare refuses it by name.
-- **`tests/fixture-astro-renderers-preact`** cannot be prepared: its endpoint imports
+- **`tests/fixture-astro-renderers-preact`** still cannot be prepared: its endpoint imports
   `astro/container`, which reaches `node:path`, and this host has no endpoint routes.
