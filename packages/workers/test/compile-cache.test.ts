@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import path from "node:path";
 import type {
   ParseOptions,
   ParseResult,
@@ -350,6 +351,7 @@ describe("the scoped-style strategy", () => {
     const attribute = await compileCached(module, compiler, cache, {
       annotateSourceFile: false,
       scopedStyleStrategy: "attribute",
+      compressHTML: undefined,
     });
     const scope = attribute.styles?.scope;
     expect(attribute.styles?.blocks).toEqual([{ global: false, css: `a[data-astro-cid-${scope}]{color:red}` }]);
@@ -358,14 +360,68 @@ describe("the scoped-style strategy", () => {
     const where = await compileCached(module, compiler, cache, {
       annotateSourceFile: false,
       scopedStyleStrategy: undefined,
+      compressHTML: undefined,
     });
     expect(where.styles?.blocks).toEqual([{ global: false, css: `a:where(.astro-${scope}){color:red}` }]);
   });
 });
 
+describe("compressHTML and the scope id", () => {
+  const module: SourceModule = {
+    id: "project:src/pages/spaced.astro",
+    kind: "astro",
+    source: "<div>\n  <p>a</p>\n</div>\n",
+    compilePath: "src/pages/spaced.astro",
+    executionName: "spaced",
+    origin: "project",
+  };
+
+  test("compiles with compact and keys the cache on it", async () => {
+    const cache = createCompileCache();
+    const options = { annotateSourceFile: false, scopedStyleStrategy: undefined };
+    const compact = await compileCached(module, compiler, cache, { ...options, compressHTML: true });
+    expect(compact.code ?? compact.source).toContain("<div> <p>a</p> </div>");
+    const spaced = await compileCached(module, compiler, cache, { ...options, compressHTML: false });
+    expect(spaced.code ?? spaced.source).toContain("<div>\n  <p>a</p>\n</div>");
+  });
+
+  test("hashes the root-relative path into the scope id, as the Bun host and Astro do", async () => {
+    // The Bun host's tests/integration/astro-compile-options.test.ts asserts the same id for this file.
+    const fixture = path.resolve(import.meta.dir, "../../../tests/fixture-astro-compile-options/src/components/Subject.astro");
+    const subject: SourceModule = {
+      ...module,
+      id: "project:src/components/Subject.astro",
+      source: await Bun.file(fixture).text(),
+      compilePath: "src/components/Subject.astro",
+      executionName: "subject",
+    };
+    const compiled = await compileCached(subject, compiler, undefined, {
+      annotateSourceFile: false,
+      scopedStyleStrategy: "attribute",
+      compressHTML: true,
+    });
+    expect(compiled.styles?.scope).toBe("t7m3ubvd");
+  });
+
+  test("without compressHTML (a pletivo-native project, or an older artifact) compiles as before", async () => {
+    const fixture = path.resolve(import.meta.dir, "../../../tests/fixture-astro-compile-options/src/components/Subject.astro");
+    const subject: SourceModule = { ...module, source: await Bun.file(fixture).text(), compilePath: "src/components/Subject.astro" };
+    const compiled = await compileCached(subject, compiler, undefined, {
+      annotateSourceFile: false,
+      scopedStyleStrategy: "attribute",
+      compressHTML: undefined,
+    });
+    const before = await compiler.transform(subject.source, { filename: subject.compilePath, scopedStyleStrategy: "attribute" });
+    expect(compiled.styles?.scope).toBe(before.scope);
+    expect(compiled.styles?.scope).not.toBe("t7m3ubvd");
+    expect(compiled.code ?? compiled.source).toContain("<h2 data-astro-cid-");
+    expect(compiled.code ?? compiled.source).toContain(">   Title   </h2>");
+  });
+});
+
 describe("createCompileCache, the bound", () => {
   function entryOf(source: string, code: string | null = null): CompiledFile {
-    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null, scripts: [], annotated: false, scopedStyleStrategy: undefined, globs: [] };
+    return { source, kind: "js", code, importMetaEnv: false, specifiers: [], envNames: null, styles: null, scripts: [], annotated: false, scopedStyleStrategy: undefined, compressHTML: undefined, globs: [] };
   }
 
   function retained(entry: CompiledFile, maxBytes: number): boolean {

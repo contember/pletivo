@@ -353,6 +353,7 @@ async function scriptCode(
     {
       annotateSourceFile: project.annotateSourceFile === true,
       scopedStyleStrategy: project.artifact?.prepared.artifact.config.scopedStyleStrategy,
+      compressHTML: project.artifact?.prepared.artifact.config.compressHTML,
     },
   );
   const code = compiled.scripts[index];

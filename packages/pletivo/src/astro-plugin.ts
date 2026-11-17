@@ -32,6 +32,8 @@ import { assertRenderableImports } from "./framework-components";
 import { materializeViteVirtualImports } from "./astro-host/vite-plugins";
 import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
+import { normalizeFilename, resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
+import { getHost } from "./astro-host/runner";
 import {
   clearAstroImportGraph,
   moduleIdFor,
@@ -406,9 +408,13 @@ export async function registerAstroPlugin(): Promise<void> {
         const cleanPath = stripQuery(args.path);
         const source = await Bun.file(cleanPath).text();
         const rel = moduleIdFor(cleanPath);
+        // Read per compile: `astro:config:setup` may have changed it through `updateConfig`.
+        const astroConfig = getHost()?.config;
 
         const result = await transform(source, {
           filename: rel,
+          normalizedFilename: astroConfig ? normalizeFilename(cleanPath, astroConfig.root) : undefined,
+          compact: resolveCompressHTML(astroConfig),
           internalURL: shimPath,
           sourcemap: false,
           scopedStyleStrategy,

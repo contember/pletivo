@@ -394,9 +394,9 @@ describe("pletivo prepare", () => {
     });
   });
 
-  test("rejects routing configuration the Workers host ignores, and an unknown scopedStyleStrategy", async () => {
+  test("rejects routing configuration the Workers host ignores, an unknown scopedStyleStrategy and a non-boolean compressHTML", async () => {
     const error = await capturedPrepareError(path.join(fixtures, "fatal-routing"));
-    expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["base", "build.format", "scopedStyleStrategy"]);
+    expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["base", "build.format", "scopedStyleStrategy", "compressHTML"]);
   });
 
   test("rejects Worker-relevant pletivo config and source directories outside the root", async () => {
@@ -431,6 +431,7 @@ describe("pletivo prepare", () => {
         { source: "/blog/[slug]", destination: "/posts/[slug]", status: 302 },
       ],
       scopedStyleStrategy: "attribute",
+      compressHTML: true,
     });
     expect(site.artifact.resolutions).toContainEqual({
       importer: "project:src/pages/index.astro",
@@ -743,7 +744,7 @@ describe("pletivo prepare on the vendor fixture", () => {
   });
 
   test("freezes only config fields the Workers host consumes", () => {
-    expect(site.artifact.config).toEqual({ site: "https://vendor.example", scopedStyleStrategy: "attribute" });
+    expect(site.artifact.config).toEqual({ site: "https://vendor.example", scopedStyleStrategy: "attribute", compressHTML: true });
   });
 
   test("freezes supported injectScript bodies in semantic order", () => {

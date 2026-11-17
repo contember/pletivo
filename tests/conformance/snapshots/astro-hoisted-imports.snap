@@ -19,10 +19,6 @@ index.html
 
 --- pletivo:conformance index.html ---
 <!DOCTYPE html>
-<html>
-  <head><title>Hoisted Imports</title><link rel="stylesheet" href="/assets/styles.[hash:1].css">
+<html> <head><title>Hoisted Imports</title><link rel="stylesheet" href="/assets/styles.[hash:1].css">
 <link rel="stylesheet" href="/assets/styles.pages.[hash:2].css">
-</head>
-  <body>
-    <h1>Hoisted Imports</h1>
-  <script type="module">var e="external-marker-from-disk";document.documentElement.dataset.externalLoaded=e;</script></body></html>
+</head> <body> <h1>Hoisted Imports</h1> <script type="module">var e="external-marker-from-disk";document.documentElement.dataset.externalLoaded=e;</script></body></html>

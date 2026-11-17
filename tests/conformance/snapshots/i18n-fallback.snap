@@ -21,54 +21,24 @@ pt/start/index.html
 
 --- pletivo:conformance en/blog/index.html ---
 <!DOCTYPE html>
-<html>
-<head><title>Blog</title></head>
-<body>
-<h1>Blog</h1>
-<p data-test="current-locale">en</p>
-</body></html>
+<html> <head><title>Blog</title></head> <body> <h1>Blog</h1> <p data-test="current-locale">en</p> </body></html>
 
 --- pletivo:conformance en/start/index.html ---
 <!DOCTYPE html>
-<html>
-<head><title>Start</title></head>
-<body>
-<h1>Start</h1>
-<p data-test="current-locale">en</p>
-</body></html>
+<html> <head><title>Start</title></head> <body> <h1>Start</h1> <p data-test="current-locale">en</p> </body></html>
 
 --- pletivo:conformance it/blog/index.html ---
 <!DOCTYPE html>
-<html>
-<head><title>Blog</title></head>
-<body>
-<h1>Blog</h1>
-<p data-test="current-locale">it</p>
-</body></html>
+<html> <head><title>Blog</title></head> <body> <h1>Blog</h1> <p data-test="current-locale">it</p> </body></html>
 
 --- pletivo:conformance it/start/index.html ---
 <!DOCTYPE html>
-<html>
-<head><title>Start</title></head>
-<body>
-<h1>Start</h1>
-<p data-test="current-locale">it</p>
-</body></html>
+<html> <head><title>Start</title></head> <body> <h1>Start</h1> <p data-test="current-locale">it</p> </body></html>
 
 --- pletivo:conformance pt/blog/index.html ---
 <!DOCTYPE html>
-<html>
-<head><title>Blog</title></head>
-<body>
-<h1>Blog</h1>
-<p data-test="current-locale">pt</p>
-</body></html>
+<html> <head><title>Blog</title></head> <body> <h1>Blog</h1> <p data-test="current-locale">pt</p> </body></html>
 
 --- pletivo:conformance pt/start/index.html ---
 <!DOCTYPE html>
-<html>
-<head><title>Oi, Start</title></head>
-<body>
-<h1>Oi, Start</h1>
-<p data-test="current-locale">pt</p>
-</body></html>
+<html> <head><title>Oi, Start</title></head> <body> <h1>Oi, Start</h1> <p data-test="current-locale">pt</p> </body></html>
