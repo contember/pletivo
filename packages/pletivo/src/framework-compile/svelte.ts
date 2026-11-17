@@ -25,7 +25,7 @@ async function loadSvelteConfig(projectRoot: string): Promise<SvelteConfig> {
   return parseSvelteConfig(config, file);
 }
 
-/** `.svelte` through the project's `svelte/compiler`, with its `svelte.config.*` preprocessors. */
+/** `.svelte` and Svelte modules through the project's `svelte/compiler`, with its `svelte.config.*` preprocessors. */
 export async function loadSvelteCompiler(projectRoot: string): Promise<FrameworkCompiler> {
   let compilerPath: string;
   try {
@@ -36,9 +36,11 @@ export async function loadSvelteCompiler(projectRoot: string): Promise<Framework
     });
   }
   const compilerModule: unknown = await import(compilerPath);
+  const typescript = new Bun.Transpiler({ loader: "ts" });
   return createSvelteCompiler({
     compiler: parseSvelteCompilerModule(compilerModule),
     config: await loadSvelteConfig(projectRoot),
     projectRoot,
+    stripTypes: (source) => typescript.transformSync(source),
   });
 }

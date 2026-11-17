@@ -251,7 +251,8 @@ function offerToRenderers(tag: ComponentFn, props: Props): Promise<HtmlString | 
   return renderFrameworkComponent({
     source: "jsx",
     result,
-    displayName: tag.name || "anonymous",
+    // Astro's renderJSX passes the function's name, empty for an unnamed one.
+    displayName: tag.name,
     Component: tag,
     props,
     slots: {},

@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { runWithRuntimeDepCapture } from "./dep-tracker";
 import { collectStaticDeps, isWalkableSourceFile } from "./import-graph";
-import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
+import { canReuseFingerprint, fingerprintFile, hashString, type CacheStore, type CachedAstroIsland, type CachedFragmentRef, type RouteCacheEntry } from "./cache";
 
 /**
  * Loaded handle to @nuasite/astro-fragments — resolved once per build
@@ -104,6 +104,8 @@ export interface RenderRequest {
 	 * markers).
 	 */
 	extraDeps?: Iterable<string> | (() => Promise<Iterable<string>>);
+	/** The framework components a rendered page's `<astro-island>`s hydrate; absent without Astro renderers. */
+	scanAstroIslands?: (html: string) => CachedAstroIsland[];
 }
 
 export type RenderSource = "cached" | "rendered";
@@ -120,6 +122,8 @@ export interface RenderOutcome {
 	 */
 	islands: string[];
 	hoistedHashes: string[];
+	/** Framework components the page hydrates; from the cache on the `cached` path. */
+	astroIslands: CachedAstroIsland[];
 	/**
 	 * Page module whose CSS this output links, when it is not the page's
 	 * own entry: a page that `Astro.rewrite`s emits the target's HTML, so
@@ -159,6 +163,7 @@ export async function runIncrementalRender(req: RenderRequest): Promise<RenderOu
 				tsxStyles: cached.tsxStyles,
 				islands: cached.islands ?? [],
 				hoistedHashes: cached.hoistedHashes ?? [],
+				astroIslands: cached.astroIslands,
 				cssEntry: cached.cssEntry,
 				size: cached.size ?? 0,
 			};
@@ -174,6 +179,7 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 	const { value, runtimeDeps, fragmentIds } = await renderWithCapture(req);
 	const islands = scanIslands(value.html);
 	const hoistedHashes = scanHoistedHashes(value.html);
+	const astroIslands = req.scanAstroIslands?.(value.html) ?? [];
 
 	if (req.cache) {
 		const staticDeps = await collectStaticDeps(req.pageEntryAbsPath);
@@ -225,6 +231,7 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 			fragments: fragmentsList,
 			islands,
 			hoistedHashes,
+			astroIslands,
 			cssEntry: value.cssEntry,
 			// Populated downstream after writeHtml — we don't know the
 			// final byte length yet (CSS/script injection happens there).
@@ -244,6 +251,7 @@ async function freshRender(req: RenderRequest, prior: RouteCacheEntry | undefine
 		tsxStyles: value.tsxStyles,
 		islands,
 		hoistedHashes,
+		astroIslands,
 		cssEntry: value.cssEntry,
 		size: 0,
 	};

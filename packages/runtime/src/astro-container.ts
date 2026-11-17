@@ -20,6 +20,7 @@
  */
 
 import type { AstroComponentFactory, HtmlString, PageContext } from "./astro-shim";
+import { finalizeIslandScripts } from "./astro-islands/prescripts";
 
 export interface RenderOptions {
   props?: Record<string, unknown>;
@@ -61,9 +62,10 @@ export class experimental_AstroContainer {
     ) => Promise<HtmlString | string> | HtmlString | string)(
       { ...options.props, __pageContext: containerPageContext() },
     );
-    if (typeof result === "string") return result;
+    // The rendered HTML is written as is, so its islands' scripts are settled here, as on a page.
+    if (typeof result === "string") return finalizeIslandScripts(result);
     if (result && typeof result === "object" && "__html" in result) {
-      return (result as HtmlString).__html;
+      return finalizeIslandScripts((result as HtmlString).__html);
     }
     throw new Error(
       `experimental_AstroContainer.renderToString: component returned an unexpected value of type ${typeof result}; expected string or HtmlString.`,

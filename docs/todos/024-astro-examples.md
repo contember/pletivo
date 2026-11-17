@@ -1,7 +1,7 @@
 # 024 — Astro's official examples, built by pletivo
 
 **Priority:** S-tier
-**Status:** open; 4 of 18 match (0 at baseline), framework renderers are the largest gap left
+**Status:** open; 4 of 18 match (0 at baseline); the 7 framework examples build and render islands, none matches yet
 **Area:** Astro compatibility, measured
 
 `tests/astro-examples/run.ts` builds every static-site example in
@@ -67,7 +67,9 @@ per example, keyed by the example's files.
 ## After (main at 25631f6)
 
 7 of 18 examples build with pletivo, **4 of 18 match**: basics,
-container-with-vitest, minimal and with-vitest.
+container-with-vitest, minimal and with-vitest. With framework renderers (gap 4)
+the 7 framework examples build as well and none of them matches; their rows
+below are measured with renderers, the other examples were not re-run.
 
 Fewer examples build than at baseline (10) on purpose. framework-preact,
 framework-svelte and framework-vue used to build and emit a broken page, and
@@ -80,17 +82,17 @@ the build, naming the file (#51, #59). blog builds now.
 | blog | yes | 14/14 | 0/8 | stylesheets under 4 kB: Astro inlines them, pletivo links them |
 | container-with-vitest | yes | 4/4 | 2/2 | **match** |
 | framework-alpine | yes | 2/2 | 0/1 | the page-script bundle: Astro always links it, pletivo inlines it |
-| framework-multiple | no | | | fails by name: Preact, React, Solid, Svelte and Vue components |
-| framework-preact | no | | | fails by name: Preact component |
-| framework-react | no | | | fails by name: React component |
-| framework-solid | no | | | fails by name: Solid component |
-| framework-svelte | no | | | fails by name: Svelte component |
-| framework-vue | no | | | fails by name: Vue component |
+| framework-multiple | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
+| framework-preact | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
+| framework-react | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
+| framework-solid | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
+| framework-svelte | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
+| framework-vue | yes | 2/2 | 0/1 | stylesheets under 4 kB inlined by Astro; island `uid`s |
 | minimal | yes | 2/2 | 1/1 | **match** |
 | portfolio | yes | 34/34 | 0/8 | `<style>` set and order; `style={{…}}` as `[object Object]`; a random id |
 | starlog | no | | | `astro:transitions` missing ([011](011-view-transitions.md)) |
 | with-markdoc | no | | | fails by name: no Markdoc renderer for `.mdoc` entries |
-| with-mdx | no | | | `Counter.jsx` compiled with React's JSX runtime, not Preact's (gap 4) |
+| with-mdx | yes | 2/2 | 0/1 | the MDX page: no `<!DOCTYPE>`/`<meta charset>`, `components` export, heading ids, Shiki |
 | with-nanostores | no | | | fails by name: Preact component |
 | with-tailwindcss | no | | | fails by name: `layout:` in a `.md` page's frontmatter |
 | with-vitest | yes | 2/2 | 1/1 | **match** |
@@ -112,9 +114,13 @@ Ordered by how many examples each one blocked at baseline.
    named by its path or `[object Object]`. Outside that import the error does
    not name the file, and not every case reaches it: with-mdx's `Counter.jsx`,
    imported from `.mdx`, is compiled for React, which is not installed, so the
-   build stops on a missing `react/jsx-dev-runtime`. Real renderers (each integration's server
-   renderer, `<astro-island>` and Astro's client runtime, on both hosts) are
-   the next piece of work and replace the error.
+   build stops on a missing `react/jsx-dev-runtime`. Fixed on the Bun host:
+   each integration's server renderer renders the component into an
+   `<astro-island>` with Astro's own island scripts, and the build writes the
+   client bundles at the island URLs. The error stays for a framework whose
+   integration is not in `astro.config`, and on Workers. All 7 examples build;
+   the markup inside each island equals Astro's. What still differs is listed
+   under Left.
 5. **Small hoisted scripts and stylesheets linked, Astro inlines them**
    (portfolio, framework-preact). Half fixed. Scripts in #54: a processed
    script whose bundle imports nothing and fits `vite.build.assetsInlineLimit`
@@ -189,6 +195,25 @@ portfolio:
 
 framework-alpine: the page-script bundle is inlined, Astro links it (see
 Decisions).
+
+framework-preact, -react, -solid, -svelte, -vue, -multiple:
+
+- Stylesheets under `assetsInlineLimit`: the components' CSS reaches the page
+  as a linked stylesheet, Astro inlines it (as in blog).
+- Island `uid`: it hashes the island's slot HTML, which differs in two ways.
+  `.astro` is compiled without `compact` (Astro's `compressHTML`), so
+  whitespace stays, and without `normalizedFilename`, so the
+  `data-astro-cid-*` scope differs. With both set, every `uid` in
+  framework-preact, -react and -multiple equals Astro's.
+- Svelte modules (`.svelte.js`, `.svelte.ts`) compile through Svelte's
+  `compileModule`, as in Vite, on the server and in the island bundles; the
+  Svelte renderer's own client is one. Island URLs are named by component,
+  not by content, so a changed bundle keeps its URL (open).
+
+with-mdx: the island equals Astro's. The page around it does not: an MDX page
+without a layout gets no `<!DOCTYPE html>` or `<meta charset>`, the
+`components = { h1: Title }` export is not applied, headings get no `id`, and
+code blocks are not highlighted with Shiki.
 
 Found on the way, not blocking an example:
 

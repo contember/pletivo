@@ -136,6 +136,44 @@ describe("frameworkCompilePlugin", () => {
   });
 });
 
+describe("frameworkCompilePlugin matches filename suffixes", () => {
+  test("the longest offered suffix decides, and a declined file loads by its real extension", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-framework-suffix-"));
+    try {
+      await fs.writeFile(path.join(dir, "Widget.fake"), "GENERIC");
+      await fs.writeFile(path.join(dir, "store.fake.ts"), "MODULE");
+      await fs.writeFile(path.join(dir, "plain.fake.mts"), "export default 'plain' as string;");
+      await fs.writeFile(
+        path.join(dir, "entry.js"),
+        'import a from "./Widget.fake"; import b from "./store.fake.ts"; import c from "./plain.fake.mts"; export default [a, b, c];',
+      );
+      const named = (framework: string, extensions: string[]): FrameworkCompiler => ({
+        framework,
+        extensions,
+        compile: async ({ source }) => ({ code: `export default ${JSON.stringify(`${framework}:${source}`)};`, loader: "js", css: null }),
+      });
+      // `.ts` is offered to Generic too, so only the longest suffix keeps store.fake.ts away from it.
+      const generic = named("Generic", [".fake", ".ts"]);
+      const modules = named("Module", [".fake.ts"]);
+      const declining: FrameworkCompiler = { framework: "None", extensions: [".fake.mts"], compile: async () => null };
+      const result = await Bun.build({
+        entrypoints: [path.join(dir, "entry.js")],
+        plugins: [frameworkCompilePlugin({ compilers: [generic, modules, declining], target: "client", onCss: () => {} })],
+      });
+      expect(result.success).toBe(true);
+      const output = await result.outputs[0]!.text();
+      expect(output).toContain('"Generic:GENERIC"');
+      expect(output).toContain('"Module:MODULE"');
+      expect(output).not.toContain("Generic:MODULE");
+      // Returned as written, through the `.mts` loader, which strips the type assertion.
+      expect(output).toContain('"plain"');
+      expect(output).not.toContain("as string");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("frameworkCompilePlugin as a runtime plugin", () => {
   test("compiles an import with dev's cache-bust query", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-framework-runtime-"));

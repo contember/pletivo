@@ -49,11 +49,11 @@ function isAstroBundle(file: string): boolean {
 
 /**
  * pletivo writes images and scripts under `_astro/`, islands under `_islands/`
- * and stylesheets as `assets/<name>.<hash>.css`. A hashed `public/` file stays a
+ * and stylesheets as `assets/styles[.<group>].<hash>.css`. A hashed `public/` file stays a
  * route, so it shows up as a difference.
  */
 function isPletivoBundle(file: string): boolean {
-  return file.startsWith("_astro/") || file.startsWith("_islands/") || /^assets\/[\w-]+\.[0-9a-f]{8}\.css$/.test(file);
+  return file.startsWith("_astro/") || file.startsWith("_islands/") || /^assets\/styles\.(?:[a-z0-9-]+\.)?[0-9a-f]{8}\.css$/.test(file);
 }
 
 /** Compared as text, line by line; only HTML is normalised. */

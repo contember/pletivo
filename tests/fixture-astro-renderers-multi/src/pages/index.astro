@@ -1,0 +1,19 @@
+---
+import * as react from "../components/react/ReactCounter";
+import { PreactCounter } from "../components/preact/PreactCounter";
+import SolidCounter from "../components/solid/SolidCounter";
+import SvelteCounter from "../components/svelte/SvelteCounter.svelte";
+import VueCounter from "../components/vue/VueCounter.vue";
+---
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Multiple</title></head>
+  <body>
+    <main>
+      <react.Counter client:visible />
+      <PreactCounter client:load />
+      <SolidCounter client:visible />
+      <VueCounter client:idle />
+      <SvelteCounter client:load />
+    </main>
+  </body>
+</html>

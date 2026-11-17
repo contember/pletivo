@@ -1,23 +1,21 @@
 /**
- * Refuses a `.astro` module that imports a component of a UI framework pletivo
- * cannot render — the components Astro hands to a framework renderer.
+ * Refuses a `.astro` module that imports a component of a UI framework whose
+ * renderer the project has not registered — the components Astro hands to a
+ * framework renderer, which only that framework's integration provides.
  *
  * A `.svelte` or `.vue` file is one by its extension. A `.tsx`/`.jsx` file is one
  * when Bun compiles its JSX for that framework's runtime: its `jsxImportSource`,
  * from a pragma in the file or else from the nearest tsconfig, which is how Bun
- * itself decides. Such a module never renders under pletivo — React's hooks throw
- * outside a React render, Solid has no runtime JSX export, Preact and Vue return
- * vnodes — so it fails here by name instead of somewhere inside the framework.
+ * itself decides. Without its renderer such a module never renders — React's hooks
+ * throw outside a React render, Solid has no runtime JSX export, Preact and Vue
+ * return vnodes — so it fails here by name instead of somewhere inside the framework.
  * What this edge cannot see (npm packages, barrel files, TSX pages) the runtime
  * refuses when it meets the framework's element.
  */
 
 import fs from "fs";
 import path from "path";
-import {
-  FRAMEWORK_RENDERERS_UNSUPPORTED,
-  frameworkOfFile,
-} from "@pletivo/runtime/framework-components";
+import { frameworkOfFile } from "@pletivo/runtime/framework-components";
 import {
   foreignJsxMessage,
   frameworkOfJsxImportSource,
@@ -25,6 +23,28 @@ import {
 } from "@pletivo/core/framework-jsx";
 
 const JSX_EXTENSIONS = new Set([".tsx", ".jsx"]);
+
+/** The renderer each framework's integration registers. Vue JSX has none here: no compiler for it is loaded. */
+const RENDERER_BY_FRAMEWORK: Readonly<Record<string, string>> = {
+  Svelte: "@astrojs/svelte",
+  Vue: "@astrojs/vue",
+  React: "@astrojs/react",
+  Preact: "@astrojs/preact",
+  Solid: "@astrojs/solid-js",
+};
+
+let registeredRenderers: ReadonlySet<string> = new Set();
+
+/** The renderers the project registered with `addRenderer()`; their frameworks' components are let through. */
+export function configureRegisteredRenderers(names: readonly string[]): void {
+  registeredRenderers = new Set(names);
+}
+
+interface Refusal {
+  message: string;
+  /** The integration that would render the component, or `null` when none would. */
+  renderer: string | null;
+}
 const TSCONFIG_NAMES = ["tsconfig.json", "jsconfig.json"];
 
 export interface JsxImportSource {
@@ -42,15 +62,20 @@ const tsconfigByDir = new Map<string, JsxImportSource | null>();
  */
 export function assertRenderableImports(file: string, specifiers: readonly string[]): void {
   const fromDir = path.dirname(file);
-  const refusals: string[] = [];
+  const refusals: Refusal[] = [];
   for (const specifier of specifiers) {
     const target = resolveImport(specifier, fromDir);
     if (target === null) continue;
     const refusal = frameworkComponent(target);
-    if (refusal !== null) refusals.push(`${refusal}, imported by ${relative(file)}`);
+    if (refusal !== null) refusals.push({ ...refusal, message: `${refusal.message}, imported by ${relative(file)}` });
   }
   if (refusals.length > 0) {
-    throw new Error(`${refusals.join("\n")}\n${FRAMEWORK_RENDERERS_UNSUPPORTED}`);
+    const missing = [...new Set(refusals.flatMap((refusal) => (refusal.renderer === null ? [] : [refusal.renderer])))];
+    const advice =
+      missing.length > 0
+        ? `Astro renders these through the renderer of the framework's integration; add ${missing.join(", ")} to the integrations in astro.config.`
+        : "Astro renders these through a framework renderer, and pletivo compiles no Vue JSX.";
+    throw new Error(`${refusals.map((refusal) => refusal.message).join("\n")}\n${advice}`);
   }
 }
 
@@ -66,10 +91,10 @@ function resolveImport(specifier: string, fromDir: string): string | null {
   }
 }
 
-function frameworkComponent(file: string): string | null {
+function frameworkComponent(file: string): Refusal | null {
   const byExtension = frameworkOfFile(file);
   if (byExtension !== null) {
-    return `pletivo cannot render ${byExtension} components: ${relative(file)}`;
+    return refusal(byExtension, `pletivo cannot render ${byExtension} components: ${relative(file)}`);
   }
   // A package ships compiled JavaScript; only the project's own JSX is compiled here.
   if (!JSX_EXTENSIONS.has(path.extname(file).toLowerCase())) return null;
@@ -77,7 +102,14 @@ function frameworkComponent(file: string): string | null {
   const source = jsxImportSourceOf(file);
   const framework = source === null ? null : frameworkOfJsxImportSource(source.value);
   if (source === null || framework === null) return null;
-  return foreignJsxMessage(framework, relative(file), source.value, source.origin);
+  return refusal(framework, foreignJsxMessage(framework, relative(file), source.value, source.origin));
+}
+
+/** `null` when the framework's renderer is registered and renders the component. */
+function refusal(framework: string, message: string): Refusal | null {
+  const renderer = RENDERER_BY_FRAMEWORK[framework] ?? null;
+  if (renderer !== null && registeredRenderers.has(renderer)) return null;
+  return { message, renderer };
 }
 
 function jsxImportSourceOf(file: string): JsxImportSource | null {

@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { BunPlugin } from "bun";
+import type { BunPlugin, Loader } from "bun";
 import type { AstroRendererEntry } from "@pletivo/core/astro-host/renderers";
 import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
 import type { IslandClientUrls } from "@pletivo/runtime/astro-islands/types";
@@ -36,9 +36,23 @@ export interface BundleAstroIslandsOptions extends IslandClientUrlsOptions {
   components: readonly AstroIslandComponent[];
   renderers: readonly AstroRendererEntry[];
   compilers: readonly FrameworkCompiler[];
-  /** JS source by specifier for the integrations' virtual modules, e.g. `virtual:@astrojs/vue/app`; the server render uses the same map. */
-  virtualModules: Readonly<Record<string, string>>;
+  /**
+   * Loads an integration's virtual module, e.g. `virtual:@astrojs/vue/app`, imported from
+   * `importer`; the host answers through the same Vite plugins the server render uses.
+   * `null` fails the bundle, naming the specifier.
+   */
+  virtualModule(specifier: string, importer: string): Promise<VirtualModuleSource | null>;
 }
+
+export interface VirtualModuleSource {
+  code: string;
+  loader: Loader;
+}
+
+/** The specifiers Vite plugins answer, as `page-scripts.ts` routes them. */
+const VIRTUAL_SPECIFIER = /^(virtual:|\/@|@id\/|\0virtual:)/;
+/** Never on disk. In the project root, so a virtual module's own imports resolve from its `node_modules`. */
+const VIRTUAL_DIR = "__pletivo_island_virtual__";
 
 /** `/`, `/docs` or `/docs/` → the prefix every island URL starts with. */
 function astroUrlPrefix(base: string): string {
@@ -104,38 +118,56 @@ function exactFilter(values: Iterable<string>): RegExp {
 }
 
 /**
- * Serves the in-memory modules, keyed by the path they pretend to have in the project root,
- * and maps each virtual specifier to its module. It must run before the compile plugin,
+ * Serves the in-memory entry modules, keyed by the path they pretend to have in the project
+ * root, and the virtual modules their imports reach. It must run before the compile plugin,
  * whose `onLoad` reads a matching path from disk.
  */
-function inMemoryPlugin(modules: ReadonlyMap<string, string>, virtualPaths: ReadonlyMap<string, string>): BunPlugin {
+function inMemoryPlugin(
+  projectRoot: string,
+  modules: ReadonlyMap<string, string>,
+  virtualModule: BundleAstroIslandsOptions["virtualModule"],
+  labels: Map<string, string>,
+): BunPlugin {
+  const virtualDir = path.join(projectRoot, VIRTUAL_DIR);
+  const virtuals = new Map<string, VirtualModuleSource>();
   return {
     name: "pletivo-astro-islands-in-memory",
     setup(build) {
       const modulePaths = exactFilter(modules.keys());
       build.onResolve({ filter: modulePaths }, (args) => ({ path: args.path }));
-      if (virtualPaths.size > 0) {
-        build.onResolve({ filter: exactFilter(virtualPaths.keys()) }, (args) => {
-          const resolved = virtualPaths.get(args.path);
-          return resolved === undefined ? undefined : { path: resolved };
-        });
-      }
       build.onLoad({ filter: modulePaths }, (args) => {
         const contents = modules.get(args.path);
         return contents === undefined ? undefined : { contents, loader: "js" };
+      });
+      build.onResolve({ filter: VIRTUAL_SPECIFIER }, async (args) => {
+        const loaded = await virtualModule(args.path, args.importer);
+        if (loaded === null) throw new Error(`no Vite plugin resolves or loads ${JSON.stringify(args.path)}`);
+        const file = path.join(virtualDir, `${shortHash(["virtual", args.path])}${extensionFor(loaded.loader)}`);
+        virtuals.set(file, loaded);
+        labels.set(file, `virtual module ${args.path}`);
+        return { path: file };
+      });
+      build.onLoad({ filter: new RegExp(`${escapeRegExp(virtualDir)}[\\\\/]`) }, (args) => {
+        const loaded = virtuals.get(args.path);
+        return loaded === undefined ? undefined : { contents: loaded.code, loader: loaded.loader };
       });
     },
   };
 }
 
-/** Bun's build log, with each in-memory entry named by what it stands for. */
+function extensionFor(loader: Loader): string {
+  return loader === "css" || loader === "json" || loader === "jsx" || loader === "tsx" || loader === "ts" ? `.${loader}` : ".js";
+}
+
+/** Bun's build log, each line led by its level, with each in-memory entry named by what it stands for. */
 function formatBuildLogs(logs: readonly (BuildMessage | ResolveMessage)[], labels: ReadonlyMap<string, string>): string {
   return logs
     .map((log) => {
-      if (!log.position) return log.message;
+      const message = `${log.level}: ${log.message}`;
+      if (!log.position) return message;
       const label = labels.get(log.position.file);
-      if (label !== undefined) return `${label}: ${log.message}`;
-      return `${log.position.file}:${log.position.line}:${log.position.column}: ${log.message}`;
+      if (label !== undefined) return `${label}: ${message}`;
+      return `${log.position.file}:${log.position.line}:${log.position.column}: ${message}`;
     })
     .join("\n");
 }
@@ -194,14 +226,6 @@ export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Pr
   }
   if (entrypoints.length === 0) return;
 
-  const virtualPaths = new Map<string, string>();
-  for (const [specifier, source] of Object.entries(options.virtualModules)) {
-    const modulePath = path.join(options.projectRoot, `pletivo-virtual.${shortHash(["virtual", specifier])}.js`);
-    virtualPaths.set(specifier, modulePath);
-    modules.set(modulePath, source);
-    labels.set(modulePath, `virtual module ${specifier}`);
-  }
-
   const result = await Bun.build({
     entrypoints,
     root: options.projectRoot,
@@ -215,7 +239,7 @@ export async function bundleAstroIslands(options: BundleAstroIslandsOptions): Pr
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     throw: false,
     plugins: [
-      inMemoryPlugin(modules, virtualPaths),
+      inMemoryPlugin(options.projectRoot, modules, options.virtualModule, labels),
       preactPlugin(options.projectRoot),
       frameworkCompilePlugin({
         compilers: options.compilers,

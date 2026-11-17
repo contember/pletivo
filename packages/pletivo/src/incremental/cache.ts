@@ -14,7 +14,15 @@ const { version: PLETIVO_VERSION } = require_("../../package.json") as { version
 // without stat'ing every cached output file.
 // Bumped to 5: added per-route `cssEntry`. A page that rewrote, cached by
 // version 4, would keep linking its own CSS groups instead of the target's.
-export const CACHE_SCHEMA_VERSION = 5;
+// Bumped to 6: added per-route `astroIslands`. A page cached by version 5
+// would leave its framework components out of the island bundles.
+export const CACHE_SCHEMA_VERSION = 6;
+
+/** A framework component export an `<astro-island>` hydrates. */
+export interface CachedAstroIsland {
+  componentPath: string;
+  exportName: string;
+}
 
 export interface CachedFragmentRef {
   hash: string;
@@ -81,6 +89,12 @@ export interface RouteCacheEntry {
    * to scan for `_astro/hoisted-<hash>.js` markers.
    */
   hoistedHashes: string[];
+  /**
+   * Framework components this page hydrates through Astro's renderers. A
+   * cached page is not re-rendered, so the island bundles learn its
+   * components from here.
+   */
+  astroIslands: CachedAstroIsland[];
   /**
    * Page module whose CSS this output links, when it is not the route's own
    * entry (the page `Astro.rewrite`s to another route). Persisted because a

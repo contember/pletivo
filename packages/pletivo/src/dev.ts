@@ -8,6 +8,7 @@ import { getContentBaseDirs, initCollections, runWithBunContentRuntime } from ".
 import { resetIslandRegistry, getUsedIslands } from "@pletivo/runtime/island";
 import { runInPage, runWithRenderTracking, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
+import { finalizeIslandScripts } from "@pletivo/runtime/astro-islands/index";
 import { hmrClientScript } from "@pletivo/runtime/hmr-client";
 import { devCss } from "./css";
 import { extractAstroScopes, resolveScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
@@ -45,6 +46,7 @@ import {
 } from "@pletivo/core/i18n/fallback";
 import { registerCssModulesPlugin, getCssModulesOutput } from "./css-modules";
 import { registerProjectSourcePlugin } from "./project-source-plugin";
+import { bundleRenderedIslands, setupAstroRenderers, type AstroRenderers } from "./astro-renderers";
 import { installImportMetaEnv } from "./import-meta-env";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
@@ -222,6 +224,13 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   configureMdx(resolveMdxOptions(config, astroHost?.config));
   configureMarkdown(resolveMarkdownOptions(astroHost?.config));
   configureJsImportedCss(projectRoot, config.srcDir);
+  // Before any project module loads: the renderers decide how its framework components compile.
+  const astroRenderers = await setupAstroRenderers({
+    projectRoot,
+    renderers: astroHost?.renderers ?? [],
+    base: typeof astroHost?.config.base === "string" ? astroHost.config.base : config.base,
+    beforeHydrationScripts: astroHost?.injectedBeforeHydrationScripts ?? [],
+  });
   {
     const vite = astroHost?.config.vite as
       | { css?: { preprocessorOptions?: { scss?: Record<string, unknown> } } }
@@ -456,6 +465,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       } else {
         return null;
       }
+      // Each Astro island carries its scripts; the page keeps the first of each, in document order.
+      html = finalizeIslandScripts(html);
 
       // Inject dev stylesheet link + HMR / hydration scripts + any
       // integration-injected scripts (`injectScript('page', code)` from
@@ -620,6 +631,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     if (typeof result === "string") html = result;
     else if (result && typeof result === "object" && "__html" in result) html = (result as { __html: string }).__html;
     else return null;
+    html = finalizeIslandScripts(html);
 
     const astroCss = await getAstroCssForPage({
       entryFile: fullPath,
@@ -1085,6 +1097,24 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     });
   }
 
+  // Astro island bundles, rebuilt on request once a page hydrated a new component or a file changed.
+  const devIslandsDir = path.join(projectRoot, "node_modules", ".pletivo", "dev-islands");
+  let islandBundle: { key: string; done: Promise<void> } | null = null;
+
+  async function serveAstroIslandBundle(renderers: AstroRenderers, pathname: string): Promise<Response | null> {
+    const components = renderers.hydratedComponents().map((c) => `${c.componentPath}\0${c.exportName}`);
+    const key = `${getDevVersion()}\0${components.join("\0")}`;
+    if (islandBundle?.key !== key) islandBundle = { key, done: bundleRenderedIslands(renderers, devIslandsDir) };
+    try {
+      await islandBundle.done;
+    } catch (e) {
+      return new Response(`Astro island bundling failed:\n${e instanceof Error ? e.message : String(e)}`, { status: 500 });
+    }
+    const file = path.join(devIslandsDir, pathname);
+    if (!file.startsWith(devIslandsDir + path.sep) || !fs.existsSync(file)) return null;
+    return new Response(Bun.file(file), { headers: { "Content-Type": "application/javascript; charset=utf-8" } });
+  }
+
   async function pletivoHandler(req: Request, url: URL, pathname: string): Promise<Response | null> {
     {
       // Serve the morphdom ESM bundle for the HMR client's lazy import.
@@ -1173,6 +1203,11 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         }
         const logs = result.logs.map((l) => String(l)).join("\n");
         return new Response(`Hoisted script bundle failed:\n${logs}`, { status: 500 });
+      }
+
+      if (astroRenderers && pathname.startsWith("/_astro/") && pathname.endsWith(".js")) {
+        const served = await serveAstroIslandBundle(astroRenderers, pathname);
+        if (served) return served;
       }
 
       // Serve island bundles on-the-fly

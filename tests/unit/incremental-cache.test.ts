@@ -29,6 +29,7 @@ describe("CacheStore", () => {
 			depFingerprints: { "/abs/page.tsx": { mtimeMs: 1, size: 10, hash: "h1" } },
 			islands: [],
 			hoistedHashes: [],
+			astroIslands: [{ componentPath: "/abs/Counter.vue", exportName: "default" }],
 			renderedModules: ["page.tsx"],
 			tsxStyles: [],
 			fragments: [],
@@ -41,11 +42,12 @@ describe("CacheStore", () => {
 		expect(r?.outPath).toBe("page/index.html");
 		expect(r?.outputHash).toBe("deadbeef");
 		expect(r?.depFingerprints["/abs/page.tsx"]?.hash).toBe("h1");
+		expect(r?.astroIslands).toEqual([{ componentPath: "/abs/Counter.vue", exportName: "default" }]);
 	});
 
 	it("ignores the on-disk cache when the configHash differs", async () => {
 		const s1 = await CacheStore.load(tmp, "c1");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], size: 0 });
 		await s1.persist();
 
 		const s2 = await CacheStore.load(tmp, "c2");
@@ -54,7 +56,7 @@ describe("CacheStore", () => {
 
 	it("forceClean wipes the on-disk cache", async () => {
 		const s1 = await CacheStore.load(tmp, "c1");
-		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], size: 0 });
+		s1.setRoute("k", { outPath: "k.html", outputHash: "x", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], size: 0 });
 		await s1.persist();
 		// Plant a stray file in the cache dir so we can verify forceClean
 		// wipes the whole directory tree.
@@ -68,9 +70,9 @@ describe("CacheStore", () => {
 
 	it("pruneRoutes drops entries whose keys aren't in the keep set", async () => {
 		const s = await CacheStore.load(tmp, "c1");
-		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], size: 0 });
-		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], size: 0 });
-		s.setRoute("c", { outPath: "c.html", outputHash: "3", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], size: 0 });
+		s.setRoute("a", { outPath: "a.html", outputHash: "1", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], size: 0 });
+		s.setRoute("b", { outPath: "b.html", outputHash: "2", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], size: 0 });
+		s.setRoute("c", { outPath: "c.html", outputHash: "3", depFingerprints: {}, renderedModules: [], tsxStyles: [], fragments: [], islands: [], hoistedHashes: [], astroIslands: [], size: 0 });
 		s.pruneRoutes(new Set(["a", "c"]));
 		expect(s.routeKeys().sort()).toEqual(["a", "c"]);
 	});

@@ -8,6 +8,7 @@ import {
   bundleAstroIslands,
   createIslandClientUrls,
   type AstroIslandComponent,
+  type VirtualModuleSource,
 } from "../../packages/pletivo/src/astro-islands-bundle";
 
 const root = path.resolve(import.meta.dir, "../fixture-astro-islands-bundle");
@@ -32,7 +33,15 @@ const renderers: AstroRendererEntry[] = [
 ];
 
 // Astro's app module when the Vue integration has no `appEntrypoint`.
-const virtualModules = { "virtual:@astrojs/vue/app": "export const setup = () => {};\n" };
+const virtualModules: Readonly<Record<string, string>> = { "virtual:@astrojs/vue/app": "export const setup = () => {};\n" };
+
+/** Stands in for the host's Vite plugins. */
+async function virtualModule(specifier: string): Promise<VirtualModuleSource | null> {
+  const code = virtualModules[specifier];
+  return code === undefined ? null : { code, loader: "js" };
+}
+
+const noVirtualModules = async (): Promise<VirtualModuleSource | null> => null;
 
 /** Every chunk a built module in `dir` statically imports, directly or through other chunks. */
 async function chunkClosure(dir: string, file: string): Promise<Set<string>> {
@@ -135,7 +144,7 @@ describe("bundleAstroIslands", () => {
       beforeHydrationScripts,
       components: islands,
       renderers,
-      virtualModules,
+      virtualModule,
       compilers: [
         decliningCompiler,
         fakeCompiler("Svelte", ".svelte", compileTargets),
@@ -265,12 +274,12 @@ describe("bundleAstroIslands failures", () => {
       components: [preactCounter, { componentPath: missing, exportName: "default" }],
       renderers: [],
       compilers: [],
-      virtualModules: {},
+      virtualModule: noVirtualModules,
     });
     await expect(bundle).rejects.toThrow(`island entry for export "default" of ${missing}`);
   });
 
-  test("a virtual module missing from the map still fails to resolve", async () => {
+  test("a virtual module no plugin loads fails, naming it", async () => {
     const bundle = bundleAstroIslands({
       projectRoot: root,
       distDir,
@@ -278,7 +287,7 @@ describe("bundleAstroIslands failures", () => {
       components: [],
       renderers: renderers.filter((renderer) => renderer.name === "@astrojs/vue"),
       compilers: [],
-      virtualModules: {},
+      virtualModule: noVirtualModules,
     });
     await expect(bundle).rejects.toThrow("virtual:@astrojs/vue/app");
   });

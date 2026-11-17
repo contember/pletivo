@@ -1,8 +1,8 @@
 /**
  * Components of the UI frameworks Astro renders through its renderer protocol
- * (`addRenderer`). pletivo does not implement that protocol: it renders `.astro`
- * components and JSX compiled for its own runtime, so a framework component has
- * to fail by name rather than render as something else.
+ * (`addRenderer`). Without the framework's renderer pletivo renders `.astro`
+ * components and JSX compiled for its own runtime only, so a framework component
+ * has to fail by name rather than render as something else.
  */
 
 const FRAMEWORK_BY_EXTENSION: Record<string, string> = {
@@ -12,8 +12,9 @@ const FRAMEWORK_BY_EXTENSION: Record<string, string> = {
 
 /** Why the error is not a bug in the component, appended to every refusal. */
 export const FRAMEWORK_RENDERERS_UNSUPPORTED =
-  "Astro renders these through framework renderers, which pletivo does not implement; " +
-  "it renders .astro components and JSX compiled for its own runtime (jsxImportSource \"pletivo\").";
+  "Astro renders these through the renderer of the framework's integration (@astrojs/react, @astrojs/vue, …). " +
+  "pletivo's Bun host does too when that integration is in astro.config; the Workers host implements no renderers " +
+  "and renders .astro components and JSX compiled for pletivo's runtime (jsxImportSource \"pletivo\") only.";
 
 /** The framework a component file belongs to by its extension, e.g. `Svelte` for `.svelte`. */
 export function frameworkOfFile(file: string): string | null {
