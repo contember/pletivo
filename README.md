@@ -45,12 +45,23 @@ Pletivo compiles `.astro` files using `@astrojs/compiler` and renders them with 
 
 ## Hosting
 
-Do not serve Astro island entries under `/_astro/` as `immutable`, or purge them
-on every deploy. Pletivo names each island entry (`_astro/<Name>.<hash>.js`) by
-its component path, not by its content, so a changed component keeps its URL. A
-browser holding the old entry would then import chunks the new deploy no longer
-has, and the island would not hydrate. Shared chunks are content-hashed and can
-be cached as immutable. See
+In an Astro project, only some JavaScript under `/_astro/` is named by content:
+
+| files under `/_astro/` | named by | cache as |
+|---|---|---|
+| `chunk-*.js` (code shared between islands) | content | `immutable` is safe |
+| non-JS files (images, `?url` imports) | content | `immutable` is safe |
+| every other `*.js`: island entries (`<Name>.<hash>.js`, `client.<hash>.js`, `before-hydration.<hash>.js`) and hoisted scripts (`hoisted-<hash>.js`) | the component path, the renderer name or the inline script source, not the bundled code | `Cache-Control: no-cache`, or a short `max-age` |
+
+Island entries and hoisted scripts keep their URL when the code they bundle
+changes: a component, one of its imports, or a framework upgrade. A browser
+holding the old file runs the old code, or fails to hydrate the island if the
+chunks it imports are gone. Purging a CDN on deploy does not help here: it cannot
+evict a copy the browser already holds as `immutable`. A CDN may still keep these
+files longer through an edge TTL (`s-maxage`), if it is purged on every deploy.
+A `?url`-imported `.js` file is content-hashed, but its name looks like an
+island entry's, so a header rule matching `*.js` treats it the same, at the cost
+of a revalidation. See
 [`docs/todos/025`](docs/todos/025-island-content-hashed-urls.md).
 
 ## Performance

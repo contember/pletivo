@@ -1,35 +1,45 @@
-# 025 — Content-hashed island entry URLs
+# 025 — Content-hashed island and hoisted-script URLs
 
 **Priority:** B-tier
 **Status:** deferred; a probe is measured and kept on the `probe/island-prebundle` branch (7345a52). The hosting rule is in the README.
-**Area:** Astro islands, build
+**Area:** Astro islands, hoisted scripts, build
 
 ## The gap
 
-In an Astro project, `pletivo build` names island entries
-`_astro/<Name>.<hash>.js`: one per hydrated component, one per renderer client and
-one for the before-hydration scripts. The hash covers the component path, the
-export name and the renderer name (`createIslandClientUrls` in
-`packages/pletivo/src/astro-islands-bundle.ts`), not the bundle content. The
-render needs the URLs, so they are fixed before the bundle exists. Chunks shared
-between entries are content-hashed by Bun.
+In an Astro project, `pletivo build` emits island entries under `_astro/`:
+- `<Name>.<hash>.js`, one per hydrated component, hashed from the component path and the export name;
+- `client.<hash>.js` per renderer, hashed from the renderer name;
+- `before-hydration.<hash>.js`, hashed from the joined script source.
 
-Astro names these entries by content, as Vite does. So a host that serves
+See `createIslandClientUrls` in `packages/pletivo/src/astro-islands-bundle.ts`.
+None of them is hashed from the bundled code. The render needs the URLs, so they
+are fixed before the bundle exists. Chunks shared
+between entries are content-hashed by Bun (`chunk-<hash>.js`).
+
+Hoisted scripts have the same gap. `_astro/hoisted-<hash>.js` hashes the
+inline `<script>` source (`astro-plugin.ts`), but the bundle inlines the
+modules that script imports, so a changed import keeps the URL.
+
+Astro names these files by content, as Vite does. So a host that serves
 `/_astro/*` as `immutable`, as Astro's own output allows, can serve a stale
-pletivo entry after a deploy that changed a component:
-- the stale entry imports content-hashed chunks the new deploy no longer has;
-- the island then fails to hydrate.
+pletivo file after a deploy that changed the code it bundles: a component, one
+of its imports, or a framework version. The stale file either runs the old code,
+or fails to hydrate the island if the chunks it imports are gone.
 
-A deploy that changes no island is unaffected.
+A deploy that changes none of that code is unaffected.
 
 **The risk is unverified.** No site is known to combine pletivo islands with
 `immutable` caching of `/_astro/*`. Until this is fixed, the README tells hosts
-not to cache island entries as immutable, or to purge them on deploy.
+to serve every `/_astro/*.js` except `chunk-*.js` with `no-cache`. A CDN purge alone
+cannot evict a browser's `immutable` copy.
 
 ## When to come back
 
-When a site has framework islands built by pletivo *and* serves `/_astro/*` as
-`immutable` (or needs to).
+When a site has framework islands or hoisted scripts built by pletivo *and*
+serves `/_astro/*` as `immutable` (or needs to). Hoisted scripts look cheaper
+(not probed): the build already rewrites their tags in the written pages after
+bundling them, since it inlines small ones, so a content hash may need only that
+rewrite plus the same `--incremental` refresh.
 
 ## Option A: bundle before the render
 
@@ -68,8 +78,8 @@ the median (min–max); RSS is the median peak.
 | framework-multiple | main / probe | 1.43 (1.39–1.72) / 1.50 (1.37–1.63) s | 309 / 309 MB | 5 |
 
 **How to read it:**
-- The site's run-to-run spread is about ±12 %, so its deltas (−0.6 %, and −2.1 % with the pre-pass forced) are noise.
-- The site has no framework islands. It measures the pre-pass, not bundling at scale.
+- The site's runs spread from −12 % to +11 % around `main`'s median, and the plain probe's up to +29 %. So its deltas (−0.6 %, and −2.1 % with the pre-pass forced) are noise.
+- The site has no framework islands. The plain "probe" row skips the pre-pass there (no renderers), so its RSS difference is noise too. Only the "forced" row measures the pre-pass, and none of it is bundling at scale.
 - No project with many islands was measured.
 
 ### What blocks it
@@ -86,7 +96,7 @@ the median (min–max); RSS is the median peak.
    Bundling the missed ones in a second pass is not a safe fallback, though this is untested: the island would get the first pass's `renderer-url`, so the page would load two copies of the framework runtime.
 2. **`--incremental`.** Cached HTML carries the hashed URLs. An entry's hash changes when its own code changes, and also when a shared chunk it imports is renamed. Chunk names depend on the whole bundled set, so adding an island on one page can change the URLs on unchanged cached pages. So:
    - those pages need an in-place URL rewrite, as `refreshCachedCssHead` does for the CSS head (the cache already stores each page's `astroIslands`), or a re-render;
-   - superseded files pile up in `_astro/` unless the orphan prune covers it.
+   - superseded files pile up in `_astro/`, which the orphan prune skips (`build.ts`).
 
    Path-based URLs avoid all of this.
 

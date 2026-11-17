@@ -25,7 +25,7 @@ SSG-relevant gaps in Astro API surface support, ordered by priority.
 
 ## B-tier — Unlocks integrations and specific use-cases
 
-- [025 — Content-hashed island URLs](025-island-content-hashed-urls.md) — **deferred**; entries are named by path, so `/_astro/*` must not be `immutable`; option A probed on `probe/island-prebundle`
+- [025 — Content-hashed island and hoisted-script URLs](025-island-content-hashed-urls.md) — **deferred**; they are not named by content, so `/_astro/*.js` other than `chunk-*.js` must not be `immutable`; option A probed on `probe/island-prebundle`
 - [004 — injectRoute()](004-inject-route.md) — sitemap, RSS, robots.txt integrations broken
 - [012 — Endpoint routes](012-endpoint-routes.md) — `src/pages/robots.txt.ts` was skipped silently; done for static endpoints
 - [006 — Content Layer Custom Loaders](006-content-layer-custom-loaders.md) — CMS integrations need this
