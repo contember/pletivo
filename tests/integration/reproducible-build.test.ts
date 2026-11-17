@@ -18,7 +18,7 @@ async function buildCheckout(prefix: string): Promise<Map<string, Uint8Array>> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   checkouts.push(root);
   await fs.cp(fixture, root, { recursive: true, filter: (source) => !source.startsWith(path.join(fixture, "dist")) });
-  const child = Bun.spawn(["bun", cli, "build"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, cli, "build"], { cwd: root, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
   expect({ exit: await child.exited, output: stdout + stderr }).toMatchObject({ exit: 0 });
   const distDir = path.join(root, "dist");

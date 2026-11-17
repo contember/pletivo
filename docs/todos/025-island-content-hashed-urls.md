@@ -16,11 +16,14 @@ None of them is hashed from the bundled code. The render needs the URLs, so they
 are fixed before the bundle exists. Chunks shared
 between entries are content-hashed by Bun (`chunk-<hash>.js`).
 
-Hoisted scripts have the same gap. `_astro/hoisted-<hash>.js` hashes the
-project-relative path of the `.astro` file (POSIX separators), the script's
-index in it and its `<script>` source (`astro-plugin.ts`). It is still not a
-content hash: the bundle inlines the modules that script imports, so a changed
-import keeps the URL.
+Hoisted scripts have the same gap. `_astro/hoisted-<hash>.js` hashes the path
+of the `.astro` file relative to the working directory (POSIX separators), the
+script's index in it and its type-stripped `<script>` source (`astro-plugin.ts`).
+The CLI and the dev server run from the project root, so the name does not
+depend on where the project is checked out; a file outside the checkout, reached
+through `../` segments, still gets a name that depends on the checkout's depth.
+It is still not a content hash: the bundle inlines the modules that script
+imports, so a changed import keeps the URL.
 
 Astro names these files by content, as Vite does. So a host that serves
 `/_astro/*` as `immutable`, as Astro's own output allows, can serve a stale
