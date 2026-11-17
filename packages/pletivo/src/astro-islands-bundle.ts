@@ -9,20 +9,19 @@ import path from "node:path";
 import type { BunPlugin, Loader } from "bun";
 import type { AstroRendererEntry } from "@pletivo/core/astro-host/renderers";
 import type { FrameworkCompiler } from "@pletivo/core/framework-compile/types";
-import type { IslandClientUrls } from "@pletivo/runtime/astro-islands/types";
+import {
+  astroUrlPrefix,
+  beforeHydrationSource,
+  createIslandClientUrls,
+  portableSpecifier,
+  type IslandClientUrlsOptions,
+} from "@pletivo/core/island-urls";
 import { frameworkCompilePlugin } from "./framework-compile";
 import { preactResolver } from "./islands-bundle";
 
 const ASTRO_DIR = "_astro";
 
-export interface IslandClientUrlsOptions {
-  /** Absolute. Component entry names hash a component file's path relative to it. */
-  projectRoot: string;
-  /** The site's base path, e.g. `/` or `/docs`. */
-  base: string;
-  /** Contents of the scripts integrations injected at the `before-hydration` stage. */
-  beforeHydrationScripts?: readonly string[];
-}
+export { createIslandClientUrls, type IslandClientUrlsOptions };
 
 /** A component export a page hydrates, as `client:component-path` and `client:component-export` name it. */
 export interface AstroIslandComponent {
@@ -55,61 +54,8 @@ const VIRTUAL_SPECIFIER = /^(virtual:|\/@|@id\/|\0virtual:)/;
 /** Never on disk. In the project root, so a virtual module's own imports resolve from its `node_modules`. */
 const VIRTUAL_DIR = "__pletivo_island_virtual__";
 
-/** `/`, `/docs` or `/docs/` → the prefix every island URL starts with. */
-function astroUrlPrefix(base: string): string {
-  const trimmed = base.replace(/^\/+|\/+$/g, "");
-  return trimmed === "" ? `/${ASTRO_DIR}/` : `/${trimmed}/${ASTRO_DIR}/`;
-}
-
 function shortHash(parts: readonly string[]): string {
   return createHash("sha256").update(parts.join("\0")).digest("base64url").slice(0, 8);
-}
-
-function safeName(name: string): string {
-  return name.replace(/[^A-Za-z0-9_.-]/g, "_");
-}
-
-/**
- * A component file as a specifier relative to the project root, with POSIX separators, so a checkout's
- * location changes no island entry name or byte. A package specifier stays as it is.
- */
-function portableSpecifier(projectRoot: string, componentPath: string): string {
-  if (!path.isAbsolute(componentPath)) return componentPath;
-  const relative = path.relative(projectRoot, componentPath);
-  // A file on another Windows drive has no relative form.
-  if (path.isAbsolute(relative)) return componentPath;
-  const posix = relative.split(path.sep).join(path.posix.sep);
-  return posix.startsWith("../") ? posix : `./${posix}`;
-}
-
-function componentFile(projectRoot: string, componentPath: string, exportName: string): string {
-  const name = safeName(path.basename(componentPath, path.extname(componentPath)));
-  return `${name}.${shortHash(["component", portableSpecifier(projectRoot, componentPath), exportName])}.js`;
-}
-
-function rendererFile(rendererName: string): string {
-  // Astro names the chunk after the entrypoint file; only Svelte's is `client.svelte.js`.
-  const name = rendererName === "@astrojs/svelte" ? "client.svelte" : "client";
-  return `${name}.${shortHash(["renderer", rendererName])}.js`;
-}
-
-/** Astro joins the stage's scripts into one module. */
-function beforeHydrationSource(scripts: readonly string[] | undefined): string | null {
-  return scripts && scripts.length > 0 ? scripts.join("\n") : null;
-}
-
-function beforeHydrationFile(source: string): string {
-  return `before-hydration.${shortHash(["before-hydration", source])}.js`;
-}
-
-export function createIslandClientUrls(options: IslandClientUrlsOptions): IslandClientUrls {
-  const prefix = astroUrlPrefix(options.base);
-  const beforeHydration = beforeHydrationSource(options.beforeHydrationScripts);
-  return {
-    component: (componentPath, exportName) => prefix + componentFile(options.projectRoot, componentPath, exportName),
-    renderer: (rendererName) => prefix + rendererFile(rendererName),
-    beforeHydration: beforeHydration === null ? null : prefix + beforeHydrationFile(beforeHydration),
-  };
 }
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
