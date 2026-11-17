@@ -9,7 +9,7 @@ import type { CompiledProject } from "../src/compile-project.ts";
 export type ModuleRef = string;
 
 function idOf(ref: ModuleRef): ModuleId {
-  return /^[a-z]+:/.test(ref) ? ref : projectModuleId(ref);
+  return /^[a-z][a-z-]*:/.test(ref) ? ref : projectModuleId(ref);
 }
 
 /** The Loader name a module is bundled under. */

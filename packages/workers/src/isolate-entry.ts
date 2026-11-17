@@ -13,6 +13,7 @@ import type { resolveI18nConfig, ResolvedI18nConfig } from "@pletivo/core/i18n/c
 import type { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import type * as Images from "@pletivo/core/image";
 import type { Route, RouteParams } from "@pletivo/core/router";
+import { createIslandClientUrls } from "@pletivo/core/island-urls";
 import { createPaginate } from "@pletivo/core/paginate";
 import {
   isAstroComponent,
@@ -22,6 +23,8 @@ import {
   runWithRenderTracking,
   type PageContext,
 } from "@pletivo/runtime/astro-shim";
+import { configureAstroIslands, finalizeIslandScripts, isRendererServer } from "@pletivo/runtime/astro-islands/index";
+import type { AstroIslandsConfig, IslandScripts, LoadedRenderer } from "@pletivo/runtime/astro-islands/types";
 import { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
 import { runWithLogCapture } from "./log-capture.ts";
 import { BoundedLru } from "./bounded-lru.ts";
@@ -108,6 +111,21 @@ export interface IsolateI18n {
   config: Parameters<typeof resolveI18nConfig>[0] | null;
 }
 
+/** One renderer, as the generated program names it: its server module's namespace. */
+export interface IsolateRenderer {
+  name: string;
+  clientEntrypoint: string | null;
+  server: object;
+}
+
+/** The project's framework renderers, as the generated program spells them. */
+export interface IsolateIslands {
+  /** See `ArtifactIslands.projectRoot`. */
+  projectRoot: string;
+  renderers: readonly IsolateRenderer[];
+  scripts: IslandScripts;
+}
+
 /** An `astro:env` module's installer; the values arrive in the isolate's `env`. */
 export type EnvInstaller = (values: Partial<EnvPayload>) => void;
 
@@ -123,6 +141,8 @@ export interface IsolateProgram {
   content: ContentModules | null;
   /** Set when the program renders Markdown with the project's own plugins. */
   markdown: IsolateMarkdown | null;
+  /** Set when the artifact carries framework renderers. */
+  islands: IsolateIslands | null;
   /** `$$renderScript` id -> the URL the host serves that script at. */
   scripts: Readonly<Record<string, string>>;
   /** Set when the program imports `astro:i18n`. */
@@ -157,6 +177,7 @@ const FRONTMATTER_CACHE_BOUNDS = { maxEntries: 20_000, maxBytes: 16 * 1024 * 102
 
 export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
   let markdownConfigured = false;
+  let islandsConfigured = false;
   let i18nConfig: ResolvedI18nConfig | null | undefined;
   // Safe across renders and projects: a version names one text wherever it appears.
   const contentCache = new BoundedLru<string>(CONTENT_CACHE_BOUNDS);
@@ -170,6 +191,11 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
     if (program.markdown !== null && !markdownConfigured) {
       configureMarkdown(program.markdown);
       markdownConfigured = true;
+    }
+    // Module state is safe here too: the renderers are part of the program.
+    if (!islandsConfigured) {
+      configureAstroIslands(program.islands === null ? null : islandsConfig(program.islands));
+      islandsConfigured = true;
     }
     // Installed before any page is imported, since frontmatter reads it at import time.
     if (program.importMetaEnv) {
@@ -231,6 +257,20 @@ function pluggable(plugin: IsolateMarkdownPlugin): Pluggable {
     );
   }
   return plugin.options === undefined ? value : [value, plugin.options];
+}
+
+/** The Bun host's islands config: island URLs named alike, renderers in registration order. */
+function islandsConfig(islands: IsolateIslands): AstroIslandsConfig {
+  const renderers = islands.renderers.map((renderer): LoadedRenderer => {
+    const ssr: unknown = Reflect.get(renderer.server, "default");
+    if (!isRendererServer(ssr)) {
+      throw new Error(`[pletivo-workers] renderer "${renderer.name}": its server module does not default-export check() and renderToStaticMarkup()`);
+    }
+    return { name: renderer.name, clientEntrypoint: renderer.clientEntrypoint, ssr };
+  });
+  // `prepare` refuses a base other than `/` and `before-hydration` scripts.
+  const urls = createIslandClientUrls({ projectRoot: islands.projectRoot, base: BASE });
+  return { renderers, urls, scripts: islands.scripts };
 }
 
 function configureMarkdown(markdown: IsolateMarkdown): void {
@@ -394,7 +434,8 @@ async function render(program: IsolateProgram, request: IsolateRenderRequest): P
   );
   const response: IsolateRenderedResponse = {
     status: "rendered",
-    html: value,
+    // Each island carries its scripts; the page keeps the first of each, as on the Bun host.
+    html: finalizeIslandScripts(value),
     renderedModules: [...renderedModules],
     tsxStyles,
     partial: Boolean(module.partial),

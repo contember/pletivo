@@ -4,10 +4,12 @@
  * never reads. The JSX `Fragment` is aliased here and renamed back by
  * `pletivo-jsx-runtime.js`; it differs from the Astro shim's, which honours `set:html`.
  * `createPaginate` is here because `getStaticPaths` runs in the isolate, and
- * `setScriptUrlResolver` because the shim's `renderScript` reads this module's registry.
+ * `setScriptUrlResolver` because the shim's `renderScript` reads this module's registry, and the
+ * islands config because the shim renders framework components with it.
  */
 
 export * from "@pletivo/runtime/astro-shim";
+export { configureAstroIslands, finalizeIslandScripts, isRendererServer } from "@pletivo/runtime/astro-islands/index";
 export { jsx, jsxs, jsxDEV, Fragment as jsxFragment } from "@pletivo/runtime/jsx-runtime";
 export { createPaginate } from "@pletivo/core/paginate";
 export { setScriptUrlResolver } from "@pletivo/runtime/script-registry";

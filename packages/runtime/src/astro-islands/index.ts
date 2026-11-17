@@ -4,12 +4,25 @@
  * then every non-`.astro` component call is offered here first.
  */
 import { renderFrameworkCall } from "./render";
-import type { AstroIslandsConfig, FrameworkComponentCall, FrameworkComponentResult } from "./types";
+import type { AstroIslandsConfig, FrameworkComponentCall, FrameworkComponentResult, RendererServer } from "./types";
 
 export type * from "./types";
 export { finalizeIslandScripts, hoistIslandScripts } from "./prescripts";
 
 let config: AstroIslandsConfig | null = null;
+
+/** Astro's `SSRLoadedRendererValue`: the functions are called as Astro calls them, so only their presence is checked. */
+export function isRendererServer(value: unknown): value is RendererServer {
+  if (typeof value !== "object" || value === null) return false;
+  const supportsAstroStaticSlot: unknown = Reflect.get(value, "supportsAstroStaticSlot");
+  const renderHydrationScript: unknown = Reflect.get(value, "renderHydrationScript");
+  return (
+    typeof Reflect.get(value, "check") === "function" &&
+    typeof Reflect.get(value, "renderToStaticMarkup") === "function" &&
+    (supportsAstroStaticSlot === undefined || typeof supportsAstroStaticSlot === "boolean") &&
+    (renderHydrationScript === undefined || typeof renderHydrationScript === "function")
+  );
+}
 
 /** Set by the host once per process, before any page renders; `null` turns islands off. */
 export function configureAstroIslands(next: AstroIslandsConfig | null): void {

@@ -42,7 +42,7 @@ export async function linkModule(
     }
   }
   const compiledCode = module.kind === "astro"
-    ? replaceAstroTrackingId(globbed.code, module.compilePath, module.id)
+    ? replaceComponentPaths(replaceAstroTrackingId(globbed.code, module.compilePath, module.id), walk, module)
     : globbed.code;
   walk.modules[module.executionName] = rewriteImports(compiledCode, {
     importer: module.compilePath,
@@ -87,6 +87,26 @@ function replaceAstroTrackingId(code: string, compilePath: string, moduleId: Mod
     );
   }
   return code.slice(0, at) + `, ${compilerString(moduleId)}, undefined);` + code.slice(at + field.length);
+}
+
+/** The compiler's `client:component-path` prop: `resolvePath` cannot cross to a compiler isolate, so every value is the specifier. */
+const COMPONENT_PATH = /"client:component-path":\(("(?:[^"\\\n]|\\.)*")\)/g;
+
+/** Each `client:component-path` as Bun's compiler resolves it, which the island `uid` hashes. */
+function replaceComponentPaths(code: string, walk: CompileWalk, module: SourceModule): string {
+  if (module.origin !== "project") return code;
+  return code.replace(COMPONENT_PATH, (_found, literal: string) => {
+    let specifier: unknown;
+    try {
+      specifier = JSON.parse(literal);
+    } catch {
+      specifier = undefined;
+    }
+    if (typeof specifier !== "string") {
+      throw new UnsupportedFileError(module.compilePath, `the Astro compiler wrote a client:component-path pletivo cannot read: ${literal}`);
+    }
+    return `"client:component-path":(${JSON.stringify(walk.componentPath(module.compilePath, specifier))})`;
+  });
 }
 
 function compilerString(value: string): string {

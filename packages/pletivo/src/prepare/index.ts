@@ -25,6 +25,7 @@ import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
+import { prepareIslands } from "./islands";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
 import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
@@ -74,7 +75,10 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const pluginModules = markdown.config === null
     ? []
     : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
-  const graph = await prepareModuleGraph(projectRoot, sources, freezeViteVirtualModule, pluginModules);
+  // First: the vendor graph must not walk the components it bundles, whose packages may be CommonJS.
+  const islands = await prepareIslands(projectRoot, host?.renderers ?? [], sources);
+  const graphSources = islands === null ? sources : sources.filter((source) => !islands.componentFiles.has(source.file));
+  const graph = await prepareModuleGraph(projectRoot, graphSources, freezeViteVirtualModule, pluginModules);
   const pageScript = await freezePageScripts(host, projectRoot);
 
   return {
@@ -85,9 +89,10 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: pageScript === null ? [] : [pageScript],
       },
-      modules: graph.modules,
-      resolutions: graph.resolutions,
+      modules: islands === null ? graph.modules : [...graph.modules, ...islands.modules],
+      resolutions: islands === null ? graph.resolutions : [...graph.resolutions, ...islands.resolutions],
       browserResolutions: graph.browserResolutions,
+      ...(islands === null ? {} : { islands: islands.islands }),
     },
     inputs,
   };

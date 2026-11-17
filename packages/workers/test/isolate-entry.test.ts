@@ -52,6 +52,7 @@ function program(pages: Record<string, PageModule>): IsolateProgram {
     i18n: null,
     envInstallers: [],
     importMetaEnv: false,
+    islands: null,
   };
 }
 

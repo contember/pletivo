@@ -13,8 +13,9 @@ const FRAMEWORK_BY_EXTENSION: Record<string, string> = {
 /** Why the error is not a bug in the component, appended to every refusal. */
 export const FRAMEWORK_RENDERERS_UNSUPPORTED =
   "Astro renders these through the renderer of the framework's integration (@astrojs/react, @astrojs/vue, …). " +
-  "pletivo's Bun host does too when that integration is in astro.config; the Workers host implements no renderers " +
-  "and renders .astro components and JSX compiled for pletivo's runtime (jsxImportSource \"pletivo\") only.";
+  "pletivo does too when that integration is in astro.config; on the Workers host, for the components " +
+  "`pletivo prepare` compiled with it. Otherwise pletivo renders .astro components and JSX compiled for its " +
+  "runtime (jsxImportSource \"pletivo\") only.";
 
 /** The framework a component file belongs to by its extension, e.g. `Svelte` for `.svelte`. */
 export function frameworkOfFile(file: string): string | null {

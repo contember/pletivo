@@ -1,4 +1,4 @@
-import type { ArtifactI18nConfig, ArtifactJson, ModuleId } from "@pletivo/core/artifact";
+import type { ArtifactI18nConfig, ArtifactIslandScripts, ArtifactJson, ModuleId } from "@pletivo/core/artifact";
 import type { ProjectEnvUse } from "./env.ts";
 
 export interface ExecutableEntry {
@@ -26,11 +26,28 @@ export interface ProgramMarkdownRequirement {
   gfm?: boolean;
 }
 
+/** One renderer: the Loader module whose default export is its server half. */
+export interface ProgramRenderer {
+  name: string;
+  clientEntrypoint: string | null;
+  executionName: string;
+}
+
+/** The project's framework renderers, configured in the isolate before anything renders. */
+export interface ProgramIslandsRequirement {
+  /** See `ArtifactIslands.projectRoot`. */
+  projectRoot: string;
+  renderers: ProgramRenderer[];
+  scripts: ArtifactIslandScripts;
+}
+
 /** Features the generated isolate entry must install. */
 export interface ExecutableRequirements {
   content: ProgramContentRequirement | null;
   /** Set when Markdown renders in the isolate and the project configured it. */
   markdown: ProgramMarkdownRequirement | null;
+  /** Set when the artifact carries framework renderers. */
+  islands: ProgramIslandsRequirement | null;
   /**
    * Set when the project imports `astro:i18n`: the config its helpers read, `null` for a
    * project with none (the helpers then throw, as on the Bun host).

@@ -1,5 +1,6 @@
 import type {
   ExecutableEntry,
+  ProgramIslandsRequirement,
   ProgramMarkdownRequirement,
   ResolvedStyleGraph,
 } from "../compiled-program.ts";
@@ -21,6 +22,7 @@ export function emitProject(
   walk: CompileWalk,
   entries: ExecutableEntry[],
   markdown: ProgramMarkdownRequirement | null,
+  islands: ProgramIslandsRequirement | null,
   i18nConfig: ArtifactI18nConfig | null,
 ): CompiledProject {
   if (walk.usesI18n) walk.modules[I18N_MODULE_NAME] = GENERATED_MODULES[I18N_MODULE_NAME];
@@ -47,6 +49,7 @@ export function emitProject(
       requirements: {
         content,
         markdown,
+        islands,
         i18n: walk.usesI18n ? { config: i18nConfig } : null,
         images,
         importMetaEnv: walk.usesImportMetaEnv,
