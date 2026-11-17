@@ -53,6 +53,27 @@ export const TAILWIND_MODULE_PREFIX = "tailwind-module:";
  */
 export const BROWSER_BUNDLE_MODULE_PREFIX = "browser-bundle:";
 
+/**
+ * Id prefix of the server bundle of the project's framework components and the renderers that
+ * render them, built at prepare with the project's compilers: `islands-bundle:<digest>/<file>`.
+ * One bundle, so a component and its renderer share one framework runtime.
+ */
+export const ISLANDS_BUNDLE_MODULE_PREFIX = "islands-bundle:";
+
+/**
+ * How an islands bundle module imports a stylesheet: this prefix and a project path. The
+ * stylesheet stays the project's file, so CSS stays live; a compiled component's own CSS is
+ * one of `ArtifactIslands.stylesheets`, placed beside the component.
+ */
+export const ISLAND_STYLESHEET_PREFIX = "pletivo-island-stylesheet:";
+
+/**
+ * Node built-ins a bundled module may import, as an `external` resolution target: workerd provides
+ * them under `nodejs_compat`, which the render isolate's runtime needs anyway. A project file
+ * may not import them; prepare refuses that.
+ */
+export const ARTIFACT_BUILTIN_EXTERNALS: ReadonlySet<string> = new Set(["node:async_hooks"]);
+
 /** Id prefix of the `tailwindcss` bundle a host's Tailwind isolate runs those modules in. */
 export const TAILWIND_RUNTIME_MODULE_PREFIX = "tailwind-runtime:";
 
@@ -158,6 +179,50 @@ export interface InjectedScripts {
   page: string[];
 }
 
+/** A renderer an integration registered with `addRenderer()`, in registration order. */
+export interface ArtifactRenderer {
+  /** E.g. `@astrojs/react`. */
+  name: string;
+  /** As registered; `null` for a server-only renderer. */
+  clientEntrypoint: string | null;
+  /** The islands bundle module whose default export is the renderer's server half. */
+  server: ModuleId;
+}
+
+/** A project file a framework compiler claimed, and the islands bundle module it became. */
+export interface ArtifactIslandComponent {
+  /** Project-root-relative, `/`-separated. */
+  file: string;
+  module: ModuleId;
+}
+
+/** A compiled component's own CSS, which the bundle imports through `ISLAND_STYLESHEET_PREFIX`. */
+export interface ArtifactIslandStylesheet {
+  /** Project-root-relative, beside the component it was compiled from; no project file has it. */
+  file: string;
+  source: string;
+}
+
+/** Astro's prebuilt island scripts, from the project's `astro`. */
+export interface ArtifactIslandScripts {
+  island: string;
+  /** By directive name: `load`, `idle`, `visible`, `media`, `only`. */
+  directives: { [directive: string]: string };
+}
+
+/** Framework components rendered through the project's renderers. See `ISLANDS_BUNDLE_MODULE_PREFIX`. */
+export interface ArtifactIslands {
+  /**
+   * The absolute project root at prepare, `/`-separated. An island's `uid` hashes the absolute
+   * `client:component-path`, as Astro's does, so a host rebuilds that path from here.
+   */
+  projectRoot: string;
+  renderers: ArtifactRenderer[];
+  scripts: ArtifactIslandScripts;
+  components: ArtifactIslandComponent[];
+  stylesheets: ArtifactIslandStylesheet[];
+}
+
 /** The complete executable graph produced by `pletivo prepare`. */
 export interface SiteArtifact {
   version: typeof ARTIFACT_VERSION;
@@ -173,6 +238,8 @@ export interface SiteArtifact {
    * artifact may also carry the packages' own modules, as one from before bundling does.
    */
   browserResolutions?: ArtifactResolution[];
+  /** Set when the project registered framework renderers. */
+  islands?: ArtifactIslands;
 }
 
 /** Marks an `ArtifactInput.path` as relative to the workspace root rather than the project root. */
@@ -238,7 +305,7 @@ export function parsePreparedSite(value: unknown): PreparedSite {
   assertExactFields(prepared, ["artifact", "inputs"], "$");
   assertExactFields(
     artifact,
-    ["version", "config", "scripts", "modules", "resolutions", "browserResolutions"],
+    ["version", "config", "scripts", "modules", "resolutions", "browserResolutions", "islands"],
     "$.artifact",
   );
 
@@ -275,6 +342,7 @@ export function parsePreparedSite(value: unknown): PreparedSite {
     }
     site.artifact.browserResolutions = browserResolutions;
   }
+  if (hasOwn(artifact, "islands")) site.artifact.islands = parseIslands(Reflect.get(artifact, "islands"), modules);
   if (hasOwn(prepared, "inputs")) site.inputs = parseInputs(Reflect.get(prepared, "inputs"));
   return site;
 }
@@ -311,10 +379,101 @@ export function serializePreparedSite(value: unknown): string {
   if (browserResolutions !== undefined) {
     canonical.artifact.browserResolutions = canonicalResolutions(browserResolutions);
   }
+  const { islands } = prepared.artifact;
+  if (islands !== undefined) canonical.artifact.islands = canonicalIslands(islands);
   if (prepared.inputs !== undefined) {
     canonical.inputs = prepared.inputs.map((input) => ({ path: input.path, digest: input.digest }));
   }
   return JSON.stringify(canonical);
+}
+
+function parseIslands(value: unknown, modules: readonly ArtifactModule[]): ArtifactIslands {
+  const at = "$.artifact.islands";
+  const islands = requireObject(value, at, "an object");
+  assertExactFields(islands, ["projectRoot", "renderers", "scripts", "components", "stylesheets"], at);
+  const bundleModules = new Set(
+    modules.filter((module) => module.id.startsWith(ISLANDS_BUNDLE_MODULE_PREFIX)).map((module) => module.id),
+  );
+  const bundleModule = (value: unknown, path: string): ModuleId => {
+    const id = requireNonEmptyString(value, path);
+    if (!bundleModules.has(id)) throw new ArtifactFormatError(path, `expected an islands bundle module, got ${JSON.stringify(id)}`);
+    return id;
+  };
+
+  const projectRoot = requireNonEmptyString(requiredField(islands, "projectRoot", at), `${at}.projectRoot`);
+  if (projectRoot.includes("\\")) throw new ArtifactFormatError(`${at}.projectRoot`, "expected \"/\" separators");
+
+  const renderersValue = requiredField(islands, "renderers", at);
+  if (!Array.isArray(renderersValue) || renderersValue.length === 0) {
+    throw new ArtifactFormatError(`${at}.renderers`, "expected a non-empty array");
+  }
+  const names = new Set<string>();
+  const renderers = arrayEntries(renderersValue, `${at}.renderers`).map(([entry, path]): ArtifactRenderer => {
+    const renderer = requireObject(entry, path, "an object");
+    assertExactFields(renderer, ["name", "clientEntrypoint", "server"], path);
+    const name = requireNonEmptyString(requiredField(renderer, "name", path), `${path}.name`);
+    if (names.has(name)) throw new ArtifactFormatError(`${path}.name`, `duplicate renderer ${JSON.stringify(name)}`);
+    names.add(name);
+    const clientEntrypoint = requiredField(renderer, "clientEntrypoint", path);
+    if (clientEntrypoint !== null && (typeof clientEntrypoint !== "string" || clientEntrypoint === "")) {
+      throw new ArtifactFormatError(`${path}.clientEntrypoint`, "expected a non-empty string or null");
+    }
+    return { name, clientEntrypoint, server: bundleModule(requiredField(renderer, "server", path), `${path}.server`) };
+  });
+
+  const scriptsAt = `${at}.scripts`;
+  const scripts = requireObject(requiredField(islands, "scripts", at), scriptsAt, "an object");
+  assertExactFields(scripts, ["island", "directives"], scriptsAt);
+  const island = requiredField(scripts, "island", scriptsAt);
+  if (typeof island !== "string") throw new ArtifactFormatError(`${scriptsAt}.island`, "expected a string");
+  const directivesValue = requireObject(requiredField(scripts, "directives", scriptsAt), `${scriptsAt}.directives`, "an object");
+  const directives: { [directive: string]: string } = {};
+  for (const name of Object.keys(directivesValue)) {
+    const script = Reflect.get(directivesValue, name);
+    if (typeof script !== "string") throw new ArtifactFormatError(`${scriptsAt}.directives.${name}`, "expected a string");
+    directives[name] = script;
+  }
+
+  const files = new Set<string>();
+  const projectFile = (entry: object, path: string, suffix: string | null): string => {
+    const file = requireNonEmptyString(requiredField(entry, "file", path), `${path}.file`);
+    if (!isProjectRelativePath(file) || (suffix !== null && !file.endsWith(suffix))) {
+      throw new ArtifactFormatError(
+        `${path}.file`,
+        `expected a "/"-separated project-relative path${suffix === null ? "" : ` ending in ${suffix}`}`,
+      );
+    }
+    if (files.has(file)) throw new ArtifactFormatError(`${path}.file`, `duplicate file ${JSON.stringify(file)}`);
+    files.add(file);
+    return file;
+  };
+  const componentsValue = requiredField(islands, "components", at);
+  if (!Array.isArray(componentsValue)) throw new ArtifactFormatError(`${at}.components`, "expected an array");
+  const components = arrayEntries(componentsValue, `${at}.components`).map(([entry, path]): ArtifactIslandComponent => {
+    const component = requireObject(entry, path, "an object");
+    assertExactFields(component, ["file", "module"], path);
+    return { file: projectFile(component, path, null), module: bundleModule(requiredField(component, "module", path), `${path}.module`) };
+  });
+  const stylesheetsValue = requiredField(islands, "stylesheets", at);
+  if (!Array.isArray(stylesheetsValue)) throw new ArtifactFormatError(`${at}.stylesheets`, "expected an array");
+  const stylesheets = arrayEntries(stylesheetsValue, `${at}.stylesheets`).map(([entry, path]): ArtifactIslandStylesheet => {
+    const stylesheet = requireObject(entry, path, "an object");
+    assertExactFields(stylesheet, ["file", "source"], path);
+    const source = requiredField(stylesheet, "source", path);
+    if (typeof source !== "string") throw new ArtifactFormatError(`${path}.source`, "expected a string");
+    return { file: projectFile(stylesheet, path, ".css"), source };
+  });
+  return { projectRoot, renderers, scripts: { island, directives }, components, stylesheets };
+}
+
+/** Each entry of a dense array with its path. */
+function arrayEntries(value: unknown[], at: string): [unknown, string][] {
+  const entries: [unknown, string][] = [];
+  for (let index = 0; index < value.length; index++) {
+    if (!hasOwn(value, index)) throw new ArtifactFormatError(`${at}[${index}]`, "sparse array entries are not allowed");
+    entries.push([value[index], `${at}[${index}]`]);
+  }
+  return entries;
 }
 
 function parseConfig(value: unknown): ArtifactConfig {
@@ -760,6 +919,31 @@ function canonicalMarkdown(markdown: ArtifactMarkdownConfig): ArtifactMarkdownCo
   }
   if (markdown.gfm !== undefined) canonical.gfm = markdown.gfm;
   return canonical;
+}
+
+function canonicalIslands(islands: ArtifactIslands): ArtifactIslands {
+  const { directives } = islands.scripts;
+  return {
+    projectRoot: islands.projectRoot,
+    // Registration order is semantic: renderers are tried in it.
+    renderers: islands.renderers.map((renderer) => ({
+      name: renderer.name,
+      clientEntrypoint: renderer.clientEntrypoint,
+      server: renderer.server,
+    })),
+    scripts: {
+      island: islands.scripts.island,
+      directives: Object.fromEntries(
+        Object.keys(directives).sort(compareStrings).map((name): [string, string] => [name, directives[name]]),
+      ),
+    },
+    components: [...islands.components]
+      .sort((left, right) => compareStrings(left.file, right.file))
+      .map((component) => ({ file: component.file, module: component.module })),
+    stylesheets: [...islands.stylesheets]
+      .sort((left, right) => compareStrings(left.file, right.file))
+      .map((stylesheet) => ({ file: stylesheet.file, source: stylesheet.source })),
+  };
 }
 
 function canonicalModule(module: ArtifactModule): ArtifactModule {
