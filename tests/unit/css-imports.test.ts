@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cssImports, cssUrlTokens, withoutCssImports } from "@pletivo/core/css-imports";
+import { cssImports, cssPreludeRules, cssUrlTokens, withoutCssImports } from "@pletivo/core/css-imports";
 
 describe("withoutCssImports", () => {
   test("removes each @import cssImports finds, conditions and all, through its semicolon", () => {
@@ -17,6 +17,24 @@ describe("withoutCssImports", () => {
 
   test("stops at the block of a rule an unterminated @import runs into", () => {
     expect(withoutCssImports('@import "./a.css"\n}\n.next { color: red; }')).toBe("}\n.next { color: red; }");
+  });
+});
+
+describe("cssPreludeRules", () => {
+  test("reports each @import and @charset with its span through the semicolon and its conditions", () => {
+    const source =
+      '@charset "utf-8";\n/* @import "./no.css"; */\n@import "./a.css";\n@import url(b.css) layer(base) screen;\n.rule { color: red; }\n';
+    const rules = cssPreludeRules(source);
+    expect(rules.map((rule) => [rule.name, rule.target, rule.conditions])).toEqual([
+      ["charset", "utf-8", ""],
+      ["import", "./a.css", ""],
+      ["import", "b.css", "layer(base) screen"],
+    ]);
+    expect(rules.map((rule) => source.slice(rule.start, rule.end))).toEqual([
+      '@charset "utf-8";',
+      '@import "./a.css";',
+      "@import url(b.css) layer(base) screen;",
+    ]);
   });
 });
 
