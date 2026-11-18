@@ -10,7 +10,7 @@ function dataUris(css: string): string[] {
 }
 
 test("inlines every small target as the data: URI Bun.build writes", async () => {
-  // Every entry, an uppercase spelling Bun does not match, and extensions it has no type for.
+  // Every entry, uppercase spellings, and extensions Bun has no type for.
   const extensions = [...Object.keys(DATA_URI_TYPES), ".PNG", ".Svg", ".bin", ".jxl", ""];
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-data-uri-"));
   try {

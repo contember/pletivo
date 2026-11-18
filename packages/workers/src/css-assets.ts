@@ -106,9 +106,8 @@ function resolveFrom(stylesheet: string, file: string): string | null {
 }
 
 /**
- * The media type Bun 1.3.14 writes into a `data:` URI it inlines, by extension. Bun
- * matches case-sensitively: `.PNG` is an octet stream. `test/css-data-uri-types.test.ts`
- * checks every entry against `Bun.build`.
+ * The media type Bun 1.4 writes into a `data:` URI it inlines, by extension, matched
+ * case-insensitively. `test/css-data-uri-types.test.ts` checks every entry against `Bun.build`.
  */
 export const DATA_URI_TYPES: Readonly<Record<string, string>> = {
   ".svg": "image/svg+xml",
@@ -153,7 +152,6 @@ export const DATA_URI_TYPES: Readonly<Record<string, string>> = {
   ".pdf": "application/pdf",
   ".txt": "text/plain",
   ".csv": "text/csv",
-  ".xml": "application/xml",
   ".wasm": "application/wasm",
   ".zip": "application/zip",
 };
@@ -161,7 +159,7 @@ export const DATA_URI_TYPES: Readonly<Record<string, string>> = {
 function dataUriType(path: string): string {
   const slash = path.lastIndexOf("/");
   const dot = path.lastIndexOf(".");
-  const extension = dot > slash ? path.slice(dot) : "";
+  const extension = dot > slash ? path.slice(dot).toLowerCase() : "";
   return DATA_URI_TYPES[extension] ?? "application/octet-stream";
 }
 
