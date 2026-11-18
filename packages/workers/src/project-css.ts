@@ -45,6 +45,8 @@ export interface PageStylesheetOptions {
   tailwind?: TailwindStylesheets;
   /** Where a closure with `@plugin` or `@config` compiles; the host cannot run those modules. */
   tailwindIsolate?: TailwindIsolateHost;
+  /** Vite's `build.assetsInlineLimit`: a `url()` target below it is inlined as a `data:` URI. */
+  assetsInlineLimit: number;
 }
 
 const CSS_MODULE = ".module.css";
@@ -230,7 +232,7 @@ function embeddedTargets(
   return embedded;
 }
 
-type EmitOptions = Pick<PageStylesheetOptions, "srcDir" | "rootDir" | "readBytes" | "islandStylesheets">;
+type EmitOptions = Pick<PageStylesheetOptions, "srcDir" | "rootDir" | "readBytes" | "islandStylesheets" | "assetsInlineLimit">;
 
 function emitStylesheets(
   stylesheets: readonly StylesheetSource[],
@@ -252,7 +254,7 @@ function stylesheetText(stylesheet: StylesheetSource, options: EmitOptions, emit
   if (!moduleId.startsWith("project:")) return withoutCssImports(content);
   const file = moduleId.slice("project:".length);
   if (!options.islandStylesheets.has(moduleId) && file.startsWith(withSlash(options.srcDir))) return content;
-  return rewriteCssAssets(file, withoutCssImports(content), options.readBytes, emitted);
+  return rewriteCssAssets(file, withoutCssImports(content), options.readBytes, emitted, options.assetsInlineLimit);
 }
 
 function labelFor(

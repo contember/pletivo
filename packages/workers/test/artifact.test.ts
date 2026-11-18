@@ -411,7 +411,7 @@ describe("injected scripts and strict parsing", () => {
     const html = finalizeHtml(
       "<html><head><title>t</title></head><body><p>x</p></body></html>",
       { compressHTML: undefined, partial: false },
-      [".site{color:blue}"],
+      { stylesheet: ".site{color:blue}", pageCss: "", inlined: false },
       PREPARED.artifact.scripts,
     );
     expect(html).toContain(

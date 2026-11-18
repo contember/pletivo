@@ -28,7 +28,7 @@ test("inlines every small target as the data: URI Bun.build writes", async () =>
     const result = await Bun.build({ entrypoints: [path.join(dir, "entry.css")], target: "browser" });
     const built = result.outputs.find((output) => output.path.endsWith(".css"));
     if (!result.success || built === undefined) throw new Error(result.logs.map(String).join("\n"));
-    const workers = rewriteCssAssets("site/entry.css", css, (file) => files.get(file), new Map());
+    const workers = rewriteCssAssets("site/entry.css", css, (file) => files.get(file), new Map(), 4096);
 
     const expected = dataUris(await built.text());
     expect(expected).toHaveLength(extensions.length);

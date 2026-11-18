@@ -40,6 +40,7 @@ function options(
     styleGraph,
     entry: PAGE,
     html: "",
+    assetsInlineLimit: 4096,
     ...overrides,
   };
 }
