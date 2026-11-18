@@ -79,7 +79,7 @@ export async function compileMdxSource(source: string, filePath: string, setting
     development: false,
     // As @astrojs/mdx: hast attributes keep their HTML names (`class`, `tabindex`).
     ...(astro ? { elementAttributeNameCase: "html" } : {}),
-    remarkPlugins: [...buildRemarkPlugins(settings.remarkPlugins, settings.gfm), [remarkEsmExportNames, exportNames]],
+    remarkPlugins: buildRemarkPlugins(settings.remarkPlugins, settings.gfm),
     // @astrojs/mdx's order: fence meta, rehype-raw, highlighter, user plugins, heading ids, charset,
     // island metadata. Outside an Astro project only rehype-raw, user plugins and island metadata run.
     rehypePlugins: [
@@ -91,6 +91,7 @@ export async function compileMdxSource(source: string, filePath: string, setting
         { resolveComponentPath: settings.resolveComponentPath, hydrated: (hydration: MdxHydration) => hydrated.push(hydration) },
       ],
     ],
+    recmaPlugins: [[recmaExportNames, exportNames]],
   };
   // The path lets the island metadata resolve relative imports, as Astro's does.
   const result = await compile({ value: body, path: filePath }, compileOptions);
@@ -203,16 +204,11 @@ export function rehypeMdxMetaString(): Transformer {
   };
 }
 
-/** Collects the names the file's ESM blocks export into `names`. Last: a plugin may add an export. */
-function remarkEsmExportNames(names: Set<string>): Transformer {
+/** Collects the names the compiled module exports into `names`, off the final estree: any plugin may add one. */
+function recmaExportNames(names: Set<string>): Transformer {
   return (tree) => {
-    const children = isRecord(tree) && Array.isArray(tree.children) ? tree.children : [];
-    for (const child of children) {
-      if (!isRecord(child) || child.type !== "mdxjsEsm") continue;
-      const estree = isRecord(child.data) ? child.data.estree : undefined;
-      const body = isRecord(estree) && Array.isArray(estree.body) ? estree.body : [];
-      for (const statement of body) for (const name of exportedNames(statement)) names.add(name);
-    }
+    const body = isRecord(tree) && Array.isArray(tree.body) ? tree.body : [];
+    for (const statement of body) for (const name of exportedNames(statement)) names.add(name);
   };
 }
 

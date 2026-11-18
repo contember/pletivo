@@ -101,6 +101,43 @@ describe(".mdx compilation", () => {
     expect(html).not.toContain("MARK");
     expect(html).toContain("<table>"); // GFM ran (prepended remark-gfm)
   });
+
+  test("honours a components export a rehype plugin adds, as @astrojs/mdx does", async () => {
+    // `export const components = { h1: "h4" }`, inserted after remark has run.
+    const declaration = {
+      type: "VariableDeclaration",
+      kind: "const",
+      declarations: [{
+        type: "VariableDeclarator",
+        id: { type: "Identifier", name: "components" },
+        init: {
+          type: "ObjectExpression",
+          properties: [{
+            type: "Property", kind: "init", method: false, shorthand: false, computed: false,
+            key: { type: "Identifier", name: "h1" },
+            value: { type: "Literal", value: "h4" },
+          }],
+        },
+      }],
+    };
+    const estree = { type: "Program", sourceType: "module", body: [{ type: "ExportNamedDeclaration", specifiers: [], source: null, declaration }] };
+    const rehypeInjectComponents = () => (tree: { children: unknown[] }) => {
+      tree.children.unshift({ type: "mdxjsEsm", value: "", data: { estree } });
+    };
+    configureMdx({
+      rehypePlugins: [rehypeInjectComponents],
+      gfm: true,
+      astro: {
+        pagesDir: path.join(dir, "pages"),
+        experimentalHeadingIdCompat: false,
+        highlight: { projectRoot: dir, syntaxHighlight: false, shikiConfig: {} },
+      },
+    });
+    const file = path.join(dir, "injected.mdx");
+    writeFileSync(file, "# Injected\n");
+    const html = await renderDefault(await import(`${pathToFileURL(file).href}?v=injected`));
+    expect(html).toContain('<h4 id="injected">Injected</h4>');
+  });
 });
 
 describe(".md unified pipeline", () => {
