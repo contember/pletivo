@@ -30,6 +30,7 @@ import { islandCandidateSources, pageIslandClients } from "./island-clients.ts";
 import { attributeValue, htmlTags } from "./html-tags.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
+import { projectBytes, type CssAssetLink, type ReadProjectBytes } from "./css-assets.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
 import type { TailwindIsolateHost } from "./tailwind-isolate.ts";
 import type { ProjectAssetsView } from "./asset-port.ts";
@@ -138,6 +139,12 @@ export interface ProjectOptions {
    * their metadata; the bytes never enter the isolate. See `ProjectAsset`.
    */
   assets?: ProjectAssetsView;
+  /**
+   * A project file's raw bytes, as `ProjectSnapshot.readBytes` reads them: the `url()`
+   * targets of the CSS a page inlines. Absent, a target is read from `files` as UTF-8,
+   * so a binary one is not found.
+   */
+  readBytes?: ReadProjectBytes;
   loader: WorkerLoaderBinding;
   executionNamespace?: ExecutionNamespace;
   /** Where pages live in `files`. */
@@ -216,6 +223,11 @@ export interface RenderedPage {
    * cache them forever. The page's CSS is inlined, not listed here.
    */
   assets: RenderedAsset[];
+  /**
+   * The files the inlined CSS links to by `url()`, by project path and md5. Not copies: a
+   * host serves each from the project, while its bytes still have that md5.
+   */
+  cssAssets: CssAssetLink[];
   /** The processed-script URLs (`/_pletivo/script/…`) the HTML loads, in document order. */
   scriptUrls: string[];
   /**
@@ -520,6 +532,8 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const stylesheet = await pageStylesheet({
     // `project.sources`: only the artifact-merged map holds `node_modules` stylesheets.
     files: project.sources,
+    readBytes: projectBytes(files, options.readBytes),
+    islandStylesheets: islandStylesheetIds(options.artifact, rootDir),
     srcDir,
     rootDir,
     styleGraph: project.styleGraph,
@@ -531,10 +545,11 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     tailwindIsolate: tailwindIsolateHost(options),
   });
   return {
-    html: finalizeHtml(rendered.html, { compressHTML, partial: rendered.partial }, [stylesheet ?? "", styles], scripts),
+    html: finalizeHtml(rendered.html, { compressHTML, partial: rendered.partial }, [stylesheet?.css ?? "", styles], scripts),
     file,
     bundleId: rendered.bundleId,
     assets: assetsOf(project.urlAssets),
+    cssAssets: stylesheet?.cssAssets ?? [],
     scriptUrls: loadedScriptUrls(rendered.html, project.program.scripts),
     staleArtifactInputs: [],
     logs: rendered.logs,
@@ -596,6 +611,15 @@ function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>
     if (src !== null && known.has(src)) loaded.add(src);
   }
   return [...loaded];
+}
+
+/** The compiled component stylesheets the artifact places beside their components. */
+function islandStylesheetIds(artifact: ProjectArtifact | undefined, rootDir: string): Set<string> {
+  const ids = new Set<string>();
+  for (const file of artifact?.islands?.stylesheets.keys() ?? []) {
+    ids.add(projectModuleId(rootDir === "" ? file : `${rootDir}/${file}`));
+  }
+  return ids;
 }
 
 function assetsOf(urlAssets: ReadonlyMap<string, string>): RenderedAsset[] {

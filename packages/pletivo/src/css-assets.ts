@@ -1,7 +1,14 @@
 import path from "path";
 import fs from "fs/promises";
 import type { BunPlugin } from "bun";
-import { DEFAULT_ASSETS_INLINE_LIMIT, shouldInlineAsset, type AssetsInlineLimit } from "./assets-inline";
+import { DEFAULT_ASSETS_INLINE_LIMIT, type AssetsInlineLimit } from "@pletivo/core/assets-inline";
+import {
+  cssAssetFileName,
+  inlinesCssAsset,
+  relativeCssAssetRefs,
+  replaceCssAssetUrls,
+  splitCssAssetRef,
+} from "@pletivo/core/css-asset-urls";
 
 /**
  * Assets referenced from CSS with `url()` — fonts, background images.
@@ -105,32 +112,17 @@ export async function rewriteConfiguredCssAssetUrls(cssFile: string, css: string
   return active ? await rewriteCssAssetUrls(cssFile, css, active) : css;
 }
 
-/** `url(x)`, `url("x")`, `url('x')`, with optional surrounding space. */
-const URL_TOKEN_RE = /\burl\(\s*(["']?)([^"'()]+)\1\s*\)/g;
-
 export async function rewriteCssAssetUrls(
   cssFile: string,
   css: string,
   active: CssAssetOptions,
 ): Promise<string> {
   const replacements = new Map<string, string>();
-  for (const match of css.matchAll(URL_TOKEN_RE)) {
-    const raw = match[2].trim();
-    if (!raw || replacements.has(raw) || !isRelativeAssetRef(raw)) continue;
+  for (const raw of relativeCssAssetRefs(css)) {
     const url = await emitCssAsset(cssFile, raw, active);
-    if (url) replacements.set(raw, url);
+    if (url) replacements.set(raw, PLACEHOLDER_ORIGIN + url);
   }
-  if (replacements.size === 0) return css;
-
-  return css.replace(URL_TOKEN_RE, (whole, _quote: string, target: string) => {
-    const url = replacements.get(target.trim());
-    return url ? `url("${PLACEHOLDER_ORIGIN}${url}")` : whole;
-  });
-}
-
-function isRelativeAssetRef(ref: string): boolean {
-  // `/…` is already a site-absolute URL; `#…` is an in-document fragment.
-  return !/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/|#)/i.test(ref);
+  return replacements.size === 0 ? css : replaceCssAssetUrls(css, replacements);
 }
 
 async function emitCssAsset(
@@ -138,14 +130,11 @@ async function emitCssAsset(
   ref: string,
   active: CssAssetOptions,
 ): Promise<string | null> {
-  // Keep `?v=1` / `#icon` on the rewritten URL — a fragment selects a
-  // sub-resource inside an SVG and the browser still needs it.
-  const suffix = ref.match(/[?#].*$/)?.[0] ?? "";
-  const target = suffix ? ref.slice(0, -suffix.length) : ref;
-  const file = path.resolve(path.dirname(cssFile), decodeURI(target));
+  const parsed = splitCssAssetRef(ref);
+  const file = path.resolve(path.dirname(cssFile), parsed.file);
 
   const cached = emitted.get(file);
-  if (cached !== undefined) return cached && cached.url + suffix;
+  if (cached !== undefined) return cached && cached.url + parsed.suffix;
 
   let bytes: Buffer;
   try {
@@ -155,20 +144,14 @@ async function emitCssAsset(
     return null;
   }
 
-  const limit = active.inlineLimit ?? DEFAULT_ASSETS_INLINE_LIMIT;
-  // A fragment reference cannot survive being turned into a `data:` URI,
-  // so it is always a file — Vite applies the same exception, before the limit.
-  if (!suffix.startsWith("#") && shouldInlineAsset(bytes, file, limit)) {
+  if (inlinesCssAsset(parsed, bytes, file, active.inlineLimit ?? DEFAULT_ASSETS_INLINE_LIMIT)) {
     emitted.set(file, null);
     return null;
   }
 
   const hasher = new Bun.CryptoHasher("md5");
   hasher.update(bytes);
-  const hash = hasher.digest("hex").slice(0, 8);
-  const ext = path.extname(file);
-  const stem = path.basename(file, ext).replace(/[^a-zA-Z0-9_-]+/g, "-") || "asset";
-  const name = `${stem}.${hash}${ext}`;
+  const name = cssAssetFileName(file, hasher.digest("hex").slice(0, 8));
 
   await fs.mkdir(active.outDir, { recursive: true });
   await fs.writeFile(path.join(active.outDir, name), bytes);
@@ -178,5 +161,5 @@ async function emitCssAsset(
     bytes: bytes.byteLength,
   };
   emitted.set(file, asset);
-  return asset.url + suffix;
+  return asset.url + parsed.suffix;
 }

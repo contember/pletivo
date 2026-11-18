@@ -347,6 +347,39 @@ Assembly follows canonical graph order, substitutes one Tailwind result at the c
 `@import` closure's position, and emits every stylesheet at most once. This preserves
 equal-specificity cascade order before and after the Tailwind entry.
 
+Each stylesheet is emitted as `pletivo build` emits it. The build bundles a sheet outside
+`srcDir`, or a compiled component's, through Bun; one under `srcDir` it emits as written.
+For a bundled sheet this host drops the `@import`s, whose targets the graph already
+emitted, and rewrites each relative `url()` the way `css-assets.ts` does: the file under
+`/assets/<stem>.<md5>.<ext>`, or below 4096 B the `data:` URI Bun would inline. The host
+keeps no copy of the file: a render records the URL with the project paths and md5 it
+names (in a bounded in-memory map, and in the `GeneratedAssetStore` for other isolates),
+and a request reads the file from the project, serving it immutable while its md5 still
+matches and 404 once it changed. The md5 is checked once per snapshot revision. The naming and the inline
+rule are shared through `@pletivo/core/css-asset-urls`. The target is read on every
+render, so an edit names a new file. A missing target fails the page, as it fails the
+build. Not covered: `vite.build.assetsInlineLimit` (the artifact does not carry it), a
+`url()` in a package sheet the artifact vendored (its target is not in the project), and
+a base path other than `/`. On both hosts a sheet under `srcDir` and an `.astro`
+`<style>` keep their relative `url()` and `@import` as written. A `url()` inside a comment
+or a string is left alone, as Bun leaves it. A small `.xml`, `.json`, `.js`, `.html` or
+`.md` target fails `Bun.build` ("Cannot import a … file into a CSS file"), but is inlined
+here as an `application/octet-stream` `data:` URI.
+
+An `@import` with a condition (`layer()`, a media query, `supports()`) loses it here: the
+graph emits the imported sheet unwrapped and the rule is dropped, where Bun wraps the
+imported rules in the condition.
+
+A `GeneratedAssetStore` now also holds those records (`getCssAsset`, `putCssAssets`); an
+implementation outside this repository has to add both methods. A record is a list of up
+to 8 path and md5 pairs per URL, merged by the store, because files with the same name and
+bytes at different paths share one URL.
+
+Known Bun-host bug, not fixed here: `css-assets.ts` caches the inline decision per file, so
+`url(a.svg)` followed by `url(a.svg#i)` inlines both and loses the fragment; and a target
+below the limit is left for Bun to resolve undecoded, so `url("./a%20b.png")` does not find
+`a b.png`. The Workers host decides per reference and decodes, so it diverges there.
+
 **What the fork cost, and what replaced it.** `fixture-tailwind` used to be the
 only assertion anywhere that this host's JS candidate scanner plus Tailwind over a
 virtual file map emits the **same bytes** as the real `@tailwindcss/node` +

@@ -7,6 +7,7 @@
  *   bun packages/workers/test/local-parity.ts tests/fixture-astro-hoisted-imports
  */
 
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -173,6 +174,7 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     page = await renderPage({
       files,
       assets: assetView,
+      readBytes: fixtureBytes,
       pathname,
       loader,
       compiler,
@@ -246,6 +248,16 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
       const url = attributeValue(tag, attribute);
       if (url !== null) islandUrls.add(url);
     }
+  }
+
+  // A `url()` target of the inlined CSS: the file it names, as the host serves it, against the build's.
+  for (const link of page.cssAssets) {
+    const served = fixtureBytes(link.path);
+    const expectedBytes = await Bun.file(path.join(outDir, link.url.replace(/^\//, ""))).bytes().catch(() => null);
+    if (expectedBytes === null) problems.push(`  ! ${link.url} — the Bun host emitted no such asset`);
+    else if (served === undefined) problems.push(`  ! ${link.url} — names ${link.path}, which the fixture does not have`);
+    else if (!sameBytes(expectedBytes, served)) problems.push(`  ! ${link.url} — ${served.length} B here, ${expectedBytes.length} B built`);
+    else console.log(`  = ${link.url} (${served.length} B)`);
   }
 
   for (const asset of page.assets) {
@@ -368,6 +380,12 @@ for (const problem of problems) console.log(`\n${problem}`);
 await fs.rm(outDir, { recursive: true, force: true });
 await fs.rm(artifactPath, { force: true });
 process.exit(problems.length === 0 ? 0 : 1);
+
+/** A fixture file's bytes off disk: `readSources` reads a font as text, which loses bytes. */
+function fixtureBytes(key: string): Uint8Array<ArrayBuffer> | undefined {
+  if (!files.has(key) && !assets.has(key)) return undefined;
+  return new Uint8Array(readFileSync(path.join(root, key)));
+}
 
 function firstDifference(expected: string, actual: string): string {
   const left = expected.split("\n");

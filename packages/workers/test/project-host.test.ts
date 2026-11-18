@@ -33,7 +33,13 @@ import {
   type ProjectHostOptions,
   type RenderEvent,
 } from "../src/project-host.ts";
-import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
+import {
+  CssAssetNotFoundError,
+  CssAssetUrlError,
+  MAX_CSS_ASSET_TARGETS,
+  type CssAssetTarget,
+} from "../src/css-assets.ts";
+import { MemoryGeneratedAssetStore, type GeneratedAssetStore } from "../src/generated-asset-store.ts";
 import {
   RouteNotFoundError,
   type DynamicWorkerCode,
@@ -766,6 +772,348 @@ import logoMarkup from "../assets/logo.svg?raw";
       for (const path of ["/..%2Fsrc%2Fpages%2Findex.astro", "/.env", "/%2e%2e/src/pages/index.astro", "/assets/"]) {
         const response = await host.fetch(new Request(`https://example.test${path}`));
         expect([path, response.status]).toEqual([path, 404]);
+      }
+    });
+  });
+
+  describe("relative url() targets in CSS", () => {
+    const IMMUTABLE = "public, max-age=31536000, immutable";
+    /** Over the 4096 B inline limit, so a file. */
+    const BIG_SVG = `<svg xmlns="http://www.w3.org/2000/svg"><!--${"x".repeat(4200)}--></svg>\n`;
+    const SMALL_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"/></svg>\n';
+    const SMALL_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x80]);
+
+    /** The name `pletivo build` gives a file: Bun's md5 of its bytes, which this host does not use. */
+    function builtName(stem: string, ext: string, bytes: string | Uint8Array): string {
+      const hasher = new Bun.CryptoHasher("md5");
+      hasher.update(bytes);
+      return `/assets/${stem}.${hasher.digest("hex").slice(0, 8)}${ext}`;
+    }
+
+    function cssHost(site: string) {
+      const workspace = new FakeWorkspace();
+      workspace.write(
+        "/src/pages/index.astro",
+        '---\nimport "../../styles/site.css";\nimport "../styles/local.css";\n---\n' +
+          "<html><head><title>t</title></head><body><p>x</p></body></html>\n",
+      );
+      // Outside srcDir: `pletivo build` bundles it, resolving its `@import`s and `url()`s.
+      workspace.write("/styles/site.css", site);
+      workspace.write("/styles/base.css", ".base { color: red; }\n");
+      // Under srcDir: `pletivo build` emits it as written.
+      workspace.write("/src/styles/local.css", '@import "./other.css";\n.local { background: url(./missing.svg); }\n');
+      workspace.write("/src/styles/other.css", ".other { color: blue; }\n");
+      workspace.write("/src/img/big.svg", BIG_SVG);
+      workspace.write("/src/img/small.svg", SMALL_SVG);
+      workspace.write("/src/img/small.png", SMALL_PNG);
+      const host = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+      });
+      return { workspace, host };
+    }
+
+    const SITE =
+      '@import "./base.css";\n' +
+      ".big { background: url(../src/img/big.svg); }\n" +
+      '.small { background: url("../src/img/small.png"); }\n' +
+      ".icon { background: url('../src/img/small.svg#icon'); }\n" +
+      ".kept { background: url(/kept.png), url(https://example.test/remote.png); }\n";
+
+    test("links the file the build writes, inlines a small one as Bun does, and serves the file", async () => {
+      const { host } = cssHost(SITE);
+      const page = await host.render("/");
+      const big = builtName("big", ".svg", BIG_SVG);
+      const icon = builtName("small", ".svg", SMALL_SVG);
+
+      expect(page.html).toContain(`.big { background: url("${big}"); }`);
+      expect(page.html).toContain(`.small { background: url("data:image/png;base64,${Buffer.from(SMALL_PNG).toString("base64")}"); }`);
+      // A fragment cannot survive a `data:` URI, so a small target with one is a file too.
+      expect(page.html).toContain(`.icon { background: url("${icon}#icon"); }`);
+      expect(page.html).toContain(".kept { background: url(/kept.png), url(https://example.test/remote.png); }");
+      expect(page.cssAssets.map((link) => link.url).sort()).toEqual([big, icon].sort());
+      expect(page.assets).toEqual([]);
+      expect(page.html).not.toContain('@import "./base.css"');
+
+      const response = await host.fetch(new Request(`https://example.test${big}`));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/svg+xml");
+      expect(response.headers.get("cache-control")).toBe(IMMUTABLE);
+      expect(await response.text()).toBe(BIG_SVG);
+    });
+
+    test("leaves a stylesheet under srcDir as written, as the build does", async () => {
+      const { html } = await cssHost(SITE).host.render("/");
+      expect(html).toContain('@import "./other.css";\n.local { background: url(./missing.svg); }');
+    });
+
+    test("answers 404 for a file changed after the render, and names a new file on the next", async () => {
+      const { workspace, host } = cssHost(SITE);
+      const before = builtName("big", ".svg", BIG_SVG);
+      expect((await host.render("/")).html).toContain(before);
+
+      const edited = BIG_SVG.replace("<!--", "<!-- edited ");
+      workspace.write("/src/img/big.svg", edited);
+      // The URL names the bytes it was rendered with; the project no longer has them.
+      expect((await host.fetch(new Request(`https://example.test${before}`))).status).toBe(404);
+      const after = builtName("big", ".svg", edited);
+      const html = await (await host.fetch(new Request("https://example.test/"))).text();
+      expect(after).not.toBe(before);
+      expect(html).toContain(after);
+      expect(html).not.toContain(before);
+      expect(await (await host.fetch(new Request(`https://example.test${after}`))).text()).toBe(edited);
+    });
+
+    test("fails the page on a target the project does not have, as the build fails", async () => {
+      const { host } = cssHost(".gone { background: url(./missing.svg); }\n");
+      await expect(host.render("/")).rejects.toBeInstanceOf(CssAssetNotFoundError);
+      const response = await host.fetch(new Request("https://example.test/"));
+      expect(response.status).toBe(500);
+      expect(await response.text()).toContain('Could not resolve: "./missing.svg" in styles/site.css');
+    });
+
+    test("leaves a url() in a comment or a string alone, as the build does", async () => {
+      const site = '/* was url(./missing.svg) */\n.q::before { content: "url(./missing.svg)"; }\n' + SITE;
+      const { html } = await cssHost(site).host.render("/");
+      expect(html).toContain('/* was url(./missing.svg) */\n.q::before { content: "url(./missing.svg)"; }');
+      expect(html).toContain(`.big { background: url("${builtName("big", ".svg", BIG_SVG)}"); }`);
+    });
+
+    test("names the stylesheet when a target's escapes do not decode", async () => {
+      const { host } = cssHost(".bad { background: url(./100%.svg); }\n");
+      const error = await host.render("/").catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(CssAssetUrlError);
+      expect(error instanceof Error ? error.message : "").toContain('malformed URL "./100%.svg" in styles/site.css');
+    });
+
+    test("reads the durable store only for a path named like a generated file", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const reads: string[] = [];
+      const get = store.get.bind(store);
+      store.get = (path) => {
+        reads.push(path);
+        return get(path);
+      };
+      const getCssAsset = store.getCssAsset.bind(store);
+      store.getCssAsset = (url) => {
+        reads.push(url);
+        return getCssAsset(url);
+      };
+      const { workspace } = cssHost(SITE);
+      workspace.write("/public/assets/logo.png", SMALL_PNG);
+      const host = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+        generatedAssetStore: store,
+      });
+      expect((await host.fetch(new Request("https://example.test/assets/logo.png"))).status).toBe(200);
+      expect((await host.fetch(new Request("https://example.test/assets/big.0123abcd.svg"))).status).toBe(404);
+      expect(reads).toEqual(["/assets/big.0123abcd.svg"]);
+    });
+
+    test("serves the file through the store's record to a host that never rendered the page", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const workspace = cssHost(SITE).workspace;
+      const options = { store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }), loader, compiler };
+      const warm = createProjectHost({ ...options, generatedAssetStore: store });
+      await warm.render("/");
+      // Records only, written once: no bytes reach the store, and a second render adds nothing.
+      expect(store.size).toBe(0);
+      expect(store.cssAssetCount).toBe(2);
+      let puts = 0;
+      const putCssAssets = store.putCssAssets.bind(store);
+      store.putCssAssets = (links) => {
+        puts++;
+        return putCssAssets(links);
+      };
+      await warm.render("/");
+      expect(puts).toBe(0);
+
+      const big = builtName("big", ".svg", BIG_SVG);
+      const cold = createProjectHost({ ...options, generatedAssetStore: store });
+      const response = await cold.fetch(new Request(`https://example.test${big}`));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/svg+xml");
+      expect(await response.text()).toBe(BIG_SVG);
+    });
+
+    test("keeps no asset bytes in the retention cache", async () => {
+      const workspace = cssHost(SITE).workspace;
+      // A cache that retains nothing fails a page that hands it any asset.
+      const host = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+        generatedAssetCache: { maxEntries: 0, maxBytes: 0 },
+      });
+      const page = await host.render("/");
+      expect(page.cssAssets).toHaveLength(2);
+      const response = await host.fetch(new Request(`https://example.test${builtName("big", ".svg", BIG_SVG)}`));
+      expect(await response.text()).toBe(BIG_SVG);
+    });
+
+    test("serves a font over the old 4 MiB retention budget, byte for byte", async () => {
+      const font = new Uint8Array(4.5 * 1024 * 1024);
+      for (let at = 0; at < font.length; at++) font[at] = (at * 31 + (at >> 9)) & 0xff;
+      const { workspace, host } = cssHost('@font-face { font-family: "Big"; src: url(../src/fonts/big.woff2); }\n');
+      workspace.write("/src/fonts/big.woff2", font);
+
+      const page = await host.render("/");
+      const url = builtName("big", ".woff2", font);
+      expect(page.html).toContain(`src: url("${url}")`);
+      const response = await host.fetch(new Request(`https://example.test${url}`));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("font/woff2");
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(font);
+    });
+
+    test("hashes a file once per revision, and answers 404 at the first request after a change", async () => {
+      const bytes = new Uint8Array(5000).fill(7);
+      const { workspace, host } = cssHost(".blob { background: url(../src/img/blob.png); }\n");
+      workspace.write("/src/img/blob.png", bytes);
+      const url = builtName("blob", ".png", bytes);
+      expect((await host.render("/")).html).toContain(url);
+      // Bytes changed under an unchanged revision, which a store must never do: served
+      // as they are now, so the host did not hash them again.
+      bytes.fill(8);
+      const same = await host.fetch(new Request(`https://example.test${url}`));
+      expect(same.status).toBe(200);
+      expect(new Uint8Array(await same.arrayBuffer())).toEqual(new Uint8Array(5000).fill(8));
+
+      workspace.write("/src/img/blob.png", new Uint8Array(5000).fill(9));
+      expect((await host.fetch(new Request(`https://example.test${url}`))).status).toBe(404);
+    });
+
+    test("serves a URL two paths share from whichever still has its bytes, in any isolate", async () => {
+      const workspace = new FakeWorkspace();
+      for (const name of ["a", "b"]) {
+        workspace.write(
+          `/src/pages/${name}.astro`,
+          `---\nimport "../../styles/${name}.css";\n---\n<html><head><title>t</title></head><body></body></html>\n`,
+        );
+      }
+      workspace.write("/styles/a.css", ".a { background: url(../one/logo.png); }\n");
+      workspace.write("/styles/b.css", ".b { background: url(../two/logo.png); }\n");
+      const logo = new Uint8Array(5000).fill(3);
+      workspace.write("/one/logo.png", logo);
+      workspace.write("/two/logo.png", logo);
+      const store = new MemoryGeneratedAssetStore();
+      const options = {
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+        generatedAssetStore: store,
+      };
+      const url = builtName("logo", ".png", logo);
+      const first = createProjectHost(options);
+      const second = createProjectHost(options);
+      expect((await first.render("/a")).html).toContain(url);
+      expect((await second.render("/b")).html).toContain(url);
+
+      workspace.write("/two/logo.png", new Uint8Array(5000).fill(4));
+      // `second` recorded only the changed path; a cold isolate has only the store's record.
+      for (const host of [createProjectHost(options), second]) {
+        const response = await host.fetch(new Request(`https://example.test${url}`));
+        expect(response.status).toBe(200);
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(logo);
+      }
+    });
+
+    test("keeps the newest targets of one URL, up to the cap", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const url = "/assets/logo.0123abcd.png";
+      const links = Array.from({ length: MAX_CSS_ASSET_TARGETS + 1 }, (_, index) => ({
+        url,
+        path: `dir${index}/logo.png`,
+        md5: "0123abcd".padEnd(32, "0"),
+      }));
+      await store.putCssAssets(links);
+      await store.putCssAssets([links[1]]);
+      const paths = (await store.getCssAsset(url)).map((target) => target.path);
+      expect(paths).toEqual([...links.slice(2), links[1]].map((link) => link.path));
+    });
+
+    test("serves nothing from a forged store record, and reads no file for it", async () => {
+      const hasher = new Bun.CryptoHasher("md5");
+      hasher.update(BIG_SVG);
+      const md5 = hasher.digest("hex");
+      const big = builtName("big", ".svg", BIG_SVG);
+      const forgeries: [string, CssAssetTarget[]][] = [
+        ["/assets/passwd.01234567", [{ path: "../../etc/passwd", md5: "01234567".padEnd(32, "0") }]],
+        [big, [{ path: "src/img/small.svg", md5 }]],
+        [big, [{ path: "src/./img/big.svg", md5 }]],
+        [big, [{ path: "src/img/big.svg", md5: md5.toUpperCase() }]],
+        [big, Array.from({ length: MAX_CSS_ASSET_TARGETS + 1 }, () => ({ path: "src/img/big.svg", md5 }))],
+      ];
+      for (const [url, targets] of forgeries) {
+        const { workspace } = cssHost(SITE);
+        const store: GeneratedAssetStore = {
+          get: () => Promise.resolve(null),
+          put: () => Promise.resolve(),
+          getCssAsset: (asked) => Promise.resolve(asked === url ? targets : []),
+          putCssAssets: () => Promise.resolve(),
+        };
+        const host = createProjectHost({
+          store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+          loader,
+          compiler,
+          generatedAssetStore: store,
+        });
+        workspace.reads.length = 0;
+        const response = await host.fetch(new Request(`https://example.test${url}`));
+        expect([url, targets[0].path, response.status]).toEqual([url, targets[0].path, 404]);
+        expect(workspace.reads.filter((path) => path.includes("/img/") || path.includes("passwd"))).toEqual([]);
+      }
+    });
+
+    test("answers only GET and HEAD, and HEAD without a body", async () => {
+      const { host } = cssHost(SITE);
+      await host.render("/");
+      const url = `https://example.test${builtName("big", ".svg", BIG_SVG)}`;
+      const head = await host.fetch(new Request(url, { method: "HEAD" }));
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-length")).toBe(String(new TextEncoder().encode(BIG_SVG).byteLength));
+      expect(await head.text()).toBe("");
+      const post = await host.fetch(new Request(url, { method: "POST" }));
+      expect(post.status).toBe(404);
+      expect(await post.text()).not.toContain(BIG_SVG);
+    });
+
+    test("fails a page that links more targets than the host keeps, unless a store holds them", async () => {
+      const count = 4097;
+      const bytes = new Uint8Array(4097).fill(1);
+      const site = Array.from({ length: count }, (_, index) => `.i${index} { background: url(../src/many/i${index}.png); }\n`).join("");
+      const { workspace, host } = cssHost(site);
+      for (let index = 0; index < count; index++) workspace.write(`/src/many/i${index}.png`, bytes);
+
+      const error = await host.render("/").catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(GeneratedAssetRetentionError);
+      expect(error instanceof GeneratedAssetRetentionError ? [error.pathname, error.paths.length] : []).toEqual(["/", 1]);
+      expect(error instanceof Error ? error.message : "").toContain('page "/"');
+
+      const stored = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+        generatedAssetStore: new MemoryGeneratedAssetStore(),
+      });
+      expect((await stored.render("/")).cssAssets).toHaveLength(count);
+    });
+
+    test("serves every one of 45 images over the inline limit", async () => {
+      const images = Array.from({ length: 45 }, (_, index) => new Uint8Array(5000).fill(index + 1));
+      const site = images.map((_, index) => `.i${index} { background: url(../src/img/i${index}.png); }\n`).join("");
+      const { workspace, host } = cssHost(site);
+      images.forEach((bytes, index) => workspace.write(`/src/img/i${index}.png`, bytes));
+
+      const page = await host.render("/");
+      expect(page.cssAssets).toHaveLength(45);
+      for (const [index, bytes] of images.entries()) {
+        const response = await host.fetch(new Request(`https://example.test${builtName(`i${index}`, ".png", bytes)}`));
+        expect([index, response.status, response.headers.get("content-type")]).toEqual([index, 200, "image/png"]);
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
       }
     });
   });

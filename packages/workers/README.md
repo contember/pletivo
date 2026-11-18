@@ -172,7 +172,12 @@ same pletivo writes the same module, so only a pletivo released with this host f
 `createProjectHost(...).fetch` answers, first match wins:
 
 1. a generated `?url` asset (`/_astro/…`): the in-memory cache, then `generatedAssetStore`;
-2. a processed `<script>` (`/_pletivo/script/…`) or a module it imports
+2. a `url()` target of a page's inlined CSS (`/assets/<stem>.<hash>.<ext>`, the name
+   `pletivo build` writes), on GET or HEAD: read from a project file recorded for that URL
+   and served `immutable`, else 404. The record is looked up in memory, then in
+   `generatedAssetStore`. The store is trusted; only a file whose current bytes have the
+   record's full md5 is served, hashed once per snapshot revision. No bytes are kept;
+3. a processed `<script>` (`/_pletivo/script/…`) or a module it imports
    (`/_pletivo/module/…`), served unbundled with bare imports rewritten to the artifact's
    browser graph. `pletivo prepare` bundles the graph's packages, so a package import loads
    one bundle entry and the chunks entries share, not each file of the package. A module of
@@ -181,15 +186,20 @@ same pletivo writes the same module, so only a pletivo released with this host f
    cached `immutable` there; project files, and a script at any other URL, are `no-cache`. A page left open
    across a new artifact loads a later dynamic import at the new version, beside the modules
    it already runs;
-3. a file in `public/`, with its exact bytes;
-4. an image output (`/_astro/<name>.<hash>.<ext>`);
-5. a redirect from `trailingSlash`, config `redirects` or i18n routing;
-6. a rendered page.
+4. a file in `public/`, with its exact bytes;
+5. an image output (`/_astro/<name>.<hash>.<ext>`);
+6. a redirect from `trailingSlash`, config `redirects` or i18n routing;
+7. a rendered page.
 
 Options a multi-session host needs:
 
-- `generatedAssetStore` — durable storage for `?url` assets (`MemoryGeneratedAssetStore`
-  implements the port for tests).
+- `generatedAssetStore` — durable storage for `?url` assets, and for the records that map a
+  CSS `url()` URL to the project paths and md5 it names (`getCssAsset`/`putCssAssets`), so
+  another isolate can serve it (`MemoryGeneratedAssetStore` implements the port for tests).
+  A store holds one project's records. Files with the same name and bytes share a URL, so a
+  record lists up to `MAX_CSS_ASSET_TARGETS` (8) paths, the oldest dropped first. Without a
+  store, a page linking more targets than the host keeps in memory (4096) fails with
+  `GeneratedAssetRetentionError`.
 - `content: { binding, store, owner }` with an entrypoint that answers through
   `store.forOwner(owner)`, so one session's render cannot read another's content.
 - `createWorkspaceProjectStore(fs, { root, revision: (root) => … })` — pass a revision

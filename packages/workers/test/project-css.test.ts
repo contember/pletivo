@@ -23,8 +23,11 @@ function options(
   styleGraph: ResolvedStyleGraph,
   overrides: Partial<PageStylesheetOptions> = {},
 ): PageStylesheetOptions {
+  const encoder = new TextEncoder();
   return {
     files: new Map(Object.entries(files)),
+    readBytes: (path) => (Object.hasOwn(files, path) ? new Uint8Array(encoder.encode(files[path])) : undefined),
+    islandStylesheets: new Set(),
     srcDir: "src",
     rootDir: "",
     styleGraph,
@@ -32,6 +35,11 @@ function options(
     html: "",
     ...overrides,
   };
+}
+
+/** The stylesheet text alone, for the tests that do not look at its assets. */
+async function stylesheetCss(stylesheetOptions: PageStylesheetOptions): Promise<string | null> {
+  return (await pageStylesheet(stylesheetOptions))?.css ?? null;
 }
 
 describe("pageStylesheet canonical graph", () => {
@@ -43,7 +51,7 @@ describe("pageStylesheet canonical graph", () => {
     const layout = "npm:layout/index.js";
     const first = "npm:theme/first.css";
     const second = "npm:theme/second.css";
-    const css = await pageStylesheet(options(
+    const css = await stylesheetCss(options(
       {
         [first]: ".same { color: red }",
         [second]: ".same { color: blue }",
@@ -64,7 +72,7 @@ describe("pageStylesheet canonical graph", () => {
 
   test("collects an opaque artifact stylesheet id without guessing its extension", async () => {
     const opaque = "npm:theme/2dd4a8";
-    const css = await pageStylesheet(options(
+    const css = await stylesheetCss(options(
       { [opaque]: ".opaque { color: purple }" },
       graph([PAGE, opaque], [], [{ importer: PAGE, target: opaque }]),
     ));
@@ -75,7 +83,7 @@ describe("pageStylesheet canonical graph", () => {
     const left = "project:src/lib/left.js";
     const right = "project:src/lib/right.js";
     const shared = "project:src/styles/shared.css";
-    const css = await pageStylesheet(options(
+    const css = await stylesheetCss(options(
       { "src/styles/shared.css": ".shared {}" },
       graph(
         [PAGE, left, right, shared],
@@ -90,6 +98,43 @@ describe("pageStylesheet canonical graph", () => {
       ),
     ));
     expect(css?.match(/\.shared/g)).toHaveLength(1);
+  });
+
+  test("drops a bundled sheet's @import, whose target the graph emits, and keeps a source sheet's", async () => {
+    // `pletivo build` bundles a sheet outside srcDir and a compiled component's; one under srcDir it emits as written.
+    const shared = "project:styles/shared.css";
+    const outside = "project:styles/outside.css";
+    const component = "project:src/components/C.svelte.pletivo-style.css";
+    const source = "project:src/styles/source.css";
+    const css = await stylesheetCss({
+      ...options(
+        {
+          "styles/shared.css": ".shared {}",
+          "styles/outside.css": '@import "./shared.css";\n.outside {}',
+          "src/components/C.svelte.pletivo-style.css": '@import url("../../styles/shared.css") screen;\n.component {}',
+          "src/styles/source.css": '@import "../../styles/shared.css";\n.source {}',
+        },
+        graph(
+          [PAGE, outside, component, source, shared],
+          [],
+          [
+            { importer: PAGE, target: outside },
+            { importer: outside, target: shared },
+            { importer: PAGE, target: component },
+            { importer: component, target: shared },
+            { importer: PAGE, target: source },
+            { importer: source, target: shared },
+          ],
+        ),
+      ),
+      islandStylesheets: new Set([component]),
+    });
+    expect(css).toBe(
+      "/* styles/shared.css */\n.shared {}\n\n" +
+        "/* styles/outside.css */\n\n.outside {}\n\n" +
+        "/* components/C.svelte.pletivo-style.css */\n\n.component {}\n\n" +
+        '/* styles/source.css */\n@import "../../styles/shared.css";\n.source {}',
+    );
   });
 
   test("keeps CSS modules absent instead of inventing a shim", async () => {
@@ -130,7 +175,7 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
 
   test("does not append the Tailwind entry or imported dependency raw", async () => {
     const production = await productionTailwindGraph();
-    const css = await pageStylesheet({
+    const css = await stylesheetCss({
       ...options(production.files, production.graph),
       html: '<div class="p-special"></div>',
       tailwind: await tailwindStylesheets(),
@@ -154,7 +199,7 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
     production.files[after] = ".same { color: blue }";
     production.files["src/styles/global.css"] += "\n.same { color: green }";
     production.graph.modules.push(before, after);
-    const css = await pageStylesheet({
+    const css = await stylesheetCss({
       ...options(production.files, production.graph),
       tailwind: await tailwindStylesheets(),
     });
@@ -197,7 +242,7 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
       headInline: [`document.body.classList.add("underline")`],
       page: [`node.className = "italic"`],
     };
-    const css = await pageStylesheet({
+    const css = await stylesheetCss({
       ...options(
         production.files,
         production.graph,

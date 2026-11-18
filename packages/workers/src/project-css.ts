@@ -1,8 +1,9 @@
 /** Page-scoped stylesheet assembly over the canonical resolved module graph. */
 
 import { TAILWIND_RUNTIME_MODULE_ID, type InjectedScripts, type ModuleId } from "@pletivo/core/artifact";
-import { cssImports } from "@pletivo/core/css-imports";
+import { cssImports, withoutCssImports } from "@pletivo/core/css-imports";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
+import { rewriteCssAssets, type CssAssetLink, type ReadProjectBytes } from "./css-assets.ts";
 import { adjacency, moduleOrder } from "./page-css.ts";
 import type { ProjectFiles } from "./project-store.ts";
 import {
@@ -27,6 +28,10 @@ export { TailwindNotConfiguredError };
 export interface PageStylesheetOptions {
   /** Project paths and artifact ModuleIds mapped to their source text. */
   files: ProjectFiles;
+  /** A project file's bytes: what a stylesheet's relative `url()` names. */
+  readBytes: ReadProjectBytes;
+  /** The artifact's compiled component stylesheets, which sit under `srcDir` and are still bundled. */
+  islandStylesheets: ReadonlySet<ModuleId>;
   srcDir: string;
   rootDir: string;
   /** Canonical graph shared with executable compilation. */
@@ -45,7 +50,13 @@ export interface PageStylesheetOptions {
 const CSS_MODULE = ".module.css";
 const PREFERRED_ENTRIES = ["global.css", "app.css", "main.css", "styles.css"];
 
-export async function pageStylesheet(options: PageStylesheetOptions): Promise<string | null> {
+/** The page's stylesheet, and the files its `url()`s now link to. */
+export interface PageStylesheet {
+  css: string;
+  cssAssets: CssAssetLink[];
+}
+
+export async function pageStylesheet(options: PageStylesheetOptions): Promise<PageStylesheet | null> {
   const ordered = orderedStylesheets(options.entry, options.styleGraph);
   const sources = ordered.flatMap((moduleId) => {
     if (isUnsupportedProjectCssModule(moduleId)) return [];
@@ -54,8 +65,9 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
   });
   if (sources.length === 0) return null;
 
+  const emitted = new Map<string, CssAssetLink>();
   const entry = findTailwindEntry(sources);
-  if (!entry) return emitStylesheets(sources, options);
+  if (!entry) return { css: emitStylesheets(sources, options, emitted), cssAssets: [...emitted.values()] };
   if (!options.tailwind) throw new TailwindNotConfiguredError(entry.moduleId);
 
   const candidates = new Set(extractHtmlClassCandidates(options.html));
@@ -84,7 +96,7 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
     if (!consumed.has(moduleId)) {
       if (isUnsupportedProjectCssModule(moduleId)) continue;
       const content = sourceFor(moduleId, options.files);
-      if (content !== undefined) parts.push(emitStylesheets([{ moduleId, content }], options));
+      if (content !== undefined) parts.push(emitStylesheets([{ moduleId, content }], options, emitted));
       continue;
     }
     if (!inserted) {
@@ -92,7 +104,7 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<st
       inserted = true;
     }
   }
-  return parts.filter(Boolean).join("\n\n");
+  return { css: parts.filter(Boolean).join("\n\n"), cssAssets: [...emitted.values()] };
 }
 
 /**
@@ -217,13 +229,29 @@ function embeddedTargets(
   return embedded;
 }
 
+type EmitOptions = Pick<PageStylesheetOptions, "srcDir" | "rootDir" | "readBytes" | "islandStylesheets">;
+
 function emitStylesheets(
   stylesheets: readonly StylesheetSource[],
-  options: Pick<PageStylesheetOptions, "srcDir" | "rootDir">,
+  options: EmitOptions,
+  emitted: Map<string, CssAssetLink>,
 ): string {
   return stylesheets
-    .map((stylesheet) => `/* ${labelFor(stylesheet.moduleId, options)} */\n${stylesheet.content}`)
+    .map((stylesheet) => `/* ${labelFor(stylesheet.moduleId, options)} */\n${stylesheetText(stylesheet, options, emitted)}`)
     .join("\n\n");
+}
+
+/**
+ * What `pletivo build` emits for one stylesheet. It bundles one outside `srcDir`, or a
+ * compiled component's, through Bun: the `@import`s are resolved, here already emitted as
+ * graph nodes, and the relative `url()`s rewritten. One under `srcDir` it emits as written.
+ */
+function stylesheetText(stylesheet: StylesheetSource, options: EmitOptions, emitted: Map<string, CssAssetLink>): string {
+  const { moduleId, content } = stylesheet;
+  if (!moduleId.startsWith("project:")) return withoutCssImports(content);
+  const file = moduleId.slice("project:".length);
+  if (!options.islandStylesheets.has(moduleId) && file.startsWith(withSlash(options.srcDir))) return content;
+  return rewriteCssAssets(file, withoutCssImports(content), options.readBytes, emitted);
 }
 
 function labelFor(

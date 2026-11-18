@@ -36,10 +36,21 @@ import {
 import { attributeSpan, htmlTags } from "./html-tags.ts";
 import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
 import { islandClientResponse } from "./island-clients.ts";
-import { publicFileResponse } from "./public-files.ts";
+import { publicContentType, publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
+import { BoundedLru } from "./bounded-lru.ts";
+import {
+  isCssAssetPath,
+  parseCssAssetTargets,
+  projectBytes,
+  recordedCssAsset,
+  withCssAssetTarget,
+  type CssAssetLink,
+  type CssAssetTarget,
+  type ReadProjectBytes,
+} from "./css-assets.ts";
 import type { GeneratedAssetStore } from "./generated-asset-store.ts";
 import {
   WorkspaceSnapshotChangedError,
@@ -65,7 +76,7 @@ import {
 
 /** What `renderPage` takes, except what the host derives from its store and options. */
 export interface ProjectHostOptions
-  extends Omit<ProjectOptions, "files" | "assets" | "compileCache" | "artifact"> {
+  extends Omit<ProjectOptions, "files" | "assets" | "readBytes" | "compileCache" | "artifact"> {
   /** Where the project is read from. See `project-store.ts`. */
   store: ProjectStore;
   /**
@@ -84,8 +95,8 @@ export interface ProjectHostOptions
   generatedAssetCache?: { maxEntries: number; maxBytes: number };
   /**
    * Durable storage for generated files, written before a page's HTML is returned and
-   * read when the in-memory cache misses. Without it, a file the cache cannot retain
-   * fails the page (`GeneratedAssetRetentionError`).
+   * read when the in-memory cache misses. Without it, a file the cache cannot retain, or
+   * more CSS `url()` records than the host keeps, fails the page (`GeneratedAssetRetentionError`).
    */
   generatedAssetStore?: GeneratedAssetStore;
   /**
@@ -176,6 +187,19 @@ const GENERATED_ASSET_PREFIX = "/_astro/";
 /** Content-hashed names, so nothing served under one can go stale. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
+/**
+ * CSS asset records kept per host. A record is a URL and its targets, usually one path and
+ * md5, about 200 B; an evicted URL is looked up in the store, or rendered again.
+ */
+const CSS_ASSET_RECORDS = { maxEntries: 4096, maxBytes: 1024 * 1024 };
+
+/** A CSS asset URL's targets as this host knows them. */
+interface KnownCssAsset {
+  targets: CssAssetTarget[];
+  /** The target found intact at `revision`: a snapshot's bytes do not change, so not hashed again. */
+  verified: { revision: string; path: string } | null;
+}
+
 export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const {
     store,
@@ -193,6 +217,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const directArtifact =
     artifactValue === undefined ? undefined : loadProjectArtifact(artifactValue);
   const served = new GeneratedAssetCache(generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE);
+  const cssAssets = new BoundedLru<KnownCssAsset>(CSS_ASSET_RECORDS);
   // Per host, not a module global: an entry's `.astro` output is bound to its compiler.
   const compileCache =
     compileCacheOption === false ? undefined : (compileCacheOption ?? createCompileCache());
@@ -261,6 +286,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       ...renderOptions,
       files: snapshot.files,
       assets: snapshot.assets,
+      readBytes: snapshot.readBytes?.bind(snapshot),
       compileCache,
       artifact: artifactOf(snapshot),
     };
@@ -323,9 +349,10 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     if (generatedAssetStore !== undefined && page.assets.length > 0) {
       await generatedAssetStore.put(page.assets);
     }
+    await recordCssAssets(pathname, page.cssAssets, snapshot.revision);
     const rejected = served.putAll(page.assets);
     if (rejected.length > 0 && generatedAssetStore === undefined) {
-      throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
+      throw new GeneratedAssetRetentionError(pathname, rejected.map((asset) => asset.path));
     }
     return { ...page, staleArtifactInputs: stale };
   }
@@ -351,10 +378,67 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   async function generatedAsset(pathname: string): Promise<RenderedAsset | null> {
     const cached = served.get(pathname);
     if (cached !== undefined) return cached;
+    // Only a generated asset's name: a `public/` file under `/assets/` never costs a store read.
     if (generatedAssetStore === undefined || !pathname.startsWith(GENERATED_ASSET_PREFIX)) return null;
     const stored = await generatedAssetStore.get(pathname);
     if (stored !== null) served.putAll([stored]);
     return stored;
+  }
+
+  /**
+   * Remember each link, and put in the store only what this host did not already hold.
+   * Without a store, a page whose links this host cannot all keep fails, as a generated
+   * asset it cannot retain does.
+   */
+  async function recordCssAssets(pathname: string, links: readonly CssAssetLink[], revision: string): Promise<void> {
+    const fresh = links.filter(
+      (link) => cssAssets.peek(link.url)?.targets.some((known) => known.path === link.path && known.md5 === link.md5) !== true,
+    );
+    if (generatedAssetStore !== undefined && fresh.length > 0) await generatedAssetStore.putCssAssets(fresh);
+    for (const link of links) {
+      const targets = withCssAssetTarget(cssAssets.peek(link.url)?.targets ?? [], link);
+      // The render has just hashed these bytes at this revision.
+      rememberCssAsset(link.url, { targets, verified: { revision, path: link.path } });
+    }
+    if (generatedAssetStore !== undefined) return;
+    const lost = [...new Set(links.filter((link) => cssAssets.peek(link.url) === undefined).map((link) => link.url))];
+    if (lost.length > 0) throw new GeneratedAssetRetentionError(pathname, lost);
+  }
+
+  function rememberCssAsset(url: string, known: KnownCssAsset): void {
+    cssAssets.set(url, known, cssAssetRecordBytes(url, known.targets));
+  }
+
+  /**
+   * A recorded CSS asset, read from the project now. The store is trusted; only a file whose
+   * current bytes have the record's full md5 is served, else 404. This host's targets come
+   * first, then the store's, which another isolate may have added to.
+   */
+  async function serveCssAsset(request: Request, pathname: string, snapshot: ProjectSnapshot): Promise<Response | null> {
+    if (request.method !== "GET" && request.method !== "HEAD") return null;
+    if (!isCssAssetPath(pathname)) return null;
+    const read = projectBytes(snapshot.files, snapshot.readBytes?.bind(snapshot));
+    let known = cssAssets.get(pathname);
+    if (known?.verified?.revision === snapshot.revision) {
+      const bytes = read(known.verified.path);
+      if (bytes !== undefined) return cssAssetResponse(request, known.verified.path, bytes);
+    }
+    let found = known === undefined ? null : intactTarget(known.targets, read);
+    if (found === null && generatedAssetStore !== undefined) {
+      const stored = parseCssAssetTargets(pathname, await generatedAssetStore.getCssAsset(pathname));
+      const unchecked = stored.filter(
+        (target) => known?.targets.some((held) => held.path === target.path && held.md5 === target.md5) !== true,
+      );
+      if (unchecked.length > 0) {
+        known = { targets: unchecked.reduce(withCssAssetTarget, known?.targets ?? []), verified: null };
+        rememberCssAsset(pathname, known);
+        found = intactTarget(unchecked, read);
+      }
+    }
+    if (known === undefined) return null;
+    if (found === null) return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+    known.verified = { revision: snapshot.revision, path: found.path };
+    return cssAssetResponse(request, found.path, found.bytes);
   }
 
   async function serveBrowserModule(url: URL, snapshot: ProjectSnapshot): Promise<Response> {
@@ -420,6 +504,9 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
         }
 
         return await withSnapshot(async (snapshot) => {
+          const cssAsset = await serveCssAsset(request, url.pathname, snapshot);
+          if (cssAsset !== null) return cssAsset;
+
           if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url, snapshot);
 
           const islandClient = islandClientResponse(request, url.pathname, artifactOf(snapshot)?.islands ?? null);
@@ -519,16 +606,45 @@ async function changedInputs(
   return stale.sort();
 }
 
+function cssAssetRecordBytes(url: string, targets: readonly CssAssetTarget[]): number {
+  return targets.reduce((bytes, target) => bytes + target.path.length + target.md5.length, url.length);
+}
+
+/** The first of `targets` whose file still has its md5, with the bytes read. */
+function intactTarget(
+  targets: readonly CssAssetTarget[],
+  read: ReadProjectBytes,
+): { path: string; bytes: Uint8Array<ArrayBuffer> } | null {
+  for (const target of targets) {
+    const bytes = recordedCssAsset(target, read);
+    if (bytes !== null) return { path: target.path, bytes };
+  }
+  return null;
+}
+
+function cssAssetResponse(request: Request, path: string, bytes: Uint8Array<ArrayBuffer>): Response {
+  return new Response(request.method === "HEAD" ? null : bytes, {
+    headers: {
+      "content-type": publicContentType(path),
+      "content-length": String(bytes.byteLength),
+      "cache-control": IMMUTABLE,
+    },
+  });
+}
+
 function joinPath(directory: string, file: string): string {
   return directory === "" ? file : `${directory}/${file}`;
 }
 
 /** A rendered page references generated assets this host cannot retain for follow-up GETs. */
 export class GeneratedAssetRetentionError extends Error {
-  constructor(readonly paths: readonly string[]) {
+  constructor(
+    readonly pathname: string,
+    readonly paths: readonly string[],
+  ) {
     super(
-      `[pletivo-workers] generated asset cache cannot retain ${paths.length} referenced ` +
-        `asset(s): ${paths.map((path) => JSON.stringify(path)).join(", ")}`,
+      `[pletivo-workers] generated asset cache cannot retain ${paths.length} asset(s) ` +
+        `page ${JSON.stringify(pathname)} references: ${paths.map((path) => JSON.stringify(path)).join(", ")}`,
     );
     this.name = "GeneratedAssetRetentionError";
   }
