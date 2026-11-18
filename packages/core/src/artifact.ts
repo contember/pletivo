@@ -132,6 +132,19 @@ export interface ArtifactMarkdownConfig {
   gfm?: boolean;
 }
 
+/**
+ * What `.mdx` compiles with, frozen when the project has an `.mdx` file. Its plugins are the
+ * resolved list `@astrojs/mdx` runs: `markdown`'s unless `extendMarkdownConfig` is false, then
+ * `mdx({...})`'s, then `pletivo.config`'s, each plugin once.
+ */
+export interface ArtifactMdxConfig {
+  remarkPlugins: PortablePlugin[];
+  rehypePlugins: PortablePlugin[];
+  gfm: boolean;
+  /** Set in an Astro project. */
+  astro?: { experimentalHeadingIdCompat: boolean };
+}
+
 /** A locale as Astro's `i18n.locales` spells it. */
 export type ArtifactLocale = string | { path: string; codes: string[] };
 
@@ -164,6 +177,7 @@ export type ArtifactTrailingSlash = "always" | "never" | "ignore";
 export interface ArtifactConfig {
   site?: string;
   markdown?: ArtifactMarkdownConfig;
+  mdx?: ArtifactMdxConfig;
   i18n?: ArtifactI18nConfig;
   trailingSlash?: ArtifactTrailingSlash;
   /** In config order; the first whose source matches wins. */
@@ -573,7 +587,7 @@ function arrayEntries(value: unknown[], at: string): [unknown, string][] {
 function parseConfig(value: unknown): ArtifactConfig {
   const at = "$.artifact.config";
   const config = requireObject(value, at, "an object");
-  assertExactFields(config, ["site", "markdown", "i18n", "trailingSlash", "redirects", "scopedStyleStrategy", "compressHTML"], at);
+  assertExactFields(config, ["site", "markdown", "mdx", "i18n", "trailingSlash", "redirects", "scopedStyleStrategy", "compressHTML"], at);
   const parsed: ArtifactConfig = {};
   if (hasOwn(config, "site")) {
     const site = Reflect.get(config, "site");
@@ -581,6 +595,7 @@ function parseConfig(value: unknown): ArtifactConfig {
     parsed.site = site;
   }
   if (hasOwn(config, "markdown")) parsed.markdown = parseMarkdownConfig(Reflect.get(config, "markdown"), `${at}.markdown`);
+  if (hasOwn(config, "mdx")) parsed.mdx = parseMdxConfig(Reflect.get(config, "mdx"), `${at}.mdx`);
   if (hasOwn(config, "i18n")) parsed.i18n = parseI18nConfig(Reflect.get(config, "i18n"), `${at}.i18n`);
   if (hasOwn(config, "trailingSlash")) {
     const trailingSlash = Reflect.get(config, "trailingSlash");
@@ -691,6 +706,26 @@ function parseMarkdownConfig(value: unknown, at: string): ArtifactMarkdownConfig
     const gfm = Reflect.get(markdown, "gfm");
     if (typeof gfm !== "boolean") throw new ArtifactFormatError(`${at}.gfm`, "expected a boolean");
     parsed.gfm = gfm;
+  }
+  return parsed;
+}
+
+function parseMdxConfig(value: unknown, at: string): ArtifactMdxConfig {
+  const mdx = requireObject(value, at, "an object");
+  assertExactFields(mdx, ["remarkPlugins", "rehypePlugins", "gfm", "astro"], at);
+  const gfm = requiredField(mdx, "gfm", at);
+  if (typeof gfm !== "boolean") throw new ArtifactFormatError(`${at}.gfm`, "expected a boolean");
+  const parsed: ArtifactMdxConfig = {
+    remarkPlugins: parsePlugins(requiredField(mdx, "remarkPlugins", at), `${at}.remarkPlugins`),
+    rehypePlugins: parsePlugins(requiredField(mdx, "rehypePlugins", at), `${at}.rehypePlugins`),
+    gfm,
+  };
+  if (hasOwn(mdx, "astro")) {
+    const astro = requireObject(Reflect.get(mdx, "astro"), `${at}.astro`, "an object");
+    assertExactFields(astro, ["experimentalHeadingIdCompat"], `${at}.astro`);
+    const compat = requiredField(astro, "experimentalHeadingIdCompat", `${at}.astro`);
+    if (typeof compat !== "boolean") throw new ArtifactFormatError(`${at}.astro.experimentalHeadingIdCompat`, "expected a boolean");
+    parsed.astro = { experimentalHeadingIdCompat: compat };
   }
   return parsed;
 }
@@ -961,6 +996,7 @@ function canonicalConfig(config: ArtifactConfig): ArtifactConfig {
   const canonical: ArtifactConfig = {};
   if (config.site !== undefined) canonical.site = config.site;
   if (config.markdown !== undefined) canonical.markdown = canonicalMarkdown(config.markdown);
+  if (config.mdx !== undefined) canonical.mdx = canonicalMdx(config.mdx);
   if (config.i18n !== undefined) canonical.i18n = canonicalI18n(config.i18n);
   if (config.trailingSlash !== undefined) canonical.trailingSlash = config.trailingSlash;
   if (config.redirects !== undefined) {
@@ -997,15 +1033,27 @@ function canonicalI18n(i18n: ArtifactI18nConfig): ArtifactI18nConfig {
   return canonical;
 }
 
+// Plugin order is semantic: the pipeline runs them as listed.
+function canonicalPlugin(entry: PortablePlugin): PortablePlugin {
+  return entry.options === undefined
+    ? { module: entry.module, export: entry.export }
+    : { module: entry.module, export: entry.export, options: canonicalJson(entry.options) };
+}
+
+function canonicalMdx(mdx: ArtifactMdxConfig): ArtifactMdxConfig {
+  const canonical: ArtifactMdxConfig = {
+    remarkPlugins: mdx.remarkPlugins.map(canonicalPlugin),
+    rehypePlugins: mdx.rehypePlugins.map(canonicalPlugin),
+    gfm: mdx.gfm,
+  };
+  if (mdx.astro !== undefined) canonical.astro = { experimentalHeadingIdCompat: mdx.astro.experimentalHeadingIdCompat };
+  return canonical;
+}
+
 function canonicalMarkdown(markdown: ArtifactMarkdownConfig): ArtifactMarkdownConfig {
-  // Plugin order is semantic: the pipeline runs them as listed.
-  const plugin = (entry: PortablePlugin): PortablePlugin =>
-    entry.options === undefined
-      ? { module: entry.module, export: entry.export }
-      : { module: entry.module, export: entry.export, options: canonicalJson(entry.options) };
   const canonical: ArtifactMarkdownConfig = {
-    remarkPlugins: markdown.remarkPlugins.map(plugin),
-    rehypePlugins: markdown.rehypePlugins.map(plugin),
+    remarkPlugins: markdown.remarkPlugins.map(canonicalPlugin),
+    rehypePlugins: markdown.rehypePlugins.map(canonicalPlugin),
   };
   if (markdown.remarkRehype !== undefined) {
     const options = canonicalJson(markdown.remarkRehype);

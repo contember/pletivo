@@ -9,6 +9,7 @@ import {
   type ArtifactModule,
   type ArtifactInput,
   type ArtifactMarkdownConfig,
+  type ArtifactMdxConfig,
   type PreparedSite,
 } from "@pletivo/core/artifact";
 import type { AstroConfig } from "@pletivo/core/astro-host/types";
@@ -27,6 +28,7 @@ import { loadConfig, type PletivoConfig } from "../config";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
+import { prepareMdx } from "./mdx";
 import { bundleOnlyFiles, prepareIslandClients, prepareIslands, type AstroHydrations } from "./islands";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
@@ -73,10 +75,12 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
-  const sources = await readSources(projectRoot, srcDir);
-  const pluginModules = markdown.config === null
-    ? []
-    : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
+  const mdx = await prepareMdx(projectConfig, host?.config, await readSources(projectRoot, srcDir));
+  const sources = mdx.sources;
+  const pluginModules = [
+    ...(markdown.config === null ? [] : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins]),
+    ...(mdx.config === null ? [] : [...mdx.config.remarkPlugins, ...mdx.config.rehypePlugins]),
+  ].map((plugin) => plugin.module);
   // First: the vendor graph must not walk what the islands bundle owns, whose packages may be CommonJS.
   const islands = await prepareIslands(projectRoot, host?.renderers ?? [], sources);
   const bundleOnly = islands === null ? new Set<string>() : bundleOnlyFiles(islands, sources);
@@ -96,7 +100,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   return {
     artifact: {
       version: ARTIFACT_VERSION,
-      config: freezeConfig(host?.config, markdown.config, routing, scopedStyle.strategy, compressHTML.value),
+      config: freezeConfig(host?.config, markdown.config, mdx.config, routing, scopedStyle.strategy, compressHTML.value),
       scripts: {
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: pageScript === null ? [] : [pageScript],
@@ -350,6 +354,7 @@ function freezeCompressHTML(config: AstroConfig | undefined): {
 function freezeConfig(
   config: AstroConfig | undefined,
   markdown: ArtifactMarkdownConfig | null,
+  mdx: ArtifactMdxConfig | null,
   routing: FrozenRouting,
   scopedStyleStrategy: ScopedStyleStrategy | undefined,
   compressHTML: boolean | undefined,
@@ -357,6 +362,7 @@ function freezeConfig(
   const frozen: ArtifactConfig = {};
   if (config?.site) frozen.site = config.site;
   if (markdown !== null) frozen.markdown = markdown;
+  if (mdx !== null) frozen.mdx = mdx;
   if (routing.i18n !== null) frozen.i18n = routing.i18n;
   if (routing.trailingSlash !== null) frozen.trailingSlash = routing.trailingSlash;
   if (routing.redirects.length > 0) frozen.redirects = routing.redirects;

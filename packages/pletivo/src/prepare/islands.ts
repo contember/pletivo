@@ -54,8 +54,8 @@ import { resolveViteId, tryLoadViteId } from "../astro-host/vite-plugins";
 import { frameworkCompilePlugin, loadFrameworkCompilers } from "../framework-compile";
 import { prepareFailure, PrepareError } from "./error";
 import { isInsideRoot, normalizePath } from "./paths";
-import { ImportScanError, specifiersOf } from "./scan";
-import type { ProjectImportSource } from "./vendor";
+import { ImportScanError } from "./scan";
+import { sourceSpecifiers, type ProjectImportSource } from "./vendor";
 
 const SOURCE = "astro.config";
 const HOOK = "islands";
@@ -390,7 +390,7 @@ export function bundleOnlyFiles(islands: PreparedIslands, sources: readonly Proj
   for (let live = queue.shift(); live !== undefined; live = queue.shift()) {
     let specifiers: string[];
     try {
-      specifiers = specifiersOf(live.file, live.source);
+      specifiers = sourceSpecifiers(live);
     } catch (error) {
       // The vendor graph scans the same file and refuses it by name.
       if (error instanceof ImportScanError) continue;

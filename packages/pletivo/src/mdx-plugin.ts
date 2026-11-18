@@ -19,7 +19,13 @@ import type { PletivoConfig } from "./config";
 import { substituteImportMetaEnv } from "./import-meta-env";
 import type { AstroIntegration } from "@pletivo/core/astro-host/types";
 import { astroMarkdownSettings, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
-import { compileMdxSource, mdxModule, type CompiledMdx, type PluggableList } from "@pletivo/core/content/mdx";
+import {
+  compileMdxSource,
+  mdxModule,
+  type CompiledMdx,
+  type MdxCompileSettings,
+  type PluggableList,
+} from "@pletivo/core/content/mdx";
 import { resolveComponentPath } from "./astro-plugin";
 import {
   astroHighlightPlugins,
@@ -270,25 +276,36 @@ export async function registerMdxPlugin(): Promise<void> {
   });
 }
 
+/** What `compileMdx` compiles with; `highlight` is the highlighter's plugins. */
+function compileSettings(options: MdxOptions, highlight: PluggableList): MdxCompileSettings {
+  const astro = options.astro;
+  return {
+    remarkPlugins: options.remarkPlugins,
+    rehypePlugins: options.rehypePlugins,
+    gfm: options.gfm !== false,
+    astro: astro
+      ? { pagesDir: astro.pagesDir, experimentalHeadingIdCompat: astro.experimentalHeadingIdCompat, highlight }
+      : null,
+    resolveComponentPath,
+  };
+}
+
+/**
+ * One `.mdx` file compiled as `compileMdx` compiles it, for what `pletivo prepare` reads off it:
+ * its imports and its hydrations. Unhighlighted: a highlighter touches neither.
+ */
+export function mdxSourceFacts(source: string, filePath: string, options: MdxOptions): Promise<CompiledMdx> {
+  return compileMdxSource(source, filePath, compileSettings(options, []));
+}
+
 /** Compile one `.mdx` file's source to the JS module the Bun loader returns. */
 export async function compileMdx(source: string, filePath: string): Promise<string> {
   const rel = path.relative(process.cwd(), filePath);
   const astro = userOptions.astro;
   let compiled: CompiledMdx;
   try {
-    compiled = await compileMdxSource(source, filePath, {
-      remarkPlugins: userOptions.remarkPlugins,
-      rehypePlugins: userOptions.rehypePlugins,
-      gfm: userOptions.gfm !== false,
-      astro: astro
-        ? {
-            pagesDir: astro.pagesDir,
-            experimentalHeadingIdCompat: astro.experimentalHeadingIdCompat,
-            highlight: await astroHighlightPlugins(astro.highlight),
-          }
-        : null,
-      resolveComponentPath,
-    });
+    const highlight = astro ? await astroHighlightPlugins(astro.highlight) : [];
+    compiled = await compileMdxSource(source, filePath, compileSettings(userOptions, highlight));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`MDX compilation error in ${rel}:\n${msg}`);
