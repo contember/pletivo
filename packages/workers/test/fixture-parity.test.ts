@@ -240,6 +240,31 @@ describe("byte parity with pletivo build", () => {
     );
   }
 
+  // Astro's framework examples as written: each page has a component stylesheet and its own scoped `<style>`,
+  // which the build inlines as one block. Not framework-preact: in this repo the root tsconfig maps
+  // `preact/hooks` to pletivo's SSR stub, which lacks the hooks `preact/compat` imports, so neither host builds it.
+  const frameworkExamples: { example: string; modules: number }[] = [
+    { example: "react", modules: 3 },
+    { example: "solid", modules: 3 },
+    { example: "svelte", modules: 3 },
+    { example: "vue", modules: 3 },
+    { example: "multiple", modules: 18 },
+  ];
+  for (const { example, modules } of frameworkExamples) {
+    test(
+      `Astro's framework-${example} example renders and hydrates as the build does`,
+      async () => {
+        const { ok, output } = await localParity(`tests/fixture-astro-${example}-example`);
+        expect(output).toContain("1/1 byte-identical");
+        expect(output).toContain("= 1 enumerated path(s)");
+        expect(output).toContain(`= ${modules} island module(s) served as JavaScript, every import among them`);
+        expect(output).toContain(`= ${modules}/${modules} island module(s) byte-identical to pletivo build`);
+        expect(ok).toBe(true);
+      },
+      180_000,
+    );
+  }
+
   test.skipIf(!HAS_TAILWIND)(
     "the Tailwind fixture agrees on every byte except how the CSS is delivered",
     async () => {

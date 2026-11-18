@@ -2,9 +2,10 @@
   // Covers the repo's own consumers of pletivo's src — the test suites and the
   // pletivo-native example. Everything else owns a config: packages/pletivo,
   // packages/astro-jsx-pages (React JSX, so it cannot share one program with
-  // pletivo's global JSX namespace), and the Astro examples (`astro check`).
+  // pletivo's global JSX namespace), and the Astro examples (`astro check`),
+  // mirrored as-is in `tests/fixture-astro-*-example`.
   "include": ["tests/**/*.ts", "tests/**/*.tsx", "examples/basic/**/*.ts", "examples/basic/**/*.tsx"],
-  "exclude": ["**/node_modules", "**/dist", "tests/astro-e2e"],
+  "exclude": ["**/node_modules", "**/dist", "tests/astro-e2e", "tests/fixture-astro-*-example"],
   "compilerOptions": {
     "jsx": "react-jsx",
     "jsxImportSource": "pletivo",
