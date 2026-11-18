@@ -43,6 +43,7 @@ const ISOLATE_HANDLER_MODULE_NAME = "pletivo-isolate-entry.js";
 const TAILWIND_MODULE_NAME = "pletivo-tailwind.js";
 const TAILWIND_ENTRY_MODULE_NAME = "pletivo-tailwind-entry.js";
 const COMPILER_ENTRY_MODULE_NAME = "pletivo-compiler-entry.js";
+const MDX_ENTRY_MODULE_NAME = "pletivo-mdx-entry.js";
 
 const ENTRIES: Record<string, Entry> = {
   "pletivo-runtime.js": {
@@ -111,6 +112,12 @@ const ENTRIES: Record<string, Entry> = {
     specifier: path.join(PACKAGE_DIR, "src/compiler-isolate-entry.ts"),
     target: "browser",
     forbidNodeBuiltins: true,
+  },
+  /** The isolate `.mdx` compiles in, beside the project's remark and rehype plugins. */
+  [MDX_ENTRY_MODULE_NAME]: {
+    specifier: path.join(PACKAGE_DIR, "src/mdx-isolate-entry.ts"),
+    target: "browser",
+    conditions: ["workerd"],
   },
 };
 
@@ -379,6 +386,16 @@ export async function generateRuntimeModules(): Promise<string> {
     "/** The entry, which every Tailwind isolate program carries next to Tailwind and its plugins. */",
     "export const TAILWIND_ISOLATE_MODULES: Readonly<Record<string, string>> = {",
     ...[TAILWIND_ENTRY_MODULE_NAME].map(
+      (name) => `  ${JSON.stringify(name)}: GENERATED_MODULES[${JSON.stringify(name)}],`,
+    ),
+    "};",
+    "",
+    "/** The MDX isolate's request handling; exports `createMdxEntry`. */",
+    `export const MDX_ENTRY_MODULE_NAME = ${JSON.stringify(MDX_ENTRY_MODULE_NAME)};`,
+    "",
+    "/** The entry, which every MDX isolate program carries next to the project's plugins. */",
+    "export const MDX_ISOLATE_MODULES: Readonly<Record<string, string>> = {",
+    ...[MDX_ENTRY_MODULE_NAME].map(
       (name) => `  ${JSON.stringify(name)}: GENERATED_MODULES[${JSON.stringify(name)}],`,
     ),
     "};",

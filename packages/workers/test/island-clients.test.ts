@@ -34,6 +34,10 @@ function page(imports: string, body: string): string {
   return `---\nimport "../styles/global.css";\n${imports}\n---\n${PAGE_HEAD}${body}</body></html>\n`;
 }
 
+function notes(imports: string, body: string): string {
+  return `${imports}\n\n# Notes\n\n${body}\n`;
+}
+
 const COUNTER_IMPORT = 'import { Counter } from "../components/Counter";';
 
 const FILES: Readonly<Record<string, string>> = {
@@ -53,6 +57,7 @@ export function Badge() {
   // Named like Bun's chunks, but an entry: its URL keeps its name across prepares.
   "src/components/chunk-list.jsx": "export default function ChunkList() {\n  return <ul />;\n}\n",
   "src/components/Footer.jsx": "export default function Footer() {\n  return <footer>footer</footer>;\n}\n",
+  "src/components/Note.jsx": "export default function Note() {\n  return <aside>note</aside>;\n}\n",
   // Outside `srcDir`: prepare reads its hydrations all the same.
   "layouts/Base.astro": '---\nimport Footer from "../src/components/Footer";\n---\n<html lang="en"><head><title>Layout</title></head><body><slot /><Footer client:idle /></body></html>\n',
   "src/pages/index.astro": page(
@@ -60,6 +65,7 @@ export function Badge() {
     "<Counter client:load /><Other /><ChunkList client:idle />",
   ),
   "src/pages/plain.astro": page("", "<p>plain</p>"),
+  "src/pages/notes.mdx": notes('import Note from "../components/Note";', "<Note client:load />"),
   "src/pages/layout.astro": '---\nimport Base from "../../layouts/Base.astro";\n---\n<Base><p>in a layout</p></Base>\n',
 };
 
@@ -129,9 +135,9 @@ function componentUrl(specifier: string, exportName: string): string {
   return createIslandClientUrls({ projectRoot, base: "/" }).component(`${projectRoot}/src/${specifier.replace("../", "")}`, exportName);
 }
 
-async function missingUrl(edits: Readonly<Record<string, string>>): Promise<MissingIslandClientError> {
+async function missingUrl(edits: Readonly<Record<string, string>>, pathname = "/"): Promise<MissingIslandClientError> {
   try {
-    await render("/", edits);
+    await render(pathname, edits);
   } catch (error) {
     if (error instanceof MissingIslandClientError) return error;
     throw error;
@@ -151,6 +157,23 @@ describe("island client modules fixed at prepare", () => {
     const url = componentUrl("../components/Footer", "default");
     expect(rendered.html).toContain(`component-url="${url}"`);
     expect(artifact.islands?.clients.has(url)).toBe(true);
+  }, 60_000);
+
+  test("an .mdx page hydrates a component prepare built", async () => {
+    const rendered = await render("/notes/");
+    const url = componentUrl("../components/Note", "default");
+    expect(rendered.html).toContain(`component-url="${url}"`);
+    expect(artifact.islands?.clients.has(url)).toBe(true);
+  }, 60_000);
+
+  test("a new hydration in an .mdx page fails the render, naming the URL and the fix", async () => {
+    const error = await missingUrl(
+      { "src/pages/notes.mdx": notes('import Other from "../components/Other";', "<Other client:load />") },
+      "/notes/",
+    );
+    const url = componentUrl("../components/Other", "default");
+    expect(error.url).toBe(url);
+    expect(error.message).toContain("Re-run `pletivo prepare`");
   }, 60_000);
 
   test("the host serves each client module as JavaScript, caching only a content-named chunk", async () => {

@@ -902,9 +902,9 @@ describe("renderPage, refusals", () => {
     expect(render("/nope")).rejects.toBeInstanceOf(RouteNotFoundError);
   });
 
-  test("refuses a page kind it has no compiler for", () => {
-    expect(render("/notes")).rejects.toThrow(/only \.astro, \.tsx and \.md pages render here/);
-  });
+  test("does not refuse an .mdx page", async () => {
+    expect((await render("/notes")).html).toContain("<h1>notes</h1>");
+  }, 60_000);
 
   test("refuses an endpoint route, which is not a page at all", async () => {
     const files = new Map([

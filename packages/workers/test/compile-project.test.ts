@@ -389,12 +389,12 @@ describe("compileProject, refusals", () => {
 describe("isExecutableModule", () => {
   test("names the extensions the isolate can be handed code for", () => {
     expect(
-      ["a.astro", "a.tsx", "a.ts", "a.jsx", "a.mts", "a.cts", "a.js", "a.mjs", "a.json", "a.md"].map(
+      ["a.astro", "a.tsx", "a.ts", "a.jsx", "a.mts", "a.cts", "a.js", "a.mjs", "a.json", "a.md", "a.mdx"].map(
         isExecutableModule,
       ),
-    ).toEqual([true, true, true, true, true, true, true, true, true, true]);
+    ).toEqual([true, true, true, true, true, true, true, true, true, true, true]);
     // `.css` becomes a resolvable stub, not code.
-    expect(["a.css", "a.mdx", "a.png"].map(isExecutableModule)).toEqual([false, false, false]);
+    expect(["a.css", "a.png"].map(isExecutableModule)).toEqual([false, false]);
   });
 });
 

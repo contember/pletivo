@@ -54,6 +54,7 @@ import {
   type IsolateResponse,
 } from "./isolate-protocol.ts";
 import { normalizeProjectPath } from "./project-path.ts";
+import { pluggable, type IsolatePlugin } from "./portable-plugins.ts";
 import type { UnresolvedReason } from "./render.ts";
 
 /** A compiled page module. Every field is user code, so each is checked before use. */
@@ -85,11 +86,7 @@ export interface ContentModules {
 export type MarkdownModule = Pick<typeof Markdown, "configureMarkdown">;
 
 /** One configured plugin: the Loader module namespace it is exported from. */
-export interface IsolateMarkdownPlugin {
-  module: object;
-  exportName: string;
-  options?: unknown;
-}
+export type IsolateMarkdownPlugin = IsolatePlugin;
 
 /** The project's Markdown pipeline, as the generated program module spells it. */
 export interface IsolateMarkdown {
@@ -240,23 +237,6 @@ function errorPayload(error: unknown): IsolateErrorResponse {
     message: error instanceof Error ? error.message : String(error),
     ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
   };
-}
-
-type Pluggable = NonNullable<Markdown.MarkdownOptions["remarkPlugins"]>[number];
-type Plugin = Extract<Pluggable, (...parameters: never[]) => unknown>;
-
-function isPlugin(value: unknown): value is Plugin {
-  return typeof value === "function";
-}
-
-function pluggable(plugin: IsolateMarkdownPlugin): Pluggable {
-  const value: unknown = Reflect.get(plugin.module, plugin.exportName);
-  if (!isPlugin(value)) {
-    throw new Error(
-      `[pletivo-workers] Markdown plugin export ${JSON.stringify(plugin.exportName)} is not a function`,
-    );
-  }
-  return plugin.options === undefined ? value : [value, plugin.options];
 }
 
 /** The Bun host's islands config: island URLs named alike, renderers in registration order. */

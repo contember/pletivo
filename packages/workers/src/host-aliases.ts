@@ -34,6 +34,8 @@ export const HOST_ALIASES: ReadonlyMap<string, HostAlias> = new Map([
   ["@pletivo/runtime/jsx-runtime", { kind: "fixed", executionName: JSX_RUNTIME_MODULE_NAME }],
   ["pletivo/astro-shim", { kind: "fixed", executionName: RUNTIME_MODULE_NAME }],
   ["@pletivo/runtime/astro-shim", { kind: "fixed", executionName: RUNTIME_MODULE_NAME }],
+  // What a compiled `.mdx` module's default export wraps its content with.
+  ["@pletivo/runtime/mdx-content", { kind: "fixed", executionName: RUNTIME_MODULE_NAME }],
   ["astro:content", { kind: "content" }],
   ["astro/loaders", { kind: "content" }],
   ["pletivo/content", { kind: "content" }],

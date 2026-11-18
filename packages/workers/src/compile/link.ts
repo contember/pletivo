@@ -43,7 +43,9 @@ export async function linkModule(
   }
   const compiledCode = module.kind === "astro"
     ? replaceComponentPaths(replaceAstroTrackingId(globbed.code, module.compilePath, module.id), walk, module)
-    : globbed.code;
+    : module.kind === "mdx"
+      ? replaceMdxComponentPaths(globbed.code, entry.componentPaths, walk, module)
+      : globbed.code;
   walk.modules[module.executionName] = rewriteImports(compiledCode, {
     importer: module.compilePath,
     resolve(_resolved, specifier) {
@@ -107,6 +109,24 @@ function replaceComponentPaths(code: string, walk: CompileWalk, module: SourceMo
     }
     return `"client:component-path":(${JSON.stringify(walk.componentPath(module.compilePath, specifier))})`;
   });
+}
+
+/** `@mdx-js/mdx` writes a JSX attribute as a property with a JSON string value. */
+function mdxComponentPathProp(path: string): string {
+  return `"client:component-path": ${JSON.stringify(path)}`;
+}
+
+/** An `.mdx` module's `client:component-path` values, rebuilt as for `.astro` (`replaceComponentPaths`). */
+function replaceMdxComponentPaths(code: string, written: readonly string[], walk: CompileWalk, module: SourceModule): string {
+  let out = code;
+  for (const specifier of new Set(written)) {
+    const prop = mdxComponentPathProp(specifier);
+    if (!out.includes(prop)) {
+      throw new UnsupportedFileError(module.compilePath, `the MDX compile wrote no ${prop}; the @mdx-js/mdx output contract may have changed`);
+    }
+    out = out.replaceAll(prop, mdxComponentPathProp(walk.componentPath(module.compilePath, specifier)));
+  }
+  return out;
 }
 
 function compilerString(value: string): string {

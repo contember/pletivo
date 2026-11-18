@@ -15,7 +15,7 @@ import { stripTypes, TranspileError } from "../transpile.ts";
 import { COMPILED, type ModuleKind } from "./module-kind.ts";
 import { MARKDOWN_SPECIFIER } from "../host-aliases.ts";
 import { UnsupportedFileError, type SourceModule } from "./source-module.ts";
-import type { AstroStyles, StyleBlock } from "./types.ts";
+import type { AstroStyles, MdxCompiler, StyleBlock } from "./types.ts";
 
 /** The compile options a project sets; all are part of a cached file's identity. */
 export interface AstroCompileOptions {
@@ -27,6 +27,8 @@ export interface AstroCompileOptions {
   compressHTML: boolean | undefined;
   /** The artifact's `config.trailingSlash`, which a `.md` page's `url` follows; absent is `"ignore"`. */
   trailingSlash?: ArtifactTrailingSlash;
+  /** What `.mdx` compiles with. */
+  mdx?: MdxCompiler;
 }
 
 /**
@@ -45,6 +47,8 @@ export async function compileCached(
   const scopedStyleStrategy = astro ? options.scopedStyleStrategy : undefined;
   const compressHTML = astro ? options.compressHTML : undefined;
   const trailingSlash = module.kind === "md" ? options.trailingSlash : undefined;
+  const mdx = module.kind === "mdx" ? mdxCompiler(module, options.mdx) : null;
+  const mdxIdentity = mdx === null ? undefined : await mdx.identity();
   const held = cache?.get(module.compilePath);
   if (
     held !== undefined &&
@@ -53,13 +57,29 @@ export async function compileCached(
     held.annotated === annotate &&
     held.scopedStyleStrategy === scopedStyleStrategy &&
     held.compressHTML === compressHTML &&
-    held.trailingSlash === trailingSlash
+    held.trailingSlash === trailingSlash &&
+    held.mdx === mdxIdentity
   ) {
     return held;
   }
-  const entry = await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy, compressHTML, trailingSlash });
+  const entry = mdx === null
+    ? await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy, compressHTML, trailingSlash })
+    : await compileMdx(module, mdx);
   cache?.set(module.compilePath, entry);
   return entry;
+}
+
+function mdxCompiler(module: SourceModule, mdx: MdxCompiler | undefined): MdxCompiler {
+  if (mdx === undefined) throw new UnsupportedFileError(module.compilePath, "this compile has no MDX compiler");
+  return mdx;
+}
+
+/** An `.mdx` module, compiled where the project's remark and rehype plugins run. */
+async function compileMdx(module: SourceModule, mdx: MdxCompiler): Promise<CompiledFile> {
+  const { source, compilePath, kind } = module;
+  const compiled = await mdx.compile(compilePath, source);
+  const identity = await mdx.identity();
+  return { ...fileEntry(source, compiled.code, null, kind, [], compilePath), mdx: identity, componentPaths: compiled.componentPaths };
 }
 
 /**
@@ -235,6 +255,8 @@ function fileEntry(
     compressHTML: undefined,
     trailingSlash: undefined,
     globs,
+    mdx: undefined,
+    componentPaths: [],
   };
 }
 
