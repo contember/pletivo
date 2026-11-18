@@ -82,27 +82,38 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   those were bundled from: those files' current text joins the page's candidates. That is what
   the Bun host's scan reads, the project's sources and no `node_modules`; the bundle text would
   add about 3 300 candidates from the frameworks' runtimes on the multi fixture.
-- **Evidence.** `fixture-astro-renderers-multi`: the page byte-identical, its 18 island modules
-  served, their import graph closed, 18/18 byte-identical to `pletivo build`. The four
-  single-renderer fixtures (react, solid, svelte, vue) give 3/3 each, and Astro's
-  framework-multiple 18/18, by hand; their HTML waits on the CSS decision below.
+- **Evidence.** `fixture-parity.test.ts` asserts, against `pletivo build`:
+  - `fixture-astro-renderers-multi`: the page byte-identical, its 18 island modules served,
+    their import graph closed, 18/18 byte-identical;
+  - the single-renderer fixtures react, solid, svelte and vue: 3/3 island modules each, and
+    every page byte-identical once both inlined head `<style>` texts went through the Bun
+    host's minifier (below). All four pass; svelte and vue also check the `url()` target
+    file against the build's.
+
+  Astro's framework-multiple gives 18/18 modules, by hand.
 
 ## What is left
 
 - **W3, parity for the framework examples.**
-- **The CSS delivery decision** below, which the single-renderer fixtures' HTML waits on.
 - **Prepare's working directory.** Bun names a shared chunk by its path relative to the working
   directory (025). The CLI runs both `pletivo build` and `pletivo prepare` from the project
   root, so they agree. Calling `prepare(root)` from another directory names every chunk, and so
   every module importing one, differently: 1 of 18 matched on the multi fixture. `build(root)`
   does the same.
-- **CSS delivery in an Astro project.** `pletivo build` inlines a small sheet minified,
-  with `@import` flattened and `url()` rewritten to `/assets/<name>.<hash>.<ext>`; this
-  host inlines the per-page sheet as written, labelled per file (023 §5). The harness
-  excepts that fork only where the build *links* a sheet, so the renderer fixtures whose
-  components carry CSS do not compare byte-for-byte; the markup outside the head
-  `<style>` does. A `url()` in such CSS is left relative to the page here, which is a
-  real broken image, not only a byte difference.
+- **CSS in an Astro project.** `pletivo build` inlines a small sheet minified, with
+  `@import` flattened and `url()` rewritten to `/assets/<name>.<hash>.<ext>`; this host
+  inlines the per-page sheet as written, labelled per file (023 §5). The parity harness
+  (`test/inlined-style.ts`) pairs the head `<style>` blocks in order, passes the first pair
+  whose texts differ through the Bun host's `minifyCss` and compares the whole page byte
+  for byte; a sheet missing one rule fails it, and a sheet the minifier rejects is named.
+  A relative `url()` and a dangling `@import` in a bundled sheet were fixed in this host
+  (#98). One difference remains, in this host:
+  - the build merges adjacent inline CSS into one `<style>`, as Astro's `mergeInlineCss`
+    does; this host emits the page stylesheet and the scoped CSS as two blocks
+    (`finalizeHtml` in `page-css.ts`, called from `render.ts`). A page with a component
+    stylesheet and its own scoped `<style>` gets
+    `<style>.react-counter{…}main[data-astro-cid-…]{…}</style>` from the build and two
+    `<style>` blocks here. No fixture in the parity test has such a page yet.
 - **Refused by name at prepare:**
   - a component importing a package stylesheet, or a stylesheet with a query;
   - a `.svelte` or `.vue` component from a package that has a `<style>`: its compiled CSS
@@ -129,5 +140,7 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   bundled and kept out of the vendor graph. One a live module imports too is bundled and
   also compiled live, so module state is not shared between the two; when its imports
   cannot be carried for the live copy, prepare refuses it by name.
-- **`tests/fixture-astro-renderers-preact`** still cannot be prepared: its endpoint imports
-  `astro/container`, which reaches `node:path`, and this host has no endpoint routes.
+- **`tests/fixture-astro-renderers-preact`: refused for parity.** Its endpoint imports
+  `astro/container`, which reaches `node:path`, so prepare fails, and this host has no
+  endpoint routes. Preact is covered on Workers by the multi fixture; framework-preact waits
+  on W3.

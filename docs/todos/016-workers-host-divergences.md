@@ -395,6 +395,11 @@ found by the scanner, and every one of those that compiles to a utility survives
 into the CSS that page carries. HTML parity on the fixture is still asserted, with
 exactly one node removed from each side — the `<link>` there, the leading
 `<style>` here — named as a single-purpose exception rather than a normalizer.
+In an Astro project the build inlines a sheet small enough for
+`build.inlineStylesheets` as a minified `<style>` instead of linking it. There the
+harness pairs the head `<style>` blocks of both sides in order, passes the first
+pair whose texts differ through the Bun host's `minifyCss`, and compares the whole
+page, that CSS included, byte for byte (`test/inlined-style.ts`, 027).
 
 `finalizeHtml` now takes the CSS as an **ordered list and makes one insertion**.
 That is forced: two insertions before the same anchor keep their order in `<head>`

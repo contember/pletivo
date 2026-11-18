@@ -26,6 +26,7 @@ import { projectPaths, renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { builtPathname } from "./built-pathname.ts";
 import { FileLoader } from "./file-loader.ts";
+import { minifyInlinedStyle } from "./inlined-style.ts";
 import { imageUrls, readSources, sameBytes } from "./sources.ts";
 import { tailwindStylesheets } from "./tailwind-sources.ts";
 import { hostTailwindRuntime, scanCandidates, STANDALONE_TARGETS, tailwindEntry } from "./tailwind-standalone.ts";
@@ -87,6 +88,8 @@ let identical = 0;
 let pages = 0;
 /** Pages whose CSS delivery was excepted from the byte comparison — see below. */
 let excepted = 0;
+/** Pages whose inlined head `<style>` was compared minified on both sides (`inlined-style.ts`). */
+let minified = 0;
 const problems: string[] = [];
 const builtPathnames = new Set<string>();
 /** Every island client URL a rendered page named, checked through the host afterwards. */
@@ -188,7 +191,7 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     problems.push(`  ! ${rel}\n    ${error instanceof Error ? error.message : String(error)}`);
     continue;
   }
-  // The one divergence the two hosts keep on purpose: the Bun host links the project
+  // A divergence the two hosts keep on purpose: the Bun host links the project
   // stylesheets, this one inlines the page's own. Exactly one cluster is removed from
   // each side — the adjacent `<link>` tags there, the leading `<style>` here — so every
   // other byte of the page, the scoped `<style>` included, is still compared. Not a
@@ -197,6 +200,8 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   let expectedHtml = expected;
   let actualHtml = page.html;
   let inlined: string | null = null;
+  /** Set when the page cannot be compared; its islands and assets are still checked below. */
+  let incomparable: string | null = null;
   if (LINKED_STYLESHEETS.test(expected)) {
     const match = INLINED_STYLESHEET.exec(page.html);
     if (match === null) {
@@ -207,9 +212,21 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     expectedHtml = expected.replace(LINKED_STYLESHEETS, "");
     actualHtml = page.html.replace(INLINED_STYLESHEET, "");
     excepted++;
+  } else {
+    // Where the build inlined its sheet instead, both texts are minified and compared in place.
+    const style = await minifyInlinedStyle(expected, page.html);
+    if (style.kind === "rejected") {
+      incomparable = `  ! ${rel} — minifyCss rejected ${style.side}'s <style>: ${style.log}`;
+    } else if (style.kind === "minified") {
+      expectedHtml = style.expected;
+      actualHtml = style.actual;
+      minified++;
+    }
   }
 
-  if (actualHtml === expectedHtml) {
+  if (incomparable !== null) {
+    problems.push(incomparable);
+  } else if (actualHtml === expectedHtml) {
     identical++;
     console.log(`  = ${rel}${inlined === null ? "" : " (CSS delivery excepted)"}`);
   } else {
@@ -374,7 +391,8 @@ if (missing.length === 0 && extra.length === 0) {
 await loader.cleanup();
 console.log(
   `\n${fixture}: ${identical}/${pages} byte-identical` +
-    (excepted === 0 ? "" : ` (${excepted} with the CSS delivery excepted — docs/todos/023 §5)`),
+    (excepted === 0 ? "" : ` (${excepted} with the CSS delivery excepted — docs/todos/023 §5)`) +
+    (minified === 0 ? "" : ` (${minified} with the inlined <style> compared minified)`),
 );
 for (const problem of problems) console.log(`\n${problem}`);
 await fs.rm(outDir, { recursive: true, force: true });
