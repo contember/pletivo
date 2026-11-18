@@ -1,5 +1,6 @@
 /**
- * Where generated assets (`?url` imports) outlive the render that produced them. A page
+ * Where generated assets (`?url` imports, and the `url()` targets of a page's inlined CSS)
+ * outlive the render that produced them. A page
  * links to them by content-hashed URL, and the browser's follow-up GET may reach a host
  * that has evicted them, restarted, or never rendered the page. The host writes them
  * here before it returns the HTML, and reads them here on a cache miss.

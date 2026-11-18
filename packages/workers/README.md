@@ -171,7 +171,9 @@ same pletivo writes the same module, so only a pletivo released with this host f
 
 `createProjectHost(...).fetch` answers, first match wins:
 
-1. a generated `?url` asset (`/_astro/…`): the in-memory cache, then `generatedAssetStore`;
+1. a generated asset: a `?url` import (`/_astro/…`), or a `url()` target of the page's inlined
+   CSS (`/assets/<stem>.<hash>.<ext>`, the name `pletivo build` writes). The in-memory cache,
+   then `generatedAssetStore` for a path of either shape; cached `immutable`;
 2. a processed `<script>` (`/_pletivo/script/…`) or a module it imports
    (`/_pletivo/module/…`), served unbundled with bare imports rewritten to the artifact's
    browser graph. `pletivo prepare` bundles the graph's packages, so a package import loads
@@ -188,8 +190,9 @@ same pletivo writes the same module, so only a pletivo released with this host f
 
 Options a multi-session host needs:
 
-- `generatedAssetStore` — durable storage for `?url` assets (`MemoryGeneratedAssetStore`
-  implements the port for tests).
+- `generatedAssetStore` — durable storage for generated assets (`MemoryGeneratedAssetStore`
+  implements the port for tests). A `RenderedAsset.body` is text for a `?url` import and
+  bytes (`Uint8Array`) for a CSS `url()` target, which may be a font or an image.
 - `content: { binding, store, owner }` with an entrypoint that answers through
   `store.forOwner(owner)`, so one session's render cannot read another's content.
 - `createWorkspaceProjectStore(fs, { root, revision: (root) => … })` — pass a revision

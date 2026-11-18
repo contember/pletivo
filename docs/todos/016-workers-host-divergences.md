@@ -358,7 +358,20 @@ render, so an edit names a new file. A missing target fails the page, as it fail
 build. Not covered: `vite.build.assetsInlineLimit` (the artifact does not carry it), a
 `url()` in a package sheet the artifact vendored (its target is not in the project), and
 a base path other than `/`. On both hosts a sheet under `srcDir` and an `.astro`
-`<style>` keep their relative `url()` and `@import` as written.
+`<style>` keep their relative `url()` and `@import` as written. A `url()` inside a comment
+or a string is left alone, as Bun leaves it.
+
+An `@import` with a condition (`layer()`, a media query, `supports()`) loses it here: the
+graph emits the imported sheet unwrapped and the rule is dropped, where Bun wraps the
+imported rules in the condition.
+
+Because a `url()` target may be a font or an image, `RenderedAsset.body` is now
+`string | Uint8Array`: a `GeneratedAssetStore` must keep bytes as well as text.
+
+Known Bun-host bug, not fixed here: `css-assets.ts` caches the inline decision per file, so
+`url(a.svg)` followed by `url(a.svg#i)` inlines both and loses the fragment; and a target
+below the limit is left for Bun to resolve undecoded, so `url("./a%20b.png")` does not find
+`a b.png`. The Workers host decides per reference and decodes, so it diverges there.
 
 **What the fork cost, and what replaced it.** `fixture-tailwind` used to be the
 only assertion anywhere that this host's JS candidate scanner plus Tailwind over a
