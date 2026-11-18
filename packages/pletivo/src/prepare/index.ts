@@ -25,6 +25,7 @@ import { srcDirMismatch } from "../astro-host/config-loader";
 import { bundlePageScripts } from "../astro-host/page-scripts";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
+import { registerMdxPlugin } from "../mdx-plugin";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
@@ -59,6 +60,8 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const inputs = await readProjectInputs(projectRoot);
   const projectConfig = await loadConfig(projectRoot);
   const srcDir = options.srcDir ?? projectConfig.srcDir;
+  // Before the config loads: the stub in place of `@astrojs/mdx` is what records `mdx({...})`.
+  await registerMdxPlugin();
   const host = await initAstroHost(projectRoot, "build");
   const markdown = freezeMarkdown(astroMarkdownSettings(host?.config));
   const routing = freezeRouting(host?.config);

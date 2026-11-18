@@ -180,6 +180,22 @@ describe("byte parity with pletivo build", () => {
     180_000,
   );
 
+  test(
+    "the mdx() options fixture runs the integration's plugins, gfm and extendMarkdownConfig in the isolate",
+    async () => {
+      const { ok, output } = await localParity("tests/fixture-astro-mdx-plugins");
+      // The build renders `<h1 id="plugins">Plugins!</h1>` and `<p class="marked">Some ~~struck~~ text.!</p>`:
+      // a remark and a rehype plugin from `mdx({...})`, GFM off, Astro's `markdown` plugins dropped.
+      // The child prepares first and the build reuses its config, so a prepare that lost the options
+      // would lose them on both sides: the size is what shows they arrived (52 B without them).
+      expect(output).toContain("Built 1 pages (112 B total)");
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
   const singleRenderers: { renderer: string; pages: number; urlTarget?: string }[] = [
     { renderer: "react", pages: 1 },
     { renderer: "solid", pages: 1 },

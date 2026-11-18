@@ -466,6 +466,40 @@ describe("pletivo prepare", () => {
     expect(moduleById(site, imported).source).toContain("remarkShout");
   });
 
+  test("freezes mdx({...}) options and refuses an untagged mdx() plugin by name", async () => {
+    // Any `@astrojs/mdx` file loads as pletivo's stub, which records what `mdx()` was given.
+    const integration = {
+      "node_modules/@astrojs/mdx/package.json": '{ "name": "@astrojs/mdx", "type": "module", "exports": { ".": "./index.js" } }\n',
+      "node_modules/@astrojs/mdx/index.js": "export default function mdx() { throw new Error('the real @astrojs/mdx ran'); }\n",
+      "src/pages/notes.mdx": "# Notes\n",
+    };
+    const config = (plugins: string) =>
+      `import mdx from "@astrojs/mdx";\nimport { rehypeMark, remarkShout } from "portable-markdown";\n` +
+      `export default { markdown: { remarkPlugins: [remarkShout] }, integrations: [mdx(${plugins})] };\n`;
+    const frozen = await prepare(await markdownPluginsCopy({
+      ...integration,
+      "astro.config.mjs": config("{ rehypePlugins: [rehypeMark], gfm: false, extendMarkdownConfig: false }"),
+    }));
+    expect(frozen.artifact.config.mdx).toEqual({
+      remarkPlugins: [],
+      rehypePlugins: [{ module: "portable-markdown", export: "rehypeMark" }],
+      gfm: false,
+      astro: { experimentalHeadingIdCompat: false },
+    });
+    __resetForTests();
+
+    const error = await capturedPrepareError(await markdownPluginsCopy({
+      ...integration,
+      "astro.config.mjs": config("{ remarkPlugins: [remarkShout, function remarkUntagged() {}] }"),
+    }));
+    expect(error.diagnostics).toContainEqual({
+      source: "astro.config",
+      hook: "mdx",
+      reason: expect.stringContaining("mdx().remarkPlugins[1] (remarkUntagged) is a live function"),
+    });
+    __resetForTests();
+  });
+
   test("leaves the MDX pipeline out of a project without .mdx files", async () => {
     const site = await prepare(path.join(fixtures, "markdown-plugins"));
     expect(site.artifact.config.mdx).toBeUndefined();
