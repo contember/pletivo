@@ -18,6 +18,14 @@ const pending = new Map<string, string>();
 let counter = 0;
 
 export async function minifyCss(css: string): Promise<string> {
+  const minified = await tryMinifyCss(css, (log) => {
+    console.warn(`[pletivo] CSS minification failed, emitting unminified:\n${log}`);
+  });
+  return minified ?? css;
+}
+
+/** Null when Bun rejects the sheet; `onError` gets Bun's log text. */
+export async function tryMinifyCss(css: string, onError?: (log: string) => void): Promise<string | null> {
   if (!css.trim()) return css;
 
   const token = `t${counter++}`;
@@ -27,13 +35,13 @@ export async function minifyCss(css: string): Promise<string> {
       entrypoints: [ENTRY_PREFIX + token],
       target: "browser",
       minify: true,
+      // Failures come back in `logs`, not as an AggregateError whose message is only "Bundle failed".
+      throw: false,
       plugins: [minifyBunPlugin()],
     });
     if (!result.success) {
-      console.warn(
-        `[pletivo] CSS minification failed, emitting unminified:\n${result.logs.map(String).join("\n")}`,
-      );
-      return css;
+      onError?.(result.logs.map(String).join("\n"));
+      return null;
     }
     for (const output of result.outputs) {
       if (output.type?.includes("text/css") || output.path.endsWith(".css")) {
@@ -42,9 +50,8 @@ export async function minifyCss(css: string): Promise<string> {
     }
     return css;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[pletivo] CSS minification failed, emitting unminified: ${message}`);
-    return css;
+    onError?.(error instanceof Error ? error.message : String(error));
+    return null;
   } finally {
     pending.delete(token);
   }
