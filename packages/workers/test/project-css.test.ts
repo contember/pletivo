@@ -23,8 +23,10 @@ function options(
   styleGraph: ResolvedStyleGraph,
   overrides: Partial<PageStylesheetOptions> = {},
 ): PageStylesheetOptions {
+  const encoder = new TextEncoder();
   return {
     files: new Map(Object.entries(files)),
+    readBytes: (path) => (Object.hasOwn(files, path) ? new Uint8Array(encoder.encode(files[path])) : undefined),
     islandStylesheets: new Set(),
     srcDir: "src",
     rootDir: "",
@@ -33,6 +35,11 @@ function options(
     html: "",
     ...overrides,
   };
+}
+
+/** The stylesheet text alone, for the tests that do not look at its assets. */
+async function stylesheetCss(stylesheetOptions: PageStylesheetOptions): Promise<string | null> {
+  return (await pageStylesheet(stylesheetOptions))?.css ?? null;
 }
 
 describe("pageStylesheet canonical graph", () => {
@@ -44,7 +51,7 @@ describe("pageStylesheet canonical graph", () => {
     const layout = "npm:layout/index.js";
     const first = "npm:theme/first.css";
     const second = "npm:theme/second.css";
-    const css = await pageStylesheet(options(
+    const css = await stylesheetCss(options(
       {
         [first]: ".same { color: red }",
         [second]: ".same { color: blue }",
@@ -65,7 +72,7 @@ describe("pageStylesheet canonical graph", () => {
 
   test("collects an opaque artifact stylesheet id without guessing its extension", async () => {
     const opaque = "npm:theme/2dd4a8";
-    const css = await pageStylesheet(options(
+    const css = await stylesheetCss(options(
       { [opaque]: ".opaque { color: purple }" },
       graph([PAGE, opaque], [], [{ importer: PAGE, target: opaque }]),
     ));
@@ -76,7 +83,7 @@ describe("pageStylesheet canonical graph", () => {
     const left = "project:src/lib/left.js";
     const right = "project:src/lib/right.js";
     const shared = "project:src/styles/shared.css";
-    const css = await pageStylesheet(options(
+    const css = await stylesheetCss(options(
       { "src/styles/shared.css": ".shared {}" },
       graph(
         [PAGE, left, right, shared],
@@ -99,7 +106,7 @@ describe("pageStylesheet canonical graph", () => {
     const outside = "project:styles/outside.css";
     const component = "project:src/components/C.svelte.pletivo-style.css";
     const source = "project:src/styles/source.css";
-    const css = await pageStylesheet({
+    const css = await stylesheetCss({
       ...options(
         {
           "styles/shared.css": ".shared {}",
@@ -168,7 +175,7 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
 
   test("does not append the Tailwind entry or imported dependency raw", async () => {
     const production = await productionTailwindGraph();
-    const css = await pageStylesheet({
+    const css = await stylesheetCss({
       ...options(production.files, production.graph),
       html: '<div class="p-special"></div>',
       tailwind: await tailwindStylesheets(),
@@ -192,7 +199,7 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
     production.files[after] = ".same { color: blue }";
     production.files["src/styles/global.css"] += "\n.same { color: green }";
     production.graph.modules.push(before, after);
-    const css = await pageStylesheet({
+    const css = await stylesheetCss({
       ...options(production.files, production.graph),
       tailwind: await tailwindStylesheets(),
     });
@@ -235,7 +242,7 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
       headInline: [`document.body.classList.add("underline")`],
       page: [`node.className = "italic"`],
     };
-    const css = await pageStylesheet({
+    const css = await stylesheetCss({
       ...options(
         production.files,
         production.graph,

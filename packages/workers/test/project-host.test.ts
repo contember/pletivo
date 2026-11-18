@@ -33,6 +33,7 @@ import {
   type ProjectHostOptions,
   type RenderEvent,
 } from "../src/project-host.ts";
+import { CssAssetNotFoundError } from "../src/css-assets.ts";
 import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
 import {
   RouteNotFoundError,
@@ -398,7 +399,7 @@ describe("createProjectHost", () => {
     test("serves a host that never rendered the page", async () => {
       const store = new MemoryGeneratedAssetStore();
       const [asset] = (await storeHost(store).render("/")).assets;
-      if (asset === undefined) throw new Error("no generated asset");
+      if (asset === undefined || typeof asset.body !== "string") throw new Error("no generated text asset");
 
       const cold = storeHost(store, { maxEntries: 32, maxBytes: 1024 * 1024 });
       const response = await cold.fetch(new Request(`https://example.test${asset.path}`));
@@ -767,6 +768,115 @@ import logoMarkup from "../assets/logo.svg?raw";
         const response = await host.fetch(new Request(`https://example.test${path}`));
         expect([path, response.status]).toEqual([path, 404]);
       }
+    });
+  });
+
+  describe("relative url() targets in CSS", () => {
+    const IMMUTABLE = "public, max-age=31536000, immutable";
+    /** Over the 4096 B inline limit, so a file. */
+    const BIG_SVG = `<svg xmlns="http://www.w3.org/2000/svg"><!--${"x".repeat(4200)}--></svg>\n`;
+    const SMALL_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"/></svg>\n';
+    const SMALL_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x80]);
+
+    /** The name `pletivo build` gives a file: Bun's md5 of its bytes, which this host does not use. */
+    function builtName(stem: string, ext: string, bytes: string | Uint8Array): string {
+      const hasher = new Bun.CryptoHasher("md5");
+      hasher.update(bytes);
+      return `/assets/${stem}.${hasher.digest("hex").slice(0, 8)}${ext}`;
+    }
+
+    function cssHost(site: string) {
+      const workspace = new FakeWorkspace();
+      workspace.write(
+        "/src/pages/index.astro",
+        '---\nimport "../../styles/site.css";\nimport "../styles/local.css";\n---\n' +
+          "<html><head><title>t</title></head><body><p>x</p></body></html>\n",
+      );
+      // Outside srcDir: `pletivo build` bundles it, resolving its `@import`s and `url()`s.
+      workspace.write("/styles/site.css", site);
+      workspace.write("/styles/base.css", ".base { color: red; }\n");
+      // Under srcDir: `pletivo build` emits it as written.
+      workspace.write("/src/styles/local.css", '@import "./other.css";\n.local { background: url(./missing.svg); }\n');
+      workspace.write("/src/styles/other.css", ".other { color: blue; }\n");
+      workspace.write("/src/img/big.svg", BIG_SVG);
+      workspace.write("/src/img/small.svg", SMALL_SVG);
+      workspace.write("/src/img/small.png", SMALL_PNG);
+      const host = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+      });
+      return { workspace, host };
+    }
+
+    const SITE =
+      '@import "./base.css";\n' +
+      ".big { background: url(../src/img/big.svg); }\n" +
+      '.small { background: url("../src/img/small.png"); }\n' +
+      ".icon { background: url('../src/img/small.svg#icon'); }\n" +
+      ".kept { background: url(/kept.png), url(https://example.test/remote.png); }\n";
+
+    test("links the file the build writes, inlines a small one as Bun does, and serves the file", async () => {
+      const { host } = cssHost(SITE);
+      const page = await host.render("/");
+      const big = builtName("big", ".svg", BIG_SVG);
+      const icon = builtName("small", ".svg", SMALL_SVG);
+
+      expect(page.html).toContain(`.big { background: url("${big}"); }`);
+      expect(page.html).toContain(`.small { background: url("data:image/png;base64,${Buffer.from(SMALL_PNG).toString("base64")}"); }`);
+      // A fragment cannot survive a `data:` URI, so a small target with one is a file too.
+      expect(page.html).toContain(`.icon { background: url("${icon}#icon"); }`);
+      expect(page.html).toContain(".kept { background: url(/kept.png), url(https://example.test/remote.png); }");
+      expect(page.assets.map((asset) => asset.path).sort()).toEqual([big, icon].sort());
+      expect(page.html).not.toContain('@import "./base.css"');
+
+      const response = await host.fetch(new Request(`https://example.test${big}`));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/svg+xml");
+      expect(response.headers.get("cache-control")).toBe(IMMUTABLE);
+      expect(await response.text()).toBe(BIG_SVG);
+    });
+
+    test("leaves a stylesheet under srcDir as written, as the build does", async () => {
+      const { html } = await cssHost(SITE).host.render("/");
+      expect(html).toContain('@import "./other.css";\n.local { background: url(./missing.svg); }');
+    });
+
+    test("names a new file when the target changes", async () => {
+      const { workspace, host } = cssHost(SITE);
+      const before = builtName("big", ".svg", BIG_SVG);
+      expect((await host.render("/")).html).toContain(before);
+
+      const edited = BIG_SVG.replace("<!--", "<!-- edited ");
+      workspace.write("/src/img/big.svg", edited);
+      const after = builtName("big", ".svg", edited);
+      const html = await (await host.fetch(new Request("https://example.test/"))).text();
+      expect(after).not.toBe(before);
+      expect(html).toContain(after);
+      expect(html).not.toContain(before);
+      expect(await (await host.fetch(new Request(`https://example.test${after}`))).text()).toBe(edited);
+    });
+
+    test("fails the page on a target the project does not have, as the build fails", async () => {
+      const { host } = cssHost(".gone { background: url(./missing.svg); }\n");
+      await expect(host.render("/")).rejects.toBeInstanceOf(CssAssetNotFoundError);
+      const response = await host.fetch(new Request("https://example.test/"));
+      expect(response.status).toBe(500);
+      expect(await response.text()).toContain('Could not resolve: "./missing.svg" in styles/site.css');
+    });
+
+    test("serves the file from the durable store to a host that never rendered the page", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const workspace = cssHost(SITE).workspace;
+      const options = { store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }), loader, compiler };
+      await createProjectHost({ ...options, generatedAssetStore: store }).render("/");
+
+      const big = builtName("big", ".svg", BIG_SVG);
+      const cold = createProjectHost({ ...options, generatedAssetStore: store });
+      const response = await cold.fetch(new Request(`https://example.test${big}`));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/svg+xml");
+      expect(await response.text()).toBe(BIG_SVG);
     });
   });
 

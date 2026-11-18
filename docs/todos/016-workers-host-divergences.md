@@ -347,6 +347,19 @@ Assembly follows canonical graph order, substitutes one Tailwind result at the c
 `@import` closure's position, and emits every stylesheet at most once. This preserves
 equal-specificity cascade order before and after the Tailwind entry.
 
+Each stylesheet is emitted as `pletivo build` emits it. The build bundles a sheet outside
+`srcDir`, or a compiled component's, through Bun; one under `srcDir` it emits as written.
+For a bundled sheet this host drops the `@import`s, whose targets the graph already
+emitted, and rewrites each relative `url()` the way `css-assets.ts` does: the file under
+`/assets/<stem>.<md5>.<ext>`, served from the generated-asset cache and store as
+immutable, or below 4096 B the `data:` URI Bun would inline. The naming and the inline
+rule are shared through `@pletivo/core/css-asset-urls`. The target is read on every
+render, so an edit names a new file. A missing target fails the page, as it fails the
+build. Not covered: `vite.build.assetsInlineLimit` (the artifact does not carry it), a
+`url()` in a package sheet the artifact vendored (its target is not in the project), and
+a base path other than `/`. On both hosts a sheet under `srcDir` and an `.astro`
+`<style>` keep their relative `url()` and `@import` as written.
+
 **What the fork cost, and what replaced it.** `fixture-tailwind` used to be the
 only assertion anywhere that this host's JS candidate scanner plus Tailwind over a
 virtual file map emits the **same bytes** as the real `@tailwindcss/node` +

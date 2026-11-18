@@ -30,6 +30,7 @@ import { islandCandidateSources, pageIslandClients } from "./island-clients.ts";
 import { attributeValue, htmlTags } from "./html-tags.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
+import type { ReadProjectBytes } from "./css-assets.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
 import type { TailwindIsolateHost } from "./tailwind-isolate.ts";
 import type { ProjectAssetsView } from "./asset-port.ts";
@@ -138,6 +139,12 @@ export interface ProjectOptions {
    * their metadata; the bytes never enter the isolate. See `ProjectAsset`.
    */
   assets?: ProjectAssetsView;
+  /**
+   * A project file's raw bytes, as `ProjectSnapshot.readBytes` reads them: the `url()`
+   * targets of the CSS a page inlines. Absent, a target is read from `files` as UTF-8,
+   * so a binary one is not found.
+   */
+  readBytes?: ReadProjectBytes;
   loader: WorkerLoaderBinding;
   executionNamespace?: ExecutionNamespace;
   /** Where pages live in `files`. */
@@ -199,7 +206,8 @@ export interface RenderedAsset {
   /** Root-absolute URL path, exactly as the HTML spells it. */
   path: string;
   contentType: string;
-  body: string;
+  /** Text for a `?url` import; bytes for a `url()` target in CSS, which may be binary. */
+  body: string | Uint8Array<ArrayBuffer>;
 }
 
 export interface RenderedPage {
@@ -520,6 +528,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const stylesheet = await pageStylesheet({
     // `project.sources`: only the artifact-merged map holds `node_modules` stylesheets.
     files: project.sources,
+    readBytes: options.readBytes ?? textBytes(files),
     islandStylesheets: islandStylesheetIds(options.artifact, rootDir),
     srcDir,
     rootDir,
@@ -532,10 +541,10 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     tailwindIsolate: tailwindIsolateHost(options),
   });
   return {
-    html: finalizeHtml(rendered.html, { compressHTML, partial: rendered.partial }, [stylesheet ?? "", styles], scripts),
+    html: finalizeHtml(rendered.html, { compressHTML, partial: rendered.partial }, [stylesheet?.css ?? "", styles], scripts),
     file,
     bundleId: rendered.bundleId,
-    assets: assetsOf(project.urlAssets),
+    assets: [...assetsOf(project.urlAssets), ...(stylesheet?.assets ?? [])],
     scriptUrls: loadedScriptUrls(rendered.html, project.program.scripts),
     staleArtifactInputs: [],
     logs: rendered.logs,
@@ -597,6 +606,15 @@ function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>
     if (src !== null && known.has(src)) loaded.add(src);
   }
   return [...loaded];
+}
+
+/** A store that holds only text: a file's bytes are its text, encoded. */
+function textBytes(files: ProjectFiles): ReadProjectBytes {
+  const encoder = new TextEncoder();
+  return (path) => {
+    const text = files.get(path);
+    return text === undefined ? undefined : new Uint8Array(encoder.encode(text));
+  };
 }
 
 /** The compiled component stylesheets the artifact places beside their components. */

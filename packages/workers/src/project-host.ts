@@ -40,6 +40,7 @@ import { publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
+import { CSS_ASSET_PREFIX } from "./css-assets.ts";
 import type { GeneratedAssetStore } from "./generated-asset-store.ts";
 import {
   WorkspaceSnapshotChangedError,
@@ -65,7 +66,7 @@ import {
 
 /** What `renderPage` takes, except what the host derives from its store and options. */
 export interface ProjectHostOptions
-  extends Omit<ProjectOptions, "files" | "assets" | "compileCache" | "artifact"> {
+  extends Omit<ProjectOptions, "files" | "assets" | "readBytes" | "compileCache" | "artifact"> {
   /** Where the project is read from. See `project-store.ts`. */
   store: ProjectStore;
   /**
@@ -170,8 +171,8 @@ function isNotFoundRoute(route: Route): boolean {
   return !route.isDynamic && !route.isEndpoint && route.segments.length === 1 && route.segments[0]?.value === "404";
 }
 
-/** Where `?url` imports are emitted; see `urlAssetHref` in compile/resolve.ts. */
-const GENERATED_ASSET_PREFIX = "/_astro/";
+/** Where `?url` imports are emitted (`urlAssetHref` in compile/resolve.ts), and `url()` targets in CSS. */
+const GENERATED_ASSET_PREFIXES = ["/_astro/", CSS_ASSET_PREFIX];
 
 /** Content-hashed names, so nothing served under one can go stale. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
@@ -261,6 +262,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       ...renderOptions,
       files: snapshot.files,
       assets: snapshot.assets,
+      readBytes: snapshot.readBytes?.bind(snapshot),
       compileCache,
       artifact: artifactOf(snapshot),
     };
@@ -351,7 +353,9 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   async function generatedAsset(pathname: string): Promise<RenderedAsset | null> {
     const cached = served.get(pathname);
     if (cached !== undefined) return cached;
-    if (generatedAssetStore === undefined || !pathname.startsWith(GENERATED_ASSET_PREFIX)) return null;
+    if (generatedAssetStore === undefined || !GENERATED_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+      return null;
+    }
     const stored = await generatedAssetStore.get(pathname);
     if (stored !== null) served.putAll([stored]);
     return stored;

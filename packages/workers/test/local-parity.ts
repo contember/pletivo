@@ -173,6 +173,7 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     page = await renderPage({
       files,
       assets: assetView,
+      readBytes: (key) => assets.get(key) ?? encodedText(files.get(key)),
       pathname,
       loader,
       compiler,
@@ -250,6 +251,14 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
 
   for (const asset of page.assets) {
     const built = path.join(outDir, asset.path.replace(/^\//, ""));
+    if (typeof asset.body !== "string") {
+      // A `url()` target in CSS: bytes, compared as bytes.
+      const expectedBytes = await Bun.file(built).bytes().catch(() => null);
+      if (expectedBytes === null) problems.push(`  ! ${asset.path} — the Bun host emitted no such asset`);
+      else if (!sameBytes(expectedBytes, asset.body)) problems.push(`  ! ${asset.path} — ${asset.body.length} B here, ${expectedBytes.length} B built`);
+      else console.log(`  = ${asset.path} (${asset.body.length} B)`);
+      continue;
+    }
     const expectedAsset = await Bun.file(built).text().catch(() => null);
     if (expectedAsset === null) {
       problems.push(`  ! ${asset.path} — the Bun host emitted no such asset`);
@@ -368,6 +377,10 @@ for (const problem of problems) console.log(`\n${problem}`);
 await fs.rm(outDir, { recursive: true, force: true });
 await fs.rm(artifactPath, { force: true });
 process.exit(problems.length === 0 ? 0 : 1);
+
+function encodedText(text: string | undefined): Uint8Array<ArrayBuffer> | undefined {
+  return text === undefined ? undefined : new Uint8Array(new TextEncoder().encode(text));
+}
 
 function firstDifference(expected: string, actual: string): string {
   const left = expected.split("\n");

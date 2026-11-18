@@ -28,7 +28,9 @@ export class MemoryGeneratedAssetStore implements GeneratedAssetStore {
   }
 
   put(assets: readonly RenderedAsset[]): Promise<void> {
-    for (const asset of assets) this.#assets.set(asset.path, { ...asset });
+    for (const asset of assets) {
+      this.#assets.set(asset.path, { ...asset, body: typeof asset.body === "string" ? asset.body : asset.body.slice() });
+    }
     return Promise.resolve();
   }
 }

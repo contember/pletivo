@@ -164,6 +164,20 @@ describe("byte parity with pletivo build", () => {
     180_000,
   );
 
+  for (const renderer of ["svelte", "vue"]) {
+    test(
+      `the ${renderer} fixture links the url() target pletivo build wrote, with its bytes`,
+      async () => {
+        const { output } = await localParity(`tests/fixture-astro-renderers-${renderer}`);
+        // The component's `url(./bg.svg)`, over the 4 kB inline limit: the file the build wrote,
+        // under the name it wrote it, byte for byte.
+        expect(output).toContain("= /assets/bg.2ea6e94c.svg (4904 B)");
+        expect(output).not.toContain("! /assets/");
+      },
+      180_000,
+    );
+  }
+
   test.skipIf(!HAS_TAILWIND)(
     "the Tailwind fixture agrees on every byte except how the CSS is delivered",
     async () => {

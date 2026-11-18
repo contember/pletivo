@@ -28,7 +28,8 @@ export class GeneratedAssetCache {
     const batch: RenderedAsset[] = [];
     for (const asset of assets) {
       batch.push(asset);
-      this.#entries.set(asset.path, asset, new TextEncoder().encode(asset.body).byteLength);
+      const bytes = typeof asset.body === "string" ? new TextEncoder().encode(asset.body).byteLength : asset.body.byteLength;
+      this.#entries.set(asset.path, asset, bytes);
     }
     return batch.filter((asset) => this.#entries.peek(asset.path) !== asset);
   }
