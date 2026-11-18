@@ -4,7 +4,7 @@ import { TAILWIND_RUNTIME_MODULE_ID, type InjectedScripts, type ModuleId } from 
 import { cssImports, withoutCssImports } from "@pletivo/core/css-imports";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 import { rewriteCssAssets, type CssAssetLink, type ReadProjectBytes } from "./css-assets.ts";
-import { adjacency, moduleOrder } from "./page-css.ts";
+import { adjacency, edgesOfKind } from "./page-css.ts";
 import type { ProjectFiles } from "./project-store.ts";
 import {
   compileTailwind,
@@ -45,6 +45,8 @@ export interface PageStylesheetOptions {
   tailwind?: TailwindStylesheets;
   /** Where a closure with `@plugin` or `@config` compiles; the host cannot run those modules. */
   tailwindIsolate?: TailwindIsolateHost;
+  /** Vite's `build.assetsInlineLimit`: a `url()` target below it is inlined as a `data:` URI. */
+  assetsInlineLimit: number;
 }
 
 const CSS_MODULE = ".module.css";
@@ -86,7 +88,7 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<Pa
     files: options.files,
     stylesheets: options.tailwind,
     candidates: [...candidates],
-    styleTargets: adjacency(options.styleGraph.styleEdges),
+    styleTargets: adjacency(edgesOfKind(options.styleGraph, "style")),
     embeddedTargets: embeddedTargets(options.styleGraph, options.files, options.tailwind),
   });
   const consumed = new Set(compilation.consumedStylesheets);
@@ -190,21 +192,22 @@ export interface StylesheetSource {
   content: string;
 }
 
+/**
+ * The stylesheets `entry` reaches, depth first, each importer's targets in source order: a CSS import
+ * before a component import comes before that component's CSS, as `pletivo build` walks the graph.
+ */
 function orderedStylesheets(entry: ModuleId, graph: ResolvedStyleGraph): ModuleId[] {
-  const stylesByImporter = adjacency(graph.styleEdges);
-  const execution = moduleOrder(entry, graph);
+  const imports = adjacency(graph.edges);
+  const stylesheets = new Set(edgesOfKind(graph, "style").map((edge) => edge.target));
   const ordered: ModuleId[] = [];
   const seen = new Set<ModuleId>();
-
-  const visitStyle = (moduleId: ModuleId): void => {
+  const visit = (moduleId: ModuleId): void => {
     if (seen.has(moduleId)) return;
     seen.add(moduleId);
-    for (const dependency of stylesByImporter.get(moduleId) ?? []) visitStyle(dependency);
-    ordered.push(moduleId);
+    for (const target of imports.get(moduleId) ?? []) visit(target);
+    if (stylesheets.has(moduleId)) ordered.push(moduleId);
   };
-  for (const moduleId of execution) {
-    for (const stylesheet of stylesByImporter.get(moduleId) ?? []) visitStyle(stylesheet);
-  }
+  visit(entry);
   return ordered;
 }
 
@@ -219,7 +222,7 @@ function embeddedTargets(
 ): ReadonlyMap<ModuleId, keyof TailwindStylesheets> {
   const embedded = new Map<ModuleId, keyof TailwindStylesheets>();
   const entries = Object.entries(stylesheets);
-  for (const edge of graph.styleEdges) {
+  for (const edge of edgesOfKind(graph, "style")) {
     const source = sourceFor(edge.target, files);
     if (source === undefined) continue;
     for (const [specifier, content] of entries) {
@@ -229,7 +232,7 @@ function embeddedTargets(
   return embedded;
 }
 
-type EmitOptions = Pick<PageStylesheetOptions, "srcDir" | "rootDir" | "readBytes" | "islandStylesheets">;
+type EmitOptions = Pick<PageStylesheetOptions, "srcDir" | "rootDir" | "readBytes" | "islandStylesheets" | "assetsInlineLimit">;
 
 function emitStylesheets(
   stylesheets: readonly StylesheetSource[],
@@ -251,7 +254,7 @@ function stylesheetText(stylesheet: StylesheetSource, options: EmitOptions, emit
   if (!moduleId.startsWith("project:")) return withoutCssImports(content);
   const file = moduleId.slice("project:".length);
   if (!options.islandStylesheets.has(moduleId) && file.startsWith(withSlash(options.srcDir))) return content;
-  return rewriteCssAssets(file, withoutCssImports(content), options.readBytes, emitted);
+  return rewriteCssAssets(file, withoutCssImports(content), options.readBytes, emitted, options.assetsInlineLimit);
 }
 
 function labelFor(

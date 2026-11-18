@@ -176,13 +176,13 @@ describe("Artifact V2 compiler consumer", () => {
     expect(stylesheetsOf(compiled, "src/pages/index.astro")).toEqual([IDs.css]);
     expect(stylesheetsOf(compiled, IDs.card)).toEqual([IDs.css]);
     expect(stylesheetsOf(compiled, IDs.css)).toEqual([IDs.theme]);
-    expect(compiled.styleGraph.styleEdges).toContainEqual({ importer: IDs.css, target: IDs.theme });
+    expect(compiled.styleGraph.edges).toContainEqual({ importer: IDs.css, target: IDs.theme, kind: "style" });
     expect(stylesOf(compiled, IDs.card)?.blocks[0]?.css).toContain("astro-");
   });
 
   test("makes every rewritten module import agree with its canonical edge", async () => {
     const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
-    for (const edge of [...compiled.styleGraph.executionEdges, ...compiled.styleGraph.styleEdges]) {
+    for (const edge of compiled.styleGraph.edges) {
       const importerBody = compiled.program.modules[nameOf(edge.importer)];
       expect(importerBody, edge.importer).toBeString();
       // A stylesheet's own `@import` edges stay out of its empty Loader module.
@@ -411,7 +411,7 @@ describe("injected scripts and strict parsing", () => {
     const html = finalizeHtml(
       "<html><head><title>t</title></head><body><p>x</p></body></html>",
       { compressHTML: undefined, partial: false },
-      [".site{color:blue}"],
+      { stylesheet: ".site{color:blue}", pageCss: "", inlined: false },
       PREPARED.artifact.scripts,
     );
     expect(html).toContain(
@@ -439,6 +439,26 @@ describe("injected scripts and strict parsing", () => {
     const invalid = JSON.parse(JSON.stringify(prepared));
     invalid.artifact.config.compressHTML = "false";
     expect(() => parsePreparedSite(invalid)).toThrow("$.artifact.config.compressHTML: expected a boolean");
+  });
+
+  test("round-trips inlineStylesheets and assetsInlineLimit and rejects a value outside them, by name", () => {
+    const prepared: PreparedSite = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: { compressHTML: true, inlineStylesheets: "always", assetsInlineLimit: 1024 },
+        scripts: { headInline: [], page: [] },
+        modules: [],
+        resolutions: [],
+      },
+    };
+    expect(parsePreparedSite(JSON.parse(serializePreparedSite(prepared)))).toEqual(prepared);
+
+    const mode = JSON.parse(JSON.stringify(prepared));
+    mode.artifact.config.inlineStylesheets = "sometimes";
+    expect(() => parsePreparedSite(mode)).toThrow('$.artifact.config.inlineStylesheets: expected "always", "auto" or "never"');
+    const limit = JSON.parse(JSON.stringify(prepared));
+    limit.artifact.config.assetsInlineLimit = "4096";
+    expect(() => parsePreparedSite(limit)).toThrow("$.artifact.config.assetsInlineLimit: expected a finite number");
   });
 
   async function unresolvedImportOf(source: string): Promise<UnresolvedImportError> {

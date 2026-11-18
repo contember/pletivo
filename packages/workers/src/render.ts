@@ -28,7 +28,8 @@ import { compileProject, isExecutableModule, type CompiledProject } from "./comp
 import { scriptCandidateSources } from "./browser-modules.ts";
 import { islandCandidateSources, pageIslandClients } from "./island-clients.ts";
 import { attributeValue, htmlTags } from "./html-tags.ts";
-import { finalizeHtml, pageCss } from "./page-css.ts";
+import { DEFAULT_ASSETS_INLINE_LIMIT } from "@pletivo/core/assets-inline";
+import { buildInlinesStylesheet, finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
 import { projectBytes, type CssAssetLink, type ReadProjectBytes } from "./css-assets.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
@@ -493,7 +494,8 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const prefix = pagesDir.endsWith("/") ? pagesDir : `${pagesDir}/`;
   const site = siteOf(options);
   const scripts = options.artifact?.prepared.artifact.scripts;
-  const compressHTML = options.artifact?.prepared.artifact.config.compressHTML;
+  const config = options.artifact?.prepared.artifact.config;
+  const compressHTML = config?.compressHTML;
   const srcDir = srcDirOf(options);
   const rootDir = projectRoot(options);
 
@@ -546,9 +548,16 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     browserSources: [...scriptCandidateSources(project.scripts, files), ...islandSources],
     tailwind: options.tailwind,
     tailwindIsolate: tailwindIsolateHost(options),
+    assetsInlineLimit: config?.assetsInlineLimit ?? DEFAULT_ASSETS_INLINE_LIMIT,
   });
+  const sheet = stylesheet?.css ?? "";
   return {
-    html: finalizeHtml(rendered.html, { compressHTML, partial: rendered.partial }, [stylesheet?.css ?? "", styles], scripts),
+    html: finalizeHtml(
+      rendered.html,
+      { compressHTML, partial: rendered.partial },
+      { stylesheet: sheet, pageCss: styles, inlined: buildInlinesStylesheet(sheet, config) },
+      scripts,
+    ),
     file,
     bundleId: rendered.bundleId,
     assets: assetsOf(project.urlAssets),

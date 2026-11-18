@@ -8,7 +8,6 @@
  * this host: the artifact does not carry it.
  */
 
-import { DEFAULT_ASSETS_INLINE_LIMIT } from "@pletivo/core/assets-inline";
 import {
   cssAssetFileName,
   inlinesCssAsset,
@@ -139,6 +138,7 @@ export function rewriteCssAssets(
   css: string,
   read: ReadProjectBytes,
   emitted: Map<string, CssAssetLink>,
+  inlineLimit: number,
 ): string {
   const urls = new Map<string, string>();
   for (const specifier of relativeCssAssetRefs(css)) {
@@ -146,7 +146,7 @@ export function rewriteCssAssets(
     const path = resolveFrom(stylesheet, ref.file);
     const bytes = path === null ? undefined : read(path);
     if (path === null || bytes === undefined) throw new CssAssetNotFoundError(stylesheet, specifier);
-    if (inlinesCssAsset(ref, bytes, path, DEFAULT_ASSETS_INLINE_LIMIT)) {
+    if (inlinesCssAsset(ref, bytes, path, inlineLimit)) {
       urls.set(specifier, `data:${dataUriType(path)};base64,${base64(bytes)}`);
       continue;
     }

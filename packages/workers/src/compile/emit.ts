@@ -66,8 +66,7 @@ export function emitProject(
 function emitStyleGraph(walk: CompileWalk): ResolvedStyleGraph {
   return {
     modules: walk.moduleIds,
-    executionEdges: walk.executionEdges,
-    styleEdges: walk.styleEdges,
+    edges: walk.edges,
     tailwindModules: walk.tailwindModules,
     styles: walk.moduleIds.flatMap((moduleId) => {
       const declared = walk.styles.get(moduleId);

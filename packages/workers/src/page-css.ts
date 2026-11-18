@@ -1,10 +1,11 @@
 /** Scoped Astro CSS ordering and safe HTML insertion. */
 
-import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
+import type { ArtifactConfig, InjectedScripts, ModuleId } from "@pletivo/core/artifact";
+import { DEFAULT_ASSETS_INLINE_LIMIT, stylesheetInliner } from "@pletivo/core/assets-inline";
 import { extractAstroScopes } from "@pletivo/core/astro-host/scoped-style";
 import { escapeStyleEnd } from "@pletivo/core/inline-style";
 import { pageDoctype, type PageDoctypeOptions } from "@pletivo/core/page-doctype";
-import type { ResolvedStyleGraph } from "./compiled-program.ts";
+import type { OrderedImportEdge, ResolvedStyleGraph } from "./compiled-program.ts";
 
 export interface PageCssOptions {
   entry: ModuleId;
@@ -58,7 +59,7 @@ function orderContributors(
 
 /** Executable modules reachable from `entry`, in depth-first post-order. */
 export function moduleOrder(entry: ModuleId, graph: ResolvedStyleGraph): ModuleId[] {
-  const imports = adjacency(graph.executionEdges);
+  const imports = adjacency(edgesOfKind(graph, "execution"));
   const order: ModuleId[] = [];
   const seen = new Set<ModuleId>();
   const visit = (moduleId: ModuleId): void => {
@@ -69,6 +70,10 @@ export function moduleOrder(entry: ModuleId, graph: ResolvedStyleGraph): ModuleI
   };
   visit(entry);
   return order;
+}
+
+export function edgesOfKind(graph: ResolvedStyleGraph, kind: OrderedImportEdge["kind"]): OrderedImportEdge[] {
+  return graph.edges.filter((edge) => edge.kind === kind);
 }
 
 /** Importer -> its targets, in edge order. */
@@ -84,17 +89,36 @@ export function adjacency(
   return byImporter;
 }
 
-/** `doctypeOptions.compressHTML` is the artifact's, absent for a pletivo-native project. */
+/** A page's stylesheet, its own `.astro`/`.tsx` CSS, and whether `pletivo build` would inline the sheet. */
+export interface PageCssParts {
+  stylesheet: string;
+  pageCss: string;
+  inlined: boolean;
+}
+
+/**
+ * Whether `pletivo build` inlines `stylesheet` (Astro's `build.inlineStylesheets`); a pletivo-native
+ * build links every sheet. Under `auto` the build measures its minified page-set sheet, this the page's as written.
+ */
+export function buildInlinesStylesheet(stylesheet: string, config: ArtifactConfig | undefined): boolean {
+  if (config?.inlineStylesheets === undefined) return false;
+  const inliner = stylesheetInliner(config.inlineStylesheets, config.assetsInlineLimit ?? DEFAULT_ASSETS_INLINE_LIMIT);
+  // The file name only reaches a function limit, which prepare refuses.
+  return inliner !== null && inliner(stylesheet, "");
+}
+
+/** An inlined sheet shares one `<style>` with the page CSS, as the build's does (Astro's `mergeInlineCss`). */
 export function finalizeHtml(
   html: string,
   doctypeOptions: PageDoctypeOptions,
-  css: readonly string[],
+  css: PageCssParts,
   scripts?: InjectedScripts,
 ): string {
   let out = html;
   // Prepended last: the CSS below may be prepended to a page without `<head>`.
   const doctype = pageDoctype(html, doctypeOptions);
-  const parts = css.filter(Boolean);
+  const filtered = [css.stylesheet, css.pageCss].filter(Boolean);
+  const parts = css.inlined && filtered.length > 0 ? [filtered.join("\n")] : filtered;
   if (parts.length > 0) {
     const tag = parts.map((part) => `<style>${escapeStyleEnd(part)}</style>`).join("\n");
     if (out.includes("</head>")) out = out.replace("</head>", () => tag + "\n</head>");

@@ -240,6 +240,66 @@ describe("byte parity with pletivo build", () => {
     );
   }
 
+  // Astro's framework examples as written: each page has a component stylesheet and its own scoped `<style>`,
+  // which the build inlines as one block. framework-preact is checked outside the repo (docs/todos/027): here the
+  // root tsconfig maps `preact/hooks` to pletivo's SSR stub, which lacks the hooks `preact/compat` imports.
+  const frameworkExamples: { example: string; modules: number }[] = [
+    { example: "react", modules: 3 },
+    { example: "solid", modules: 3 },
+    { example: "svelte", modules: 3 },
+    { example: "vue", modules: 3 },
+    { example: "multiple", modules: 18 },
+  ];
+  for (const { example, modules } of frameworkExamples) {
+    test(
+      `Astro's framework-${example} example renders and hydrates as the build does`,
+      async () => {
+        const { ok, output } = await localParity(`tests/fixture-astro-${example}-example`);
+        expect(output).toContain("1/1 byte-identical");
+        expect(output).toContain("= 1 enumerated path(s)");
+        expect(output).toContain(`= ${modules} island module(s) served as JavaScript, every import among them`);
+        expect(output).toContain(`= ${modules}/${modules} island module(s) byte-identical to pletivo build`);
+        expect(ok).toBe(true);
+      },
+      180_000,
+    );
+  }
+
+  // Each page has a stylesheet and its own scoped `<style>`; the two share one block only where the build inlines the sheet.
+  const stylesheetDelivery: { fixture: string; delivery: string }[] = [
+    // `auto`, a sheet over Vite's 4096 B: the build links it.
+    { fixture: "stylesheet-linked", delivery: "1 with the CSS delivery excepted" },
+    // `never`, a small sheet: linked too.
+    { fixture: "stylesheet-never", delivery: "1 with the CSS delivery excepted" },
+    // `always`, the same sheet as the linked fixture: inlined and merged.
+    { fixture: "stylesheet-always", delivery: "1 with the inlined <style> compared minified" },
+    // `vite.build.assetsInlineLimit: 10000`: the sheet is inlined and its 4904 B `url()` target is a `data:` URI.
+    { fixture: "stylesheet-limit", delivery: "1 with the inlined <style> compared minified" },
+  ];
+  for (const { fixture, delivery } of stylesheetDelivery) {
+    test(
+      `the ${fixture} fixture delivers its stylesheet and scoped CSS as the build does`,
+      async () => {
+        const { ok, output } = await localParity(`tests/fixture-astro-${fixture}`);
+        expect(output).toContain("1/1 byte-identical");
+        expect(output).toContain(delivery);
+        expect(ok).toBe(true);
+      },
+      60_000,
+    );
+  }
+
+  test(
+    "a stylesheet imported before a component comes before that component's, as the import graph orders them",
+    async () => {
+      // The page imports styles/z.css, then a component that imports styles/a.css: walk order z, a; path order a, z.
+      const { ok, output } = await localParity("tests/fixture-astro-css-import-order");
+      expect(output).toContain("1/1 byte-identical");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
   test.skipIf(!HAS_TAILWIND)(
     "the Tailwind fixture agrees on every byte except how the CSS is delivered",
     async () => {

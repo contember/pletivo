@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
-import type { ResolvedStyleGraph } from "../src/compiled-program.ts";
+import type { OrderedImportEdge, ResolvedStyleGraph } from "../src/compiled-program.ts";
 import {
   TailwindNotConfiguredError,
   pageStylesheet,
@@ -10,12 +10,19 @@ import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
 
 const PAGE = "project:src/pages/index.astro";
 
-function graph(
-  modules: ModuleId[],
-  executionEdges: ResolvedStyleGraph["executionEdges"] = [],
-  styleEdges: ResolvedStyleGraph["styleEdges"] = [],
-): ResolvedStyleGraph {
-  return { modules, executionEdges, styleEdges, styles: [], tailwindModules: [] };
+type Edge = { importer: ModuleId; target: ModuleId };
+
+/** Every executed module's edge before every stylesheet's; a test of their relative order lists `edges` itself. */
+function graph(modules: ModuleId[], executionEdges: Edge[] = [], styleEdges: Edge[] = []): ResolvedStyleGraph {
+  return {
+    modules,
+    edges: [
+      ...executionEdges.map((edge): OrderedImportEdge => ({ ...edge, kind: "execution" })),
+      ...styleEdges.map((edge): OrderedImportEdge => ({ ...edge, kind: "style" })),
+    ],
+    styles: [],
+    tailwindModules: [],
+  };
 }
 
 function options(
@@ -33,6 +40,7 @@ function options(
     styleGraph,
     entry: PAGE,
     html: "",
+    assetsInlineLimit: 4096,
     ...overrides,
   };
 }
@@ -68,6 +76,27 @@ describe("pageStylesheet canonical graph", () => {
     expect(css).toBe(
       `/* ${first} */\n.same { color: red }\n\n/* ${second} */\n.same { color: blue }`,
     );
+  });
+
+  test("follows the import walk, not path order: a sheet imported before a component comes first", async () => {
+    // The page imports z.css, then a component that imports a.css: path order would put a.css first.
+    const component = "project:src/components/C.astro";
+    const z = "project:src/styles/z.css";
+    const a = "project:src/styles/a.css";
+    const css = await stylesheetCss(options(
+      { "src/styles/z.css": ".z {}", "src/styles/a.css": ".a {}" },
+      {
+        modules: [PAGE, z, component, a],
+        edges: [
+          { importer: PAGE, target: z, kind: "style" },
+          { importer: PAGE, target: component, kind: "execution" },
+          { importer: component, target: a, kind: "style" },
+        ],
+        styles: [],
+        tailwindModules: [],
+      },
+    ));
+    expect(css).toBe("/* styles/z.css */\n.z {}\n\n/* styles/a.css */\n.a {}");
   });
 
   test("collects an opaque artifact stylesheet id without guessing its extension", async () => {
@@ -151,7 +180,7 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
   const tokens = "project:src/styles/tokens.css";
 
   async function productionTailwindGraph(
-    pageEdges: ResolvedStyleGraph["styleEdges"] = [{ importer: PAGE, target: entry }],
+    pageEdges: Edge[] = [{ importer: PAGE, target: entry }],
   ): Promise<{ files: Record<string, string>; graph: ResolvedStyleGraph }> {
     const embedded = await tailwindStylesheets();
     const tailwindPackage = "npm:tailwindcss/root";

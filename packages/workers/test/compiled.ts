@@ -28,12 +28,12 @@ export function hasModule(project: CompiledProject, ref: ModuleRef): boolean {
 
 /** What `ref` imports to execute, in source order, without repeats. */
 export function importsOf(project: CompiledProject, ref: ModuleRef): ModuleRef[] {
-  return targetsOf(project.styleGraph.executionEdges, idOf(ref));
+  return targetsOf(project.styleGraph.edges.filter((edge) => edge.kind === "execution"), idOf(ref));
 }
 
 /** The stylesheets `ref` imports, in source order, without repeats. */
 export function stylesheetsOf(project: CompiledProject, ref: ModuleRef): ModuleRef[] {
-  return targetsOf(project.styleGraph.styleEdges, idOf(ref));
+  return targetsOf(project.styleGraph.edges.filter((edge) => edge.kind === "style"), idOf(ref));
 }
 
 export function stylesOf(project: CompiledProject, ref: ModuleRef): ResolvedModuleStyles | undefined {

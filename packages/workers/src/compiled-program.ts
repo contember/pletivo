@@ -77,14 +77,11 @@ export interface ExecutableProgram {
   scripts: Readonly<Record<string, string>>;
 }
 
-export interface OrderedExecutionEdge {
+/** An importer's specifier: a stylesheet target is a `style` edge, anything else executes. */
+export interface OrderedImportEdge {
   importer: ModuleId;
   target: ModuleId;
-}
-
-export interface OrderedStyleEdge {
-  importer: ModuleId;
-  target: ModuleId;
+  kind: "execution" | "style";
 }
 
 export interface ResolvedStyleBlock {
@@ -108,8 +105,8 @@ export interface TailwindModuleUse {
 /** CSS inputs retain the same source-order graph as executable compilation. */
 export interface ResolvedStyleGraph {
   modules: ModuleId[];
-  executionEdges: OrderedExecutionEdge[];
-  styleEdges: OrderedStyleEdge[];
+  /** In walk order, so an importer's stylesheets and executed modules keep their relative source order. */
+  edges: OrderedImportEdge[];
   styles: ResolvedModuleStyles[];
   tailwindModules: TailwindModuleUse[];
 }

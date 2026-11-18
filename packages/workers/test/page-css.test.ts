@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ModuleId } from "@pletivo/core/artifact";
-import type { ResolvedStyleGraph } from "../src/compiled-program.ts";
-import { finalizeHtml, moduleOrder, pageCss } from "../src/page-css.ts";
+import type { OrderedImportEdge, ResolvedStyleGraph } from "../src/compiled-program.ts";
+import { buildInlinesStylesheet, finalizeHtml, moduleOrder, pageCss, type PageCssParts } from "../src/page-css.ts";
 
 /** A pletivo-native project's page. */
 const NATIVE = { compressHTML: undefined, partial: false };
@@ -9,12 +9,18 @@ const PAGE = "project:page.astro";
 const LAYOUT = "npm:layout/Layout.astro";
 const HEADER = "npm:layout/Header.astro";
 
+/** Two blocks, as a page whose build links its sheet gets them. */
+function linked(stylesheet: string, pageCss = ""): PageCssParts {
+  return { stylesheet, pageCss, inlined: false };
+}
+
 function graph(
   modules: ModuleId[],
-  executionEdges: ResolvedStyleGraph["executionEdges"] = [],
+  executionEdges: { importer: ModuleId; target: ModuleId }[] = [],
   styles: ResolvedStyleGraph["styles"] = [],
 ): ResolvedStyleGraph {
-  return { modules, executionEdges, styleEdges: [], styles, tailwindModules: [] };
+  const edges = executionEdges.map((edge): OrderedImportEdge => ({ ...edge, kind: "execution" }));
+  return { modules, edges, styles, tailwindModules: [] };
 }
 
 describe("moduleOrder", () => {
@@ -96,7 +102,7 @@ describe("finalizeHtml", () => {
     expect(finalizeHtml(
       "<html><head></head><body>x</body></html>",
       NATIVE,
-      ["site{}", "scoped{}"],
+      linked("site{}", "scoped{}"),
       { headInline: ["headOne()", "headTwo()"], page: ["pageOne()"] },
     )).toBe(
       '<!DOCTYPE html>\n<html><head><style>site{}</style>\n<style>scoped{}</style>\n' +
@@ -109,7 +115,7 @@ describe("finalizeHtml", () => {
     const html = finalizeHtml(
       "<html><head></head><body><p>safe</p></body></html>",
       NATIVE,
-      ['a::after{content:"</StYlE><script>bad()</script>"}'],
+      linked('a::after{content:"</StYlE><script>bad()</script>"}'),
     );
     expect(html.match(/<style>/g)).toHaveLength(1);
     expect(html.match(/<\/style>/gi)).toHaveLength(1);
@@ -120,7 +126,7 @@ describe("finalizeHtml", () => {
   test("inserts CSS and scripts verbatim, `$` replacement patterns included", () => {
     const dollars = "$$|$&|$'|$`";
     for (const html of ["<html><head></head><body>x</body></html>", "<html><body>x</body></html>"]) {
-      const out = finalizeHtml(html, NATIVE, [`a::after{content:"${dollars}"}`], {
+      const out = finalizeHtml(html, NATIVE, linked(`a::after{content:"${dollars}"}`), {
         headInline: [`head("${dollars}")`],
         page: [`page("${dollars}")`],
       });
@@ -134,18 +140,46 @@ describe("finalizeHtml", () => {
 
   test("falls back to body then front without reversing CSS", () => {
     const ordered = "<style>site{}</style>\n<style>scoped{}</style>";
-    expect(finalizeHtml("<html><body>x</body></html>", NATIVE, ["site{}", "scoped{}"]))
+    expect(finalizeHtml("<html><body>x</body></html>", NATIVE, linked("site{}", "scoped{}")))
       .toBe(`<!DOCTYPE html>\n<html><body>x${ordered}\n</body></html>`);
-    expect(finalizeHtml("<p>x</p>", NATIVE, ["site{}", "scoped{}"]))
+    expect(finalizeHtml("<p>x</p>", NATIVE, linked("site{}", "scoped{}")))
       .toBe(`${ordered}\n<p>x</p>`);
   });
 
   test("puts an Astro project's doctype before CSS prepended to a page without <head>", () => {
-    expect(finalizeHtml("<p>x</p>", { compressHTML: true, partial: false }, ["site{}"]))
+    expect(finalizeHtml("<p>x</p>", { compressHTML: true, partial: false }, linked("site{}")))
       .toBe("<!DOCTYPE html><style>site{}</style>\n<p>x</p>");
-    expect(finalizeHtml("<p>x</p>", { compressHTML: false, partial: false }, ["site{}"]))
+    expect(finalizeHtml("<p>x</p>", { compressHTML: false, partial: false }, linked("site{}")))
       .toBe("<!DOCTYPE html>\n<style>site{}</style>\n<p>x</p>");
-    expect(finalizeHtml("<p>x</p>", { compressHTML: true, partial: true }, ["site{}"]))
+    expect(finalizeHtml("<p>x</p>", { compressHTML: true, partial: true }, linked("site{}")))
       .toBe("<style>site{}</style>\n<p>x</p>");
+  });
+
+  test("merges an inlined sheet and the page CSS into one <style>, as the build does", () => {
+    const head = "<html><head></head><body>x</body></html>";
+    expect(finalizeHtml(head, NATIVE, { stylesheet: "site{}", pageCss: "scoped{}", inlined: true }))
+      .toContain("<head><style>site{}\nscoped{}</style>\n</head>");
+    expect(finalizeHtml(head, NATIVE, { stylesheet: "", pageCss: "scoped{}", inlined: true }))
+      .toContain("<head><style>scoped{}</style>\n</head>");
+    expect(finalizeHtml(head, NATIVE, { stylesheet: "", pageCss: "", inlined: true })).not.toContain("<style>");
+  });
+});
+
+describe("buildInlinesStylesheet", () => {
+  const small = ".a{}";
+  const big = `.a{--pad:${"x".repeat(5000)}}`;
+
+  test("follows build.inlineStylesheets, and links every sheet of a pletivo-native project", () => {
+    expect(buildInlinesStylesheet(small, undefined)).toBe(false);
+    expect(buildInlinesStylesheet(small, {})).toBe(false);
+    expect(buildInlinesStylesheet(big, { inlineStylesheets: "always" })).toBe(true);
+    expect(buildInlinesStylesheet(small, { inlineStylesheets: "never" })).toBe(false);
+  });
+
+  test("under auto, inlines strictly below the carried limit, Vite's 4096 B by default", () => {
+    expect(buildInlinesStylesheet(small, { inlineStylesheets: "auto" })).toBe(true);
+    expect(buildInlinesStylesheet(big, { inlineStylesheets: "auto" })).toBe(false);
+    expect(buildInlinesStylesheet(big, { inlineStylesheets: "auto", assetsInlineLimit: 8192 })).toBe(true);
+    expect(buildInlinesStylesheet("a".repeat(100), { inlineStylesheets: "auto", assetsInlineLimit: 100 })).toBe(false);
   });
 });
