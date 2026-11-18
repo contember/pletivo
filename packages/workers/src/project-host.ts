@@ -95,8 +95,8 @@ export interface ProjectHostOptions
   generatedAssetCache?: { maxEntries: number; maxBytes: number };
   /**
    * Durable storage for generated files, written before a page's HTML is returned and
-   * read when the in-memory cache misses. Without it, a file the cache cannot retain
-   * fails the page (`GeneratedAssetRetentionError`).
+   * read when the in-memory cache misses. Without it, a file the cache cannot retain, or
+   * more CSS `url()` records than the host keeps, fails the page (`GeneratedAssetRetentionError`).
    */
   generatedAssetStore?: GeneratedAssetStore;
   /**
@@ -349,10 +349,10 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     if (generatedAssetStore !== undefined && page.assets.length > 0) {
       await generatedAssetStore.put(page.assets);
     }
-    await recordCssAssets(page.cssAssets, snapshot.revision);
+    await recordCssAssets(pathname, page.cssAssets, snapshot.revision);
     const rejected = served.putAll(page.assets);
     if (rejected.length > 0 && generatedAssetStore === undefined) {
-      throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
+      throw new GeneratedAssetRetentionError(pathname, rejected.map((asset) => asset.path));
     }
     return { ...page, staleArtifactInputs: stale };
   }
@@ -385,8 +385,12 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     return stored;
   }
 
-  /** Remember each link, and put in the store only what this host did not already hold. */
-  async function recordCssAssets(links: readonly CssAssetLink[], revision: string): Promise<void> {
+  /**
+   * Remember each link, and put in the store only what this host did not already hold.
+   * Without a store, a page whose links this host cannot all keep fails, as a generated
+   * asset it cannot retain does.
+   */
+  async function recordCssAssets(pathname: string, links: readonly CssAssetLink[], revision: string): Promise<void> {
     const fresh = links.filter(
       (link) => cssAssets.peek(link.url)?.targets.some((known) => known.path === link.path && known.md5 === link.md5) !== true,
     );
@@ -396,6 +400,9 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
       // The render has just hashed these bytes at this revision.
       rememberCssAsset(link.url, { targets, verified: { revision, path: link.path } });
     }
+    if (generatedAssetStore !== undefined) return;
+    const lost = [...new Set(links.filter((link) => cssAssets.peek(link.url) === undefined).map((link) => link.url))];
+    if (lost.length > 0) throw new GeneratedAssetRetentionError(pathname, lost);
   }
 
   function rememberCssAsset(url: string, known: KnownCssAsset): void {
@@ -407,13 +414,14 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
    * current bytes have the record's full md5 is served, else 404. This host's targets come
    * first, then the store's, which another isolate may have added to.
    */
-  async function serveCssAsset(pathname: string, snapshot: ProjectSnapshot): Promise<Response | null> {
+  async function serveCssAsset(request: Request, pathname: string, snapshot: ProjectSnapshot): Promise<Response | null> {
+    if (request.method !== "GET" && request.method !== "HEAD") return null;
     if (!isCssAssetPath(pathname)) return null;
     const read = projectBytes(snapshot.files, snapshot.readBytes?.bind(snapshot));
     let known = cssAssets.get(pathname);
     if (known?.verified?.revision === snapshot.revision) {
       const bytes = read(known.verified.path);
-      if (bytes !== undefined) return cssAssetResponse(known.verified.path, bytes);
+      if (bytes !== undefined) return cssAssetResponse(request, known.verified.path, bytes);
     }
     let found = known === undefined ? null : intactTarget(known.targets, read);
     if (found === null && generatedAssetStore !== undefined) {
@@ -430,7 +438,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     if (known === undefined) return null;
     if (found === null) return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
     known.verified = { revision: snapshot.revision, path: found.path };
-    return cssAssetResponse(found.path, found.bytes);
+    return cssAssetResponse(request, found.path, found.bytes);
   }
 
   async function serveBrowserModule(url: URL, snapshot: ProjectSnapshot): Promise<Response> {
@@ -496,7 +504,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
         }
 
         return await withSnapshot(async (snapshot) => {
-          const cssAsset = await serveCssAsset(url.pathname, snapshot);
+          const cssAsset = await serveCssAsset(request, url.pathname, snapshot);
           if (cssAsset !== null) return cssAsset;
 
           if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url, snapshot);
@@ -614,8 +622,8 @@ function intactTarget(
   return null;
 }
 
-function cssAssetResponse(path: string, bytes: Uint8Array<ArrayBuffer>): Response {
-  return new Response(bytes, {
+function cssAssetResponse(request: Request, path: string, bytes: Uint8Array<ArrayBuffer>): Response {
+  return new Response(request.method === "HEAD" ? null : bytes, {
     headers: {
       "content-type": publicContentType(path),
       "content-length": String(bytes.byteLength),
@@ -630,10 +638,13 @@ function joinPath(directory: string, file: string): string {
 
 /** A rendered page references generated assets this host cannot retain for follow-up GETs. */
 export class GeneratedAssetRetentionError extends Error {
-  constructor(readonly paths: readonly string[]) {
+  constructor(
+    readonly pathname: string,
+    readonly paths: readonly string[],
+  ) {
     super(
-      `[pletivo-workers] generated asset cache cannot retain ${paths.length} referenced ` +
-        `asset(s): ${paths.map((path) => JSON.stringify(path)).join(", ")}`,
+      `[pletivo-workers] generated asset cache cannot retain ${paths.length} asset(s) ` +
+        `page ${JSON.stringify(pathname)} references: ${paths.map((path) => JSON.stringify(path)).join(", ")}`,
     );
     this.name = "GeneratedAssetRetentionError";
   }

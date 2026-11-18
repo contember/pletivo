@@ -1034,6 +1034,40 @@ import logoMarkup from "../assets/logo.svg?raw";
       expect(paths).toEqual([...links.slice(2), links[1]].map((link) => link.path));
     });
 
+    test("answers only GET and HEAD, and HEAD without a body", async () => {
+      const { host } = cssHost(SITE);
+      await host.render("/");
+      const url = `https://example.test${builtName("big", ".svg", BIG_SVG)}`;
+      const head = await host.fetch(new Request(url, { method: "HEAD" }));
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-length")).toBe(String(new TextEncoder().encode(BIG_SVG).byteLength));
+      expect(await head.text()).toBe("");
+      const post = await host.fetch(new Request(url, { method: "POST" }));
+      expect(post.status).toBe(404);
+      expect(await post.text()).not.toContain(BIG_SVG);
+    });
+
+    test("fails a page that links more targets than the host keeps, unless a store holds them", async () => {
+      const count = 4097;
+      const bytes = new Uint8Array(4097).fill(1);
+      const site = Array.from({ length: count }, (_, index) => `.i${index} { background: url(../src/many/i${index}.png); }\n`).join("");
+      const { workspace, host } = cssHost(site);
+      for (let index = 0; index < count; index++) workspace.write(`/src/many/i${index}.png`, bytes);
+
+      const error = await host.render("/").catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(GeneratedAssetRetentionError);
+      expect(error instanceof GeneratedAssetRetentionError ? [error.pathname, error.paths.length] : []).toEqual(["/", 1]);
+      expect(error instanceof Error ? error.message : "").toContain('page "/"');
+
+      const stored = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+        generatedAssetStore: new MemoryGeneratedAssetStore(),
+      });
+      expect((await stored.render("/")).cssAssets).toHaveLength(count);
+    });
+
     test("serves every one of 45 images over the inline limit", async () => {
       const images = Array.from({ length: 45 }, (_, index) => new Uint8Array(5000).fill(index + 1));
       const site = images.map((_, index) => `.i${index} { background: url(../src/img/i${index}.png); }\n`).join("");

@@ -173,7 +173,7 @@ same pletivo writes the same module, so only a pletivo released with this host f
 
 1. a generated `?url` asset (`/_astro/…`): the in-memory cache, then `generatedAssetStore`;
 2. a `url()` target of a page's inlined CSS (`/assets/<stem>.<hash>.<ext>`, the name
-   `pletivo build` writes): read from a project file recorded for that URL
+   `pletivo build` writes), on GET or HEAD: read from a project file recorded for that URL
    and served `immutable`, else 404. The record is looked up in memory, then in
    `generatedAssetStore`. The store is trusted; only a file whose current bytes have the
    record's full md5 is served, hashed once per snapshot revision. No bytes are kept;
@@ -197,7 +197,9 @@ Options a multi-session host needs:
   CSS `url()` URL to the project paths and md5 it names (`getCssAsset`/`putCssAssets`), so
   another isolate can serve it (`MemoryGeneratedAssetStore` implements the port for tests).
   A store holds one project's records. Files with the same name and bytes share a URL, so a
-  record lists up to `MAX_CSS_ASSET_TARGETS` (8) paths, the oldest dropped first.
+  record lists up to `MAX_CSS_ASSET_TARGETS` (8) paths, the oldest dropped first. Without a
+  store, a page linking more targets than the host keeps in memory (4096) fails with
+  `GeneratedAssetRetentionError`.
 - `content: { binding, store, owner }` with an entrypoint that answers through
   `store.forOwner(owner)`, so one session's render cannot read another's content.
 - `createWorkspaceProjectStore(fs, { root, revision: (root) => … })` — pass a revision
