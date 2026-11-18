@@ -75,35 +75,51 @@ function resolveFrom(stylesheet: string, file: string): string | null {
   return segments.join("/");
 }
 
-/** The media type Bun 1.3 writes into a `data:` URI it inlines, by extension. */
-const DATA_URI_TYPES: Readonly<Record<string, string>> = {
+/**
+ * The media type Bun 1.3.14 writes into a `data:` URI it inlines, by extension. Bun
+ * matches case-sensitively: `.PNG` is an octet stream. `test/css-data-uri-types.test.ts`
+ * checks every entry against `Bun.build`.
+ */
+export const DATA_URI_TYPES: Readonly<Record<string, string>> = {
   ".svg": "image/svg+xml",
+  ".svgz": "image/svg+xml",
   ".png": "image/png",
   ".apng": "image/apng",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
+  ".jpe": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".avif": "image/avif",
   ".ico": "image/x-icon",
   ".bmp": "image/x-ms-bmp",
   ".tiff": "image/tiff",
+  ".tif": "image/tiff",
   ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".jp2": "image/jp2",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
   ".otf": "font/otf",
+  ".ttc": "font/collection",
   ".eot": "application/vnd.ms-fontobject",
   ".mp4": "video/mp4",
+  ".m4v": "video/x-m4v",
   ".webm": "video/webm",
   ".mov": "video/quicktime",
+  ".ogv": "video/ogg",
   ".mp3": "audio/mpeg",
   ".wav": "audio/x-wav",
   ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
   ".opus": "audio/ogg",
   ".m4a": "audio/x-m4a",
   ".aac": "audio/x-aac",
   ".flac": "audio/x-flac",
+  ".weba": "audio/webm",
+  ".mid": "audio/midi",
+  ".midi": "audio/midi",
   ".pdf": "application/pdf",
   ".txt": "text/plain",
   ".csv": "text/csv",
@@ -115,7 +131,7 @@ const DATA_URI_TYPES: Readonly<Record<string, string>> = {
 function dataUriType(path: string): string {
   const slash = path.lastIndexOf("/");
   const dot = path.lastIndexOf(".");
-  const extension = dot > slash ? path.slice(dot).toLowerCase() : "";
+  const extension = dot > slash ? path.slice(dot) : "";
   return DATA_URI_TYPES[extension] ?? "application/octet-stream";
 }
 
