@@ -2,7 +2,7 @@ import path from "path";
 import fs from "fs/promises";
 import { Glob } from "bun";
 import { getScssOutput } from "./scss";
-import { planJsImportedCss } from "./js-imported-css";
+import { inImportOrder, planJsImportedCss } from "./js-imported-css";
 import { minifyCss } from "./css-minify";
 import type { StylesheetInliner } from "./assets-inline";
 
@@ -51,7 +51,8 @@ export function stylesheetsForPage(bundle: CssBundle, pageEntry: string | undefi
  *     `@tailwindcss/node` is available in the project, route everything
  *     through the Tailwind compile pipeline (imports, @source scanning,
  *     candidate extraction via @tailwindcss/oxide, build()).
- *  2. Fallback — concatenate all `.css` files from src/, no processing.
+ *  2. Fallback — concatenate all `.css` files from src/, no processing: the
+ *     ones a page imports in import-graph order, after the ones none does.
  *
  * `inline` decides, on each finished sheet, whether pages inline it; an inlined
  * sheet is not written to `dist/`. `null` links every sheet.
@@ -149,14 +150,14 @@ async function buildCss(projectRoot: string, srcDir: string): Promise<{
     }
   }
 
-  // Fallback: concat everything
+  // Fallback: concat everything, the imported files in import-graph order, as Astro emits them.
+  // Files no page imports still ship, ahead of the rest: Astro drops them, but sites may rely on it.
   const parts: string[] = [];
   const consumedSourceCss = new Set<string>();
-  for (const file of cssFiles.sort()) {
-    const full = path.join(srcPath, file);
+  for (const full of inImportOrder(cssFiles.sort().map((file) => path.resolve(srcPath, file)))) {
     const content = await Bun.file(full).text();
-    consumedSourceCss.add(path.resolve(full));
-    parts.push(`/* ${file} */\n${content}`);
+    consumedSourceCss.add(full);
+    parts.push(`/* ${path.relative(srcPath, full)} */\n${content}`);
   }
   return { css: parts.join("\n\n"), consumedSourceCss };
 }

@@ -586,3 +586,72 @@ describe("CSS chunking: CSS reached through a dynamic import", () => {
 		await expectWarmEqualsFull(["index.html", "other/index.html"]);
 	});
 });
+
+/**
+ * Without a Tailwind entry every `src/**\/*.css` ships in the shared sheet. Astro emits
+ * the imported ones in import-graph order, depth-first post-order from the page module;
+ * the expected orders below are what Astro 5.16 emits for the same sources.
+ */
+describe("CSS chunking: source CSS without Tailwind follows the import graph", () => {
+	async function sheetOf(page: string): Promise<string> {
+		return (await linkedCss([page]))[page].trim();
+	}
+
+	async function setupNested(): Promise<void> {
+		await write(
+			"src/pages/index.astro",
+			`---\nimport A from "../components/A.astro";\nimport "../styles/mid.css";\nimport { lib } from "../components/lib.js";\nimport "../styles/shared.css";\n---\n<html><head><title>order</title></head><body><A />{lib}</body></html>\n`,
+		);
+		await write(
+			"src/components/A.astro",
+			`---\nimport "../styles/a.css";\nimport B from "./B.astro";\nimport "../styles/a2.css";\n---\n<div class="a"><B /></div>\n`,
+		);
+		await write("src/components/B.astro", `---\nimport "../styles/b.css";\n---\n<p class="b">b</p>\n`);
+		await write("src/components/lib.js", `import "../styles/l.css";\nimport { label } from "./J.jsx";\nexport const lib = label;\n`);
+		await write("src/components/J.jsx", `import "../styles/j.css";\nimport "../styles/shared.css";\nexport const label = "j";\n`);
+		const zIndex = { a: 1, b: 2, a2: 3, mid: 4, l: 5, j: 6, shared: 7 };
+		for (const [name, z] of Object.entries(zIndex)) await write(`src/styles/${name}.css`, `.${name} { z-index: ${z}; }\n`);
+	}
+
+	it("puts a page's own import before the CSS of a component it imports next", async () => {
+		await write("src/pages/index.astro", `---\nimport "../styles/z.css";\nimport C from "../components/C.astro";\n---\n<html><head><title>za</title></head><body><C /></body></html>\n`);
+		await write("src/components/C.astro", `---\nimport "../styles/a.css";\n---\n<p class="a">c</p>\n`);
+		await write("src/styles/z.css", `.z { z-index: 1; }\n`);
+		await write("src/styles/a.css", `.a { z-index: 2; }\n`);
+		expect(runBuild().status).toBe(0);
+		expect(await sheetOf("index.html")).toBe(".z{z-index:1}.a{z-index:2}");
+	});
+
+	it("follows nested imports, a stylesheet between module imports, one reached twice, and .js/.jsx importers", async () => {
+		await setupNested();
+		expect(runBuild().status).toBe(0);
+		expect(await sheetOf("index.html")).toBe(
+			".a{z-index:1}.b{z-index:2}.a2{z-index:3}.mid{z-index:4}.l{z-index:5}.j{z-index:6}.shared{z-index:7}",
+		);
+	});
+
+	it("still ships a stylesheet no page imports, ahead of the imported ones", async () => {
+		await write("src/pages/index.astro", `---\nimport "../styles/z.css";\nimport "../styles/a.css";\n---\n<html><head><title>u</title></head><body>u</body></html>\n`);
+		await write("src/styles/z.css", `.z { z-index: 1; }\n`);
+		await write("src/styles/a.css", `.a { z-index: 2; }\n`);
+		await write("src/styles/m.css", `.m { z-index: 3; }\n`);
+		expect(runBuild().status).toBe(0);
+		expect(await sheetOf("index.html")).toBe(".m{z-index:3}.z{z-index:1}.a{z-index:2}");
+	});
+
+	it("keeps the order on a warm incremental build, with a restored dynamic route walked first", async () => {
+		await setupNested();
+		// `blog/[slug].astro` sorts before `index.astro`, so its CSS leads the merged walk.
+		await write(
+			"src/pages/blog/[slug].astro",
+			`---\nimport "../../styles/post.css";\nimport B from "../../components/B.astro";\nexport function getStaticPaths() {\n\treturn [{ params: { slug: "one" } }];\n}\n---\n<html><head><title>post</title></head><body><B /></body></html>\n`,
+		);
+		await write("src/styles/post.css", `.post { z-index: 8; }\n`);
+		const pages = ["index.html", "blog/one/index.html"];
+		const expected = ".post{z-index:8}.b{z-index:2}.a{z-index:1}.a2{z-index:3}.mid{z-index:4}.l{z-index:5}.j{z-index:6}.shared{z-index:7}";
+
+		await expectWarmEqualsFull(pages);
+		expect(await sheetOf("index.html")).toBe(expected);
+		expect(await sheetOf("blog/one/index.html")).toBe(expected);
+	});
+});

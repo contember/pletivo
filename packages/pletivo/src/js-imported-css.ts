@@ -141,9 +141,16 @@ export async function getJsImportedCssOutput(options: PlanCssOptions = {}): Prom
   return [plan.shared, ...plan.groups.map((g) => g.css)].filter(Boolean).join("\n\n");
 }
 
-export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<CssPlan> {
-  const consumed = options.consumedSourceCss ?? new Set<string>();
+/** The CSS the page entries reach, from one merged walk over the pages in path order. */
+interface PageCssWalk {
+  knownPages: string[];
+  /** First position at which any page reaches the module: the deterministic emission order. */
+  order: Map<string, number>;
+  kinds: Map<string, CssRefKind>;
+  pagesFor: Map<string, Set<string>>;
+}
 
+function walkPageCss(): PageCssWalk {
   const knownPages = [...pageEntryFiles].filter((file) => fileNodes.has(file)).sort();
 
   // Walk each page entry. `order` doubles as the set of attributed CSS
@@ -164,6 +171,25 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
       pages.add(page);
     });
   }
+  return { knownPages, order, kinds, pagesFor };
+}
+
+/**
+ * Absolute stylesheet paths in the order the page modules import them: the merged walk
+ * `planJsImportedCss` orders its groups by. Files no page reaches keep their given order,
+ * ahead of the rest.
+ */
+export function inImportOrder(files: readonly string[]): string[] {
+  const { order } = walkPageCss();
+  const unreached = files.filter((file) => !order.has(file));
+  const reached = files.filter((file) => order.has(file));
+  reached.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+  return [...unreached, ...reached];
+}
+
+export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<CssPlan> {
+  const consumed = options.consumedSourceCss ?? new Set<string>();
+  const { knownPages, order, kinds, pagesFor } = walkPageCss();
 
   // Anything the page walk did not reach still has to ship. Rather than
   // guess, it goes in the shared sheet — the pre-grouping behaviour.
