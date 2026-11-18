@@ -564,9 +564,10 @@ describe("CSS chunking: CSS reached through a dynamic import", () => {
 	it("keeps a cached page's import order when its dynamic import sits between static ones", async () => {
 		// Conflicting rules: the order decides which colour wins. Inner.astro is reached only
 		// through Dyn.astro, which a cached page does not load.
-		await write("vendor/a.css", `.t { color: rgb(1, 0, 0); }\n`);
-		await write("vendor/dyn.css", `.t { color: rgb(0, 2, 0); }\n`);
-		await write("vendor/z.css", `.t { color: rgb(0, 0, 3); }\n`);
+		// The minifier may drop overridden `.t` rules, so each file also carries a marker the order is read from.
+		await write("vendor/a.css", `.t { color: rgb(1, 0, 0); }\n.a-marker { order: 1; }\n`);
+		await write("vendor/dyn.css", `.t { color: rgb(0, 2, 0); }\n.dyn-marker { order: 2; }\n`);
+		await write("vendor/z.css", `.t { color: rgb(0, 0, 3); }\n.z-marker { order: 3; }\n`);
 		await write("vendor/Inner.astro", `---\nimport "./dyn.css";\n---\n<p>inner</p>\n`);
 		await write("vendor/Dyn.astro", `---\nimport Inner from "./Inner.astro";\n---\n<Inner />\n`);
 		await write("vendor/load.js", `export async function load() {\n\treturn (await import("./Dyn.astro")).default;\n}\n`);
@@ -578,7 +579,9 @@ describe("CSS chunking: CSS reached through a dynamic import", () => {
 
 		expect(runBuild().status).toBe(0);
 		const css = await linkedCss();
-		expect(css["index.html"]).toContain(".t{color:#010000}.t{color:#000200}.t{color:#000003}");
+		const sheet = css["index.html"];
+		expect(sheet.match(/\.(?:a|dyn|z)-marker\{/g)).toEqual([".a-marker{", ".dyn-marker{", ".z-marker{"]);
+		expect(sheet.match(/\.t\{color:#[0-9a-f]{6}\}/g)?.at(-1)).toBe(".t{color:#000003}");
 
 		await expectWarmEqualsFull(["index.html", "other/index.html"]);
 	});
