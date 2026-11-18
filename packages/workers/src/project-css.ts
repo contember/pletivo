@@ -1,7 +1,7 @@
 /** Page-scoped stylesheet assembly over the canonical resolved module graph. */
 
 import { TAILWIND_RUNTIME_MODULE_ID, type InjectedScripts, type ModuleId } from "@pletivo/core/artifact";
-import { cssImports } from "@pletivo/core/css-imports";
+import { cssImports, withoutCssImports } from "@pletivo/core/css-imports";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
 import { adjacency, moduleOrder } from "./page-css.ts";
 import type { ProjectFiles } from "./project-store.ts";
@@ -27,6 +27,8 @@ export { TailwindNotConfiguredError };
 export interface PageStylesheetOptions {
   /** Project paths and artifact ModuleIds mapped to their source text. */
   files: ProjectFiles;
+  /** The artifact's compiled component stylesheets, which sit under `srcDir` and are still bundled. */
+  islandStylesheets: ReadonlySet<ModuleId>;
   srcDir: string;
   rootDir: string;
   /** Canonical graph shared with executable compilation. */
@@ -217,13 +219,28 @@ function embeddedTargets(
   return embedded;
 }
 
+type EmitOptions = Pick<PageStylesheetOptions, "srcDir" | "rootDir" | "islandStylesheets">;
+
 function emitStylesheets(
   stylesheets: readonly StylesheetSource[],
-  options: Pick<PageStylesheetOptions, "srcDir" | "rootDir">,
+  options: EmitOptions,
 ): string {
   return stylesheets
-    .map((stylesheet) => `/* ${labelFor(stylesheet.moduleId, options)} */\n${stylesheet.content}`)
+    .map((stylesheet) => `/* ${labelFor(stylesheet.moduleId, options)} */\n${stylesheetText(stylesheet, options)}`)
     .join("\n\n");
+}
+
+/**
+ * What `pletivo build` emits for one stylesheet. It bundles one outside `srcDir`, or a
+ * compiled component's, through Bun, which resolves the `@import`s: here their targets are
+ * already emitted as graph nodes. One under `srcDir` it emits as written.
+ */
+function stylesheetText(stylesheet: StylesheetSource, options: EmitOptions): string {
+  const { moduleId, content } = stylesheet;
+  if (!moduleId.startsWith("project:")) return withoutCssImports(content);
+  const file = moduleId.slice("project:".length);
+  if (!options.islandStylesheets.has(moduleId) && file.startsWith(withSlash(options.srcDir))) return content;
+  return withoutCssImports(content);
 }
 
 function labelFor(

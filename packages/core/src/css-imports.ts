@@ -9,6 +9,17 @@ export function cssImports(source: string): string[] {
   return atRules(source, { import: readCssImportTarget }).map((rule) => rule.target);
 }
 
+/** `source` without the `@import` rules `cssImports` finds, each through its `;`. */
+export function withoutCssImports(source: string): string {
+  let out = "";
+  let from = 0;
+  for (const rule of atRules(source, { import: readCssImportTarget })) {
+    out += source.slice(from, rule.start);
+    from = ruleEnd(source, rule.end);
+  }
+  return out + source.slice(from);
+}
+
 /** A Tailwind `@plugin` or `@config` rule: a JavaScript module the stylesheet loads. */
 export interface TailwindModuleRef {
   hint: "plugin" | "config";
@@ -29,12 +40,21 @@ export function tailwindModuleRefs(source: string): TailwindModuleRef[] {
 
 type TargetReader = (source: string, cursor: number) => CssValue | null;
 
+interface AtRule {
+  name: string;
+  target: string;
+  /** Where the `@` is. */
+  start: number;
+  /** Just past the target. */
+  end: number;
+}
+
 /** The at-rules named in `readers` whose prelude starts with a target, in source order. */
 function atRules(
   source: string,
   readers: Readonly<Record<string, TargetReader>>,
-): { name: string; target: string }[] {
-  const rules: { name: string; target: string }[] = [];
+): AtRule[] {
+  const rules: AtRule[] = [];
   let cursor = 0;
   while (cursor < source.length) {
     cursor = skipCssTrivia(source, cursor);
@@ -45,16 +65,32 @@ function atRules(
       cursor = name === "" ? skipCssToken(source, cursor) : cursor + 1 + name.length;
       continue;
     }
+    const start = cursor;
     cursor = skipCssTrivia(source, cursor + 1 + name.length);
     const parsed = read(source, cursor);
     if (parsed) {
-      rules.push({ name, target: parsed.value });
+      rules.push({ name, target: parsed.value, start, end: parsed.end });
       cursor = parsed.end;
     } else {
       cursor = skipCssToken(source, cursor);
     }
   }
   return rules;
+}
+
+/** Just past the `;` that ends the rule whose prelude continues at `cursor`; before a block it runs into. */
+function ruleEnd(source: string, cursor: number): number {
+  let depth = 0;
+  let at = cursor;
+  while (at < source.length) {
+    const char = source[at];
+    if (char === "(") depth++;
+    else if (char === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && char === ";") return at + 1;
+    else if (depth === 0 && (char === "{" || char === "}")) return at;
+    at = skipCssToken(source, at);
+  }
+  return at;
 }
 
 /** The lowercased identifier after an `@`. */

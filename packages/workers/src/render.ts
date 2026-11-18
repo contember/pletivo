@@ -520,6 +520,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const stylesheet = await pageStylesheet({
     // `project.sources`: only the artifact-merged map holds `node_modules` stylesheets.
     files: project.sources,
+    islandStylesheets: islandStylesheetIds(options.artifact, rootDir),
     srcDir,
     rootDir,
     styleGraph: project.styleGraph,
@@ -596,6 +597,15 @@ function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>
     if (src !== null && known.has(src)) loaded.add(src);
   }
   return [...loaded];
+}
+
+/** The compiled component stylesheets the artifact places beside their components. */
+function islandStylesheetIds(artifact: ProjectArtifact | undefined, rootDir: string): Set<string> {
+  const ids = new Set<string>();
+  for (const file of artifact?.islands?.stylesheets.keys() ?? []) {
+    ids.add(projectModuleId(rootDir === "" ? file : `${rootDir}/${file}`));
+  }
+  return ids;
 }
 
 function assetsOf(urlAssets: ReadonlyMap<string, string>): RenderedAsset[] {

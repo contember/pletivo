@@ -25,6 +25,7 @@ function options(
 ): PageStylesheetOptions {
   return {
     files: new Map(Object.entries(files)),
+    islandStylesheets: new Set(),
     srcDir: "src",
     rootDir: "",
     styleGraph,
@@ -90,6 +91,43 @@ describe("pageStylesheet canonical graph", () => {
       ),
     ));
     expect(css?.match(/\.shared/g)).toHaveLength(1);
+  });
+
+  test("drops a bundled sheet's @import, whose target the graph emits, and keeps a source sheet's", async () => {
+    // `pletivo build` bundles a sheet outside srcDir and a compiled component's; one under srcDir it emits as written.
+    const shared = "project:styles/shared.css";
+    const outside = "project:styles/outside.css";
+    const component = "project:src/components/C.svelte.pletivo-style.css";
+    const source = "project:src/styles/source.css";
+    const css = await pageStylesheet({
+      ...options(
+        {
+          "styles/shared.css": ".shared {}",
+          "styles/outside.css": '@import "./shared.css";\n.outside {}',
+          "src/components/C.svelte.pletivo-style.css": '@import url("../../styles/shared.css") screen;\n.component {}',
+          "src/styles/source.css": '@import "../../styles/shared.css";\n.source {}',
+        },
+        graph(
+          [PAGE, outside, component, source, shared],
+          [],
+          [
+            { importer: PAGE, target: outside },
+            { importer: outside, target: shared },
+            { importer: PAGE, target: component },
+            { importer: component, target: shared },
+            { importer: PAGE, target: source },
+            { importer: source, target: shared },
+          ],
+        ),
+      ),
+      islandStylesheets: new Set([component]),
+    });
+    expect(css).toBe(
+      "/* styles/shared.css */\n.shared {}\n\n" +
+        "/* styles/outside.css */\n\n.outside {}\n\n" +
+        "/* components/C.svelte.pletivo-style.css */\n\n.component {}\n\n" +
+        '/* styles/source.css */\n@import "../../styles/shared.css";\n.source {}',
+    );
   });
 
   test("keeps CSS modules absent instead of inventing a shim", async () => {
