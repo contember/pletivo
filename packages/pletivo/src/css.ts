@@ -53,7 +53,7 @@ export function stylesheetsForPage(bundle: CssBundle, pageEntry: string | undefi
  *     through the Tailwind compile pipeline (imports, @source scanning,
  *     candidate extraction via @tailwindcss/oxide, build()).
  *  2. Fallback — concatenate all `.css` files from src/ in the order Astro
- *     emits them (`concatSourceCss`), no other processing.
+ *     emits them, local `@import`s inlined (`concatSourceCss`).
  *
  * `inline` decides, on each finished sheet, whether pages inline it; an inlined
  * sheet is not written to `dist/`. `null` links every sheet.
