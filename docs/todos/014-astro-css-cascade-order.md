@@ -62,8 +62,68 @@ is `@astrojs/compiler` 2.13 handing back `result.css[]` in reverse source order,
 fixed in compiler 3 — the version pletivo pins. Pletivo follows source order;
 the conformance snapshot records the divergence deliberately.
 
+## Source CSS without Tailwind
+
+The same order applies to the stylesheets a module imports, not only to the
+hoisted blocks. Without a Tailwind entry, `buildCss` puts every
+`src/**/*.css` in the shared sheet. It used to sort them by path, so a page that
+imports `z.css` and then a component that imports `a.css` got `.a` before `.z`.
+Astro gives `.z` first.
+
+`concatSourceCss` now orders the sheet like this:
+
+- **Per page, Astro's order.** Each page's walk is depth-first post-order from
+  the page module. Checked against Astro 5.16 on nested `.astro`, `.js` and
+  `.jsx` importers, a CSS import between module imports, and one sheet reached
+  twice.
+- **Across pages, a topological merge into one shared sheet**
+  (`importOrderedCss`). Each pair of files a page reaches one after the other
+  is an edge; ties go to first-seen position, the pages walked in path order.
+  `about` importing `components.css` alone does not put it ahead of the `base.css`
+  that `index` imports first.
+- **Conflicts.** Astro links a sheet per page; pletivo links one. When two pages
+  order the same files differently, no single order serves both. Those files (a
+  cycle in the merge) keep first-seen order. Example: `index` imports `y c`,
+  `post` imports `z`, a component importing `c`, then `y`. The sheet is
+  `z y c`: right for `index`, while `post` gets `y` before `c`. Splitting the
+  fallback into per-page sheets would fix it; that changes the sheet layout and
+  is not done.
+- **`@import` between source files.** A file another source file `@import`s
+  without conditions is emitted depth-first just before its importer, and the
+  `@import` is dropped: Vite inlines it the same way. A page importing
+  `x.css` and `g.css`, where `g.css` imports `v.css` and `r.css`, gets
+  `x v r g`. Before, the file shipped by path order and the `@import` stayed,
+  resolving against `/assets/` to a 404. An `@import` with `layer()`,
+  `supports()` or a media query is not inlined.
+- **Every other `@import`** (a URL, a package, a conditional one) and the first
+  `@charset` move to the top of the sheet in order, as Vite hoists them. An
+  `@import` below a rule is invalid and the browser drops it. Hoisting it above an
+  `@layer` statement can change the layer order, as it does in Vite.
+- **Files no page imports** still ship, first and in path order, unless another
+  source file `@import`s them. Astro drops them, and so does the Tailwind path,
+  apart from the entry and its `@import`s. Sites built on the fallback may rely
+  on them.
+
+Which sheet a rule lands in does not change: the fallback's files stay in the
+shared sheet.
+
+Pinned by "source CSS without Tailwind follows the import graph" in
+`tests/e2e/css-chunking.test.ts`. That includes a warm `--incremental` build
+equal to a full one.
+
+Still different from Astro:
+
+- `pletivo dev` registers no page entries, so it serves the fallback in path order.
+- CSS Modules and CSS from outside `src/` come after all source CSS: the page
+  groups, and the shared sheet's unattributed part, follow `base`. That predates
+  this change.
+- The page groups (CSS outside `src/`) are ranked by first-seen position, not
+  by the merge. `about` importing `vendor/components.css` alone still puts it
+  ahead of the `vendor/base.css` that `index` imports first.
+
 ## Files
 
 - `packages/pletivo/src/astro-css-order.ts`
+- `packages/pletivo/src/css.ts` — `concatSourceCss()`, the fallback; `js-imported-css.ts` — `importOrderedCss()`
 - `packages/pletivo/src/astro-plugin.ts` — `astroCssMap`, `getAstroCssForPage()`
 - `tests/conformance/fixtures/css-cascade-order/`

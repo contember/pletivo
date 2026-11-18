@@ -13,11 +13,41 @@ export function cssImports(source: string): string[] {
 export function withoutCssImports(source: string): string {
   let out = "";
   let from = 0;
-  for (const rule of atRules(source, { import: readCssImportTarget })) {
+  for (const rule of cssImportRules(source)) {
     out += source.slice(from, rule.start);
-    from = ruleEnd(source, rule.end);
+    from = rule.end;
   }
   return out + source.slice(from);
+}
+
+/** One `@import` or `@charset` rule of a stylesheet. */
+export interface CssPreludeRule {
+  name: "import" | "charset";
+  target: string;
+  /** Where the `@` is. */
+  start: number;
+  /** Just past the rule's `;`. */
+  end: number;
+  /** What follows the target before the `;`: an `@import`'s `layer()`, `supports()` or media query. Trimmed. */
+  conditions: string;
+}
+
+/** The `@import` rules `cssImports` finds, each through its `;`. */
+function cssImportRules(source: string): CssPreludeRule[] {
+  return preludeRules(source, { import: readCssImportTarget });
+}
+
+/** The `@import` and `@charset` rules, in source order: the at-rules CSS allows only before every other rule. */
+export function cssPreludeRules(source: string): CssPreludeRule[] {
+  return preludeRules(source, { import: readCssImportTarget, charset: readQuotedTarget });
+}
+
+function preludeRules(source: string, readers: Readonly<Record<string, TargetReader>>): CssPreludeRule[] {
+  return atRules(source, readers).map((rule) => {
+    const end = ruleEnd(source, rule.end);
+    const conditions = source.slice(rule.end, source[end - 1] === ";" ? end - 1 : end).trim();
+    return { name: rule.name === "charset" ? "charset" : "import", target: rule.target, start: rule.start, end, conditions };
+  });
 }
 
 /** A Tailwind `@plugin` or `@config` rule: a JavaScript module the stylesheet loads. */

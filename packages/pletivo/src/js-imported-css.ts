@@ -141,9 +141,18 @@ export async function getJsImportedCssOutput(options: PlanCssOptions = {}): Prom
   return [plan.shared, ...plan.groups.map((g) => g.css)].filter(Boolean).join("\n\n");
 }
 
-export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<CssPlan> {
-  const consumed = options.consumedSourceCss ?? new Set<string>();
+/** The CSS the page entries reach, from one merged walk over the pages in path order. */
+interface PageCssWalk {
+  knownPages: string[];
+  /** First position at which any page reaches the module: the deterministic emission order. */
+  order: Map<string, number>;
+  kinds: Map<string, CssRefKind>;
+  pagesFor: Map<string, Set<string>>;
+  /** Each known page's own walk: the CSS it reaches, each module once, in import order. */
+  sequences: string[][];
+}
 
+function walkPageCss(): PageCssWalk {
   const knownPages = [...pageEntryFiles].filter((file) => fileNodes.has(file)).sort();
 
   // Walk each page entry. `order` doubles as the set of attributed CSS
@@ -153,7 +162,9 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
   const order = new Map<string, number>();
   const kinds = new Map<string, CssRefKind>();
   const pagesFor = new Map<string, Set<string>>();
+  const sequences: string[][] = [];
   for (const page of knownPages) {
+    const sequence: string[] = [];
     walkCssGraph(page, new Set<string>(), (file, kind) => {
       if (!order.has(file)) {
         order.set(file, order.size);
@@ -161,9 +172,101 @@ export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<C
       }
       let pages = pagesFor.get(file);
       if (!pages) pagesFor.set(file, (pages = new Set<string>()));
+      if (!pages.has(page)) sequence.push(file);
       pages.add(page);
     });
+    sequences.push(sequence);
   }
+  return { knownPages, order, kinds, pagesFor, sequences };
+}
+
+/**
+ * Every CSS module the page entries reach, in one order for a sheet all of them link. Each page's
+ * own import order is kept where the pages agree: a topological merge of the page walks, ties broken
+ * by first-seen position. Modules the pages order differently (a cycle) keep first-seen order.
+ */
+export function importOrderedCss(): string[] {
+  const { order, sequences } = walkPageCss();
+  const next = new Map<string, Set<string>>();
+  for (const file of order.keys()) next.set(file, new Set<string>());
+  for (const sequence of sequences) {
+    for (let i = 1; i < sequence.length; i++) next.get(sequence[i - 1])?.add(sequence[i]);
+  }
+  const rank = (file: string): number => order.get(file) ?? 0;
+  const components = stronglyConnected([...order.keys()], next);
+  const componentOf = new Map<string, number>();
+  components.forEach((members, index) => {
+    members.sort((a, b) => rank(a) - rank(b));
+    for (const file of members) componentOf.set(file, index);
+  });
+  const incoming = components.map(() => 0);
+  for (const [from, targets] of next) {
+    for (const to of targets) {
+      if (componentOf.get(from) !== componentOf.get(to)) incoming[componentOf.get(to) ?? 0]++;
+    }
+  }
+  const ready = new Set<number>();
+  components.forEach((_, index) => {
+    if (incoming[index] === 0) ready.add(index);
+  });
+  const out: string[] = [];
+  while (ready.size > 0) {
+    let pick = -1;
+    for (const index of ready) {
+      if (pick === -1 || rank(components[index][0]) < rank(components[pick][0])) pick = index;
+    }
+    ready.delete(pick);
+    for (const file of components[pick]) {
+      out.push(file);
+      for (const to of next.get(file) ?? []) {
+        const target = componentOf.get(to) ?? 0;
+        if (target === pick) continue;
+        incoming[target]--;
+        if (incoming[target] === 0) ready.add(target);
+      }
+    }
+  }
+  return out;
+}
+
+/** Tarjan's strongly connected components of the graph `next` describes over `nodes`. */
+function stronglyConnected(nodes: string[], next: ReadonlyMap<string, ReadonlySet<string>>): string[][] {
+  const index = new Map<string, number>();
+  const low = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const components: string[][] = [];
+  const visit = (node: string): void => {
+    index.set(node, index.size);
+    low.set(node, index.get(node) ?? 0);
+    stack.push(node);
+    onStack.add(node);
+    for (const to of next.get(node) ?? []) {
+      if (!index.has(to)) {
+        visit(to);
+        low.set(node, Math.min(low.get(node) ?? 0, low.get(to) ?? 0));
+      } else if (onStack.has(to)) {
+        low.set(node, Math.min(low.get(node) ?? 0, index.get(to) ?? 0));
+      }
+    }
+    if (low.get(node) !== index.get(node)) return;
+    const component: string[] = [];
+    let member: string | undefined;
+    do {
+      member = stack.pop();
+      if (member === undefined) break;
+      onStack.delete(member);
+      component.push(member);
+    } while (member !== node);
+    components.push(component);
+  };
+  for (const node of nodes) if (!index.has(node)) visit(node);
+  return components;
+}
+
+export async function planJsImportedCss(options: PlanCssOptions = {}): Promise<CssPlan> {
+  const consumed = options.consumedSourceCss ?? new Set<string>();
+  const { knownPages, order, kinds, pagesFor } = walkPageCss();
 
   // Anything the page walk did not reach still has to ship. Rather than
   // guess, it goes in the shared sheet — the pre-grouping behaviour.
