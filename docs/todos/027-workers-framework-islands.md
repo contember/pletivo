@@ -87,8 +87,8 @@ The JavaScript at every island URL a Workers render emits, served by the host.
     their import graph closed, 18/18 byte-identical;
   - the single-renderer fixtures react, solid, svelte and vue: 3/3 island modules each, and
     every page byte-identical once both inlined head `<style>` texts went through the Bun
-    host's minifier (below). react and solid pass. svelte and vue fail on the two CSS bugs
-    listed under what is left, and nothing else.
+    host's minifier (below). react and solid pass. svelte and vue fail on the first two CSS
+    differences listed under what is left, and nothing else.
 
   Astro's framework-multiple gives 18/18 modules, by hand.
 
@@ -103,14 +103,21 @@ The JavaScript at every island URL a Workers render emits, served by the host.
 - **CSS in an Astro project.** `pletivo build` inlines a small sheet minified, with
   `@import` flattened and `url()` rewritten to `/assets/<name>.<hash>.<ext>`; this host
   inlines the per-page sheet as written, labelled per file (023 §5). The parity harness
-  (`test/inlined-style.ts`) passes both head `<style>` texts through the Bun host's
-  `minifyCss` and compares the whole page byte for byte; a sheet missing one rule fails it.
-  Two real bugs remain on svelte and vue, both in this host:
-  - a relative `url()` is left relative to the page, a broken image;
+  (`test/inlined-style.ts`) pairs the head `<style>` blocks in order, passes the first pair
+  whose texts differ through the Bun host's `minifyCss` and compares the whole page byte
+  for byte; a sheet missing one rule fails it, and a sheet the minifier rejects is named.
+  Three differences remain, all in this host:
+  - a relative `url()` is left relative to the page, a broken image (svelte, vue);
   - a component sheet's `@import` stays in its text after the imported sheet was emitted
-    above it, so it lands after other rules. The CSS spec has a browser ignore it; Bun's
-    CSS parser rejects the sheet ("@import rules must come before any other rules except
-    @charset and @layer") and `minifyCss` returns it unminified.
+    above it, so it lands after other rules (svelte, vue). The CSS spec has a browser ignore
+    it; Bun's CSS parser rejects the sheet ("@import rules must come before any other rules
+    except @charset and @layer");
+  - the build merges adjacent inline CSS into one `<style>`, as Astro's `mergeInlineCss`
+    does; this host emits the page stylesheet and the scoped CSS as two blocks
+    (`finalizeHtml` in `page-css.ts`, called from `render.ts`). A page with a component
+    stylesheet and its own scoped `<style>` gets
+    `<style>.react-counter{…}main[data-astro-cid-…]{…}</style>` from the build and two
+    `<style>` blocks here. No fixture in the parity test has such a page yet.
 - **Refused by name at prepare:**
   - a component importing a package stylesheet, or a stylesheet with a query;
   - a `.svelte` or `.vue` component from a package that has a `<style>`: its compiled CSS
@@ -139,4 +146,5 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   cannot be carried for the live copy, prepare refuses it by name.
 - **`tests/fixture-astro-renderers-preact`: refused for parity.** Its endpoint imports
   `astro/container`, which reaches `node:path`, so prepare fails, and this host has no
-  endpoint routes. Preact is covered by the multi fixture and the framework-preact example.
+  endpoint routes. Preact is covered on Workers by the multi fixture; framework-preact waits
+  on W3.
