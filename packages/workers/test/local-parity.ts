@@ -250,16 +250,18 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     }
   }
 
+  // A `url()` target of the inlined CSS: the file it names, as the host serves it, against the build's.
+  for (const link of page.cssAssets) {
+    const served = fixtureBytes(link.path);
+    const expectedBytes = await Bun.file(path.join(outDir, link.url.replace(/^\//, ""))).bytes().catch(() => null);
+    if (expectedBytes === null) problems.push(`  ! ${link.url} — the Bun host emitted no such asset`);
+    else if (served === undefined) problems.push(`  ! ${link.url} — names ${link.path}, which the fixture does not have`);
+    else if (!sameBytes(expectedBytes, served)) problems.push(`  ! ${link.url} — ${served.length} B here, ${expectedBytes.length} B built`);
+    else console.log(`  = ${link.url} (${served.length} B)`);
+  }
+
   for (const asset of page.assets) {
     const built = path.join(outDir, asset.path.replace(/^\//, ""));
-    if (typeof asset.body !== "string") {
-      // A `url()` target in CSS: bytes, compared as bytes.
-      const expectedBytes = await Bun.file(built).bytes().catch(() => null);
-      if (expectedBytes === null) problems.push(`  ! ${asset.path} — the Bun host emitted no such asset`);
-      else if (!sameBytes(expectedBytes, asset.body)) problems.push(`  ! ${asset.path} — ${asset.body.length} B here, ${expectedBytes.length} B built`);
-      else console.log(`  = ${asset.path} (${asset.body.length} B)`);
-      continue;
-    }
     const expectedAsset = await Bun.file(built).text().catch(() => null);
     if (expectedAsset === null) {
       problems.push(`  ! ${asset.path} — the Bun host emitted no such asset`);

@@ -36,11 +36,19 @@ import {
 import { attributeSpan, htmlTags } from "./html-tags.ts";
 import { detectProjectFeatures, type ProjectFeatures } from "./project-features.ts";
 import { islandClientResponse } from "./island-clients.ts";
-import { publicFileResponse } from "./public-files.ts";
+import { publicContentType, publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
-import { isCssAssetPath } from "./css-assets.ts";
+import { BoundedLru } from "./bounded-lru.ts";
+import {
+  isCssAssetPath,
+  parseCssAssetRecord,
+  projectBytes,
+  recordedCssAsset,
+  type CssAssetLink,
+  type CssAssetRecord,
+} from "./css-assets.ts";
 import type { GeneratedAssetStore } from "./generated-asset-store.ts";
 import {
   WorkspaceSnapshotChangedError,
@@ -177,6 +185,12 @@ const GENERATED_ASSET_PREFIX = "/_astro/";
 /** Content-hashed names, so nothing served under one can go stale. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
+/**
+ * CSS asset records kept per host. A record is a URL, a path and an md5, about 200 B, so
+ * this bounds the map near 1 MiB; an evicted URL is looked up in the store, or rendered again.
+ */
+const CSS_ASSET_RECORDS = { maxEntries: 4096, maxBytes: 1024 * 1024 };
+
 export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const {
     store,
@@ -194,6 +208,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const directArtifact =
     artifactValue === undefined ? undefined : loadProjectArtifact(artifactValue);
   const served = new GeneratedAssetCache(generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE);
+  const cssAssets = new BoundedLru<CssAssetRecord>(CSS_ASSET_RECORDS);
   // Per host, not a module global: an entry's `.astro` output is bound to its compiler.
   const compileCache =
     compileCacheOption === false ? undefined : (compileCacheOption ?? createCompileCache());
@@ -325,6 +340,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     if (generatedAssetStore !== undefined && page.assets.length > 0) {
       await generatedAssetStore.put(page.assets);
     }
+    await recordCssAssets(page.cssAssets);
     const rejected = served.putAll(page.assets);
     if (rejected.length > 0 && generatedAssetStore === undefined) {
       throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
@@ -354,12 +370,49 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     const cached = served.get(pathname);
     if (cached !== undefined) return cached;
     // Only a generated asset's name: a `public/` file under `/assets/` never costs a store read.
-    if (generatedAssetStore === undefined || !(pathname.startsWith(GENERATED_ASSET_PREFIX) || isCssAssetPath(pathname))) {
-      return null;
-    }
+    if (generatedAssetStore === undefined || !pathname.startsWith(GENERATED_ASSET_PREFIX)) return null;
     const stored = await generatedAssetStore.get(pathname);
     if (stored !== null) served.putAll([stored]);
     return stored;
+  }
+
+  /** Remember each link, and put in the store only what this host did not already hold. */
+  async function recordCssAssets(links: readonly CssAssetLink[]): Promise<void> {
+    const fresh = links.filter((link) => {
+      const known = cssAssets.peek(link.url);
+      return known?.path !== link.path || known.md5 !== link.md5;
+    });
+    if (generatedAssetStore !== undefined && fresh.length > 0) await generatedAssetStore.putCssAssets(fresh);
+    for (const link of links) cssAssets.set(link.url, { path: link.path, md5: link.md5 }, cssAssetRecordBytes(link));
+  }
+
+  /** The record for `pathname`: this host's, then the store's. Only a name of the asset shape is looked up. */
+  async function cssAssetRecord(pathname: string): Promise<CssAssetRecord | null> {
+    if (!isCssAssetPath(pathname)) return null;
+    const known = cssAssets.get(pathname);
+    if (known !== undefined) return known;
+    if (generatedAssetStore === undefined) return null;
+    const record = parseCssAssetRecord(pathname, await generatedAssetStore.getCssAsset(pathname));
+    if (record !== null) cssAssets.set(pathname, record, cssAssetRecordBytes({ url: pathname, ...record }));
+    return record;
+  }
+
+  /**
+   * A recorded CSS asset, read from the project now: only a path some render recorded is
+   * read. A file whose bytes no longer have the md5 the URL names is gone: 404.
+   */
+  async function serveCssAsset(pathname: string, snapshot: ProjectSnapshot): Promise<Response | null> {
+    const record = await cssAssetRecord(pathname);
+    if (record === null) return null;
+    const bytes = recordedCssAsset(record, projectBytes(snapshot.files, snapshot.readBytes?.bind(snapshot)));
+    if (bytes === null) return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+    return new Response(bytes, {
+      headers: {
+        "content-type": publicContentType(record.path),
+        "content-length": String(bytes.byteLength),
+        "cache-control": IMMUTABLE,
+      },
+    });
   }
 
   async function serveBrowserModule(url: URL, snapshot: ProjectSnapshot): Promise<Response> {
@@ -425,6 +478,9 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
         }
 
         return await withSnapshot(async (snapshot) => {
+          const cssAsset = await serveCssAsset(url.pathname, snapshot);
+          if (cssAsset !== null) return cssAsset;
+
           if (isBrowserModulePath(url.pathname)) return serveBrowserModule(url, snapshot);
 
           const islandClient = islandClientResponse(request, url.pathname, artifactOf(snapshot)?.islands ?? null);
@@ -522,6 +578,10 @@ async function changedInputs(
     if (digest !== input.digest) stale.push(input.path);
   }
   return stale.sort();
+}
+
+function cssAssetRecordBytes(link: CssAssetLink): number {
+  return link.url.length + link.path.length + link.md5.length;
 }
 
 function joinPath(directory: string, file: string): string {

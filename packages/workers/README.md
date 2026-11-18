@@ -171,10 +171,12 @@ same pletivo writes the same module, so only a pletivo released with this host f
 
 `createProjectHost(...).fetch` answers, first match wins:
 
-1. a generated asset: a `?url` import (`/_astro/…`), or a `url()` target of the page's inlined
-   CSS (`/assets/<stem>.<hash>.<ext>`, the name `pletivo build` writes). The in-memory cache,
-   then `generatedAssetStore` for a path of either shape; cached `immutable`;
-2. a processed `<script>` (`/_pletivo/script/…`) or a module it imports
+1. a generated `?url` asset (`/_astro/…`): the in-memory cache, then `generatedAssetStore`;
+2. a `url()` target of a page's inlined CSS (`/assets/<stem>.<hash>.<ext>`, the name
+   `pletivo build` writes): read from the project file a render recorded for that URL, and
+   served `immutable` while its md5 still matches, else 404. The record is looked up in
+   memory, then in `generatedAssetStore`; no bytes are kept;
+3. a processed `<script>` (`/_pletivo/script/…`) or a module it imports
    (`/_pletivo/module/…`), served unbundled with bare imports rewritten to the artifact's
    browser graph. `pletivo prepare` bundles the graph's packages, so a package import loads
    one bundle entry and the chunks entries share, not each file of the package. A module of
@@ -183,16 +185,16 @@ same pletivo writes the same module, so only a pletivo released with this host f
    cached `immutable` there; project files, and a script at any other URL, are `no-cache`. A page left open
    across a new artifact loads a later dynamic import at the new version, beside the modules
    it already runs;
-3. a file in `public/`, with its exact bytes;
-4. an image output (`/_astro/<name>.<hash>.<ext>`);
-5. a redirect from `trailingSlash`, config `redirects` or i18n routing;
-6. a rendered page.
+4. a file in `public/`, with its exact bytes;
+5. an image output (`/_astro/<name>.<hash>.<ext>`);
+6. a redirect from `trailingSlash`, config `redirects` or i18n routing;
+7. a rendered page.
 
 Options a multi-session host needs:
 
-- `generatedAssetStore` — durable storage for generated assets (`MemoryGeneratedAssetStore`
-  implements the port for tests). A `RenderedAsset.body` is text for a `?url` import and
-  bytes (`Uint8Array`) for a CSS `url()` target, which may be a font or an image.
+- `generatedAssetStore` — durable storage for `?url` assets, and for the records that map a
+  CSS `url()` URL to its project path and md5 (`getCssAsset`/`putCssAssets`), so another
+  isolate can serve it (`MemoryGeneratedAssetStore` implements the port for tests).
 - `content: { binding, store, owner }` with an entrypoint that answers through
   `store.forOwner(owner)`, so one session's render cannot read another's content.
 - `createWorkspaceProjectStore(fs, { root, revision: (root) => … })` — pass a revision

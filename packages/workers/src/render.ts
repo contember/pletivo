@@ -30,7 +30,7 @@ import { islandCandidateSources, pageIslandClients } from "./island-clients.ts";
 import { attributeValue, htmlTags } from "./html-tags.ts";
 import { finalizeHtml, pageCss } from "./page-css.ts";
 import { pageStylesheet, parentDir } from "./project-css.ts";
-import type { ReadProjectBytes } from "./css-assets.ts";
+import { projectBytes, type CssAssetLink, type ReadProjectBytes } from "./css-assets.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
 import type { TailwindIsolateHost } from "./tailwind-isolate.ts";
 import type { ProjectAssetsView } from "./asset-port.ts";
@@ -206,8 +206,7 @@ export interface RenderedAsset {
   /** Root-absolute URL path, exactly as the HTML spells it. */
   path: string;
   contentType: string;
-  /** Text for a `?url` import; bytes for a `url()` target in CSS, which may be binary. */
-  body: string | Uint8Array<ArrayBuffer>;
+  body: string;
 }
 
 export interface RenderedPage {
@@ -224,6 +223,11 @@ export interface RenderedPage {
    * cache them forever. The page's CSS is inlined, not listed here.
    */
   assets: RenderedAsset[];
+  /**
+   * The files the inlined CSS links to by `url()`, by project path and md5. Not copies: a
+   * host serves each from the project, while its bytes still have that md5.
+   */
+  cssAssets: CssAssetLink[];
   /** The processed-script URLs (`/_pletivo/script/…`) the HTML loads, in document order. */
   scriptUrls: string[];
   /**
@@ -528,7 +532,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const stylesheet = await pageStylesheet({
     // `project.sources`: only the artifact-merged map holds `node_modules` stylesheets.
     files: project.sources,
-    readBytes: options.readBytes ?? textBytes(files),
+    readBytes: projectBytes(files, options.readBytes),
     islandStylesheets: islandStylesheetIds(options.artifact, rootDir),
     srcDir,
     rootDir,
@@ -544,7 +548,8 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     html: finalizeHtml(rendered.html, { compressHTML, partial: rendered.partial }, [stylesheet?.css ?? "", styles], scripts),
     file,
     bundleId: rendered.bundleId,
-    assets: [...assetsOf(project.urlAssets), ...(stylesheet?.assets ?? [])],
+    assets: assetsOf(project.urlAssets),
+    cssAssets: stylesheet?.cssAssets ?? [],
     scriptUrls: loadedScriptUrls(rendered.html, project.program.scripts),
     staleArtifactInputs: [],
     logs: rendered.logs,
@@ -606,15 +611,6 @@ function loadedScriptUrls(html: string, scripts: Readonly<Record<string, string>
     if (src !== null && known.has(src)) loaded.add(src);
   }
   return [...loaded];
-}
-
-/** A store that holds only text: a file's bytes are its text, encoded. */
-function textBytes(files: ProjectFiles): ReadProjectBytes {
-  const encoder = new TextEncoder();
-  return (path) => {
-    const text = files.get(path);
-    return text === undefined ? undefined : new Uint8Array(encoder.encode(text));
-  };
 }
 
 /** The compiled component stylesheets the artifact places beside their components. */

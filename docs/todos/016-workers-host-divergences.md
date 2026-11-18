@@ -351,8 +351,11 @@ Each stylesheet is emitted as `pletivo build` emits it. The build bundles a shee
 `srcDir`, or a compiled component's, through Bun; one under `srcDir` it emits as written.
 For a bundled sheet this host drops the `@import`s, whose targets the graph already
 emitted, and rewrites each relative `url()` the way `css-assets.ts` does: the file under
-`/assets/<stem>.<md5>.<ext>`, served from the generated-asset cache and store as
-immutable, or below 4096 B the `data:` URI Bun would inline. The naming and the inline
+`/assets/<stem>.<md5>.<ext>`, or below 4096 B the `data:` URI Bun would inline. The host
+keeps no copy of the file: a render records the URL with the project path and md5 it
+names (in a bounded in-memory map, and in the `GeneratedAssetStore` for other isolates),
+and a request reads the file from the project, serving it immutable while its md5 still
+matches and 404 once it changed. The naming and the inline
 rule are shared through `@pletivo/core/css-asset-urls`. The target is read on every
 render, so an edit names a new file. A missing target fails the page, as it fails the
 build. Not covered: `vite.build.assetsInlineLimit` (the artifact does not carry it), a
@@ -365,8 +368,8 @@ An `@import` with a condition (`layer()`, a media query, `supports()`) loses it 
 graph emits the imported sheet unwrapped and the rule is dropped, where Bun wraps the
 imported rules in the condition.
 
-Because a `url()` target may be a font or an image, `RenderedAsset.body` is now
-`string | Uint8Array`: a `GeneratedAssetStore` must keep bytes as well as text.
+A `GeneratedAssetStore` now also holds those records (`getCssAsset`, `putCssAssets`); an
+implementation outside this repository has to add both methods.
 
 Known Bun-host bug, not fixed here: `css-assets.ts` caches the inline decision per file, so
 `url(a.svg)` followed by `url(a.svg#i)` inlines both and loses the fragment; and a target

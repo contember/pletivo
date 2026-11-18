@@ -3,10 +3,9 @@
 import { TAILWIND_RUNTIME_MODULE_ID, type InjectedScripts, type ModuleId } from "@pletivo/core/artifact";
 import { cssImports, withoutCssImports } from "@pletivo/core/css-imports";
 import type { ResolvedStyleGraph } from "./compiled-program.ts";
-import { rewriteCssAssets, type ReadProjectBytes } from "./css-assets.ts";
+import { rewriteCssAssets, type CssAssetLink, type ReadProjectBytes } from "./css-assets.ts";
 import { adjacency, moduleOrder } from "./page-css.ts";
 import type { ProjectFiles } from "./project-store.ts";
-import type { RenderedAsset } from "./render.ts";
 import {
   compileTailwind,
   extractHtmlClassCandidates,
@@ -54,7 +53,7 @@ const PREFERRED_ENTRIES = ["global.css", "app.css", "main.css", "styles.css"];
 /** The page's stylesheet, and the files its `url()`s now link to. */
 export interface PageStylesheet {
   css: string;
-  assets: RenderedAsset[];
+  cssAssets: CssAssetLink[];
 }
 
 export async function pageStylesheet(options: PageStylesheetOptions): Promise<PageStylesheet | null> {
@@ -66,9 +65,9 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<Pa
   });
   if (sources.length === 0) return null;
 
-  const emitted = new Map<string, RenderedAsset>();
+  const emitted = new Map<string, CssAssetLink>();
   const entry = findTailwindEntry(sources);
-  if (!entry) return { css: emitStylesheets(sources, options, emitted), assets: [...emitted.values()] };
+  if (!entry) return { css: emitStylesheets(sources, options, emitted), cssAssets: [...emitted.values()] };
   if (!options.tailwind) throw new TailwindNotConfiguredError(entry.moduleId);
 
   const candidates = new Set(extractHtmlClassCandidates(options.html));
@@ -105,7 +104,7 @@ export async function pageStylesheet(options: PageStylesheetOptions): Promise<Pa
       inserted = true;
     }
   }
-  return { css: parts.filter(Boolean).join("\n\n"), assets: [...emitted.values()] };
+  return { css: parts.filter(Boolean).join("\n\n"), cssAssets: [...emitted.values()] };
 }
 
 /**
@@ -235,7 +234,7 @@ type EmitOptions = Pick<PageStylesheetOptions, "srcDir" | "rootDir" | "readBytes
 function emitStylesheets(
   stylesheets: readonly StylesheetSource[],
   options: EmitOptions,
-  emitted: Map<string, RenderedAsset>,
+  emitted: Map<string, CssAssetLink>,
 ): string {
   return stylesheets
     .map((stylesheet) => `/* ${labelFor(stylesheet.moduleId, options)} */\n${stylesheetText(stylesheet, options, emitted)}`)
@@ -247,7 +246,7 @@ function emitStylesheets(
  * compiled component's, through Bun: the `@import`s are resolved, here already emitted as
  * graph nodes, and the relative `url()`s rewritten. One under `srcDir` it emits as written.
  */
-function stylesheetText(stylesheet: StylesheetSource, options: EmitOptions, emitted: Map<string, RenderedAsset>): string {
+function stylesheetText(stylesheet: StylesheetSource, options: EmitOptions, emitted: Map<string, CssAssetLink>): string {
   const { moduleId, content } = stylesheet;
   if (!moduleId.startsWith("project:")) return withoutCssImports(content);
   const file = moduleId.slice("project:".length);

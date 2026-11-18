@@ -18,14 +18,61 @@ import {
   type CssAssetRef,
 } from "@pletivo/core/css-asset-urls";
 import { md5Hex } from "@pletivo/core/md5";
-import { publicContentType } from "./public-files.ts";
-import type { RenderedAsset } from "./render.ts";
+import { normalizeProjectPath } from "./project-path.ts";
+import type { ProjectFiles } from "./project-store.ts";
 
 /** Where `pletivo build` writes a `url()` target, under base path `/`. */
 export const CSS_ASSET_PREFIX = "/assets/";
 
 /** A project file's raw bytes, or `undefined` when the project has none at that path. */
 export type ReadProjectBytes = (path: string) => Uint8Array<ArrayBuffer> | undefined;
+
+/** The store's bytes, or for a store that holds only text, a file's text encoded. */
+export function projectBytes(files: ProjectFiles, readBytes: ReadProjectBytes | undefined): ReadProjectBytes {
+  if (readBytes !== undefined) return readBytes;
+  const encoder = new TextEncoder();
+  return (path) => {
+    const text = files.get(path);
+    return text === undefined ? undefined : new Uint8Array(encoder.encode(text));
+  };
+}
+
+/**
+ * What a `url()` target's URL names: the project file and the md5 of the bytes it was
+ * named after. The host serves the file from the project as it is then, never a copy.
+ */
+export interface CssAssetRecord {
+  path: string;
+  md5: string;
+}
+
+/** A URL a page's CSS links to, and the file it names. */
+export interface CssAssetLink extends CssAssetRecord {
+  url: string;
+}
+
+function cssAssetUrl(path: string, md5: string): string {
+  return CSS_ASSET_PREFIX + cssAssetFileName(path, md5.slice(0, 8));
+}
+
+/**
+ * A record read back from a `GeneratedAssetStore`, or `null` when it is not one this host
+ * writes for `url`: a normalized project path whose name and md5 spell exactly that URL.
+ */
+export function parseCssAssetRecord(url: string, value: unknown): CssAssetRecord | null {
+  if (typeof value !== "object" || value === null) return null;
+  const path: unknown = Reflect.get(value, "path");
+  const md5: unknown = Reflect.get(value, "md5");
+  if (typeof path !== "string" || typeof md5 !== "string" || !/^[0-9a-f]{32}$/.test(md5)) return null;
+  if (path === "" || normalizeProjectPath(path) !== path || cssAssetUrl(path, md5) !== url) return null;
+  return { path, md5 };
+}
+
+/** The file `record` names, while its bytes still have the recorded md5; else `null`. */
+export function recordedCssAsset(record: CssAssetRecord, read: ReadProjectBytes): Uint8Array<ArrayBuffer> | null {
+  const bytes = read(record.path);
+  return bytes !== undefined && md5Hex(bytes) === record.md5 ? bytes : null;
+}
 
 /** The name a `url()` target is written under: `/assets/<stem>.<8 hex><ext>`. */
 const CSS_ASSET_PATH = /^\/assets\/[A-Za-z0-9_-]+\.[0-9a-f]{8}(?:\.[^/.]*)?$/;
@@ -66,7 +113,7 @@ export function rewriteCssAssets(
   stylesheet: string,
   css: string,
   read: ReadProjectBytes,
-  emitted: Map<string, RenderedAsset>,
+  emitted: Map<string, CssAssetLink>,
 ): string {
   const urls = new Map<string, string>();
   for (const specifier of relativeCssAssetRefs(css)) {
@@ -78,8 +125,9 @@ export function rewriteCssAssets(
       urls.set(specifier, `data:${dataUriType(path)};base64,${base64(bytes)}`);
       continue;
     }
-    const url = CSS_ASSET_PREFIX + cssAssetFileName(path, md5Hex(bytes).slice(0, 8));
-    emitted.set(url, { path: url, contentType: publicContentType(path), body: bytes });
+    const md5 = md5Hex(bytes);
+    const url = cssAssetUrl(path, md5);
+    emitted.set(url, { url, path, md5 });
     urls.set(specifier, url + ref.suffix);
   }
   return urls.size === 0 ? css : replaceCssAssetUrls(css, urls);
