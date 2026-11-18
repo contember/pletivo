@@ -87,8 +87,8 @@ The JavaScript at every island URL a Workers render emits, served by the host.
     their import graph closed, 18/18 byte-identical;
   - the single-renderer fixtures react, solid, svelte and vue: 3/3 island modules each, and
     every page byte-identical once both inlined head `<style>` texts went through the Bun
-    host's minifier (below). react and solid pass. svelte and vue fail on the first two CSS
-    differences listed under what is left, and nothing else.
+    host's minifier (below). All four pass; svelte and vue also check the `url()` target
+    file against the build's.
 
   Astro's framework-multiple gives 18/18 modules, by hand.
 
@@ -106,12 +106,8 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   (`test/inlined-style.ts`) pairs the head `<style>` blocks in order, passes the first pair
   whose texts differ through the Bun host's `minifyCss` and compares the whole page byte
   for byte; a sheet missing one rule fails it, and a sheet the minifier rejects is named.
-  Three differences remain, all in this host:
-  - a relative `url()` is left relative to the page, a broken image (svelte, vue);
-  - a component sheet's `@import` stays in its text after the imported sheet was emitted
-    above it, so it lands after other rules (svelte, vue). The CSS spec has a browser ignore
-    it; Bun's CSS parser rejects the sheet ("@import rules must come before any other rules
-    except @charset and @layer");
+  A relative `url()` and a dangling `@import` in a bundled sheet were fixed in this host
+  (#98). One difference remains, in this host:
   - the build merges adjacent inline CSS into one `<style>`, as Astro's `mergeInlineCss`
     does; this host emits the page stylesheet and the scoped CSS as two blocks
     (`finalizeHtml` in `page-css.ts`, called from `render.ts`). A page with a component
