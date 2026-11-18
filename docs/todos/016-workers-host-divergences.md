@@ -362,7 +362,9 @@ build. Not covered: `vite.build.assetsInlineLimit` (the artifact does not carry 
 `url()` in a package sheet the artifact vendored (its target is not in the project), and
 a base path other than `/`. On both hosts a sheet under `srcDir` and an `.astro`
 `<style>` keep their relative `url()` and `@import` as written. A `url()` inside a comment
-or a string is left alone, as Bun leaves it.
+or a string is left alone, as Bun leaves it. A small `.xml`, `.json`, `.js`, `.html` or
+`.md` target fails `Bun.build` ("Cannot import a … file into a CSS file"), but is inlined
+here as an `application/octet-stream` `data:` URI.
 
 An `@import` with a condition (`layer()`, a media query, `supports()`) loses it here: the
 graph emits the imported sheet unwrapped and the rule is dropped, where Bun wraps the

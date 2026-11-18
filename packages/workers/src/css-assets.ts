@@ -179,8 +179,9 @@ function resolveFrom(stylesheet: string, file: string): string | null {
 }
 
 /**
- * The media type Bun 1.4 writes into a `data:` URI it inlines, by extension, matched
- * case-insensitively. `test/css-data-uri-types.test.ts` checks every entry against `Bun.build`.
+ * The media type Bun 1.4 writes into a `data:` URI it inlines for the listed extensions,
+ * matched case-insensitively; others get application/octet-stream.
+ * `test/css-data-uri-types.test.ts` checks every entry against `Bun.build`.
  */
 export const DATA_URI_TYPES: Readonly<Record<string, string>> = {
   ".svg": "image/svg+xml",
