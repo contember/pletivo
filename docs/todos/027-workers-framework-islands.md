@@ -134,8 +134,9 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   file it emits as an asset. The prepare and island bundlers' read trackers therefore match only
   the extensions Bun loads as source or text plus the framework compilers', so the asset reaches
   the named refusal above.
-- **`client:component-path` from MDX** is not rewritten; MDX does not compile in the
-  isolate yet.
+- **Islands from an `.mdx` page** follow the same rule (b): prepare compiles each `.mdx`
+  file and builds clients for its hydrations, and link rewrites its `client:component-path`
+  as it does an `.astro` file's ([016](016-workers-host-divergences.md), "MDX pages").
 - **Shared helpers are two instances.** A project module only components import is
   bundled and kept out of the vendor graph. One a live module imports too is bundled and
   also compiled live, so module state is not shared between the two; when its imports
