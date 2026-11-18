@@ -62,8 +62,31 @@ is `@astrojs/compiler` 2.13 handing back `result.css[]` in reverse source order,
 fixed in compiler 3 — the version pletivo pins. Pletivo follows source order;
 the conformance snapshot records the divergence deliberately.
 
+## Source CSS without Tailwind
+
+The same order applies to the stylesheets a module imports, not only to the
+hoisted blocks. Without a Tailwind entry, `buildCss` puts every
+`src/**/*.css` in the shared sheet. It used to sort them by path, so a page that
+imports `z.css` and then a component that imports `a.css` got `.a` before `.z`.
+Astro gives `.z` first.
+
+The fallback now orders the files a page imports by the merged page walk that
+`planJsImportedCss` orders its groups by: depth-first post-order from each page
+entry, the pages in path order, each file at the first place a page reaches it.
+On a single page this is Astro 5.16's order, checked on nested `.astro`, `.js`
+and `.jsx` importers, a CSS import between module imports, and one sheet
+reached twice. Files no page imports still ship, first and in path order.
+Astro drops them, and so does the Tailwind path, apart from the entry and its
+`@import`s. Sites built on the fallback may rely on them. Which sheet a rule
+lands in does not change: the fallback's files stay in the shared sheet.
+
+Pinned by "source CSS without Tailwind follows the import graph" in
+`tests/e2e/css-chunking.test.ts`. That includes a warm `--incremental` build
+equal to a full one.
+
 ## Files
 
 - `packages/pletivo/src/astro-css-order.ts`
+- `packages/pletivo/src/css.ts` — `buildCss()`, the fallback; `js-imported-css.ts` — `inImportOrder()`
 - `packages/pletivo/src/astro-plugin.ts` — `astroCssMap`, `getAstroCssForPage()`
 - `tests/conformance/fixtures/css-cascade-order/`
