@@ -33,7 +33,11 @@ import {
   type ProjectHostOptions,
   type RenderEvent,
 } from "../src/project-host.ts";
-import { CssAssetNotFoundError, CssAssetUrlError } from "../src/css-assets.ts";
+import {
+  CssAssetNotFoundError,
+  CssAssetUrlError,
+  MAX_CSS_ASSET_TARGETS,
+} from "../src/css-assets.ts";
 import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
 import {
   RouteNotFoundError,
@@ -962,6 +966,72 @@ import logoMarkup from "../assets/logo.svg?raw";
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toBe("font/woff2");
       expect(new Uint8Array(await response.arrayBuffer())).toEqual(font);
+    });
+
+    test("hashes a file once per revision, and answers 404 at the first request after a change", async () => {
+      const bytes = new Uint8Array(5000).fill(7);
+      const { workspace, host } = cssHost(".blob { background: url(../src/img/blob.png); }\n");
+      workspace.write("/src/img/blob.png", bytes);
+      const url = builtName("blob", ".png", bytes);
+      expect((await host.render("/")).html).toContain(url);
+      // Bytes changed under an unchanged revision, which a store must never do: served
+      // as they are now, so the host did not hash them again.
+      bytes.fill(8);
+      const same = await host.fetch(new Request(`https://example.test${url}`));
+      expect(same.status).toBe(200);
+      expect(new Uint8Array(await same.arrayBuffer())).toEqual(new Uint8Array(5000).fill(8));
+
+      workspace.write("/src/img/blob.png", new Uint8Array(5000).fill(9));
+      expect((await host.fetch(new Request(`https://example.test${url}`))).status).toBe(404);
+    });
+
+    test("serves a URL two paths share from whichever still has its bytes, in any isolate", async () => {
+      const workspace = new FakeWorkspace();
+      for (const name of ["a", "b"]) {
+        workspace.write(
+          `/src/pages/${name}.astro`,
+          `---\nimport "../../styles/${name}.css";\n---\n<html><head><title>t</title></head><body></body></html>\n`,
+        );
+      }
+      workspace.write("/styles/a.css", ".a { background: url(../one/logo.png); }\n");
+      workspace.write("/styles/b.css", ".b { background: url(../two/logo.png); }\n");
+      const logo = new Uint8Array(5000).fill(3);
+      workspace.write("/one/logo.png", logo);
+      workspace.write("/two/logo.png", logo);
+      const store = new MemoryGeneratedAssetStore();
+      const options = {
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+        generatedAssetStore: store,
+      };
+      const url = builtName("logo", ".png", logo);
+      const first = createProjectHost(options);
+      const second = createProjectHost(options);
+      expect((await first.render("/a")).html).toContain(url);
+      expect((await second.render("/b")).html).toContain(url);
+
+      workspace.write("/two/logo.png", new Uint8Array(5000).fill(4));
+      // `second` recorded only the changed path; a cold isolate has only the store's record.
+      for (const host of [createProjectHost(options), second]) {
+        const response = await host.fetch(new Request(`https://example.test${url}`));
+        expect(response.status).toBe(200);
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(logo);
+      }
+    });
+
+    test("keeps the newest targets of one URL, up to the cap", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const url = "/assets/logo.0123abcd.png";
+      const links = Array.from({ length: MAX_CSS_ASSET_TARGETS + 1 }, (_, index) => ({
+        url,
+        path: `dir${index}/logo.png`,
+        md5: "0123abcd".padEnd(32, "0"),
+      }));
+      await store.putCssAssets(links);
+      await store.putCssAssets([links[1]]);
+      const paths = (await store.getCssAsset(url)).map((target) => target.path);
+      expect(paths).toEqual([...links.slice(2), links[1]].map((link) => link.path));
     });
 
     test("serves every one of 45 images over the inline limit", async () => {

@@ -173,9 +173,10 @@ same pletivo writes the same module, so only a pletivo released with this host f
 
 1. a generated `?url` asset (`/_astro/…`): the in-memory cache, then `generatedAssetStore`;
 2. a `url()` target of a page's inlined CSS (`/assets/<stem>.<hash>.<ext>`, the name
-   `pletivo build` writes): read from the project file a render recorded for that URL, and
-   served `immutable` while its md5 still matches, else 404. The record is looked up in
-   memory, then in `generatedAssetStore`; no bytes are kept;
+   `pletivo build` writes): read from a project file recorded for that URL
+   and served `immutable`, else 404. The record is looked up in memory, then in
+   `generatedAssetStore`. The store is trusted; only a file whose current bytes have the
+   record's full md5 is served, hashed once per snapshot revision. No bytes are kept;
 3. a processed `<script>` (`/_pletivo/script/…`) or a module it imports
    (`/_pletivo/module/…`), served unbundled with bare imports rewritten to the artifact's
    browser graph. `pletivo prepare` bundles the graph's packages, so a package import loads
@@ -193,8 +194,10 @@ same pletivo writes the same module, so only a pletivo released with this host f
 Options a multi-session host needs:
 
 - `generatedAssetStore` — durable storage for `?url` assets, and for the records that map a
-  CSS `url()` URL to its project path and md5 (`getCssAsset`/`putCssAssets`), so another
-  isolate can serve it (`MemoryGeneratedAssetStore` implements the port for tests).
+  CSS `url()` URL to the project paths and md5 it names (`getCssAsset`/`putCssAssets`), so
+  another isolate can serve it (`MemoryGeneratedAssetStore` implements the port for tests).
+  A store holds one project's records. Files with the same name and bytes share a URL, so a
+  record lists up to `MAX_CSS_ASSET_TARGETS` (8) paths, the oldest dropped first.
 - `content: { binding, store, owner }` with an entrypoint that answers through
   `store.forOwner(owner)`, so one session's render cannot read another's content.
 - `createWorkspaceProjectStore(fs, { root, revision: (root) => … })` — pass a revision

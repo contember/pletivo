@@ -38,17 +38,30 @@ export function projectBytes(files: ProjectFiles, readBytes: ReadProjectBytes | 
 }
 
 /**
- * What a `url()` target's URL names: the project file and the md5 of the bytes it was
- * named after. The host serves the file from the project as it is then, never a copy.
+ * A project file a CSS asset URL names, and the md5 of the bytes it was named after. The
+ * host serves the file from the project as it is then, never a copy.
  */
-export interface CssAssetRecord {
+export interface CssAssetTarget {
   path: string;
   md5: string;
 }
 
 /** A URL a page's CSS links to, and the file it names. */
-export interface CssAssetLink extends CssAssetRecord {
+export interface CssAssetLink extends CssAssetTarget {
   url: string;
+}
+
+/**
+ * How many targets one URL keeps. Files with the same name and bytes at different paths
+ * share a URL; past this many, the oldest recorded is dropped.
+ */
+export const MAX_CSS_ASSET_TARGETS = 8;
+
+/** `targets` with `target` added as the newest, replacing an entry for its path, capped. */
+export function withCssAssetTarget(targets: readonly CssAssetTarget[], target: CssAssetTarget): CssAssetTarget[] {
+  const next = targets.filter((known) => known.path !== target.path);
+  next.push({ path: target.path, md5: target.md5 });
+  return next.slice(-MAX_CSS_ASSET_TARGETS);
 }
 
 function cssAssetUrl(path: string, md5: string): string {
@@ -56,10 +69,22 @@ function cssAssetUrl(path: string, md5: string): string {
 }
 
 /**
- * A record read back from a `GeneratedAssetStore`, or `null` when it is not one this host
- * writes for `url`: a normalized project path whose name and md5 spell exactly that URL.
+ * Targets read back from a `GeneratedAssetStore`, or none when the value is not what this
+ * host writes for `url`: at most `MAX_CSS_ASSET_TARGETS` entries, each a normalized
+ * project path whose name and md5 spell exactly that URL.
  */
-export function parseCssAssetRecord(url: string, value: unknown): CssAssetRecord | null {
+export function parseCssAssetTargets(url: string, value: unknown): CssAssetTarget[] {
+  if (!Array.isArray(value) || value.length > MAX_CSS_ASSET_TARGETS) return [];
+  const targets: CssAssetTarget[] = [];
+  for (const entry of value) {
+    const target = parseCssAssetTarget(url, entry);
+    if (target === null) return [];
+    targets.push(target);
+  }
+  return targets;
+}
+
+function parseCssAssetTarget(url: string, value: unknown): CssAssetTarget | null {
   if (typeof value !== "object" || value === null) return null;
   const path: unknown = Reflect.get(value, "path");
   const md5: unknown = Reflect.get(value, "md5");
@@ -68,10 +93,10 @@ export function parseCssAssetRecord(url: string, value: unknown): CssAssetRecord
   return { path, md5 };
 }
 
-/** The file `record` names, while its bytes still have the recorded md5; else `null`. */
-export function recordedCssAsset(record: CssAssetRecord, read: ReadProjectBytes): Uint8Array<ArrayBuffer> | null {
-  const bytes = read(record.path);
-  return bytes !== undefined && md5Hex(bytes) === record.md5 ? bytes : null;
+/** The file `target` names, while its bytes still have the recorded md5; else `null`. */
+export function recordedCssAsset(target: CssAssetTarget, read: ReadProjectBytes): Uint8Array<ArrayBuffer> | null {
+  const bytes = read(target.path);
+  return bytes !== undefined && md5Hex(bytes) === target.md5 ? bytes : null;
 }
 
 /** The name a `url()` target is written under: `/assets/<stem>.<8 hex><ext>`. */
@@ -107,7 +132,7 @@ export class CssAssetNotFoundError extends Error {
 
 /**
  * `css` of the project file `stylesheet` with each relative `url()` rewritten. Every file
- * it now links to is added to `emitted`, keyed by its URL path.
+ * it now links to is added to `emitted`, keyed by its URL and path: two paths can share a URL.
  */
 export function rewriteCssAssets(
   stylesheet: string,
@@ -127,7 +152,7 @@ export function rewriteCssAssets(
     }
     const md5 = md5Hex(bytes);
     const url = cssAssetUrl(path, md5);
-    emitted.set(url, { url, path, md5 });
+    emitted.set(`${url}\n${path}`, { url, path, md5 });
     urls.set(specifier, url + ref.suffix);
   }
   return urls.size === 0 ? css : replaceCssAssetUrls(css, urls);

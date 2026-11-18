@@ -43,11 +43,13 @@ import { GeneratedAssetCache } from "./asset-cache.ts";
 import { BoundedLru } from "./bounded-lru.ts";
 import {
   isCssAssetPath,
-  parseCssAssetRecord,
+  parseCssAssetTargets,
   projectBytes,
   recordedCssAsset,
+  withCssAssetTarget,
   type CssAssetLink,
-  type CssAssetRecord,
+  type CssAssetTarget,
+  type ReadProjectBytes,
 } from "./css-assets.ts";
 import type { GeneratedAssetStore } from "./generated-asset-store.ts";
 import {
@@ -186,10 +188,17 @@ const GENERATED_ASSET_PREFIX = "/_astro/";
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
 /**
- * CSS asset records kept per host. A record is a URL, a path and an md5, about 200 B, so
- * this bounds the map near 1 MiB; an evicted URL is looked up in the store, or rendered again.
+ * CSS asset records kept per host. A record is a URL and its targets, usually one path and
+ * md5, about 200 B; an evicted URL is looked up in the store, or rendered again.
  */
 const CSS_ASSET_RECORDS = { maxEntries: 4096, maxBytes: 1024 * 1024 };
+
+/** A CSS asset URL's targets as this host knows them. */
+interface KnownCssAsset {
+  targets: CssAssetTarget[];
+  /** The target found intact at `revision`: a snapshot's bytes do not change, so not hashed again. */
+  verified: { revision: string; path: string } | null;
+}
 
 export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const {
@@ -208,7 +217,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   const directArtifact =
     artifactValue === undefined ? undefined : loadProjectArtifact(artifactValue);
   const served = new GeneratedAssetCache(generatedAssetCache ?? DEFAULT_GENERATED_ASSET_CACHE);
-  const cssAssets = new BoundedLru<CssAssetRecord>(CSS_ASSET_RECORDS);
+  const cssAssets = new BoundedLru<KnownCssAsset>(CSS_ASSET_RECORDS);
   // Per host, not a module global: an entry's `.astro` output is bound to its compiler.
   const compileCache =
     compileCacheOption === false ? undefined : (compileCacheOption ?? createCompileCache());
@@ -340,7 +349,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
     if (generatedAssetStore !== undefined && page.assets.length > 0) {
       await generatedAssetStore.put(page.assets);
     }
-    await recordCssAssets(page.cssAssets);
+    await recordCssAssets(page.cssAssets, snapshot.revision);
     const rejected = served.putAll(page.assets);
     if (rejected.length > 0 && generatedAssetStore === undefined) {
       throw new GeneratedAssetRetentionError(rejected.map((asset) => asset.path));
@@ -377,42 +386,51 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   }
 
   /** Remember each link, and put in the store only what this host did not already hold. */
-  async function recordCssAssets(links: readonly CssAssetLink[]): Promise<void> {
-    const fresh = links.filter((link) => {
-      const known = cssAssets.peek(link.url);
-      return known?.path !== link.path || known.md5 !== link.md5;
-    });
+  async function recordCssAssets(links: readonly CssAssetLink[], revision: string): Promise<void> {
+    const fresh = links.filter(
+      (link) => cssAssets.peek(link.url)?.targets.some((known) => known.path === link.path && known.md5 === link.md5) !== true,
+    );
     if (generatedAssetStore !== undefined && fresh.length > 0) await generatedAssetStore.putCssAssets(fresh);
-    for (const link of links) cssAssets.set(link.url, { path: link.path, md5: link.md5 }, cssAssetRecordBytes(link));
+    for (const link of links) {
+      const targets = withCssAssetTarget(cssAssets.peek(link.url)?.targets ?? [], link);
+      // The render has just hashed these bytes at this revision.
+      rememberCssAsset(link.url, { targets, verified: { revision, path: link.path } });
+    }
   }
 
-  /** The record for `pathname`: this host's, then the store's. Only a name of the asset shape is looked up. */
-  async function cssAssetRecord(pathname: string): Promise<CssAssetRecord | null> {
-    if (!isCssAssetPath(pathname)) return null;
-    const known = cssAssets.get(pathname);
-    if (known !== undefined) return known;
-    if (generatedAssetStore === undefined) return null;
-    const record = parseCssAssetRecord(pathname, await generatedAssetStore.getCssAsset(pathname));
-    if (record !== null) cssAssets.set(pathname, record, cssAssetRecordBytes({ url: pathname, ...record }));
-    return record;
+  function rememberCssAsset(url: string, known: KnownCssAsset): void {
+    cssAssets.set(url, known, cssAssetRecordBytes(url, known.targets));
   }
 
   /**
-   * A recorded CSS asset, read from the project now: only a path some render recorded is
-   * read. A file whose bytes no longer have the md5 the URL names is gone: 404.
+   * A recorded CSS asset, read from the project now. The store is trusted; only a file whose
+   * current bytes have the record's full md5 is served, else 404. This host's targets come
+   * first, then the store's, which another isolate may have added to.
    */
   async function serveCssAsset(pathname: string, snapshot: ProjectSnapshot): Promise<Response | null> {
-    const record = await cssAssetRecord(pathname);
-    if (record === null) return null;
-    const bytes = recordedCssAsset(record, projectBytes(snapshot.files, snapshot.readBytes?.bind(snapshot)));
-    if (bytes === null) return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
-    return new Response(bytes, {
-      headers: {
-        "content-type": publicContentType(record.path),
-        "content-length": String(bytes.byteLength),
-        "cache-control": IMMUTABLE,
-      },
-    });
+    if (!isCssAssetPath(pathname)) return null;
+    const read = projectBytes(snapshot.files, snapshot.readBytes?.bind(snapshot));
+    let known = cssAssets.get(pathname);
+    if (known?.verified?.revision === snapshot.revision) {
+      const bytes = read(known.verified.path);
+      if (bytes !== undefined) return cssAssetResponse(known.verified.path, bytes);
+    }
+    let found = known === undefined ? null : intactTarget(known.targets, read);
+    if (found === null && generatedAssetStore !== undefined) {
+      const stored = parseCssAssetTargets(pathname, await generatedAssetStore.getCssAsset(pathname));
+      const unchecked = stored.filter(
+        (target) => known?.targets.some((held) => held.path === target.path && held.md5 === target.md5) !== true,
+      );
+      if (unchecked.length > 0) {
+        known = { targets: unchecked.reduce(withCssAssetTarget, known?.targets ?? []), verified: null };
+        rememberCssAsset(pathname, known);
+        found = intactTarget(unchecked, read);
+      }
+    }
+    if (known === undefined) return null;
+    if (found === null) return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+    known.verified = { revision: snapshot.revision, path: found.path };
+    return cssAssetResponse(found.path, found.bytes);
   }
 
   async function serveBrowserModule(url: URL, snapshot: ProjectSnapshot): Promise<Response> {
@@ -580,8 +598,30 @@ async function changedInputs(
   return stale.sort();
 }
 
-function cssAssetRecordBytes(link: CssAssetLink): number {
-  return link.url.length + link.path.length + link.md5.length;
+function cssAssetRecordBytes(url: string, targets: readonly CssAssetTarget[]): number {
+  return targets.reduce((bytes, target) => bytes + target.path.length + target.md5.length, url.length);
+}
+
+/** The first of `targets` whose file still has its md5, with the bytes read. */
+function intactTarget(
+  targets: readonly CssAssetTarget[],
+  read: ReadProjectBytes,
+): { path: string; bytes: Uint8Array<ArrayBuffer> } | null {
+  for (const target of targets) {
+    const bytes = recordedCssAsset(target, read);
+    if (bytes !== null) return { path: target.path, bytes };
+  }
+  return null;
+}
+
+function cssAssetResponse(path: string, bytes: Uint8Array<ArrayBuffer>): Response {
+  return new Response(bytes, {
+    headers: {
+      "content-type": publicContentType(path),
+      "content-length": String(bytes.byteLength),
+      "cache-control": IMMUTABLE,
+    },
+  });
 }
 
 function joinPath(directory: string, file: string): string {
