@@ -164,6 +164,22 @@ describe("byte parity with pletivo build", () => {
     180_000,
   );
 
+  test(
+    "the MDX example compiles its page in the MDX isolate and renders it as the build does",
+    async () => {
+      const { ok, output } = await localParity("tests/fixture-astro-mdx-example");
+      // Astro's with-mdx: ESM exports and expressions, a `components` export mapping `h1` to a
+      // scoped `.astro` component (its style inlined, compared through inlined-style.ts), and a
+      // Preact island hydrated from MDX, its component-url and uid rewritten as the build names them.
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(output).toContain("= 5 island module(s) served as JavaScript, every import among them");
+      expect(output).toContain("= 5/5 island module(s) byte-identical to pletivo build");
+      expect(ok).toBe(true);
+    },
+    180_000,
+  );
+
   const singleRenderers: { renderer: string; pages: number; urlTarget?: string }[] = [
     { renderer: "react", pages: 1 },
     { renderer: "solid", pages: 1 },
