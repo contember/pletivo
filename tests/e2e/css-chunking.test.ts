@@ -648,10 +648,69 @@ describe("CSS chunking: source CSS without Tailwind follows the import graph", (
 		);
 		await write("src/styles/post.css", `.post { z-index: 8; }\n`);
 		const pages = ["index.html", "blog/one/index.html"];
-		const expected = ".post{z-index:8}.b{z-index:2}.a{z-index:1}.a2{z-index:3}.mid{z-index:4}.l{z-index:5}.j{z-index:6}.shared{z-index:7}";
+		// Both pages keep their own order: `.b` waits for `.a`, which index reaches before it.
+		const expected = ".post{z-index:8}.a{z-index:1}.b{z-index:2}.a2{z-index:3}.mid{z-index:4}.l{z-index:5}.j{z-index:6}.shared{z-index:7}";
 
 		await expectWarmEqualsFull(pages);
 		expect(await sheetOf("index.html")).toBe(expected);
 		expect(await sheetOf("blog/one/index.html")).toBe(expected);
+	});
+
+	it("keeps a page's order when an earlier page reaches only part of it", async () => {
+		// `about` sorts first and reaches `components` alone; index still gets `base` first.
+		await write("src/pages/about.astro", `---\nimport "../styles/components.css";\n---\n<html><head><title>a</title></head><body>a</body></html>\n`);
+		await write("src/pages/index.astro", `---\nimport "../styles/base.css";\nimport "../styles/components.css";\n---\n<html><head><title>i</title></head><body>i</body></html>\n`);
+		await write("src/styles/components.css", `.components { z-index: 1; }\n`);
+		await write("src/styles/base.css", `.base { z-index: 2; }\n`);
+		expect(runBuild().status).toBe(0);
+		expect(await sheetOf("index.html")).toBe(".base{z-index:2}.components{z-index:1}");
+		expect(await sheetOf("about/index.html")).toBe(".base{z-index:2}.components{z-index:1}");
+	});
+
+	it("falls back to first-seen order for stylesheets two pages order differently", async () => {
+		// index: y c. post: z c y. One shared sheet cannot give both; y and c keep index's order, which saw them first.
+		await write("src/pages/index.astro", `---\nimport "../styles/y.css";\nimport "../styles/c.css";\n---\n<html><head><title>i</title></head><body>i</body></html>\n`);
+		await write(
+			"src/pages/post.astro",
+			`---\nimport "../styles/z.css";\nimport C from "../components/C.astro";\nimport "../styles/y.css";\n---\n<html><head><title>p</title></head><body><C /></body></html>\n`,
+		);
+		await write("src/components/C.astro", `---\nimport "../styles/c.css";\n---\n<p class="c">c</p>\n`);
+		await write("src/styles/z.css", `.z { z-index: 1; }\n`);
+		await write("src/styles/c.css", `.c { z-index: 2; }\n`);
+		await write("src/styles/y.css", `.y { z-index: 3; }\n`);
+		expect(runBuild().status).toBe(0);
+		expect(await sheetOf("index.html")).toBe(".z{z-index:1}.y{z-index:3}.c{z-index:2}");
+	});
+
+	it("emits a stylesheet's `@import`ed source files depth-first just before it", async () => {
+		await write("src/pages/index.astro", `---\nimport "../styles/x.css";\nimport "../styles/g.css";\n---\n<html><head><title>i</title></head><body>i</body></html>\n`);
+		await write("src/styles/x.css", `.x { z-index: 1; }\n`);
+		await write("src/styles/g.css", `@import "./v.css";\n@import "./r.css";\n.g { z-index: 4; }\n`);
+		await write("src/styles/v.css", `.v { z-index: 2; }\n`);
+		await write("src/styles/r.css", `.r { z-index: 3; }\n`);
+		expect(runBuild().status).toBe(0);
+		expect(await sheetOf("index.html")).toBe(".x{z-index:1}.v{z-index:2}.r{z-index:3}.g{z-index:4}");
+	});
+
+	it("inlines an `@import`ed reset before its importer instead of shipping an invalid `@import`", async () => {
+		await write("src/pages/index.astro", `---\nimport "../styles/global.css";\n---\n<html><head><title>i</title></head><body>i</body></html>\n`);
+		await write("src/styles/global.css", `@import "./reset.css";\n.g { z-index: 1; }\n`);
+		await write("src/styles/reset.css", `.r { z-index: 2; }\n`);
+		const result = runBuild();
+		expect(result.status).toBe(0);
+		expect(result.stdout + result.stderr).not.toContain("CSS minification failed");
+		expect(await sheetOf("index.html")).toBe(".r{z-index:2}.g{z-index:1}");
+	});
+
+	it("keeps a URL `@import` at the top of the sheet, ahead of a stylesheet no page imports", async () => {
+		await write("src/pages/index.astro", `---\nimport "../styles/global.css";\n---\n<html><head><title>i</title></head><body>i</body></html>\n`);
+		await write("src/styles/global.css", `@import url("https://fonts.googleapis.com/css2?family=Inter");\nbody { font-family: Inter; }\n`);
+		await write("src/styles/legacy.css", `.legacy { z-index: 2; }\n`);
+		const result = runBuild();
+		expect(result.status).toBe(0);
+		expect(result.stdout + result.stderr).not.toContain("CSS minification failed");
+		expect(await sheetOf("index.html")).toBe(
+			`@import "https://fonts.googleapis.com/css2?family=Inter";.legacy{z-index:2}body{font-family:Inter}`,
+		);
 	});
 });

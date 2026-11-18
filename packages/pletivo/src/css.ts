@@ -2,7 +2,8 @@ import path from "path";
 import fs from "fs/promises";
 import { Glob } from "bun";
 import { getScssOutput } from "./scss";
-import { inImportOrder, planJsImportedCss } from "./js-imported-css";
+import { cssPreludeRules, type CssPreludeRule } from "@pletivo/core/css-imports";
+import { importOrderedCss, planJsImportedCss } from "./js-imported-css";
 import { minifyCss } from "./css-minify";
 import type { StylesheetInliner } from "./assets-inline";
 
@@ -51,8 +52,8 @@ export function stylesheetsForPage(bundle: CssBundle, pageEntry: string | undefi
  *     `@tailwindcss/node` is available in the project, route everything
  *     through the Tailwind compile pipeline (imports, @source scanning,
  *     candidate extraction via @tailwindcss/oxide, build()).
- *  2. Fallback — concatenate all `.css` files from src/, no processing: the
- *     ones a page imports in import-graph order, after the ones none does.
+ *  2. Fallback — concatenate all `.css` files from src/ in the order Astro
+ *     emits them (`concatSourceCss`), no other processing.
  *
  * `inline` decides, on each finished sheet, whether pages inline it; an inlined
  * sheet is not written to `dist/`. `null` links every sheet.
@@ -150,16 +151,67 @@ async function buildCss(projectRoot: string, srcDir: string): Promise<{
     }
   }
 
-  // Fallback: concat everything, the imported files in import-graph order, as Astro emits them.
-  // Files no page imports still ship, ahead of the rest: Astro drops them, but sites may rely on it.
-  const parts: string[] = [];
-  const consumedSourceCss = new Set<string>();
-  for (const full of inImportOrder(cssFiles.sort().map((file) => path.resolve(srcPath, file)))) {
-    const content = await Bun.file(full).text();
-    consumedSourceCss.add(full);
-    parts.push(`/* ${path.relative(srcPath, full)} */\n${content}`);
+  // Fallback: concat everything, in the order Astro emits it.
+  const files = cssFiles.sort().map((file) => path.resolve(srcPath, file));
+  return { css: await concatSourceCss(srcPath, files), consumedSourceCss: new Set(files) };
+}
+
+/**
+ * The fallback sheet. The files pages import come in import order (`importOrderedCss`). Files no
+ * page imports still ship, ahead of them: Astro drops them, but sites may rely on it. A file another
+ * one `@import`s is emitted just before its importer, as Vite inlines it; that `@import` goes. Every
+ * other `@import`, and the first `@charset`, move to the top, where CSS allows them.
+ */
+async function concatSourceCss(srcPath: string, files: readonly string[]): Promise<string> {
+  const sources = new Map<string, string>();
+  for (const file of files) sources.set(file, await Bun.file(file).text());
+  const rules = new Map<string, CssPreludeRule[]>();
+  const imported = new Set<string>();
+  for (const [file, source] of sources) {
+    const found = cssPreludeRules(source);
+    rules.set(file, found);
+    for (const rule of found) {
+      const target = inlinedImport(file, rule, sources);
+      if (target) imported.add(target);
+    }
   }
-  return { css: parts.join("\n\n"), consumedSourceCss };
+  const reached = importOrderedCss().filter((file) => sources.has(file));
+  const reachedSet = new Set(reached);
+  const unreached = files.filter((file) => !reachedSet.has(file) && !imported.has(file));
+
+  let charset: string | null = null;
+  const hoisted: string[] = [];
+  const parts: string[] = [];
+  const emitted = new Set<string>();
+  const emit = (file: string): void => {
+    if (emitted.has(file)) return;
+    emitted.add(file);
+    const source = sources.get(file) ?? "";
+    let body = "";
+    let from = 0;
+    for (const rule of rules.get(file) ?? []) {
+      body += source.slice(from, rule.start);
+      from = rule.end;
+      const target = inlinedImport(file, rule, sources);
+      if (target) emit(target);
+      else if (rule.name === "charset") charset ??= source.slice(rule.start, rule.end);
+      else hoisted.push(source.slice(rule.start, rule.end));
+    }
+    body += source.slice(from);
+    parts.push(`/* ${path.relative(srcPath, file)} */\n${body}`);
+  };
+  for (const file of [...unreached, ...reached]) emit(file);
+  // Files only an `@import` cycle reaches, which no emitted file starts.
+  for (const file of files) emit(file);
+  return [...(charset === null ? [] : [charset]), ...hoisted, ...parts].join("\n\n");
+}
+
+/** The fallback file an unconditional relative `@import` names; null for a URL, a package, or a missing file. */
+function inlinedImport(importer: string, rule: CssPreludeRule, sources: ReadonlyMap<string, string>): string | null {
+  if (rule.name !== "import" || rule.conditions !== "") return null;
+  if (rule.target.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(rule.target)) return null;
+  const file = path.resolve(path.dirname(importer), rule.target);
+  return sources.has(file) ? file : null;
 }
 
 async function findTailwindEntry(
