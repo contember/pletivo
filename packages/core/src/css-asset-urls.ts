@@ -6,15 +6,13 @@
  */
 
 import { shouldInlineAsset, type AssetsInlineLimit } from "./assets-inline";
-
-/** `url(x)`, `url("x")`, `url('x')`, with optional surrounding space. */
-const URL_TOKEN_RE = /\burl\(\s*(["']?)([^"'()]+)\1\s*\)/g;
+import { cssUrlTokens } from "./css-imports";
 
 /** The distinct relative `url()` targets in `css`, as written and trimmed, in source order. */
 export function relativeCssAssetRefs(css: string): string[] {
   const refs = new Set<string>();
-  for (const match of css.matchAll(URL_TOKEN_RE)) {
-    const raw = match[2].trim();
+  for (const token of cssUrlTokens(css)) {
+    const raw = token.target.trim();
     if (raw && isRelativeAssetRef(raw)) refs.add(raw);
   }
   return [...refs];
@@ -22,10 +20,15 @@ export function relativeCssAssetRefs(css: string): string[] {
 
 /** `css` with every `url()` whose trimmed target is a key of `urls` pointing at its value instead. */
 export function replaceCssAssetUrls(css: string, urls: ReadonlyMap<string, string>): string {
-  return css.replace(URL_TOKEN_RE, (whole, _quote: string, target: string) => {
-    const url = urls.get(target.trim());
-    return url === undefined ? whole : `url("${url}")`;
-  });
+  let out = "";
+  let from = 0;
+  for (const token of cssUrlTokens(css)) {
+    const url = urls.get(token.target.trim());
+    if (url === undefined) continue;
+    out += `${css.slice(from, token.start)}url("${url}")`;
+    from = token.end;
+  }
+  return out + css.slice(from);
 }
 
 function isRelativeAssetRef(ref: string): boolean {

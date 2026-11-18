@@ -865,6 +865,13 @@ import logoMarkup from "../assets/logo.svg?raw";
       expect(await response.text()).toContain('Could not resolve: "./missing.svg" in styles/site.css');
     });
 
+    test("leaves a url() in a comment or a string alone, as the build does", async () => {
+      const site = '/* was url(./missing.svg) */\n.q::before { content: "url(./missing.svg)"; }\n' + SITE;
+      const { html } = await cssHost(site).host.render("/");
+      expect(html).toContain('/* was url(./missing.svg) */\n.q::before { content: "url(./missing.svg)"; }');
+      expect(html).toContain(`.big { background: url("${builtName("big", ".svg", BIG_SVG)}"); }`);
+    });
+
     test("serves the file from the durable store to a host that never rendered the page", async () => {
       const store = new MemoryGeneratedAssetStore();
       const workspace = cssHost(SITE).workspace;

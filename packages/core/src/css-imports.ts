@@ -38,6 +38,45 @@ export function tailwindModuleRefs(source: string): TailwindModuleRef[] {
   }));
 }
 
+/** One `url(…)` token: where it is, and its target as written, quotes stripped. */
+export interface CssUrlToken {
+  start: number;
+  end: number;
+  target: string;
+}
+
+/** `url(x)`, `url("x")`, `url('x')`, with optional surrounding space; tried only where a token starts. */
+const URL_TOKEN = /url\(\s*(["']?)([^"'()]+)\1\s*\)/y;
+
+/**
+ * The `url(…)` tokens of a stylesheet, in source order. A tokenizer, not a search: a
+ * `url(` inside a comment or a string is no token.
+ */
+export function cssUrlTokens(source: string): CssUrlToken[] {
+  const tokens: CssUrlToken[] = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    if (source.startsWith("url(", cursor) && !/[A-Za-z0-9_]/.test(source[cursor - 1] ?? "")) {
+      URL_TOKEN.lastIndex = cursor;
+      const match = URL_TOKEN.exec(source);
+      if (match) {
+        tokens.push({ start: cursor, end: cursor + match[0].length, target: match[2] });
+        cursor += match[0].length;
+        continue;
+      }
+    }
+    const quote = source[cursor];
+    if ((quote === "\"" || quote === "'") && readCssString(source, cursor, quote) === null) {
+      // A string a newline breaks ends there, as CSS reads it.
+      const newline = source.slice(cursor).search(/[\r\n]/);
+      cursor = newline === -1 ? source.length : cursor + newline;
+      continue;
+    }
+    cursor = skipCssToken(source, cursor);
+  }
+  return tokens;
+}
+
 type TargetReader = (source: string, cursor: number) => CssValue | null;
 
 interface AtRule {
