@@ -63,6 +63,8 @@ export class CompileWalk {
   usesI18n = false;
   /** A compiled `.md` module renders Markdown, so the pipeline's module joins the program. */
   usesMarkdown = false;
+  /** A module imports a host alias, which a host-generated module answers. */
+  usesHostModules = false;
 
   readonly #projectFiles: NormalizedProjectFiles;
   readonly #artifact: ArtifactResolver;

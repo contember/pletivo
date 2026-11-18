@@ -30,6 +30,7 @@ import type {
   ProgramMarkdownRequirement,
 } from "./compiled-program.ts";
 import { UnsupportedFileError } from "./compile/source-module.ts";
+import { RUNTIME_MODULES } from "./generated/runtime-modules.ts";
 
 export { isExecutableModule } from "./compile/module-kind.ts";
 export { UnresolvedImportError, UnsupportedFileError } from "./compile/source-module.ts";
@@ -114,17 +115,18 @@ export async function compilePluginProgram(
 ): Promise<PluginProgram> {
   const walk = new CompileWalk(new Map(), artifact.resolver, undefined);
   const resolver = new ImportResolver(walk, { artifact: artifact.resolver });
-  const program: PluginProgram = {
-    modules: walk.modules,
-    remarkPlugins: plugins.remarkPlugins.map((entry) => claimPlugin(walk, artifact.resolver, entry)),
-    rehypePlugins: plugins.rehypePlugins.map((entry) => claimPlugin(walk, artifact.resolver, entry)),
-  };
+  const remarkPlugins = plugins.remarkPlugins.map((entry) => claimPlugin(walk, artifact.resolver, entry));
+  const rehypePlugins = plugins.rehypePlugins.map((entry) => claimPlugin(walk, artifact.resolver, entry));
   await linkPending(walk, resolver, compiler, undefined, {
     annotateSourceFile: false,
     scopedStyleStrategy: undefined,
     compressHTML: undefined,
   });
-  return program;
+  // The runtime every render program holds; only a plugin that imports a host alias reaches it.
+  const modules = walk.usesHostModules
+    ? walk.modules
+    : Object.fromEntries(Object.entries(walk.modules).filter(([name]) => !Object.hasOwn(RUNTIME_MODULES, name)));
+  return { modules, remarkPlugins, rehypePlugins };
 }
 
 /** Claim each renderer's server module into the walk and name where the isolate imports it from. */

@@ -3,6 +3,8 @@ import { ANY_PROJECT_IMPORTER, ARTIFACT_VERSION, type ArtifactMdxConfig } from "
 import { loadProjectArtifact } from "../src/artifact.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { createCompileCache } from "../src/compile-cache.ts";
+import { compilePluginProgram } from "../src/compile-project.ts";
+import { RUNTIME_MODULES } from "../src/generated/runtime-modules.ts";
 import { MdxIsolateError, MdxNotPreparedError } from "../src/mdx-isolate.ts";
 import { UnsupportedFileError } from "../src/compile-project.ts";
 import { renderPage } from "../src/render.ts";
@@ -94,6 +96,13 @@ describe(".mdx pages on the Workers host", () => {
     expect(page.html).toContain('<h1 id="hello-who">Hello !MDX</h1>');
     expect(page.html).toContain('<p class="marked">Plain !<del>struck!</del> text.!</p>');
     expect(page.html).toContain('<meta charset="utf-8">');
+  }, 60_000);
+
+  test("compile in a program that holds the plugins and none of the render runtime", async () => {
+    const program = await compilePluginProgram(artifact(WITH_PLUGINS), compiler, WITH_PLUGINS);
+    const names = Object.keys(program.modules);
+    expect(names).toContain(program.remarkPlugins[0]?.executionName);
+    for (const runtime of Object.keys(RUNTIME_MODULES)) expect(names).not.toContain(runtime);
   }, 60_000);
 
   test("stay live: an edit re-renders with the same artifact and compile cache", async () => {
