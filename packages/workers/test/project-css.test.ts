@@ -78,27 +78,25 @@ describe("pageStylesheet canonical graph", () => {
     );
   });
 
-  test("keeps a stylesheet imported before a component ahead of that component's own", async () => {
-    // A preact island's server module: `import "./Counter.css"`, then `import("./Message")`, which imports Message.css.
-    const counter = "islands-bundle:x/pletivo-islands-entry-1.js";
-    const message = "islands-bundle:x/chunk-message.js";
-    const counterCss = "project:src/components/Counter.css";
-    const messageCss = "project:src/components/Message.css";
+  test("follows the import walk, not path order: a sheet imported before a component comes first", async () => {
+    // The page imports z.css, then a component that imports a.css: path order would put a.css first.
+    const component = "project:src/components/C.astro";
+    const z = "project:src/styles/z.css";
+    const a = "project:src/styles/a.css";
     const css = await stylesheetCss(options(
-      { "src/components/Counter.css": ".counter {}", "src/components/Message.css": ".message {}" },
+      { "src/styles/z.css": ".z {}", "src/styles/a.css": ".a {}" },
       {
-        modules: [PAGE, counter, counterCss, message, messageCss],
+        modules: [PAGE, z, component, a],
         edges: [
-          { importer: PAGE, target: counter, kind: "execution" },
-          { importer: counter, target: counterCss, kind: "style" },
-          { importer: counter, target: message, kind: "execution" },
-          { importer: message, target: messageCss, kind: "style" },
+          { importer: PAGE, target: z, kind: "style" },
+          { importer: PAGE, target: component, kind: "execution" },
+          { importer: component, target: a, kind: "style" },
         ],
         styles: [],
         tailwindModules: [],
       },
     ));
-    expect(css).toBe("/* components/Counter.css */\n.counter {}\n\n/* components/Message.css */\n.message {}");
+    expect(css).toBe("/* styles/z.css */\n.z {}\n\n/* styles/a.css */\n.a {}");
   });
 
   test("collects an opaque artifact stylesheet id without guessing its extension", async () => {
