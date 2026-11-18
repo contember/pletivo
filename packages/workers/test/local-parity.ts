@@ -7,6 +7,7 @@
  *   bun packages/workers/test/local-parity.ts tests/fixture-astro-hoisted-imports
  */
 
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -173,7 +174,7 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
     page = await renderPage({
       files,
       assets: assetView,
-      readBytes: (key) => assets.get(key) ?? encodedText(files.get(key)),
+      readBytes: fixtureBytes,
       pathname,
       loader,
       compiler,
@@ -378,8 +379,10 @@ await fs.rm(outDir, { recursive: true, force: true });
 await fs.rm(artifactPath, { force: true });
 process.exit(problems.length === 0 ? 0 : 1);
 
-function encodedText(text: string | undefined): Uint8Array<ArrayBuffer> | undefined {
-  return text === undefined ? undefined : new Uint8Array(new TextEncoder().encode(text));
+/** A fixture file's bytes off disk: `readSources` reads a font as text, which loses bytes. */
+function fixtureBytes(key: string): Uint8Array<ArrayBuffer> | undefined {
+  if (!files.has(key) && !assets.has(key)) return undefined;
+  return new Uint8Array(readFileSync(path.join(root, key)));
 }
 
 function firstDifference(expected: string, actual: string): string {
