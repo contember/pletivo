@@ -164,15 +164,31 @@ describe("byte parity with pletivo build", () => {
     180_000,
   );
 
-  for (const renderer of ["svelte", "vue"]) {
+  const singleRenderers: { renderer: string; pages: number; urlTarget?: string }[] = [
+    { renderer: "react", pages: 1 },
+    { renderer: "solid", pages: 1 },
+    // The component's `url(./bg.svg)`, over the 4 kB inline limit: the file the build wrote,
+    // under the name it wrote it, byte for byte.
+    { renderer: "svelte", pages: 1, urlTarget: "/assets/bg.2ea6e94c.svg (4904 B)" },
+    { renderer: "vue", pages: 2, urlTarget: "/assets/bg.2ea6e94c.svg (4904 B)" },
+    // Not preact: its endpoint imports astro/container, which reaches node:path and prepare refuses.
+  ];
+  for (const { renderer, pages, urlTarget } of singleRenderers) {
     test(
-      `the ${renderer} fixture links the url() target pletivo build wrote, with its bytes`,
+      `the ${renderer} fixture renders its islands and inlined CSS as the build does`,
       async () => {
-        const { output } = await localParity(`tests/fixture-astro-renderers-${renderer}`);
-        // The component's `url(./bg.svg)`, over the 4 kB inline limit: the file the build wrote,
-        // under the name it wrote it, byte for byte.
-        expect(output).toContain("= /assets/bg.2ea6e94c.svg (4904 B)");
-        expect(output).not.toContain("! /assets/");
+        const { ok, output } = await localParity(`tests/fixture-astro-renderers-${renderer}`);
+        // The build inlines the component CSS minified, this host as written: both minified, then every
+        // byte of the page compared (inlined-style.ts).
+        expect(output).toContain(`${pages}/${pages} byte-identical`);
+        expect(output).toContain(`= ${pages} enumerated path(s)`);
+        expect(output).toContain("= 3 island module(s) served as JavaScript, every import among them");
+        expect(output).toContain("= 3/3 island module(s) byte-identical to pletivo build");
+        if (urlTarget !== undefined) {
+          expect(output).toContain(`= ${urlTarget}`);
+          expect(output).not.toContain("! /assets/");
+        }
+        expect(ok).toBe(true);
       },
       180_000,
     );
