@@ -1,6 +1,6 @@
 /**
- * Which features a project uses that this host does not render, so a host can refuse
- * the project up front with a reason instead of failing page by page.
+ * Which features a project uses that this host renders only in part or not at all, so a
+ * host can refuse the project up front with a reason instead of failing page by page.
  */
 
 import { is } from "@astrojs/compiler/utils";
@@ -12,9 +12,9 @@ import { projectRoutes } from "./render.ts";
 
 /** Project paths per feature, sorted; an empty list means the feature is unused. */
 export interface ProjectFeatures {
-  /** `.mdx` files: pages, content entries or components. */
+  /** `.mdx` files: pages, content entries or components. A content entry does not render. */
   mdx: string[];
-  /** Files that hydrate a component with a `client:*` directive. */
+  /** Files that hydrate a component with a `client:*` directive; their islands need a prepared artifact. */
   islands: string[];
   /** Endpoint routes (`rss.xml.ts`): a page file that answers with a `Response`. */
   endpoints: string[];

@@ -158,7 +158,7 @@ export interface ProjectHost {
   paths(): Promise<RoutePath[]>;
   /** The project as the next render will see it. */
   snapshot(): Promise<ProjectSnapshot>;
-  /** What the project uses that this host does not render; see `project-features.ts`. */
+  /** What the project uses that this host renders only in part or not at all; see `project-features.ts`. */
   features(): Promise<ProjectFeatures>;
   /**
    * Do a page's cold work ahead of its first request: load the artifact, compile the
