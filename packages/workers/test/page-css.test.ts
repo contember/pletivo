@@ -148,4 +148,16 @@ describe("finalizeHtml", () => {
     expect(finalizeHtml("<p>x</p>", { compressHTML: true, partial: true }, ["site{}"]))
       .toBe("<style>site{}</style>\n<p>x</p>");
   });
+
+  test("merges an Astro project's stylesheet and scoped CSS into one <style>, as the build inlines them", () => {
+    for (const compressHTML of [true, false]) {
+      expect(finalizeHtml(
+        "<html><head></head><body>x</body></html>",
+        { compressHTML, partial: false },
+        ["site{}", "", "scoped{}"],
+      )).toContain("<head><style>site{}\nscoped{}</style>\n</head>");
+    }
+    expect(finalizeHtml("<html><head></head><body>x</body></html>", { compressHTML: true, partial: false }, ["", ""]))
+      .not.toContain("<style>");
+  });
 });

@@ -84,7 +84,12 @@ export function adjacency(
   return byImporter;
 }
 
-/** `doctypeOptions.compressHTML` is the artifact's, absent for a pletivo-native project. */
+/**
+ * `doctypeOptions.compressHTML` is the artifact's, absent for a pletivo-native project. In an Astro
+ * project the CSS parts share one `<style>`: `pletivo build` merges an inlined sheet with the page's
+ * own CSS, as Astro's `mergeInlineCss` does. A pletivo-native build links its sheets, so each part
+ * keeps its own block.
+ */
 export function finalizeHtml(
   html: string,
   doctypeOptions: PageDoctypeOptions,
@@ -94,7 +99,8 @@ export function finalizeHtml(
   let out = html;
   // Prepended last: the CSS below may be prepended to a page without `<head>`.
   const doctype = pageDoctype(html, doctypeOptions);
-  const parts = css.filter(Boolean);
+  const filtered = css.filter(Boolean);
+  const parts = doctypeOptions.compressHTML === undefined || filtered.length === 0 ? filtered : [filtered.join("\n")];
   if (parts.length > 0) {
     const tag = parts.map((part) => `<style>${escapeStyleEnd(part)}</style>`).join("\n");
     if (out.includes("</head>")) out = out.replace("</head>", () => tag + "\n</head>");
