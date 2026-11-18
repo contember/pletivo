@@ -11,6 +11,7 @@
  */
 
 import yaml from "js-yaml";
+import { splitFrontmatter } from "./frontmatter";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -18,6 +19,8 @@ import remarkRehype from "remark-rehype";
 import rehypeRaw from "rehype-raw";
 import rehypeStringify from "rehype-stringify";
 import type { CompileOptions } from "@mdx-js/mdx";
+
+export { splitFrontmatter } from "./frontmatter";
 
 // `unified`'s `PluggableList` — derived from the published `CompileOptions`
 // (the bare `unified` specifier isn't directly resolvable here; see config.ts).
@@ -109,14 +112,6 @@ export function parseYamlObject(input: string): Record<string, unknown> {
     : {};
 }
 
-/** Split off a YAML frontmatter block without parsing it. `yaml` is null when there is none. */
-export function splitFrontmatter(content: string): { yaml: string | null; body: string } {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
-  if (!match) {
-    return { yaml: null, body: content };
-  }
-  return { yaml: match[1], body: match[2] };
-}
 
 export function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
   const { yaml, body } = splitFrontmatter(content);

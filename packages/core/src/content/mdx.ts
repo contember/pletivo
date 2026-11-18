@@ -8,7 +8,7 @@ import { compile, nodeTypes, type CompileOptions } from "@mdx-js/mdx";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import type { Transformer } from "unified";
-import { splitFrontmatter } from "./markdown";
+import { splitFrontmatter } from "./frontmatter";
 import { rehypeMdxHeadingIds } from "./mdx-heading-ids";
 import { rehypeAstroIslandMetadata, type MdxHydration } from "./mdx-island-metadata";
 import { rehypeMdxPageCharset } from "./mdx-page-charset";

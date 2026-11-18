@@ -112,7 +112,9 @@ describe("generated runtime modules", () => {
 
   test("give the MDX isolate its entry alone, and the render isolate none of it", () => {
     expect(Object.keys(MDX_ISOLATE_MODULES)).toEqual([MDX_ENTRY_MODULE_NAME]);
-    expect(MDX_ISOLATE_MODULES[MDX_ENTRY_MODULE_NAME]).toContain("function createMdxEntry");
+    expect(MDX_ISOLATE_MODULES[MDX_ENTRY_MODULE_NAME]).toMatch(/export\s*\{[^}]*\bas createMdxEntry\b/);
+    // Minified with one acorn it is about 617 kB; with acorn twice 734 kB, unminified 1.1 MB.
+    expect(MDX_ISOLATE_MODULES[MDX_ENTRY_MODULE_NAME].length).toBeLessThan(700_000);
     expect(Object.keys(RUNTIME_MODULES)).not.toContain(MDX_ENTRY_MODULE_NAME);
   });
 
