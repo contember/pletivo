@@ -2,7 +2,7 @@
 // gets `<meta charset="utf-8">` ahead of its content, as a Markdown page does. pletivo refuses a page
 // with `layout:` frontmatter, so Astro's layout branch, which skips the charset, has no counterpart.
 import type { Transformer } from "unified";
-import { isRouteFile } from "@pletivo/core/router";
+import { isRouteFile } from "../router";
 
 const EXPORT_CONST_PARTIAL_TRUE = /export\s+const\s+partial\s*=\s*true/;
 

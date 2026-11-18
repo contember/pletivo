@@ -9,6 +9,7 @@ import {
   type ArtifactModule,
   type ArtifactInput,
   type ArtifactMarkdownConfig,
+  type ArtifactMdxConfig,
   type PreparedSite,
 } from "@pletivo/core/artifact";
 import type { AstroConfig } from "@pletivo/core/astro-host/types";
@@ -24,9 +25,11 @@ import { srcDirMismatch } from "../astro-host/config-loader";
 import { bundlePageScripts } from "../astro-host/page-scripts";
 import { freezeViteVirtualModule } from "../astro-host/vite-plugins";
 import { loadConfig, type PletivoConfig } from "../config";
+import { registerMdxPlugin } from "../mdx-plugin";
 import { PrepareError, prepareFailure, type PrepareDiagnostic } from "./error";
 import { readProjectInputs } from "./inputs";
 import { freezeMarkdown } from "./markdown";
+import { prepareMdx } from "./mdx";
 import { bundleOnlyFiles, prepareIslandClients, prepareIslands, type AstroHydrations } from "./islands";
 import { freezeRouting, type FrozenRouting } from "./routing";
 import { compareStrings } from "@pletivo/core/compare-strings";
@@ -57,6 +60,8 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const inputs = await readProjectInputs(projectRoot);
   const projectConfig = await loadConfig(projectRoot);
   const srcDir = options.srcDir ?? projectConfig.srcDir;
+  // Before the config loads: the stub in place of `@astrojs/mdx` is what records `mdx({...})`.
+  await registerMdxPlugin();
   const host = await initAstroHost(projectRoot, "build");
   const markdown = freezeMarkdown(astroMarkdownSettings(host?.config));
   const routing = freezeRouting(host?.config);
@@ -73,10 +78,17 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
-  const sources = await readSources(projectRoot, srcDir);
-  const pluginModules = markdown.config === null
-    ? []
-    : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins].map((plugin) => plugin.module);
+  // Sources first: they refuse a `srcDir` that does not exist or leaves the project.
+  const projectSources = await readSources(projectRoot, srcDir);
+  const outsideMdx = await Promise.all(
+    (await filesOutsideSrcDir(projectRoot, srcDir, "**/*.mdx")).map(async (file) => ({ file, source: await Bun.file(file).text() })),
+  );
+  const mdx = await prepareMdx(projectConfig, host?.config, projectSources, outsideMdx);
+  const sources = mdx.sources;
+  const pluginModules = [
+    ...(markdown.config === null ? [] : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins]),
+    ...(mdx.config === null ? [] : [...mdx.config.remarkPlugins, ...mdx.config.rehypePlugins]),
+  ].map((plugin) => plugin.module);
   // First: the vendor graph must not walk what the islands bundle owns, whose packages may be CommonJS.
   const islands = await prepareIslands(projectRoot, host?.renderers ?? [], sources);
   const bundleOnly = islands === null ? new Set<string>() : bundleOnlyFiles(islands, sources);
@@ -90,13 +102,16 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   // After the graph, which carries the package `.astro` components that may hydrate islands too.
   const clients = islands === null
     ? null
-    : await prepareIslandClients(islands, await astroHydrations(projectRoot, srcDir, sources, graph.modules));
+    : await prepareIslandClients(islands, [
+      ...(await astroHydrations(projectRoot, srcDir, sources, graph.modules)),
+      ...mdx.outsideHydrations,
+    ]);
   const pageScript = await freezePageScripts(host, projectRoot);
 
   return {
     artifact: {
       version: ARTIFACT_VERSION,
-      config: freezeConfig(host?.config, markdown.config, routing, scopedStyle.strategy, compressHTML.value),
+      config: freezeConfig(host?.config, markdown.config, mdx.config, routing, scopedStyle.strategy, compressHTML.value),
       scripts: {
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: pageScript === null ? [] : [pageScript],
@@ -193,17 +208,25 @@ async function astroHydrations(
     const { hydrated } = await astroSourceFacts(file, source);
     if (hydrated.length > 0) files.push({ file, hydrated });
   };
-  const srcBase = realpathSync(path.resolve(projectRoot, srcDir));
-  for await (const rel of new Glob("**/*.astro").scan({ cwd: projectRoot, dot: true })) {
-    if (isSkippedPath(rel)) continue;
-    const file = path.join(projectRoot, rel);
-    if (file.startsWith(srcBase + path.sep)) continue;
+  for (const file of await filesOutsideSrcDir(projectRoot, srcDir, "**/*.astro")) {
     await read(file, await Bun.file(file).text());
   }
   for (const module of carried) {
     if (module.kind === "astro" && module.compilePath !== undefined) await read(path.resolve(projectRoot, module.compilePath), module.source);
   }
   return files;
+}
+
+/** Project files matching `pattern` that `readSources` does not read, which a page may still import. */
+async function filesOutsideSrcDir(projectRoot: string, srcDir: string, pattern: string): Promise<string[]> {
+  const srcBase = realpathSync(path.resolve(projectRoot, srcDir));
+  const files: string[] = [];
+  for await (const rel of new Glob(pattern).scan({ cwd: projectRoot, dot: true })) {
+    if (isSkippedPath(rel)) continue;
+    const file = path.join(projectRoot, rel);
+    if (!file.startsWith(srcBase + path.sep)) files.push(file);
+  }
+  return files.sort(compareStrings);
 }
 
 /** A build product, a dependency or a dot entry, which no source walk reads. */
@@ -350,6 +373,7 @@ function freezeCompressHTML(config: AstroConfig | undefined): {
 function freezeConfig(
   config: AstroConfig | undefined,
   markdown: ArtifactMarkdownConfig | null,
+  mdx: ArtifactMdxConfig | null,
   routing: FrozenRouting,
   scopedStyleStrategy: ScopedStyleStrategy | undefined,
   compressHTML: boolean | undefined,
@@ -357,6 +381,7 @@ function freezeConfig(
   const frozen: ArtifactConfig = {};
   if (config?.site) frozen.site = config.site;
   if (markdown !== null) frozen.markdown = markdown;
+  if (mdx !== null) frozen.mdx = mdx;
   if (routing.i18n !== null) frozen.i18n = routing.i18n;
   if (routing.trailingSlash !== null) frozen.trailingSlash = routing.trailingSlash;
   if (routing.redirects.length > 0) frozen.redirects = routing.redirects;

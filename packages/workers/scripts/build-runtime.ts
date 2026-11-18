@@ -37,12 +37,20 @@ export interface Entry {
    * package's `browser` entry touches `document` at module scope.
    */
   conditions?: string[];
+  /**
+   * Packages resolved to their ES module entry from every importer, a `require()` included,
+   * so a dual package that is both imported and required is bundled once.
+   */
+  esmOnly?: string[];
+  /** Minify this bundle. Off by default: an unminified one is what an isolate error's stack names. */
+  minify?: boolean;
 }
 
 const ISOLATE_HANDLER_MODULE_NAME = "pletivo-isolate-entry.js";
 const TAILWIND_MODULE_NAME = "pletivo-tailwind.js";
 const TAILWIND_ENTRY_MODULE_NAME = "pletivo-tailwind-entry.js";
 const COMPILER_ENTRY_MODULE_NAME = "pletivo-compiler-entry.js";
+const MDX_ENTRY_MODULE_NAME = "pletivo-mdx-entry.js";
 
 const ENTRIES: Record<string, Entry> = {
   "pletivo-runtime.js": {
@@ -112,6 +120,16 @@ const ENTRIES: Record<string, Entry> = {
     target: "browser",
     forbidNodeBuiltins: true,
   },
+  /** The isolate `.mdx` compiles in, beside the project's remark and rehype plugins. */
+  [MDX_ENTRY_MODULE_NAME]: {
+    specifier: path.join(PACKAGE_DIR, "src/mdx-isolate-entry.ts"),
+    target: "browser",
+    conditions: ["workerd"],
+    // `acorn-jsx` requires acorn and micromark imports it: one copy, not two.
+    esmOnly: ["acorn"],
+    // The largest module a host carries, and loaded only by the isolate that compiles `.mdx`.
+    minify: true,
+  },
 };
 
 /** Of those, the ones `compileProject` adds to every bundle. */
@@ -149,13 +167,14 @@ export async function bundleRuntimeModule(entry: Entry): Promise<string> {
   if (entry.aliases) plugins.push(aliasModules(entry.aliases, aliased));
   if (entry.external?.length) plugins.push(externalizeModules(entry.external));
   if (entry.forbidNodeBuiltins) plugins.push(rejectNodeBuiltins(entry.specifier));
+  if (entry.esmOnly?.length) plugins.push(resolveEsmEntries(entry.esmOnly));
   const result = await Bun.build({
     entrypoints: [Bun.resolveSync(entry.specifier, PACKAGE_DIR)],
     target: entry.target,
     conditions: entry.conditions,
     plugins: plugins.length > 0 ? plugins : undefined,
     format: "esm",
-    minify: false,
+    minify: entry.minify === true,
   });
   if (!result.success) {
     throw new Error(
@@ -281,6 +300,19 @@ function externalizeModules(specifiers: string[]): BunPlugin {
   };
 }
 
+function resolveEsmEntries(specifiers: string[]): BunPlugin {
+  return {
+    name: "resolve-esm-entries",
+    setup(build) {
+      for (const specifier of specifiers) {
+        const filter = new RegExp(`^${escapeRegex(specifier)}$`);
+        // `Bun.resolveSync` applies the `import` condition whatever the importer's call is.
+        build.onResolve({ filter }, (args) => ({ path: Bun.resolveSync(args.path, path.dirname(args.importer)) }));
+      }
+    },
+  };
+}
+
 /** Externalizes whatever resolves to an aliased file, recording specifier -> Loader module. */
 function aliasModules(aliases: Record<string, string>, aliased: Map<string, string>): BunPlugin {
   return {
@@ -379,6 +411,16 @@ export async function generateRuntimeModules(): Promise<string> {
     "/** The entry, which every Tailwind isolate program carries next to Tailwind and its plugins. */",
     "export const TAILWIND_ISOLATE_MODULES: Readonly<Record<string, string>> = {",
     ...[TAILWIND_ENTRY_MODULE_NAME].map(
+      (name) => `  ${JSON.stringify(name)}: GENERATED_MODULES[${JSON.stringify(name)}],`,
+    ),
+    "};",
+    "",
+    "/** The MDX isolate's request handling; exports `createMdxEntry`. */",
+    `export const MDX_ENTRY_MODULE_NAME = ${JSON.stringify(MDX_ENTRY_MODULE_NAME)};`,
+    "",
+    "/** The entry, which every MDX isolate program carries next to the project's plugins. */",
+    "export const MDX_ISOLATE_MODULES: Readonly<Record<string, string>> = {",
+    ...[MDX_ENTRY_MODULE_NAME].map(
       (name) => `  ${JSON.stringify(name)}: GENERATED_MODULES[${JSON.stringify(name)}],`,
     ),
     "};",

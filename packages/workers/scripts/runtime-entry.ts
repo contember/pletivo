@@ -13,4 +13,5 @@ export { configureAstroIslands, finalizeIslandScripts, isRendererServer } from "
 export { jsx, jsxs, jsxDEV, Fragment as jsxFragment } from "@pletivo/runtime/jsx-runtime";
 export { createPaginate } from "@pletivo/core/paginate";
 export { setScriptUrlResolver } from "@pletivo/runtime/script-registry";
+export { mdxContent } from "@pletivo/runtime/mdx-content";
 export { runWithLogCapture } from "../src/log-capture.ts";

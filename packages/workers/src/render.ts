@@ -33,6 +33,8 @@ import { pageStylesheet, parentDir } from "./project-css.ts";
 import { projectBytes, type CssAssetLink, type ReadProjectBytes } from "./css-assets.ts";
 import type { TailwindStylesheets } from "./tailwind.ts";
 import type { TailwindIsolateHost } from "./tailwind-isolate.ts";
+import { createIsolateMdxCompiler } from "./mdx-isolate.ts";
+import type { MdxCompiler } from "./compile/types.ts";
 import type { ProjectAssetsView } from "./asset-port.ts";
 import type { ContentBinding, ContentFiles, ContentHandle } from "./content-files.ts";
 import {
@@ -465,6 +467,7 @@ async function isolatePaths(
     assets: options.assets,
     cache: options.compileCache,
     annotateSourceFile: options.annotateSourceFile,
+    mdx: mdxCompiler(options),
     tailwind: options.tailwind,
   });
   const { payload } = await callIsolate({
@@ -504,7 +507,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   if (files.get(file) === undefined) throw new RouteNotFoundError(pathname);
 
   if (!isExecutableModule(file)) {
-    throw new UnsupportedRouteError(file, "only .astro, .tsx and .md pages render here");
+    throw new UnsupportedRouteError(file, "only .astro, .tsx, .md and .mdx pages render here");
   }
 
   const project = await compilePage(file, options);
@@ -568,6 +571,7 @@ function compilePage(file: string, options: ProjectOptions): Promise<CompiledPro
     assets: options.assets,
     cache: options.compileCache,
     annotateSourceFile: options.annotateSourceFile,
+    mdx: mdxCompiler(options),
     tailwind: options.tailwind,
   });
 }
@@ -777,7 +781,17 @@ function throwContentFailure(handle: ContentHandle | null): void {
   if (failure !== undefined) throw failure;
 }
 
-/** The Tailwind isolate runs where the render isolate does, cut off from the network. */
+/** `.mdx` compiles in an isolate of its own, beside the project's plugins. */
+function mdxCompiler(options: ProjectOptions): MdxCompiler {
+  return createIsolateMdxCompiler({
+    host: tailwindIsolateHost(options),
+    artifact: options.artifact,
+    pagesDir: options.pagesDir ?? DEFAULT_PAGES_DIR,
+    compiler: options.compiler,
+  });
+}
+
+/** The Tailwind and MDX isolates run where the render isolate does, cut off from the network. */
 function tailwindIsolateHost(options: ProjectOptions): TailwindIsolateHost {
   return {
     loader: options.loader,

@@ -520,6 +520,46 @@ project", closed in a `finally`. Not defensive coding: measured in workerd, a
 mutable module global handed the slower of two overlapping requests the faster
 one's bytes.
 
+### MDX pages
+
+An `.mdx` page compiles through `@pletivo/core/content/mdx` on both hosts: the same
+pipeline, plugin order and `@astrojs/mdx` additions (heading ids, page charset,
+`components`, island metadata). The Workers host runs it in an MDX isolate of its own
+(`src/mdx-isolate.ts`), a Loader program built from the MDX entry, the artifact's frozen
+`config.mdx` and its plugins' modules, cut off from the network. The compiled module joins
+the render program like any other; its `client:component-path` values are rewritten at link,
+as `.astro` ones are. Editing the page stays live: its compile is cached per source and per
+MDX program.
+
+- **Plugins travel as portable references.** `prepare` freezes the resolved MDX pipeline
+  (Astro `markdown.*` unless `mdx({ extendMarkdownConfig: false })`, the plugins and `gfm`
+  given to `mdx({...})`, `pletivo.config` `mdx.*`) the way it freezes Markdown's, and refuses
+  an untagged plugin by name and config. `mdx({...})` reaches prepare only because pletivo's
+  stub replaces `@astrojs/mdx` before the Astro config loads, as in `pletivo build`; the
+  `tests/fixture-astro-mdx-plugins` parity case checks it. A project prepared before it had
+  an `.mdx` file holds no `config.mdx`; such a render fails with `MdxNotPreparedError`.
+- **Hydrations are read at prepare.** Every project `.mdx` file compiles there with the Bun
+  host's compiler. Those under `srcDir` are sources: their imports join the vendor graph and
+  their hydrations get island clients. Those outside it (`docs/*.mdx`, which a page may
+  import) are read for hydrations, as `.astro` files outside `srcDir` are: their hydrations
+  get clients and their presence freezes the pipeline. Their own imports do not join the
+  vendor graph, and one that does not compile is skipped (a page that reaches it fails on
+  either host). A new hydration
+  without a new prepare fails with `MissingIslandClientError`.
+- **No syntax highlighting.** The Bun host runs Shiki from the project's
+  `@astrojs/markdown-remark`. Its Oniguruma engine compiles wasm from bytes, which workerd
+  forbids, and its grammars are about 9.9 MB, so a fenced block renders as
+  `<pre><code class="language-…">`. Astro's `with-mdx` example differs from `pletivo build`
+  only there; `tests/fixture-astro-mdx-example` sets `syntaxHighlight: false` and matches.
+- **The MDX entry is about 617 kB, 194 kB gzipped** (`@mdx-js/mdx`, acorn, parse5,
+  micromark), the one minified bundle. acorn is resolved to its ES module build from every
+  importer, so `acorn-jsx`'s `require` does not bundle a second copy. Only the MDX isolate
+  loads it, but it is in `runtime-modules.ts`, so every host Worker ships it, MDX or not.
+  Leaving it out of a host that renders no MDX would make the entry an optional import of
+  `@pletivo/workers`, a change to the package's design that is not made here.
+- **`.mdx` entries in a content collection still fail.** Content stays out of the module map,
+  and an entry's compiled module would have to join the render program.
+
 ### Runtime bundle build and module-level constraints
 
 `scripts/build-runtime.ts` bundles what runs in the isolate, and the targets are forced:
@@ -577,8 +617,8 @@ than matching Vite here, but it is a divergence, not an oversight. See
 [022](022-dogfood-ssr-workers.md) items 3 and 4.
 
 `tests/fixture` still cannot run here, and collections are no longer the reason:
-its pages use islands. `content-formats` needs `.mdx`, which the isolate has no
-renderer for and says so by name. Also absent from collections: `image()` schemas
+its pages use islands. `content-formats` needs `.mdx` collection entries, which the
+isolate does not render and says so by name (MDX pages do, see above). Also absent from collections: `image()` schemas
 (no filesystem), and the glob matcher is a re-implementation — `**`, `*`, `?`,
 `{a,b}` and dotfile exclusion only, so extglob and character classes can match
 differently than `Bun.Glob`. `generateId`'s `base` URL is rooted at the file map

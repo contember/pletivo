@@ -17,6 +17,8 @@ import {
   ISOLATE_PROGRAM_MODULE_NAME,
   ISOLATE_PROTOCOL_MODULE_NAME,
   JSX_RUNTIME_MODULE_NAME,
+  MDX_ENTRY_MODULE_NAME,
+  MDX_ISOLATE_MODULES,
   RUNTIME_MODULES,
   RUNTIME_MODULE_NAME,
   TAILWIND_ENTRY_MODULE_NAME,
@@ -108,6 +110,14 @@ describe("generated runtime modules", () => {
     expect(COMPILER_ISOLATE_MODULES[COMPILER_MAIN_MODULE_NAME]).toContain(`from "./${COMPILER_WASM_MODULE_NAME}"`);
   });
 
+  test("give the MDX isolate its entry alone, and the render isolate none of it", () => {
+    expect(Object.keys(MDX_ISOLATE_MODULES)).toEqual([MDX_ENTRY_MODULE_NAME]);
+    expect(MDX_ISOLATE_MODULES[MDX_ENTRY_MODULE_NAME]).toMatch(/export\s*\{[^}]*\bas createMdxEntry\b/);
+    // Minified with one acorn it is about 617 kB; with acorn twice 734 kB, unminified 1.1 MB.
+    expect(MDX_ISOLATE_MODULES[MDX_ENTRY_MODULE_NAME].length).toBeLessThan(700_000);
+    expect(Object.keys(RUNTIME_MODULES)).not.toContain(MDX_ENTRY_MODULE_NAME);
+  });
+
   test("import nothing but the Loader modules each one is paired with", () => {
     const loaderImports: Record<string, { allowed: string[]; nodeBuiltins: boolean }> = {
       [RUNTIME_MODULE_NAME]: { allowed: [], nodeBuiltins: true },
@@ -125,6 +135,7 @@ describe("generated runtime modules", () => {
         nodeBuiltins: false,
       },
       [TAILWIND_ENTRY_MODULE_NAME]: { allowed: [`./${TAILWIND_MODULE_NAME}`], nodeBuiltins: false },
+      [MDX_ENTRY_MODULE_NAME]: { allowed: [], nodeBuiltins: false },
       "pletivo-compiler-entry.js": { allowed: [], nodeBuiltins: false },
       [COMPILER_MAIN_MODULE_NAME]: {
         allowed: [`./${COMPILER_WASM_MODULE_NAME}`, "./pletivo-compiler-entry.js"],

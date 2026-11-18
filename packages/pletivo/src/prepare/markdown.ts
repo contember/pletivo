@@ -11,8 +11,13 @@ import {
   PORTABLE_MODULE,
   type ArtifactJson,
   type ArtifactMarkdownConfig,
+  type ArtifactMdxConfig,
   type PortablePlugin,
 } from "@pletivo/core/artifact";
+import type { AstroConfig } from "@pletivo/core/astro-host/types";
+import { astroMarkdownSettings } from "@pletivo/core/content/markdown";
+import type { PletivoConfig } from "../config";
+import { MDX_INTEGRATION_OPTIONS_KEY, type MdxOptions } from "../mdx-plugin";
 import type { PrepareDiagnostic } from "./error";
 
 export interface FrozenMarkdown {
@@ -59,6 +64,61 @@ export function freezeMarkdown(markdown: unknown): FrozenMarkdown {
     config.remarkRehype !== undefined ||
     config.gfm !== undefined;
   return { config: customized ? config : null, diagnostics };
+}
+
+export interface FrozenMdx {
+  config: ArtifactMdxConfig;
+  diagnostics: PrepareDiagnostic[];
+}
+
+/** Where a plugin of the resolved MDX list was configured, for a diagnostic. */
+interface PluginOrigin {
+  source: string;
+  at: string;
+}
+
+/**
+ * Freeze `options`, what `.mdx` compiles with on the Bun host (`resolveMdxOptions` of these
+ * configs). A plugin from `markdown` is reported by `freezeMarkdown`; the MDX-only ones here.
+ */
+export function freezeMdx(options: MdxOptions, pletivoConfig: PletivoConfig, astroConfig: AstroConfig | undefined): FrozenMdx {
+  const origins = new Map<unknown, PluginOrigin>();
+  const record = (list: unknown, source: string, at: string): void => {
+    if (!Array.isArray(list)) return;
+    list.forEach((entry: unknown, index) => {
+      if (!origins.has(entry)) origins.set(entry, { source, at: `${at}[${index}]` });
+    });
+  };
+  // What `recordMdxIntegrationOptions` stashed; `resolveMdxOptions` read the same fields.
+  const integration: unknown = astroConfig?.[MDX_INTEGRATION_OPTIONS_KEY];
+  const integrationField = (key: string): unknown => (isObject(integration) ? Reflect.get(integration, key) : undefined);
+  const markdown = integrationField("extendMarkdownConfig") === false ? undefined : astroMarkdownSettings(astroConfig);
+  for (const stage of STAGES) {
+    record(markdown?.[stage], "markdown", `markdown.${stage}`);
+    record(integrationField(stage), "astro.config", `mdx().${stage}`);
+    record(pletivoConfig.mdx?.[stage], "pletivo.config", `mdx.${stage}`);
+  }
+
+  const diagnostics: PrepareDiagnostic[] = [];
+  const freezeList = (stage: (typeof STAGES)[number]): PortablePlugin[] => {
+    const frozen: PortablePlugin[] = [];
+    (options[stage] ?? []).forEach((entry, index) => {
+      const origin = origins.get(entry) ?? { source: "astro.config", at: `mdx.${stage}[${index}]` };
+      const plugin = freezePlugin(entry, origin.at);
+      if (typeof plugin !== "string") frozen.push(plugin);
+      else if (origin.source !== "markdown") diagnostics.push({ source: origin.source, hook: "mdx", reason: plugin });
+    });
+    return frozen;
+  };
+  const config: ArtifactMdxConfig = {
+    remarkPlugins: freezeList("remarkPlugins"),
+    rehypePlugins: freezeList("rehypePlugins"),
+    gfm: options.gfm !== false,
+  };
+  if (options.astro !== undefined) {
+    config.astro = { experimentalHeadingIdCompat: options.astro.experimentalHeadingIdCompat };
+  }
+  return { config, diagnostics };
 }
 
 /** The portable form of one `plugin` or `[plugin, options]` entry, or why there is none. */

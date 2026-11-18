@@ -1,11 +1,9 @@
 /**
  * Bun plugin that teaches the runtime how to import `.mdx` files.
  *
- * On each `.mdx` import:
- *  - reads the source
- *  - strips YAML frontmatter (so it doesn't interfere with MDX compilation)
- *  - runs `@mdx-js/mdx`'s `compile()` with `jsxImportSource: "pletivo"`
- *  - returns the generated JS code to Bun
+ * On each `.mdx` import it reads the source, compiles it with
+ * `@pletivo/core/content/mdx` (the Workers host's compile too) and returns the
+ * generated JS code to Bun.
  *
  * The compiled module exports a default component function. When called,
  * it renders through pletivo's JSX runtime and returns an `HtmlString`.
@@ -16,29 +14,32 @@
 
 import path from "path";
 import { fileURLToPath } from "url";
-import { compile, nodeTypes, type CompileOptions } from "@mdx-js/mdx";
-import rehypeRaw from "rehype-raw";
-import remarkGfm from "remark-gfm";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import type { PletivoConfig } from "./config";
 import { substituteImportMetaEnv } from "./import-meta-env";
 import type { AstroIntegration } from "@pletivo/core/astro-host/types";
-import { astroMarkdownSettings, splitFrontmatter, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
-import { rehypeMdxHeadingIds } from "@pletivo/core/content/mdx-heading-ids";
-import { rehypeAstroIslandMetadata } from "./mdx-island-metadata";
-import { rehypeMdxPageCharset } from "./mdx-page-charset";
+import { astroMarkdownSettings, type AstroMarkdownConfig } from "@pletivo/core/content/markdown";
+import {
+  compileMdxSource,
+  mdxModule,
+  type CompiledMdx,
+  type MdxCompileSettings,
+  type PluggableList,
+} from "@pletivo/core/content/mdx";
+import { resolveComponentPath } from "./astro-plugin";
 import {
   astroHighlightPlugins,
   parseMdxShikiConfig,
   parseMdxSyntaxHighlight,
   parseShikiConfig,
   parseSyntaxHighlight,
-  rehypeMdxMetaString,
   SYNTAX_HIGHLIGHT_DEFAULT,
   type AstroHighlight,
   type ShikiConfig,
   type SyntaxHighlight,
 } from "./mdx-syntax-highlight";
+
+export { buildRehypePlugins, buildRemarkPlugins, type PluggableList } from "@pletivo/core/content/mdx";
 
 // Resolve absolute path to pletivo's jsx-runtime so compiled MDX can
 // import it even when pletivo isn't installed as a node_modules dep
@@ -46,11 +47,6 @@ import {
 const pletivoSrcDir = path.dirname(fileURLToPath(import.meta.url));
 const jsxRuntimePath = path.resolve(pletivoSrcDir, "runtime/jsx-runtime.ts");
 const mdxContentPath = path.resolve(pletivoSrcDir, "mdx-content.ts");
-
-// `unified`'s `PluggableList` isn't re-exported by @mdx-js/mdx and `unified`
-// itself isn't a direct dependency (only resolvable transitively), so derive
-// the type from the published `CompileOptions` instead of importing it.
-export type PluggableList = NonNullable<CompileOptions["remarkPlugins"]>;
 
 export interface MdxOptions {
   remarkPlugins?: PluggableList;
@@ -245,48 +241,6 @@ function dedupePlugins(plugins: PluggableList): PluggableList {
   return out;
 }
 
-/** True for `remark-gfm` in any form (reference or function name). */
-function isRemarkGfm(entry: unknown): boolean {
-  const fn = pluginFn(entry);
-  return fn === remarkGfm || (typeof fn === "function" && fn.name === "remarkGfm");
-}
-
-/**
- * Assemble the remark pipeline for MDX, mirroring `@astrojs/mdx`: prepend
- * `remark-gfm` (unless disabled) so GFM features — tables, strikethrough,
- * autolinks — work, then the user's remark plugins. If the user already
- * configured their own `remark-gfm`, theirs is kept (with its options) and we
- * don't add a second copy.
- */
-export function buildRemarkPlugins(userRemark: PluggableList | undefined, gfm: boolean): PluggableList {
-  const user = userRemark ?? [];
-  if (gfm && !user.some(isRemarkGfm)) return [remarkGfm, ...user];
-  return [...user];
-}
-
-/**
- * True for `rehype-raw` in any form. A *bare* `rehype-raw` re-parses the whole
- * tree through hast-util-raw and throws on MDX's JSX nodes (`mdxJsxFlowElement`
- * etc.). We supply our own `rehype-raw` configured with `passThrough: nodeTypes`
- * (see buildRehypePlugins), so any user-forwarded copy must be dropped.
- */
-function isRehypeRaw(entry: unknown): boolean {
-  const fn = pluginFn(entry);
-  return fn === rehypeRaw || (typeof fn === "function" && fn.name === "rehypeRaw");
-}
-
-/**
- * Assemble the rehype pipeline for MDX, mirroring `@astrojs/mdx`: always
- * prepend `[rehypeRaw, { passThrough: nodeTypes }]` so embedded raw HTML is
- * handled while MDX's own JSX/expression nodes pass through untouched, then
- * append the user's rehype plugins with any bare `rehype-raw` stripped (it
- * can't run on MDX and our managed copy supersedes it).
- */
-export function buildRehypePlugins(userRehype: PluggableList | undefined, highlight: PluggableList = []): PluggableList {
-  const user = (userRehype ?? []).filter((p) => !isRehypeRaw(p));
-  return [[rehypeRaw, { passThrough: nodeTypes }], ...highlight, ...user];
-}
-
 export async function registerMdxPlugin(): Promise<void> {
   if (registered) return;
   registered = true;
@@ -322,74 +276,50 @@ export async function registerMdxPlugin(): Promise<void> {
   });
 }
 
+/** What `compileMdx` compiles with; `highlight` is the highlighter's plugins. */
+function compileSettings(options: MdxOptions, highlight: PluggableList): MdxCompileSettings {
+  const astro = options.astro;
+  return {
+    remarkPlugins: options.remarkPlugins,
+    rehypePlugins: options.rehypePlugins,
+    gfm: options.gfm !== false,
+    astro: astro
+      ? { pagesDir: astro.pagesDir, experimentalHeadingIdCompat: astro.experimentalHeadingIdCompat, highlight }
+      : null,
+    resolveComponentPath,
+  };
+}
+
+/**
+ * One `.mdx` file compiled as `compileMdx` compiles it, for what `pletivo prepare` reads off it:
+ * its imports and its hydrations. Unhighlighted: a highlighter touches neither.
+ */
+export function mdxSourceFacts(source: string, filePath: string, options: MdxOptions): Promise<CompiledMdx> {
+  return compileMdxSource(source, filePath, compileSettings(options, []));
+}
+
 /** Compile one `.mdx` file's source to the JS module the Bun loader returns. */
 export async function compileMdx(source: string, filePath: string): Promise<string> {
   const rel = path.relative(process.cwd(), filePath);
-
-  // Strip YAML frontmatter before MDX compilation; the same split the page `layout:` check reads.
-  const { body } = splitFrontmatter(source);
-
-  let code: string;
+  const astro = userOptions.astro;
+  let compiled: CompiledMdx;
   try {
-    const compileOptions: CompileOptions = {
-      jsxImportSource: "pletivo",
-      development: false,
-      // As @astrojs/mdx: hast attributes keep their HTML names (`class`, `tabindex`).
-      ...(userOptions.astro ? { elementAttributeNameCase: "html" } : {}),
-    };
-    // Mirror @astrojs/mdx: GFM on by default (remark-gfm prepended),
-    // then the user's remark plugins.
-    compileOptions.remarkPlugins = buildRemarkPlugins(
-      userOptions.remarkPlugins,
-      userOptions.gfm !== false,
-    );
-    // @astrojs/mdx's order: fence meta, rehype-raw, highlighter, user plugins, heading ids, charset,
-    // island metadata. Outside an Astro project only rehype-raw, user plugins and island metadata run.
-    const astro = userOptions.astro;
     const highlight = astro ? await astroHighlightPlugins(astro.highlight) : [];
-    const astroPlugins: PluggableList = astro
-      ? [
-          [rehypeMdxHeadingIds, { experimentalHeadingIdCompat: astro.experimentalHeadingIdCompat }],
-          [rehypeMdxPageCharset, { pagesDir: astro.pagesDir }],
-        ]
-      : [];
-    compileOptions.rehypePlugins = [
-      ...(astro ? [rehypeMdxMetaString] : []),
-      ...buildRehypePlugins(userOptions.rehypePlugins, highlight),
-      ...astroPlugins,
-      rehypeAstroIslandMetadata,
-    ];
-    // The path lets the island metadata resolve relative imports, as Astro's does.
-    const result = await compile({ value: body, path: filePath }, compileOptions);
-    code = String(result);
+    compiled = await compileMdxSource(source, filePath, compileSettings(userOptions, highlight));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`MDX compilation error in ${rel}:\n${msg}`);
   }
 
-  // Rewrite bare `pletivo/jsx-runtime` to an absolute path so the
-  // import resolves even when pletivo is run from source.
-  code = code.replace(
-    /(from\s+["'])pletivo\/jsx-runtime(["'])/g,
-    (_match, open: string, close: string) => open + jsxRuntimePath + close,
-  );
-
   // In dev mode, append version query to .astro and .json imports for
   // cache busting (same as the astro plugin does for its own output).
   // JSON needs this too so translation dictionaries reload on edit.
-  code = applyDevCacheBust(substituteImportMetaEnv(code, "js"), getDevVersion());
-  // The default export renders natively and hoists its islands' scripts (mdx-content.ts).
-  const exported = "export default function MDXContent(";
-  if (!code.includes(exported)) throw new Error(`MDX compilation of ${rel} produced no default MDXContent export`);
-  code = code.replace(exported, "function MDXContent(");
-  code += `\nimport { mdxContent as __pletivoMdxContent } from ${JSON.stringify(mdxContentPath)};\n`;
-  if (userOptions.astro) {
-    // As @astrojs/mdx's `Content`: `Fragment` and the module's `components` export, under the caller's.
-    const exportsComponents = new Bun.Transpiler({ loader: "js" }).scan(code).exports.includes("components");
-    code += `import { Fragment as __pletivoFragment } from ${JSON.stringify(jsxRuntimePath)};\n`;
-    code += `export default __pletivoMdxContent(MDXContent, { Fragment: __pletivoFragment${exportsComponents ? ", ...components" : ""} });\n`;
-  } else {
-    code += "export default __pletivoMdxContent(MDXContent);\n";
-  }
-  return code;
+  const code = applyDevCacheBust(substituteImportMetaEnv(compiled.code, "js"), getDevVersion());
+  // Absolute paths, so the imports resolve even when pletivo is run from source.
+  return mdxModule(code, compiled.exportsComponents, {
+    astro: astro !== undefined,
+    jsxRuntime: jsxRuntimePath,
+    mdxContent: mdxContentPath,
+    label: rel,
+  });
 }

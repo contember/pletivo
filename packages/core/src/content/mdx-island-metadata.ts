@@ -1,7 +1,6 @@
 // Port of Astro's `rehypeAnalyzeAstroMetadata` (`astro/src/jsx/rehype.ts`): a component with a
 // `client:*` directive gets the `client:component-*` props the `.astro` compiler adds.
 import type { Transformer } from "unified";
-import { resolveComponentPath } from "./astro-plugin";
 
 type Tree = Parameters<Transformer>[0];
 type File = Parameters<Transformer>[1];
@@ -21,6 +20,23 @@ interface ImportSpecifier {
 interface MatchedImport {
   name: string;
   path: string;
+}
+
+/** One component the MDX hydrates, `client:only` included. */
+export interface MdxHydration {
+  /** The import as written. */
+  specifier: string;
+  /** What `client:component-path` is set to: `resolveComponentPath`'s answer. */
+  componentPath: string;
+  /** `client:component-export`. */
+  exportName: string;
+}
+
+export interface AstroIslandMetadataOptions {
+  /** The host's `.astro` `resolvePath`: the island `uid` hashes what it returns. */
+  resolveComponentPath(specifier: string, importer: string): string;
+  /** Called once per hydrated element the plugin gives a `client:component-path`. */
+  hydrated?(hydration: MdxHydration): void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -49,7 +65,7 @@ function pushAttribute(node: MdxJsxElement, name: string, value: string | null):
   node.attributes.push({ type: "mdxJsxAttribute", name, value });
 }
 
-export function rehypeAstroIslandMetadata(): Transformer {
+export function rehypeAstroIslandMetadata(options: AstroIslandMetadataOptions): Transformer {
   return (tree: Tree, file: File) => {
     const imports = parseImports(tree, file.path);
     visit(tree, (node) => {
@@ -72,10 +88,12 @@ export function rehypeAstroIslandMetadata(): Transformer {
         );
       }
       if (!file.path) throw new Error(`Cannot resolve the import of <${tagName}> without the MDX file's path`);
-      const resolvedPath = resolveComponentPath(matched.path, file.path);
+      const resolvedPath = options.resolveComponentPath(matched.path, file.path);
 
-      if (names.includes("client:only")) addClientOnlyMetadata(node, tagName, names, matched, resolvedPath);
-      else addClientMetadata(node, tagName, names, matched, resolvedPath);
+      const exported = names.includes("client:only")
+        ? addClientOnlyMetadata(node, tagName, names, matched, resolvedPath)
+        : addClientMetadata(node, tagName, names, matched, resolvedPath);
+      if (exported !== null) options.hydrated?.({ specifier: matched.path, componentPath: resolvedPath, exportName: exported });
     });
   };
 }
@@ -157,18 +175,21 @@ function exportName(tagName: string, matched: MatchedImport): string {
   return matched.name === "*" ? tagName.split(".").slice(1).join(".") : matched.name;
 }
 
+/** The element's `client:component-export` when the plugin wrote its `client:component-path`, else `null`. */
 function addClientMetadata(
   node: MdxJsxElement,
   tagName: string,
   names: string[],
   matched: MatchedImport,
   resolvedPath: string,
-): void {
-  if (!names.includes("client:component-path")) pushAttribute(node, "client:component-path", resolvedPath);
+): string | null {
+  const writesPath = !names.includes("client:component-path");
+  if (writesPath) pushAttribute(node, "client:component-path", resolvedPath);
   if (!names.includes("client:component-export")) {
     pushAttribute(node, "client:component-export", exportName(tagName, matched));
   }
   if (!names.includes("client:component-hydration")) pushAttribute(node, "client:component-hydration", null);
+  return writesPath ? writtenExport(node) : null;
 }
 
 // Astro also renames the element to `astro-client-only`; pletivo keeps the component for the runtime.
@@ -178,7 +199,7 @@ function addClientOnlyMetadata(
   names: string[],
   matched: MatchedImport,
   resolvedPath: string,
-): void {
+): string | null {
   if (!names.includes("client:display-name")) pushAttribute(node, "client:display-name", tagName);
   // Unconditional: Astro guards this one with a misspelt name, so a written path is always overridden.
   pushAttribute(node, "client:component-path", resolvedPath);
@@ -186,4 +207,15 @@ function addClientOnlyMetadata(
     pushAttribute(node, "client:component-export", exportName(tagName, matched));
   }
   if (!names.includes("client:component-hydration")) pushAttribute(node, "client:component-hydration", null);
+  return writtenExport(node);
+}
+
+/** The element's `client:component-export` as a string; an author's expression value is not one. */
+function writtenExport(node: MdxJsxElement): string | null {
+  for (const attr of node.attributes) {
+    if (isRecord(attr) && attr.type === "mdxJsxAttribute" && attr.name === "client:component-export") {
+      return typeof attr.value === "string" ? attr.value : null;
+    }
+  }
+  return null;
 }

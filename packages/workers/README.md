@@ -227,7 +227,9 @@ Options a multi-session host needs:
   path into a `node_modules` (a monorepo's hoisted one above the project included), or one
   in a package's own stylesheet, is `missing`.
 - `host.features()` — the files that use MDX, `client:*` islands, endpoints or
-  `prerender = false`, none of which this host renders.
+  `prerender = false`. Endpoints and `prerender = false` pages do not render here. MDX
+  pages and islands do, from a prepared artifact, but `.mdx` content collection entries
+  do not.
 - `modulePreload` (default `true`) — a rendered page gets a `<link rel="modulepreload">`
   for every `/_pletivo/…` module its scripts reach through static imports, dependencies
   first, so the browser fetches the graph in parallel instead of one import level per

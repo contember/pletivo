@@ -451,6 +451,74 @@ describe("pletivo prepare", () => {
     expect(moduleById(site, plugins).source).toContain("remarkShout");
   });
 
+  test("freezes an .mdx page's pipeline, the markdown plugins it extends included, and vendors its imports", async () => {
+    const directory = await markdownPluginsCopy({
+      "src/pages/notes.mdx": 'import { remarkShout } from "portable-markdown";\n\nexport const shout = typeof remarkShout;\n\n# Notes\n',
+    });
+    const site = await prepare(directory);
+    expect(site.artifact.config.mdx).toEqual({
+      remarkPlugins: [{ module: "portable-markdown", export: "remarkShout", options: { suffix: "!" } }],
+      rehypePlugins: [{ module: "portable-markdown", export: "rehypeMark" }],
+      gfm: true,
+      astro: { experimentalHeadingIdCompat: false },
+    });
+    const imported = targetFor(site, "project:src/pages/notes.mdx", "portable-markdown");
+    expect(moduleById(site, imported).source).toContain("remarkShout");
+  });
+
+  test("freezes mdx({...}) options and refuses an untagged mdx() plugin by name", async () => {
+    // Any `@astrojs/mdx` file loads as pletivo's stub, which records what `mdx()` was given.
+    const integration = {
+      "node_modules/@astrojs/mdx/package.json": '{ "name": "@astrojs/mdx", "type": "module", "exports": { ".": "./index.js" } }\n',
+      "node_modules/@astrojs/mdx/index.js": "export default function mdx() { throw new Error('the real @astrojs/mdx ran'); }\n",
+      "src/pages/notes.mdx": "# Notes\n",
+    };
+    const config = (plugins: string) =>
+      `import mdx from "@astrojs/mdx";\nimport { rehypeMark, remarkShout } from "portable-markdown";\n` +
+      `export default { markdown: { remarkPlugins: [remarkShout] }, integrations: [mdx(${plugins})] };\n`;
+    const frozen = await prepare(await markdownPluginsCopy({
+      ...integration,
+      "astro.config.mjs": config("{ rehypePlugins: [rehypeMark], gfm: false, extendMarkdownConfig: false }"),
+    }));
+    expect(frozen.artifact.config.mdx).toEqual({
+      remarkPlugins: [],
+      rehypePlugins: [{ module: "portable-markdown", export: "rehypeMark" }],
+      gfm: false,
+      astro: { experimentalHeadingIdCompat: false },
+    });
+    __resetForTests();
+
+    const error = await capturedPrepareError(await markdownPluginsCopy({
+      ...integration,
+      "astro.config.mjs": config("{ remarkPlugins: [remarkShout, function remarkUntagged() {}] }"),
+    }));
+    expect(error.diagnostics).toContainEqual({
+      source: "astro.config",
+      hook: "mdx",
+      reason: expect.stringContaining("mdx().remarkPlugins[1] (remarkUntagged) is a live function"),
+    });
+    __resetForTests();
+  });
+
+  test("leaves the MDX pipeline out of a project without .mdx files", async () => {
+    const site = await prepare(path.join(fixtures, "markdown-plugins"));
+    expect(site.artifact.config.mdx).toBeUndefined();
+  });
+
+  test("refuses an MDX plugin the Workers host cannot import, by name and config", async () => {
+    const directory = await markdownPluginsCopy({
+      "pletivo.config.ts": "export default { mdx: { remarkPlugins: [function remarkUntagged() {}] } };\n",
+      "src/pages/notes.mdx": "# Notes\n",
+    });
+    const error = await capturedPrepareError(directory);
+    expect(error.diagnostics).toContainEqual({
+      source: "pletivo.config",
+      hook: "mdx",
+      reason: expect.stringContaining("mdx.remarkPlugins[0] (remarkUntagged) is a live function"),
+    });
+    __resetForTests();
+  });
+
   test("carries a src/pages/.well-known page's imports and skips other dot entries", async () => {
     const copied = await copyFixtures(await temporaryDirectory());
     const files: Record<string, string> = {
@@ -828,6 +896,17 @@ async function temporaryRepository(): Promise<string> {
 /** A temporary repository holding `files`, keyed by path relative to its root. */
 async function projectWithFiles(files: Readonly<Record<string, string>>): Promise<string> {
   const directory = await temporaryRepository();
+  for (const [file, source] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
+    await fs.writeFile(path.join(directory, file), source);
+  }
+  return directory;
+}
+
+/** The markdown-plugins fixture, copied into a temporary repository with `files` added. */
+async function markdownPluginsCopy(files: Readonly<Record<string, string>>): Promise<string> {
+  const directory = await temporaryRepository();
+  await fs.cp(path.join(fixtures, "markdown-plugins"), directory, { recursive: true });
   for (const [file, source] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
     await fs.writeFile(path.join(directory, file), source);

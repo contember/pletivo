@@ -38,6 +38,15 @@ export interface ProjectImportSource {
   hydrated?: readonly AstroIslandComponent[];
   /** A `.md` file's bare `layout:`, which its compiled module imports. */
   markdownLayout?: MarkdownLayoutImport;
+  /** The JavaScript an `.mdx` file compiles to, whose imports are the file's. */
+  compiled?: string;
+}
+
+/** Every specifier a project source imports: an `.mdx` file's are its compiled code's. */
+export function sourceSpecifiers(source: ProjectImportSource): string[] {
+  return source.compiled === undefined
+    ? specifiersOf(source.file, source.source)
+    : specifiersOf(source.file, source.compiled, "js");
 }
 
 export interface MarkdownLayoutImport {
@@ -164,7 +173,8 @@ export async function prepareModuleGraph(
       path.dirname(project.file),
       false,
       extensionOf(project.file) === ".css",
-      project.source,
+      project.compiled ?? project.source,
+      project.compiled === undefined ? undefined : "js",
     );
     if (project.markdownLayout?.route === true) enqueueMarkdownLayout(project, project.markdownLayout);
   }

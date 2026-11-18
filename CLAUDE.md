@@ -62,7 +62,7 @@ A handful of re-export stubs remain in `packages/pletivo/src/` on purpose:
 `runtime/{jsx-runtime,hooks,astro-shim}.ts` and `content/index.ts` are named in
 the package's `exports`, and Node forbids an `exports` target outside the package
 directory. `runtime/astro-container.ts` and `i18n/virtual-module.ts` are pinned by
-`pletivoSrcDir` string paths in `astro-plugin.ts`.
+`pletivoSrcDir` string paths in `astro-plugin.ts`, and `mdx-content.ts` likewise in `mdx-plugin.ts`.
 
 ## Release
 

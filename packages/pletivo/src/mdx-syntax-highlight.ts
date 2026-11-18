@@ -187,33 +187,3 @@ export async function astroHighlightPlugins(highlight: AstroHighlight): Promise<
   const transformer = await created;
   return transformer ? [() => transformer] : [];
 }
-
-interface CodeElement {
-  type: "element";
-  tagName: "code";
-  properties?: Record<string, unknown>;
-  data?: Record<string, unknown>;
-}
-
-function isCodeElement(node: unknown): node is CodeElement {
-  return isRecord(node) && node.type === "element" && node.tagName === "code";
-}
-
-function visit(node: unknown, fn: (node: unknown) => void): void {
-  fn(node);
-  if (isRecord(node) && Array.isArray(node.children)) for (const child of node.children) visit(child, fn);
-}
-
-/**
- * Port of `@astrojs/mdx`'s `rehypeMetaString`: `rehype-raw` drops `data`, so a code fence's meta
- * (```js {1:3}) is kept as the `metastring` property for the highlighter.
- */
-export function rehypeMdxMetaString(): Transformer {
-  return (tree) => {
-    visit(tree, (node) => {
-      if (!isCodeElement(node) || !node.data?.meta) return;
-      node.properties ??= {};
-      node.properties.metastring = node.data.meta;
-    });
-  };
-}

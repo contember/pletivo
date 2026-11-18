@@ -164,6 +164,52 @@ describe("byte parity with pletivo build", () => {
     180_000,
   );
 
+  test(
+    "the MDX example compiles its page in the MDX isolate and renders it as the build does",
+    async () => {
+      const { ok, output } = await localParity("tests/fixture-astro-mdx-example");
+      // Astro's with-mdx: ESM exports and expressions, a `components` export mapping `h1` to a
+      // scoped `.astro` component (its style inlined, compared through inlined-style.ts), and a
+      // Preact island hydrated from MDX, its component-url and uid rewritten as the build names them.
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(output).toContain("= 5 island module(s) served as JavaScript, every import among them");
+      expect(output).toContain("= 5/5 island module(s) byte-identical to pletivo build");
+      expect(ok).toBe(true);
+    },
+    180_000,
+  );
+
+  test(
+    "the mdx() options fixture runs the integration's plugins, gfm and extendMarkdownConfig in the isolate",
+    async () => {
+      const { ok, output } = await localParity("tests/fixture-astro-mdx-plugins");
+      // The build renders `<h1 id="plugins">Plugins!</h1>` and `<p class="marked">Some ~~struck~~ text.!</p>`:
+      // a remark and a rehype plugin from `mdx({...})`, GFM off, Astro's `markdown` plugins dropped.
+      // The child prepares first and the build reuses its config, so a prepare that lost the options
+      // would lose them on both sides: the size is what shows they arrived (52 B without them).
+      expect(output).toContain("Built 1 pages (112 B total)");
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(ok).toBe(true);
+    },
+    60_000,
+  );
+
+  test(
+    "the outside-srcDir MDX fixture renders an .mdx only a page import reaches, and its island",
+    async () => {
+      const { ok, output } = await localParity("tests/fixture-astro-mdx-outside");
+      // `docs/Outside.mdx` is the project's only `.mdx` file and hydrates a Preact island:
+      // prepare must freeze the MDX pipeline and build the island's client from it.
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(output).toContain("= 5/5 island module(s) byte-identical to pletivo build");
+      expect(ok).toBe(true);
+    },
+    180_000,
+  );
+
   const singleRenderers: { renderer: string; pages: number; urlTarget?: string }[] = [
     { renderer: "react", pages: 1 },
     { renderer: "solid", pages: 1 },

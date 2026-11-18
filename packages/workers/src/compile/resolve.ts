@@ -267,6 +267,7 @@ export class ImportResolver {
   #externalUse(importer: SourceModule, rawSpecifier: string, external: string): ResolutionUse {
     // Only an artifact resolution names one; the isolate imports it as written.
     if (ARTIFACT_BUILTIN_EXTERNALS.has(external)) return { kind: "external", specifier: external, rewritten: external };
+    this.#walk.usesHostModules = true;
     const alias = HOST_ALIASES.get(external);
     if (alias === undefined) {
       throw unresolvedImport(

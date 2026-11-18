@@ -48,6 +48,10 @@ export interface CompiledFile {
   trailingSlash: ArtifactTrailingSlash | undefined;
   /** `import.meta.glob` calls, replaced by placeholders in `code`; linking expands them. */
   globs: readonly ImportMetaGlob[];
+  /** The `MdxCompiler` identity an `.mdx` module compiled under; `undefined` for every other kind. */
+  mdx: string | undefined;
+  /** An `.mdx` module's `client:component-path` values as spelled; linking rewrites them. */
+  componentPaths: readonly string[];
 }
 
 export interface CompileCache {
@@ -68,7 +72,7 @@ const DEFAULT_MAX_ENTRIES = 4096;
 /** An entry's charge, in string length: the byte count for ASCII source, near enough otherwise. */
 function chargeOf(entry: CompiledFile): number {
   let charge = entry.source.length + (entry.code?.length ?? 0);
-  for (const specifier of entry.specifiers) charge += specifier.length;
+  for (const specifier of [...entry.specifiers, ...entry.componentPaths]) charge += specifier.length;
   if (entry.envNames !== null) {
     for (const [specifier, names] of entry.envNames) {
       charge += specifier.length;

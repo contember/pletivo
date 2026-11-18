@@ -19,6 +19,20 @@ export interface AstroStyles {
   blocks: StyleBlock[];
 }
 
+/** One `.mdx` file compiled to the module the render isolate loads. */
+export interface CompiledMdxModule {
+  code: string;
+  /** Each `client:component-path` the compile wrote, as the import spells it; linking resolves it. */
+  componentPaths: readonly string[];
+}
+
+/** Compiles `.mdx` with the project's plugins: `createIsolateMdxCompiler` in `mdx-isolate.ts`. */
+export interface MdxCompiler {
+  /** What the output depends on besides the file's path and source; a cached compile is kept only under it. */
+  identity(): Promise<string>;
+  compile(file: string, source: string): Promise<CompiledMdxModule>;
+}
+
 export interface CompiledProject {
   /** What the isolate executes: the module map, the entries and the features to install. */
   program: ExecutableProgram;
@@ -59,4 +73,6 @@ export interface CompileProjectOptions {
   cache?: CompileCache;
   /** Compile `.astro` with `annotateSourceFile`; see `ProjectOptions.annotateSourceFile`. */
   annotateSourceFile?: boolean;
+  /** Absent, a reached `.mdx` file throws `UnsupportedFileError`. */
+  mdx?: MdxCompiler;
 }
