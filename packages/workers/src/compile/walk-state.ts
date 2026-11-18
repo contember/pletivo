@@ -2,8 +2,7 @@ import type { ModuleId } from "@pletivo/core/artifact";
 import { executionNameForModuleId, projectModuleId, type ArtifactResolver, type ProjectIslands } from "../artifact.ts";
 import { ASSETS_SOURCES } from "../astro-assets.ts";
 import type {
-  OrderedExecutionEdge,
-  OrderedStyleEdge,
+  OrderedImportEdge,
   ProgramContentRequirement,
   ProgramScript,
   TailwindModuleUse,
@@ -46,8 +45,7 @@ export class CompileWalk {
   /** Every claimed module, in claim order. */
   readonly moduleIds: ModuleId[] = [];
   /** Module-to-module edges, one per distinct specifier of an importer, in source order. */
-  readonly executionEdges: OrderedExecutionEdge[] = [];
-  readonly styleEdges: OrderedStyleEdge[] = [];
+  readonly edges: OrderedImportEdge[] = [];
   /** Tailwind `@plugin` and `@config` rules; their modules never join the program. */
   readonly tailwindModules: TailwindModuleUse[] = [];
   readonly styles = new Map<ModuleId, AstroStyles>();
@@ -259,9 +257,7 @@ export class CompileWalk {
 
   /** A stylesheet target is a style edge; anything else an importer reaches executes. */
   addEdge(importer: SourceModule, target: SourceModule): void {
-    const edge = { importer: importer.id, target: target.id };
-    if (target.kind === "css") this.styleEdges.push(edge);
-    else this.executionEdges.push(edge);
+    this.edges.push({ importer: importer.id, target: target.id, kind: target.kind === "css" ? "style" : "execution" });
   }
 
   /** Names without compiling, so an importer can reference a module not yet compiled. */

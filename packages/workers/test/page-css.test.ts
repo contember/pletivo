@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ModuleId } from "@pletivo/core/artifact";
-import type { ResolvedStyleGraph } from "../src/compiled-program.ts";
+import type { OrderedImportEdge, ResolvedStyleGraph } from "../src/compiled-program.ts";
 import { finalizeHtml, moduleOrder, pageCss } from "../src/page-css.ts";
 
 /** A pletivo-native project's page. */
@@ -11,10 +11,11 @@ const HEADER = "npm:layout/Header.astro";
 
 function graph(
   modules: ModuleId[],
-  executionEdges: ResolvedStyleGraph["executionEdges"] = [],
+  executionEdges: { importer: ModuleId; target: ModuleId }[] = [],
   styles: ResolvedStyleGraph["styles"] = [],
 ): ResolvedStyleGraph {
-  return { modules, executionEdges, styleEdges: [], styles, tailwindModules: [] };
+  const edges = executionEdges.map((edge): OrderedImportEdge => ({ ...edge, kind: "execution" }));
+  return { modules, edges, styles, tailwindModules: [] };
 }
 
 describe("moduleOrder", () => {

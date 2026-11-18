@@ -4,7 +4,7 @@ import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
 import { extractAstroScopes } from "@pletivo/core/astro-host/scoped-style";
 import { escapeStyleEnd } from "@pletivo/core/inline-style";
 import { pageDoctype, type PageDoctypeOptions } from "@pletivo/core/page-doctype";
-import type { ResolvedStyleGraph } from "./compiled-program.ts";
+import type { OrderedImportEdge, ResolvedStyleGraph } from "./compiled-program.ts";
 
 export interface PageCssOptions {
   entry: ModuleId;
@@ -58,7 +58,7 @@ function orderContributors(
 
 /** Executable modules reachable from `entry`, in depth-first post-order. */
 export function moduleOrder(entry: ModuleId, graph: ResolvedStyleGraph): ModuleId[] {
-  const imports = adjacency(graph.executionEdges);
+  const imports = adjacency(edgesOfKind(graph, "execution"));
   const order: ModuleId[] = [];
   const seen = new Set<ModuleId>();
   const visit = (moduleId: ModuleId): void => {
@@ -69,6 +69,10 @@ export function moduleOrder(entry: ModuleId, graph: ResolvedStyleGraph): ModuleI
   };
   visit(entry);
   return order;
+}
+
+export function edgesOfKind(graph: ResolvedStyleGraph, kind: OrderedImportEdge["kind"]): OrderedImportEdge[] {
+  return graph.edges.filter((edge) => edge.kind === kind);
 }
 
 /** Importer -> its targets, in edge order. */

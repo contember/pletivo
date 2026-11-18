@@ -176,13 +176,13 @@ describe("Artifact V2 compiler consumer", () => {
     expect(stylesheetsOf(compiled, "src/pages/index.astro")).toEqual([IDs.css]);
     expect(stylesheetsOf(compiled, IDs.card)).toEqual([IDs.css]);
     expect(stylesheetsOf(compiled, IDs.css)).toEqual([IDs.theme]);
-    expect(compiled.styleGraph.styleEdges).toContainEqual({ importer: IDs.css, target: IDs.theme });
+    expect(compiled.styleGraph.edges).toContainEqual({ importer: IDs.css, target: IDs.theme, kind: "style" });
     expect(stylesOf(compiled, IDs.card)?.blocks[0]?.css).toContain("astro-");
   });
 
   test("makes every rewritten module import agree with its canonical edge", async () => {
     const compiled = await compileProject({ files: PROJECT, entries: ["src/pages/index.astro"], compiler, artifact: loadProjectArtifact(PREPARED) });
-    for (const edge of [...compiled.styleGraph.executionEdges, ...compiled.styleGraph.styleEdges]) {
+    for (const edge of compiled.styleGraph.edges) {
       const importerBody = compiled.program.modules[nameOf(edge.importer)];
       expect(importerBody, edge.importer).toBeString();
       // A stylesheet's own `@import` edges stay out of its empty Loader module.

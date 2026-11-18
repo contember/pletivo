@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { InjectedScripts, ModuleId } from "@pletivo/core/artifact";
-import type { ResolvedStyleGraph } from "../src/compiled-program.ts";
+import type { OrderedImportEdge, ResolvedStyleGraph } from "../src/compiled-program.ts";
 import {
   TailwindNotConfiguredError,
   pageStylesheet,
@@ -10,12 +10,19 @@ import { tailwindDir, tailwindStylesheets } from "./tailwind-sources.ts";
 
 const PAGE = "project:src/pages/index.astro";
 
-function graph(
-  modules: ModuleId[],
-  executionEdges: ResolvedStyleGraph["executionEdges"] = [],
-  styleEdges: ResolvedStyleGraph["styleEdges"] = [],
-): ResolvedStyleGraph {
-  return { modules, executionEdges, styleEdges, styles: [], tailwindModules: [] };
+type Edge = { importer: ModuleId; target: ModuleId };
+
+/** Every executed module's edge before every stylesheet's; a test of their relative order lists `edges` itself. */
+function graph(modules: ModuleId[], executionEdges: Edge[] = [], styleEdges: Edge[] = []): ResolvedStyleGraph {
+  return {
+    modules,
+    edges: [
+      ...executionEdges.map((edge): OrderedImportEdge => ({ ...edge, kind: "execution" })),
+      ...styleEdges.map((edge): OrderedImportEdge => ({ ...edge, kind: "style" })),
+    ],
+    styles: [],
+    tailwindModules: [],
+  };
 }
 
 function options(
@@ -68,6 +75,29 @@ describe("pageStylesheet canonical graph", () => {
     expect(css).toBe(
       `/* ${first} */\n.same { color: red }\n\n/* ${second} */\n.same { color: blue }`,
     );
+  });
+
+  test("keeps a stylesheet imported before a component ahead of that component's own", async () => {
+    // A preact island's server module: `import "./Counter.css"`, then `import("./Message")`, which imports Message.css.
+    const counter = "islands-bundle:x/pletivo-islands-entry-1.js";
+    const message = "islands-bundle:x/chunk-message.js";
+    const counterCss = "project:src/components/Counter.css";
+    const messageCss = "project:src/components/Message.css";
+    const css = await stylesheetCss(options(
+      { "src/components/Counter.css": ".counter {}", "src/components/Message.css": ".message {}" },
+      {
+        modules: [PAGE, counter, counterCss, message, messageCss],
+        edges: [
+          { importer: PAGE, target: counter, kind: "execution" },
+          { importer: counter, target: counterCss, kind: "style" },
+          { importer: counter, target: message, kind: "execution" },
+          { importer: message, target: messageCss, kind: "style" },
+        ],
+        styles: [],
+        tailwindModules: [],
+      },
+    ));
+    expect(css).toBe("/* components/Counter.css */\n.counter {}\n\n/* components/Message.css */\n.message {}");
   });
 
   test("collects an opaque artifact stylesheet id without guessing its extension", async () => {
@@ -151,7 +181,7 @@ describe.skipIf(tailwindDir() === null)("pageStylesheet Tailwind closure", () =>
   const tokens = "project:src/styles/tokens.css";
 
   async function productionTailwindGraph(
-    pageEdges: ResolvedStyleGraph["styleEdges"] = [{ importer: PAGE, target: entry }],
+    pageEdges: Edge[] = [{ importer: PAGE, target: entry }],
   ): Promise<{ files: Record<string, string>; graph: ResolvedStyleGraph }> {
     const embedded = await tailwindStylesheets();
     const tailwindPackage = "npm:tailwindcss/root";
