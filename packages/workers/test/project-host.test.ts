@@ -37,8 +37,9 @@ import {
   CssAssetNotFoundError,
   CssAssetUrlError,
   MAX_CSS_ASSET_TARGETS,
+  type CssAssetTarget,
 } from "../src/css-assets.ts";
-import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
+import { MemoryGeneratedAssetStore, type GeneratedAssetStore } from "../src/generated-asset-store.ts";
 import {
   RouteNotFoundError,
   type DynamicWorkerCode,
@@ -1032,6 +1033,39 @@ import logoMarkup from "../assets/logo.svg?raw";
       await store.putCssAssets([links[1]]);
       const paths = (await store.getCssAsset(url)).map((target) => target.path);
       expect(paths).toEqual([...links.slice(2), links[1]].map((link) => link.path));
+    });
+
+    test("serves nothing from a forged store record, and reads no file for it", async () => {
+      const hasher = new Bun.CryptoHasher("md5");
+      hasher.update(BIG_SVG);
+      const md5 = hasher.digest("hex");
+      const big = builtName("big", ".svg", BIG_SVG);
+      const forgeries: [string, CssAssetTarget[]][] = [
+        ["/assets/passwd.01234567", [{ path: "../../etc/passwd", md5: "01234567".padEnd(32, "0") }]],
+        [big, [{ path: "src/img/small.svg", md5 }]],
+        [big, [{ path: "src/./img/big.svg", md5 }]],
+        [big, [{ path: "src/img/big.svg", md5: md5.toUpperCase() }]],
+        [big, Array.from({ length: MAX_CSS_ASSET_TARGETS + 1 }, () => ({ path: "src/img/big.svg", md5 }))],
+      ];
+      for (const [url, targets] of forgeries) {
+        const { workspace } = cssHost(SITE);
+        const store: GeneratedAssetStore = {
+          get: () => Promise.resolve(null),
+          put: () => Promise.resolve(),
+          getCssAsset: (asked) => Promise.resolve(asked === url ? targets : []),
+          putCssAssets: () => Promise.resolve(),
+        };
+        const host = createProjectHost({
+          store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+          loader,
+          compiler,
+          generatedAssetStore: store,
+        });
+        workspace.reads.length = 0;
+        const response = await host.fetch(new Request(`https://example.test${url}`));
+        expect([url, targets[0].path, response.status]).toEqual([url, targets[0].path, 404]);
+        expect(workspace.reads.filter((path) => path.includes("/img/") || path.includes("passwd"))).toEqual([]);
+      }
     });
 
     test("answers only GET and HEAD, and HEAD without a body", async () => {
