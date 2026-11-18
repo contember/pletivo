@@ -78,7 +78,12 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
-  const mdx = await prepareMdx(projectConfig, host?.config, await readSources(projectRoot, srcDir));
+  // Sources first: they refuse a `srcDir` that does not exist or leaves the project.
+  const projectSources = await readSources(projectRoot, srcDir);
+  const outsideMdx = await Promise.all(
+    (await filesOutsideSrcDir(projectRoot, srcDir, "**/*.mdx")).map(async (file) => ({ file, source: await Bun.file(file).text() })),
+  );
+  const mdx = await prepareMdx(projectConfig, host?.config, projectSources, outsideMdx);
   const sources = mdx.sources;
   const pluginModules = [
     ...(markdown.config === null ? [] : [...markdown.config.remarkPlugins, ...markdown.config.rehypePlugins]),
@@ -97,7 +102,10 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   // After the graph, which carries the package `.astro` components that may hydrate islands too.
   const clients = islands === null
     ? null
-    : await prepareIslandClients(islands, await astroHydrations(projectRoot, srcDir, sources, graph.modules));
+    : await prepareIslandClients(islands, [
+      ...(await astroHydrations(projectRoot, srcDir, sources, graph.modules)),
+      ...mdx.outsideHydrations,
+    ]);
   const pageScript = await freezePageScripts(host, projectRoot);
 
   return {
@@ -200,17 +208,25 @@ async function astroHydrations(
     const { hydrated } = await astroSourceFacts(file, source);
     if (hydrated.length > 0) files.push({ file, hydrated });
   };
-  const srcBase = realpathSync(path.resolve(projectRoot, srcDir));
-  for await (const rel of new Glob("**/*.astro").scan({ cwd: projectRoot, dot: true })) {
-    if (isSkippedPath(rel)) continue;
-    const file = path.join(projectRoot, rel);
-    if (file.startsWith(srcBase + path.sep)) continue;
+  for (const file of await filesOutsideSrcDir(projectRoot, srcDir, "**/*.astro")) {
     await read(file, await Bun.file(file).text());
   }
   for (const module of carried) {
     if (module.kind === "astro" && module.compilePath !== undefined) await read(path.resolve(projectRoot, module.compilePath), module.source);
   }
   return files;
+}
+
+/** Project files matching `pattern` that `readSources` does not read, which a page may still import. */
+async function filesOutsideSrcDir(projectRoot: string, srcDir: string, pattern: string): Promise<string[]> {
+  const srcBase = realpathSync(path.resolve(projectRoot, srcDir));
+  const files: string[] = [];
+  for await (const rel of new Glob(pattern).scan({ cwd: projectRoot, dot: true })) {
+    if (isSkippedPath(rel)) continue;
+    const file = path.join(projectRoot, rel);
+    if (!file.startsWith(srcBase + path.sep)) files.push(file);
+  }
+  return files.sort(compareStrings);
 }
 
 /** A build product, a dependency or a dot entry, which no source walk reads. */

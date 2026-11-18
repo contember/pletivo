@@ -58,6 +58,10 @@ export function Badge() {
   "src/components/chunk-list.jsx": "export default function ChunkList() {\n  return <ul />;\n}\n",
   "src/components/Footer.jsx": "export default function Footer() {\n  return <footer>footer</footer>;\n}\n",
   "src/components/Note.jsx": "export default function Note() {\n  return <aside>note</aside>;\n}\n",
+  "src/components/Aside.jsx": "export default function Aside() {\n  return <aside>aside</aside>;\n}\n",
+  // Outside `srcDir`, so only a page import reaches it: prepare compiles it all the same.
+  "docs/Outside.mdx": notes('import Aside from "../src/components/Aside";', "<Aside client:load />"),
+  "src/pages/outside.astro": '---\nimport Outside from "../../docs/Outside.mdx";\n---\n<html lang="en"><head><title>Outside</title></head><body><Outside /></body></html>\n',
   // Outside `srcDir`: prepare reads its hydrations all the same.
   "layouts/Base.astro": '---\nimport Footer from "../src/components/Footer";\n---\n<html lang="en"><head><title>Layout</title></head><body><slot /><Footer client:idle /></body></html>\n',
   "src/pages/index.astro": page(
@@ -162,6 +166,13 @@ describe("island client modules fixed at prepare", () => {
   test("an .mdx page hydrates a component prepare built", async () => {
     const rendered = await render("/notes/");
     const url = componentUrl("../components/Note", "default");
+    expect(rendered.html).toContain(`component-url="${url}"`);
+    expect(artifact.islands?.clients.has(url)).toBe(true);
+  }, 60_000);
+
+  test("an .mdx file outside srcDir hydrates a component prepare built", async () => {
+    const rendered = await render("/outside/");
+    const url = componentUrl("../components/Aside", "default");
     expect(rendered.html).toContain(`component-url="${url}"`);
     expect(artifact.islands?.clients.has(url)).toBe(true);
   }, 60_000);

@@ -196,6 +196,20 @@ describe("byte parity with pletivo build", () => {
     60_000,
   );
 
+  test(
+    "the outside-srcDir MDX fixture renders an .mdx only a page import reaches, and its island",
+    async () => {
+      const { ok, output } = await localParity("tests/fixture-astro-mdx-outside");
+      // `docs/Outside.mdx` is the project's only `.mdx` file and hydrates a Preact island:
+      // prepare must freeze the MDX pipeline and build the island's client from it.
+      expect(output).toContain("1/1 byte-identical");
+      expect(output).toContain("= 1 enumerated path(s)");
+      expect(output).toContain("= 5/5 island module(s) byte-identical to pletivo build");
+      expect(ok).toBe(true);
+    },
+    180_000,
+  );
+
   const singleRenderers: { renderer: string; pages: number; urlTarget?: string }[] = [
     { renderer: "react", pages: 1 },
     { renderer: "solid", pages: 1 },
