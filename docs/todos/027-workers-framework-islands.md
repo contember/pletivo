@@ -1,7 +1,8 @@
 # 027 — Framework islands on the Workers host
 
 **Priority:** A-tier
-**Status:** server render (W1) and client bundles (W2) done. The framework examples' parity (W3) is open.
+**Status:** server render (W1), client bundles (W2) and the framework examples' parity (W3) done.
+framework-preact is not a repo fixture (below), and with-mdx keeps its one Shiki difference.
 **Area:** Workers host, Astro islands, prepare
 
 ## What W1 built
@@ -92,9 +93,40 @@ The JavaScript at every island URL a Workers render emits, served by the host.
 
   Astro's framework-multiple gives 18/18 modules, by hand.
 
+## What W3 built
+
+Astro's framework examples, against `pletivo build`, and hydrating in a browser.
+
+- **Two fixes in this host**, each found by an example:
+  - an Astro page's stylesheet and its own scoped CSS share one `<style>`, as the build merges an
+    inlined sheet with the page CSS (Astro's `mergeInlineCss`). A pletivo-native page keeps two
+    blocks: its build links the sheet. Every example with a component stylesheet hit it.
+  - the style graph is one edge list in walk order, so a stylesheet a module imports before a
+    component comes before that component's CSS, as the build walks it. Two lists put a module's own
+    CSS after all its imports' CSS: framework-preact imports `Counter.css`, then lazily `Message`,
+    and got `.message` before `.counter`.
+- **Evidence.** `fixture-parity.test.ts` also asserts `tests/fixture-astro-{react,solid,svelte,vue,multiple}-example`,
+  Astro's examples with their sources as written: the page byte-identical (inlined `<style>` compared
+  minified), 3 island modules each (18 for multiple) served, their imports closed and byte-identical.
+  `tests/fixture-astro-mdx-example` stays the with-mdx mirror, highlighting off.
+- **The examples as written**, `local-parity.ts` on a copy outside the repo: framework-preact, -react,
+  -solid, -svelte, -vue and -multiple 1/1 pages and every island module byte-identical (7, 3, 3, 3,
+  3, 18). with-mdx: 5/5 modules, and the page differs only in its code block, which the build
+  highlights with Shiki and this host does not (016).
+- **framework-preact is not a repo fixture.** The root `tsconfig.json` maps `preact/hooks` to the SSR
+  stub for everything under the repo, `node_modules` included, and the stub has no `useId`,
+  `useDebugValue` or `useImperativeHandle`, which `preact/compat` imports: `pletivo build` itself
+  fails on it here. It also imports `@preact/signals`, which the workspace has only transitively.
+- **Browser check**, through `createProjectHost` in workerd (`wrangler dev --local`, Worker Loader),
+  each example prepared and served by `host.fetch`, in headless Chrome: framework-multiple, the
+  with-mdx fixture and the five single-framework examples. Every `astro-island` lost its `ssr`
+  attribute; clicking `+` moved each counter (framework-multiple: React, Preact, Solid, Vue and Svelte
+  each on its own; framework-preact's two islands share one signal and both showed the new value, with
+  the lazy `Message` loaded); every island module answered 200; the console had no messages and no
+  page errors.
+
 ## What is left
 
-- **W3, parity for the framework examples.**
 - **Prepare's working directory.** Bun names a shared chunk by its path relative to the working
   directory (025). The CLI runs both `pletivo build` and `pletivo prepare` from the project
   root, so they agree. Calling `prepare(root)` from another directory names every chunk, and so
@@ -107,13 +139,9 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   whose texts differ through the Bun host's `minifyCss` and compares the whole page byte
   for byte; a sheet missing one rule fails it, and a sheet the minifier rejects is named.
   A relative `url()` and a dangling `@import` in a bundled sheet were fixed in this host
-  (#98). One difference remains, in this host:
-  - the build merges adjacent inline CSS into one `<style>`, as Astro's `mergeInlineCss`
-    does; this host emits the page stylesheet and the scoped CSS as two blocks
-    (`finalizeHtml` in `page-css.ts`, called from `render.ts`). A page with a component
-    stylesheet and its own scoped `<style>` gets
-    `<style>.react-counter{…}main[data-astro-cid-…]{…}</style>` from the build and two
-    `<style>` blocks here. No fixture in the parity test has such a page yet.
+  (#98), and the two-block `<style>` in W3. An Astro page whose build links an oversized sheet
+  next to its scoped `<style>` would now differ by more than the delivery the harness excepts:
+  this host merges both into one block. No fixture has such a page.
 - **Refused by name at prepare:**
   - a component importing a package stylesheet, or a stylesheet with a query;
   - a `.svelte` or `.vue` component from a package that has a `<style>`: its compiled CSS
@@ -143,5 +171,5 @@ The JavaScript at every island URL a Workers render emits, served by the host.
   cannot be carried for the live copy, prepare refuses it by name.
 - **`tests/fixture-astro-renderers-preact`: refused for parity.** Its endpoint imports
   `astro/container`, which reaches `node:path`, so prepare fails, and this host has no
-  endpoint routes. Preact is covered on Workers by the multi fixture; framework-preact waits
-  on W3.
+  endpoint routes. Preact is covered on Workers by the multi fixture and by framework-preact as
+  written, outside the repo (W3).
