@@ -15,7 +15,8 @@ import { runInPage, runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_R
 import { hydrationScript } from "@pletivo/runtime/hydration";
 import { finalizeIslandScripts } from "@pletivo/runtime/astro-islands/index";
 import { bundleCss, stylesheetsForPage, type CssBundle, type Stylesheet } from "./css";
-import { readAssetsInlineLimit, readInlineStylesheets, shouldInlineAsset, stylesheetInliner, type AssetsInlineLimit } from "./assets-inline";
+import { shouldInlineAsset, type AssetsInlineLimit } from "@pletivo/core/assets-inline";
+import { readAssetsInlineLimit, readInlineStylesheets, stylesheetInliner } from "./assets-inline";
 import { hashPublicAssets, copyPublicAssets, rewriteRefs } from "./assets";
 import { islandPlugin, islandWrapperSource } from "./islands-bundle";
 import { generateSitemap } from "./sitemap";

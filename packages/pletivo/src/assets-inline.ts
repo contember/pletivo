@@ -1,10 +1,5 @@
 import type { AstroConfig, ViteUserConfig } from "@pletivo/core/astro-host/types";
-
-/** Vite's `build.assetsInlineLimit`: a byte limit, or a per-file verdict where `undefined` defers to the default. */
-export type AssetsInlineLimit = number | ((filePath: string, content: Buffer) => boolean | undefined);
-
-/** Vite's default, which Astro does not override. */
-export const DEFAULT_ASSETS_INLINE_LIMIT = 4096;
+import { DEFAULT_ASSETS_INLINE_LIMIT, shouldInlineAsset, type AssetsInlineLimit } from "@pletivo/core/assets-inline";
 
 /** Reads `vite.build.assetsInlineLimit` from the Astro config; projects without one get Vite's default. */
 export function readAssetsInlineLimit(vite: ViteUserConfig | undefined): AssetsInlineLimit {
@@ -17,21 +12,12 @@ export function readAssetsInlineLimit(vite: ViteUserConfig | undefined): AssetsI
   if (typeof limit === "number") return limit;
   if (typeof limit === "function") {
     return (filePath, content) => {
-      const verdict: unknown = limit(filePath, content);
+      // Vite hands the function a Buffer.
+      const verdict: unknown = limit(filePath, Buffer.from(content.buffer, content.byteOffset, content.byteLength));
       return typeof verdict === "boolean" ? verdict : undefined;
     };
   }
   throw new Error(`vite.build.assetsInlineLimit must be a number or a function, got ${typeof limit}`);
-}
-
-/** Astro's `shouldInlineAsset` (`core/build/plugins/util.ts`), which is Vite's rule: strictly below the limit. */
-export function shouldInlineAsset(content: string | Buffer, filePath: string, limit: AssetsInlineLimit): boolean {
-  const bytes = typeof content === "string" ? Buffer.byteLength(content) : content.byteLength;
-  if (typeof limit === "function") {
-    const buffer = typeof content === "string" ? Buffer.from(content) : content;
-    return limit(filePath, buffer) ?? bytes < DEFAULT_ASSETS_INLINE_LIMIT;
-  }
-  return bytes < limit;
 }
 
 /** Astro's `build.inlineStylesheets`. */
