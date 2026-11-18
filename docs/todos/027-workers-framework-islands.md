@@ -108,11 +108,10 @@ Astro's framework examples, against `pletivo build`, and hydrating in a browser.
   - the style graph is one edge list in walk order, so a stylesheet a module imports before a
     component comes before that component's CSS: the order Astro/Vite emit (014). Two lists put a
     module's own CSS after all its imports' CSS: framework-preact imports `Counter.css`, then lazily
-    `Message`, and got `.message` before `.counter`. `pletivo build` without Tailwind concatenates
-    `src/**/*.css` in path order instead, so framework-preact matched only because `Counter.css` sorts
-    before `Message.css`. The build follows the import graph once its own fix lands; until then
-    `tests/fixture-astro-css-import-order` (the page imports `z.css`, then a component importing
-    `a.css`) fails parity, by design.
+    `Message`, and got `.message` before `.counter`. `pletivo build` without Tailwind used path order
+    until #102, so framework-preact had matched only because `Counter.css` sorts before `Message.css`.
+    Both hosts now follow the import graph; `tests/fixture-astro-css-import-order` (the page imports
+    `z.css`, then a component importing `a.css`) pins the case where walk and path order differ.
 - **Evidence.** `fixture-parity.test.ts` also asserts `tests/fixture-astro-{react,solid,svelte,vue,multiple}-example`,
   Astro's examples with their sources as written: the page byte-identical (inlined `<style>` compared
   minified), 3 island modules each (18 for multiple) served, their imports closed and byte-identical.
