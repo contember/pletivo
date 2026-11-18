@@ -15,6 +15,7 @@ import {
   relativeCssAssetRefs,
   replaceCssAssetUrls,
   splitCssAssetRef,
+  type CssAssetRef,
 } from "@pletivo/core/css-asset-urls";
 import { md5Hex } from "@pletivo/core/md5";
 import { publicContentType } from "./public-files.ts";
@@ -25,6 +26,26 @@ export const CSS_ASSET_PREFIX = "/assets/";
 
 /** A project file's raw bytes, or `undefined` when the project has none at that path. */
 export type ReadProjectBytes = (path: string) => Uint8Array<ArrayBuffer> | undefined;
+
+/** The name a `url()` target is written under: `/assets/<stem>.<8 hex><ext>`. */
+const CSS_ASSET_PATH = /^\/assets\/[A-Za-z0-9_-]+\.[0-9a-f]{8}(?:\.[^/.]*)?$/;
+
+/** Whether a URL path has the shape of a `url()` target this host writes. */
+export function isCssAssetPath(pathname: string): boolean {
+  return CSS_ASSET_PATH.test(pathname);
+}
+
+/** A target's `%` escapes do not decode. The Bun host fails the build on it with a bare `URIError`. */
+export class CssAssetUrlError extends Error {
+  constructor(
+    readonly stylesheet: string,
+    readonly specifier: string,
+    cause: unknown,
+  ) {
+    super(`[pletivo-workers] malformed URL ${JSON.stringify(specifier)} in ${stylesheet}`, { cause });
+    this.name = "CssAssetUrlError";
+  }
+}
 
 /** A relative `url()` names no file in the project. The Bun host fails the build on it. */
 export class CssAssetNotFoundError extends Error {
@@ -49,7 +70,7 @@ export function rewriteCssAssets(
 ): string {
   const urls = new Map<string, string>();
   for (const specifier of relativeCssAssetRefs(css)) {
-    const ref = splitCssAssetRef(specifier);
+    const ref = splitRef(stylesheet, specifier);
     const path = resolveFrom(stylesheet, ref.file);
     const bytes = path === null ? undefined : read(path);
     if (path === null || bytes === undefined) throw new CssAssetNotFoundError(stylesheet, specifier);
@@ -62,6 +83,15 @@ export function rewriteCssAssets(
     urls.set(specifier, url + ref.suffix);
   }
   return urls.size === 0 ? css : replaceCssAssetUrls(css, urls);
+}
+
+function splitRef(stylesheet: string, specifier: string): CssAssetRef {
+  try {
+    return splitCssAssetRef(specifier);
+  } catch (error) {
+    if (error instanceof URIError) throw new CssAssetUrlError(stylesheet, specifier, error);
+    throw error;
+  }
 }
 
 /** `file` against the stylesheet's directory, or `null` when it climbs out of the project. */

@@ -33,7 +33,7 @@ import {
   type ProjectHostOptions,
   type RenderEvent,
 } from "../src/project-host.ts";
-import { CssAssetNotFoundError } from "../src/css-assets.ts";
+import { CssAssetNotFoundError, CssAssetUrlError } from "../src/css-assets.ts";
 import { MemoryGeneratedAssetStore } from "../src/generated-asset-store.ts";
 import {
   RouteNotFoundError,
@@ -870,6 +870,34 @@ import logoMarkup from "../assets/logo.svg?raw";
       const { html } = await cssHost(site).host.render("/");
       expect(html).toContain('/* was url(./missing.svg) */\n.q::before { content: "url(./missing.svg)"; }');
       expect(html).toContain(`.big { background: url("${builtName("big", ".svg", BIG_SVG)}"); }`);
+    });
+
+    test("names the stylesheet when a target's escapes do not decode", async () => {
+      const { host } = cssHost(".bad { background: url(./100%.svg); }\n");
+      const error = await host.render("/").catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(CssAssetUrlError);
+      expect(error instanceof Error ? error.message : "").toContain('malformed URL "./100%.svg" in styles/site.css');
+    });
+
+    test("reads the durable store only for a path named like a generated file", async () => {
+      const store = new MemoryGeneratedAssetStore();
+      const reads: string[] = [];
+      const get = store.get.bind(store);
+      store.get = (path) => {
+        reads.push(path);
+        return get(path);
+      };
+      const { workspace } = cssHost(SITE);
+      workspace.write("/public/assets/logo.png", SMALL_PNG);
+      const host = createProjectHost({
+        store: createWorkspaceProjectStore(workspace, { revision: () => workspace.revision }),
+        loader,
+        compiler,
+        generatedAssetStore: store,
+      });
+      expect((await host.fetch(new Request("https://example.test/assets/logo.png"))).status).toBe(200);
+      expect((await host.fetch(new Request("https://example.test/assets/big.0123abcd.svg"))).status).toBe(404);
+      expect(reads).toEqual(["/assets/big.0123abcd.svg"]);
     });
 
     test("serves the file from the durable store to a host that never rendered the page", async () => {

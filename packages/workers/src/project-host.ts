@@ -40,7 +40,7 @@ import { publicFileResponse } from "./public-files.ts";
 import { RouteRedirect, routeRedirect } from "./routing.ts";
 import { createCompileCache, type CompileCache } from "./compile-cache.ts";
 import { GeneratedAssetCache } from "./asset-cache.ts";
-import { CSS_ASSET_PREFIX } from "./css-assets.ts";
+import { isCssAssetPath } from "./css-assets.ts";
 import type { GeneratedAssetStore } from "./generated-asset-store.ts";
 import {
   WorkspaceSnapshotChangedError,
@@ -171,8 +171,8 @@ function isNotFoundRoute(route: Route): boolean {
   return !route.isDynamic && !route.isEndpoint && route.segments.length === 1 && route.segments[0]?.value === "404";
 }
 
-/** Where `?url` imports are emitted (`urlAssetHref` in compile/resolve.ts), and `url()` targets in CSS. */
-const GENERATED_ASSET_PREFIXES = ["/_astro/", CSS_ASSET_PREFIX];
+/** Where `?url` imports are emitted; see `urlAssetHref` in compile/resolve.ts. */
+const GENERATED_ASSET_PREFIX = "/_astro/";
 
 /** Content-hashed names, so nothing served under one can go stale. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
@@ -353,7 +353,8 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
   async function generatedAsset(pathname: string): Promise<RenderedAsset | null> {
     const cached = served.get(pathname);
     if (cached !== undefined) return cached;
-    if (generatedAssetStore === undefined || !GENERATED_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+    // Only a generated asset's name: a `public/` file under `/assets/` never costs a store read.
+    if (generatedAssetStore === undefined || !(pathname.startsWith(GENERATED_ASSET_PREFIX) || isCssAssetPath(pathname))) {
       return null;
     }
     const stored = await generatedAssetStore.get(pathname);
