@@ -26,7 +26,7 @@ import { projectPaths, renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { builtPathname } from "./built-pathname.ts";
 import { FileLoader } from "./file-loader.ts";
-import { describeDelta, minifyInlinedStyle } from "./inlined-style.ts";
+import { minifyInlinedStyle } from "./inlined-style.ts";
 import { imageUrls, readSources, sameBytes } from "./sources.ts";
 import { tailwindStylesheets } from "./tailwind-sources.ts";
 import { hostTailwindRuntime, scanCandidates, STANDALONE_TARGETS, tailwindEntry } from "./tailwind-standalone.ts";
@@ -200,6 +200,8 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   let expectedHtml = expected;
   let actualHtml = page.html;
   let inlined: string | null = null;
+  /** Set when the page cannot be compared; its islands and assets are still checked below. */
+  let incomparable: string | null = null;
   if (LINKED_STYLESHEETS.test(expected)) {
     const match = INLINED_STYLESHEET.exec(page.html);
     if (match === null) {
@@ -213,21 +215,18 @@ for await (const rel of new Glob("**/*.html").scan({ cwd: outDir })) {
   } else {
     // Where the build inlined its sheet instead, both texts are minified and compared in place.
     const style = await minifyInlinedStyle(expected, page.html);
-    if (style.kind === "missing") {
-      problems.push(`  ! ${rel} — pletivo build inlined a <style> in the head and this host inlined none`);
-      continue;
-    }
-    if (style.kind === "minified") {
+    if (style.kind === "rejected") {
+      incomparable = `  ! ${rel} — minifyCss rejected ${style.side}'s <style>: ${style.log}`;
+    } else if (style.kind === "minified") {
       expectedHtml = style.expected;
       actualHtml = style.actual;
       minified++;
-      console.log(
-        `  ~ ${rel} <style> minified — pletivo build ${describeDelta(style.built)}, this host ${describeDelta(style.rendered)}`,
-      );
     }
   }
 
-  if (actualHtml === expectedHtml) {
+  if (incomparable !== null) {
+    problems.push(incomparable);
+  } else if (actualHtml === expectedHtml) {
     identical++;
     console.log(`  = ${rel}${inlined === null ? "" : " (CSS delivery excepted)"}`);
   } else {
