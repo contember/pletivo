@@ -351,14 +351,15 @@ Each stylesheet is emitted as `pletivo build` emits it. The build bundles a shee
 `srcDir`, or a compiled component's, through Bun; one under `srcDir` it emits as written.
 For a bundled sheet this host drops the `@import`s, whose targets the graph already
 emitted, and rewrites each relative `url()` the way `css-assets.ts` does: the file under
-`/assets/<stem>.<md5>.<ext>`, or below 4096 B the `data:` URI Bun would inline. The host
+`/assets/<stem>.<md5>.<ext>`, or below the artifact's `assetsInlineLimit` (Vite's
+`build.assetsInlineLimit`, 4096 B by default; the build reads the same value) the `data:` URI Bun would inline. The host
 keeps no copy of the file: a render records the URL with the project paths and md5 it
 names (in a bounded in-memory map, and in the `GeneratedAssetStore` for other isolates),
 and a request reads the file from the project, serving it immutable while its md5 still
 matches and 404 once it changed. The md5 is checked once per snapshot revision. The naming and the inline
 rule are shared through `@pletivo/core/css-asset-urls`. The target is read on every
 render, so an edit names a new file. A missing target fails the page, as it fails the
-build. Not covered: `vite.build.assetsInlineLimit` (the artifact does not carry it), a
+build. Not covered: a
 `url()` in a package sheet the artifact vendored (its target is not in the project), and
 a base path other than `/`. On both hosts a sheet under `srcDir` and an `.astro`
 `<style>` keep their relative `url()` and `@import` as written. A `url()` inside a comment
@@ -393,10 +394,21 @@ That comparison never covered the thing the new model actually risks, so two
 per-page checks were added beside it: every class the rendered page applies is
 found by the scanner, and every one of those that compiles to a utility survives
 into the CSS that page carries. HTML parity on the fixture is still asserted, with
-exactly one node removed from each side — the `<link>` there, the leading
-`<style>` here — named as a single-purpose exception rather than a normalizer.
+exactly one node removed from each side — the `<link>` cluster there, the first
+`<style>` here — named as a single-purpose exception rather than a normalizer. That
+`<style>` holds the sheet alone where this host decides the build links the sheet
+(below), and the sheet with the page's scoped CSS where it decides the build inlines it.
 In an Astro project the build inlines a sheet small enough for
-`build.inlineStylesheets` as a minified `<style>` instead of linking it. There the
+`build.inlineStylesheets` as a minified `<style>` instead of linking it, merged with the page's
+own CSS (Astro's `mergeInlineCss`). The artifact carries `inlineStylesheets` and a numeric
+`assetsInlineLimit`, present exactly in an Astro project; prepare refuses a function limit by name,
+since this host decides every inline itself and cannot run config code. This host inlines every sheet
+and merges it with the page CSS where the build would: always under `"always"`, never under `"never"`
+or in a pletivo-native project. Under `"auto"` it measures its own per-page sheet, as written and
+labelled per file, against the limit; the build measures its minified sheet of each page-set group.
+Near the limit the two can disagree: a sheet over the limit here and under it once minified is two
+blocks here and one there. `tests/fixture-astro-stylesheet-{linked,never,always,limit}` pin the four
+clear cases. There the
 harness pairs the head `<style>` blocks of both sides in order, passes the first
 pair whose texts differ through the Bun host's `minifyCss`, and compares the whole
 page, that CSS included, byte for byte (`test/inlined-style.ts`, 027).
@@ -546,11 +558,12 @@ MDX program.
   vendor graph, and one that does not compile is skipped (a page that reaches it fails on
   either host). A new hydration
   without a new prepare fails with `MissingIslandClientError`.
-- **No syntax highlighting.** The Bun host runs Shiki from the project's
+- **No syntax highlighting, by decision: code blocks stay unhighlighted here.** The Bun host runs Shiki from the project's
   `@astrojs/markdown-remark`. Its Oniguruma engine compiles wasm from bytes, which workerd
   forbids, and its grammars are about 9.9 MB, so a fenced block renders as
   `<pre><code class="language-…">`. Astro's `with-mdx` example differs from `pletivo build`
-  only there; `tests/fixture-astro-mdx-example` sets `syntaxHighlight: false` and matches.
+  only there, and that page stays a recorded parity exception; `tests/fixture-astro-mdx-example`
+  sets `syntaxHighlight: false` and matches.
 - **The MDX entry is about 617 kB, 194 kB gzipped** (`@mdx-js/mdx`, acorn, parse5,
   micromark), the one minified bundle. acorn is resolved to its ES module build from every
   importer, so `acorn-jsx`'s `require` does not bundle a second copy. Only the MDX isolate

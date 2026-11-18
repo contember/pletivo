@@ -2,7 +2,7 @@
 
 **Priority:** A-tier
 **Status:** server render (W1), client bundles (W2) and the framework examples' parity (W3) done.
-framework-preact is not a repo fixture (below), and with-mdx keeps its one Shiki difference.
+framework-preact is checked outside the repo, and with-mdx keeps its one Shiki difference, both by decision (below).
 **Area:** Workers host, Astro islands, prepare
 
 ## What W1 built
@@ -98,13 +98,21 @@ The JavaScript at every island URL a Workers render emits, served by the host.
 Astro's framework examples, against `pletivo build`, and hydrating in a browser.
 
 - **Two fixes in this host**, each found by an example:
-  - an Astro page's stylesheet and its own scoped CSS share one `<style>`, as the build merges an
-    inlined sheet with the page CSS (Astro's `mergeInlineCss`). A pletivo-native page keeps two
-    blocks: its build links the sheet. Every example with a component stylesheet hit it.
+  - the stylesheet and the page's own scoped CSS share one `<style>` where the build inlines the
+    sheet, as it merges an inlined sheet with the page CSS (Astro's `mergeInlineCss`). The artifact
+    carries `build.inlineStylesheets` and a numeric `vite.build.assetsInlineLimit` for it; the decision
+    and its one near-limit divergence under `"auto"` are in 016. Every example with a component
+    stylesheet hit the merge. A page whose build links its sheet next to a scoped `<style>` passed
+    before W3 and passes again (`tests/fixture-astro-stylesheet-{linked,never}`); the first version of
+    this fix merged it too. The same `assetsInlineLimit` now decides a bundled sheet's `url()` inline.
   - the style graph is one edge list in walk order, so a stylesheet a module imports before a
-    component comes before that component's CSS, as the build walks it. Two lists put a module's own
-    CSS after all its imports' CSS: framework-preact imports `Counter.css`, then lazily `Message`,
-    and got `.message` before `.counter`.
+    component comes before that component's CSS: the order Astro/Vite emit (014). Two lists put a
+    module's own CSS after all its imports' CSS: framework-preact imports `Counter.css`, then lazily
+    `Message`, and got `.message` before `.counter`. `pletivo build` without Tailwind concatenates
+    `src/**/*.css` in path order instead, so framework-preact matched only because `Counter.css` sorts
+    before `Message.css`. The build follows the import graph once its own fix lands; until then
+    `tests/fixture-astro-css-import-order` (the page imports `z.css`, then a component importing
+    `a.css`) fails parity, by design.
 - **Evidence.** `fixture-parity.test.ts` also asserts `tests/fixture-astro-{react,solid,svelte,vue,multiple}-example`,
   Astro's examples with their sources as written: the page byte-identical (inlined `<style>` compared
   minified), 3 island modules each (18 for multiple) served, their imports closed and byte-identical.
@@ -113,10 +121,13 @@ Astro's framework examples, against `pletivo build`, and hydrating in a browser.
   -solid, -svelte, -vue and -multiple 1/1 pages and every island module byte-identical (7, 3, 3, 3,
   3, 18). with-mdx: 5/5 modules, and the page differs only in its code block, which the build
   highlights with Shiki and this host does not (016).
-- **framework-preact is not a repo fixture.** The root `tsconfig.json` maps `preact/hooks` to the SSR
-  stub for everything under the repo, `node_modules` included, and the stub has no `useId`,
+- **framework-preact is not a repo fixture, by decision.** The root `tsconfig.json` maps `preact/hooks`
+  to the SSR stub for everything under the repo, `node_modules` included, and the stub has no `useId`,
   `useDebugValue` or `useImperativeHandle`, which `preact/compat` imports: `pletivo build` itself
   fails on it here. It also imports `@preact/signals`, which the workspace has only transitively.
+  The run outside the repo above is the evidence; neither the stub nor the tsconfig changes for it.
+- **with-mdx's code block stays a recorded exception, by decision:** this host leaves fenced code
+  unhighlighted (016).
 - **Browser check**, through `createProjectHost` in workerd (`wrangler dev --local`, Worker Loader),
   each example prepared and served by `host.fetch`, in headless Chrome: framework-multiple, the
   with-mdx fixture and the five single-framework examples. Every `astro-island` lost its `ssr`
@@ -139,9 +150,8 @@ Astro's framework examples, against `pletivo build`, and hydrating in a browser.
   whose texts differ through the Bun host's `minifyCss` and compares the whole page byte
   for byte; a sheet missing one rule fails it, and a sheet the minifier rejects is named.
   A relative `url()` and a dangling `@import` in a bundled sheet were fixed in this host
-  (#98), and the two-block `<style>` in W3. An Astro page whose build links an oversized sheet
-  next to its scoped `<style>` would now differ by more than the delivery the harness excepts:
-  this host merges both into one block. No fixture has such a page.
+  (#98), and the two-block `<style>` in W3. Under `"auto"` a sheet near the limit can be inlined
+  by the build and not here, or the reverse (016).
 - **Refused by name at prepare:**
   - a component importing a package stylesheet, or a stylesheet with a query;
   - a `.svelte` or `.vue` component from a package that has a `<style>`: its compiled CSS
