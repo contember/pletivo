@@ -40,13 +40,14 @@ export interface IsolateMdxCompilerOptions {
   compiler: AstroCompiler;
 }
 
-/** The compile threw in the isolate, a plugin's included. */
-export class MdxIsolateError extends Error {
+/** The compile threw in the isolate, a plugin's included, or the isolate failed. */
+export class MdxIsolateError extends UnsupportedFileError {
   constructor(
-    message: string,
+    file: string,
+    reason: string,
     readonly isolateStack?: string,
   ) {
-    super(message);
+    super(file, reason);
     this.name = "MdxIsolateError";
   }
 }
@@ -161,7 +162,7 @@ async function compileInIsolate(program: MdxProgram, host: MdxIsolateHost, file:
   const response = await stub.getEntrypoint().fetch(
     new Request("http://pletivo.invalid/mdx", { method: "POST", body: JSON.stringify(body) }),
   );
-  if (!response.ok) throw new MdxIsolateError(`[pletivo-workers] MDX isolate failed: ${await response.text()}`);
+  if (!response.ok) throw new MdxIsolateError(file, `the MDX isolate failed: ${await response.text()}`);
   let value: unknown;
   try {
     value = await response.json();
@@ -169,9 +170,7 @@ async function compileInIsolate(program: MdxProgram, host: MdxIsolateHost, file:
     throw new IsolateProtocolError("$", `expected a JSON response: ${error instanceof Error ? error.message : String(error)}`);
   }
   const reply = parseMdxReply(value);
-  if (reply.status === "error") {
-    throw new UnsupportedFileError(file, `MDX compilation failed: ${reply.message}`);
-  }
+  if (reply.status === "error") throw new MdxIsolateError(file, `MDX compilation failed: ${reply.message}`, reply.stack);
   return { code: reply.code, componentPaths: reply.componentPaths };
 }
 

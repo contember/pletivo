@@ -3,7 +3,7 @@ import { ANY_PROJECT_IMPORTER, ARTIFACT_VERSION, type ArtifactMdxConfig } from "
 import { loadProjectArtifact } from "../src/artifact.ts";
 import { createAstroCompiler } from "../src/astro-compiler.ts";
 import { createCompileCache } from "../src/compile-cache.ts";
-import { MdxNotPreparedError } from "../src/mdx-isolate.ts";
+import { MdxIsolateError, MdxNotPreparedError } from "../src/mdx-isolate.ts";
 import { UnsupportedFileError } from "../src/compile-project.ts";
 import { renderPage } from "../src/render.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
@@ -26,6 +26,9 @@ function visit(node, fn) {
 }
 export function remarkShout(options = {}) {
   return (tree) => visit(tree, (node) => { if (node.type === "text") node.value += options.suffix ?? ""; });
+}
+export function remarkThrow() {
+  return () => { throw new Error("the plugin broke"); };
 }
 export function rehypeMark() {
   return (tree) => visit(tree, (node) => {
@@ -116,7 +119,17 @@ describe(".mdx pages on the Workers host", () => {
     broken.set("src/pages/index.mdx", "# Broken\n\n<Unclosed>\n");
     const error = await renderPage({ files: broken, pathname: "/", loader, compiler }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(UnsupportedFileError);
-    expect(String(error)).toContain("src/pages/index.mdx");
-    expect(String(error)).toContain("MDX compilation failed");
+    if (!(error instanceof MdxIsolateError)) throw new Error("expected an MdxIsolateError");
+    expect(error.file).toBe("src/pages/index.mdx");
+    expect(error.message).toContain("MDX compilation failed");
+  }, 60_000);
+
+  test("carry the stack of a plugin that throws in the isolate", async () => {
+    const throwing = artifact({ ...WITH_PLUGINS, remarkPlugins: [{ module: "portable-markdown", export: "remarkThrow" }] });
+    const error = await renderPage({ files: new Map(FILES), pathname: "/", loader, compiler, artifact: throwing })
+      .catch((caught: unknown) => caught);
+    if (!(error instanceof MdxIsolateError)) throw new Error("expected an MdxIsolateError");
+    expect(error.message).toContain("the plugin broke");
+    expect(error.isolateStack).toContain("the plugin broke");
   }, 60_000);
 });
