@@ -20,6 +20,8 @@ import {
   type ScopedStyleStrategy,
 } from "@pletivo/core/astro-host/scoped-style";
 import { invalidCompressHTML, resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
+import type { InlineStylesheets } from "@pletivo/core/assets-inline";
+import { readAssetsInlineLimit, readInlineStylesheets } from "../assets-inline";
 import { initAstroHost, type AstroHost } from "../astro-host/runner";
 import { srcDirMismatch } from "../astro-host/config-loader";
 import { bundlePageScripts } from "../astro-host/page-scripts";
@@ -67,6 +69,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   const routing = freezeRouting(host?.config);
   const scopedStyle = freezeScopedStyle(host?.config);
   const compressHTML = freezeCompressHTML(host?.config);
+  const stylesheets = freezeStylesheetInlining(host?.config);
   const fatal = [
     ...unsupportedProjectSemantics(projectConfig),
     ...unsupportedSemantics(host),
@@ -75,6 +78,7 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
     ...routing.diagnostics,
     ...scopedStyle.diagnostics,
     ...compressHTML.diagnostics,
+    ...stylesheets.diagnostics,
   ];
   if (fatal.length > 0) throw new PrepareError(fatal);
 
@@ -111,7 +115,10 @@ export async function prepare(root: string, options: PrepareOptions = {}): Promi
   return {
     artifact: {
       version: ARTIFACT_VERSION,
-      config: freezeConfig(host?.config, markdown.config, mdx.config, routing, scopedStyle.strategy, compressHTML.value),
+      config: {
+        ...freezeConfig(host?.config, markdown.config, mdx.config, routing, scopedStyle.strategy, compressHTML.value),
+        ...stylesheets.config,
+      },
       scripts: {
         headInline: [...(host?.injectedHeadScripts ?? [])],
         page: pageScript === null ? [] : [pageScript],
@@ -368,6 +375,43 @@ function freezeCompressHTML(config: AstroConfig | undefined): {
     };
   }
   return { value: resolveCompressHTML(config), diagnostics: [] };
+}
+
+/**
+ * `build.inlineStylesheets` and `vite.build.assetsInlineLimit`, as the build resolves them; nothing in a
+ * pletivo-native project, whose build links every sheet. A function limit is refused: the Workers host
+ * decides every inline itself and cannot run project code from the config.
+ */
+function freezeStylesheetInlining(config: AstroConfig | undefined): {
+  config: { inlineStylesheets?: InlineStylesheets; assetsInlineLimit?: number };
+  diagnostics: PrepareDiagnostic[];
+} {
+  if (config === undefined) return { config: {}, diagnostics: [] };
+  const diagnostics: PrepareDiagnostic[] = [];
+  const frozen: { inlineStylesheets?: InlineStylesheets; assetsInlineLimit?: number } = {};
+  try {
+    frozen.inlineStylesheets = readInlineStylesheets(config.build);
+  } catch (error) {
+    diagnostics.push({ source: "astro.config", hook: "build.inlineStylesheets", reason: errorMessage(error) });
+  }
+  try {
+    const limit = readAssetsInlineLimit(config.vite);
+    if (typeof limit === "number") frozen.assetsInlineLimit = limit;
+    else {
+      diagnostics.push({
+        source: "astro.config",
+        hook: "vite.build.assetsInlineLimit",
+        reason: "a function limit cannot be carried to the Workers host; set a number of bytes",
+      });
+    }
+  } catch (error) {
+    diagnostics.push({ source: "astro.config", hook: "vite.build.assetsInlineLimit", reason: errorMessage(error) });
+  }
+  return { config: frozen, diagnostics };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function freezeConfig(

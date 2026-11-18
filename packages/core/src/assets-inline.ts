@@ -14,3 +14,19 @@ export function shouldInlineAsset(content: string | Uint8Array, filePath: string
   }
   return bytes.byteLength < limit;
 }
+
+/** Astro's `build.inlineStylesheets`. */
+export type InlineStylesheets = "always" | "auto" | "never";
+
+/**
+ * Whether a built stylesheet is inlined as `<style>` instead of linked, given its
+ * final text and its dist-relative file name (`plugin-css.ts`'s inline-stylesheets
+ * plugin). `null` links every sheet.
+ */
+export type StylesheetInliner = (css: string, fileName: string) => boolean;
+
+export function stylesheetInliner(mode: InlineStylesheets, limit: AssetsInlineLimit): StylesheetInliner | null {
+  if (mode === "never") return null;
+  if (mode === "always") return () => true;
+  return (css, fileName) => shouldInlineAsset(css, fileName, limit);
+}

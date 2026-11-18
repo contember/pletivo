@@ -441,6 +441,26 @@ describe("injected scripts and strict parsing", () => {
     expect(() => parsePreparedSite(invalid)).toThrow("$.artifact.config.compressHTML: expected a boolean");
   });
 
+  test("round-trips inlineStylesheets and assetsInlineLimit and rejects a value outside them, by name", () => {
+    const prepared: PreparedSite = {
+      artifact: {
+        version: ARTIFACT_VERSION,
+        config: { compressHTML: true, inlineStylesheets: "always", assetsInlineLimit: 1024 },
+        scripts: { headInline: [], page: [] },
+        modules: [],
+        resolutions: [],
+      },
+    };
+    expect(parsePreparedSite(JSON.parse(serializePreparedSite(prepared)))).toEqual(prepared);
+
+    const mode = JSON.parse(JSON.stringify(prepared));
+    mode.artifact.config.inlineStylesheets = "sometimes";
+    expect(() => parsePreparedSite(mode)).toThrow('$.artifact.config.inlineStylesheets: expected "always", "auto" or "never"');
+    const limit = JSON.parse(JSON.stringify(prepared));
+    limit.artifact.config.assetsInlineLimit = "4096";
+    expect(() => parsePreparedSite(limit)).toThrow("$.artifact.config.assetsInlineLimit: expected a finite number");
+  });
+
   async function unresolvedImportOf(source: string): Promise<UnresolvedImportError> {
     const error = await compileProject({
       files: new Map([["src/pages/a.ts", source]]),

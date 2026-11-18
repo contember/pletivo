@@ -2,6 +2,7 @@
 
 import { compareStrings } from "./compare-strings";
 import { isScopedStyleStrategy, type ScopedStyleStrategy } from "./astro-host/scoped-style";
+import type { InlineStylesheets } from "./assets-inline";
 
 export const ARTIFACT_VERSION = 2;
 
@@ -186,6 +187,10 @@ export interface ArtifactConfig {
   scopedStyleStrategy?: ScopedStyleStrategy;
   /** `.astro` compiles with `compact` set to it; absent leaves the compiler's default (off). */
   compressHTML?: boolean;
+  /** `build.inlineStylesheets`, present exactly in an Astro project; a pletivo-native build links every sheet. */
+  inlineStylesheets?: InlineStylesheets;
+  /** A numeric `vite.build.assetsInlineLimit`; absent leaves Vite's default. */
+  assetsInlineLimit?: number;
 }
 
 /** Injected scripts the Workers host currently emits, in semantic order. */
@@ -587,7 +592,11 @@ function arrayEntries(value: unknown[], at: string): [unknown, string][] {
 function parseConfig(value: unknown): ArtifactConfig {
   const at = "$.artifact.config";
   const config = requireObject(value, at, "an object");
-  assertExactFields(config, ["site", "markdown", "mdx", "i18n", "trailingSlash", "redirects", "scopedStyleStrategy", "compressHTML"], at);
+  assertExactFields(
+    config,
+    ["site", "markdown", "mdx", "i18n", "trailingSlash", "redirects", "scopedStyleStrategy", "compressHTML", "inlineStylesheets", "assetsInlineLimit"],
+    at,
+  );
   const parsed: ArtifactConfig = {};
   if (hasOwn(config, "site")) {
     const site = Reflect.get(config, "site");
@@ -616,6 +625,20 @@ function parseConfig(value: unknown): ArtifactConfig {
     const compressHTML = Reflect.get(config, "compressHTML");
     if (typeof compressHTML !== "boolean") throw new ArtifactFormatError(`${at}.compressHTML`, "expected a boolean");
     parsed.compressHTML = compressHTML;
+  }
+  if (hasOwn(config, "inlineStylesheets")) {
+    const inlineStylesheets = Reflect.get(config, "inlineStylesheets");
+    if (inlineStylesheets !== "always" && inlineStylesheets !== "auto" && inlineStylesheets !== "never") {
+      throw new ArtifactFormatError(`${at}.inlineStylesheets`, 'expected "always", "auto" or "never"');
+    }
+    parsed.inlineStylesheets = inlineStylesheets;
+  }
+  if (hasOwn(config, "assetsInlineLimit")) {
+    const limit = Reflect.get(config, "assetsInlineLimit");
+    if (typeof limit !== "number" || !Number.isFinite(limit)) {
+      throw new ArtifactFormatError(`${at}.assetsInlineLimit`, "expected a finite number");
+    }
+    parsed.assetsInlineLimit = limit;
   }
   return parsed;
 }
@@ -1008,6 +1031,8 @@ function canonicalConfig(config: ArtifactConfig): ArtifactConfig {
   }
   if (config.scopedStyleStrategy !== undefined) canonical.scopedStyleStrategy = config.scopedStyleStrategy;
   if (config.compressHTML !== undefined) canonical.compressHTML = config.compressHTML;
+  if (config.inlineStylesheets !== undefined) canonical.inlineStylesheets = config.inlineStylesheets;
+  if (config.assetsInlineLimit !== undefined) canonical.assetsInlineLimit = config.assetsInlineLimit;
   return canonical;
 }
 

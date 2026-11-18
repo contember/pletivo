@@ -399,6 +399,24 @@ describe("pletivo prepare", () => {
     expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["base", "build.format", "scopedStyleStrategy", "compressHTML"]);
   });
 
+  test("freezes build.inlineStylesheets and a numeric vite.build.assetsInlineLimit", async () => {
+    const site = await prepare(await projectWithFiles({
+      "astro.config.mjs": 'export default { build: { inlineStylesheets: "never" }, vite: { build: { assetsInlineLimit: 1024 } } };\n',
+      "src/pages/index.astro": "<p>x</p>\n",
+    }));
+    expect(site.artifact.config.inlineStylesheets).toBe("never");
+    expect(site.artifact.config.assetsInlineLimit).toBe(1024);
+  });
+
+  test("refuses a function vite.build.assetsInlineLimit and an unknown build.inlineStylesheets by name", async () => {
+    const error = await capturedPrepareError(await projectWithFiles({
+      "astro.config.mjs": 'export default { build: { inlineStylesheets: "sometimes" }, vite: { build: { assetsInlineLimit: () => true } } };\n',
+      "src/pages/index.astro": "<p>x</p>\n",
+    }));
+    expect(error.diagnostics.map((entry) => entry.hook)).toEqual(["build.inlineStylesheets", "vite.build.assetsInlineLimit"]);
+    expect(error.diagnostics.at(-1)?.reason).toContain("set a number of bytes");
+  });
+
   test("rejects Worker-relevant pletivo config and source directories outside the root", async () => {
     await expectPrepareError(path.join(fixtures, "fatal-pletivo-routing"), "base");
     await expectPrepareError(path.join(fixtures, "fatal-hash-assets"), "hashAssets");
@@ -432,6 +450,8 @@ describe("pletivo prepare", () => {
       ],
       scopedStyleStrategy: "attribute",
       compressHTML: true,
+      inlineStylesheets: "auto",
+      assetsInlineLimit: 4096,
     });
     expect(site.artifact.resolutions).toContainEqual({
       importer: "project:src/pages/index.astro",
@@ -828,7 +848,13 @@ describe("pletivo prepare on the vendor fixture", () => {
   });
 
   test("freezes only config fields the Workers host consumes", () => {
-    expect(site.artifact.config).toEqual({ site: "https://vendor.example", scopedStyleStrategy: "attribute", compressHTML: true });
+    expect(site.artifact.config).toEqual({
+      site: "https://vendor.example",
+      scopedStyleStrategy: "attribute",
+      compressHTML: true,
+      inlineStylesheets: "auto",
+      assetsInlineLimit: 4096,
+    });
   });
 
   test("freezes supported injectScript bodies in semantic order", () => {
