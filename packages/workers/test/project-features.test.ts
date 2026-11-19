@@ -39,6 +39,33 @@ describe("detectProjectFeatures", () => {
     });
   });
 
+  test("reads every file it scans in one batch where the store can batch it", async () => {
+    const sources = new Map([
+      ["src/pages/index.astro", "<p>home</p>\n"],
+      ["src/pages/live.md", "---\nexport const prerender = false;\n---\n"],
+      ["src/components/Card.astro", "<div />\n"],
+      ["src/styles/site.css", "p {}\n"],
+    ]);
+    const batches: string[][] = [];
+    const singles: string[] = [];
+    const files = {
+      keys: () => sources.keys(),
+      has: (path: string) => sources.has(path),
+      get: (path: string) => {
+        singles.push(path);
+        return sources.get(path);
+      },
+      getMany: (paths: readonly string[]) => {
+        batches.push([...paths]);
+        return paths.map((path) => sources.get(path));
+      },
+    };
+    const features = await detectProjectFeatures(files, { compiler });
+    expect(features.onDemand).toEqual(["src/pages/live.md"]);
+    expect(batches).toEqual([["src/pages/index.astro", "src/components/Card.astro", "src/pages/live.md"]]);
+    expect(singles).toEqual([]);
+  });
+
   test("is what ProjectHost.features reports for the current snapshot", async () => {
     const host = createProjectHost({
       store: createMapProjectStore(new Map([["src/pages/index.mdx", "# hi\n"]])),
