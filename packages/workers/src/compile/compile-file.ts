@@ -65,6 +65,7 @@ export async function compileCached(
   const entry = mdx === null
     ? await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy, compressHTML, trailingSlash })
     : await compileMdx(module, mdx);
+  // Two compiles of one file can both miss an async store and both set; the source check keeps either entry correct.
   await cache?.set(module.compilePath, entry);
   return entry;
 }
