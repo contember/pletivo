@@ -54,7 +54,14 @@ export interface CompiledFile {
   componentPaths: readonly string[];
 }
 
+/** Either answer may be a promise, so a cache can sit over an async store; the compile awaits both. */
 export interface CompileCache {
+  get(file: string): CompiledFile | undefined | Promise<CompiledFile | undefined>;
+  set(file: string, entry: CompiledFile): void | Promise<void>;
+}
+
+/** A cache that answers at once, as the in-memory one does. */
+export interface SyncCompileCache extends CompileCache {
   get(file: string): CompiledFile | undefined;
   set(file: string, entry: CompiledFile): void;
 }
@@ -87,7 +94,7 @@ function chargeOf(entry: CompiledFile): number {
   return charge;
 }
 
-export function createCompileCache(options: CompileCacheOptions = {}): CompileCache {
+export function createCompileCache(options: CompileCacheOptions = {}): SyncCompileCache {
   const held = new BoundedLru<CompiledFile>({
     maxEntries: DEFAULT_MAX_ENTRIES,
     maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,

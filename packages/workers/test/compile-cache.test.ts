@@ -17,7 +17,7 @@ import type {
   TransformResult,
 } from "@astrojs/compiler/types";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
-import { createCompileCache, type CompiledFile } from "../src/compile-cache.ts";
+import { createCompileCache, type CompileCache, type CompiledFile } from "../src/compile-cache.ts";
 import { compileProject, type CompiledProject } from "../src/compile-project.ts";
 import { compileCached } from "../src/compile/compile-file.ts";
 import type { SourceModule } from "../src/compile/source-module.ts";
@@ -416,6 +416,40 @@ describe("compressHTML and the scope id", () => {
     expect(compiled.styles?.scope).not.toBe("t7m3ubvd");
     expect(compiled.code ?? compiled.source).toContain("<h2 data-astro-cid-");
     expect(compiled.code ?? compiled.source).toContain(">   Title   </h2>");
+  });
+});
+
+describe("an async cache", () => {
+  test("serves a held entry without a compile, and the compile waits for its set", async () => {
+    const stored = new Map<string, CompiledFile>();
+    /** A persistent cache backed by an async store: each answer settles on a later task. */
+    const cache: CompileCache = {
+      get: async (file) => {
+        await Bun.sleep(1);
+        return stored.get(file);
+      },
+      set: async (file, entry) => {
+        await Bun.sleep(1);
+        stored.set(file, entry);
+      },
+    };
+    const module: SourceModule = {
+      id: "project:src/pages/async.astro",
+      kind: "astro",
+      source: "<h1>async</h1>\n<style>h1 { color: red; }</style>\n",
+      compilePath: "src/pages/async.astro",
+      executionName: "async",
+      origin: "project",
+    };
+    const options = { annotateSourceFile: false, scopedStyleStrategy: undefined, compressHTML: undefined };
+
+    const cold = await compileCached(module, compiler, cache, options);
+    expect(stored.get(module.compilePath)).toBe(cold);
+
+    const counting = countingCompiler();
+    const warm = await compileCached(module, counting.compiler, cache, options);
+    expect(counting.transformed).toEqual([]);
+    expect(warm).toBe(cold);
   });
 });
 
