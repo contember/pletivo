@@ -87,6 +87,9 @@ export interface WorkspaceStoreOptions {
   /**
    * The text of each file at the workspace paths asked, `null` where there is none, in one read:
    * a collection asks for all of its files. Unset, each file is read on its own.
+   *
+   * A batch has no size limit. A provider whose backend bounds one query (an SQL statement's
+   * bound parameters, say) splits the batch itself.
    */
   readMany?: (paths: readonly string[]) => (string | null)[];
 }
