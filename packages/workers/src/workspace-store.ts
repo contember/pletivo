@@ -53,6 +53,11 @@ export interface WorkspaceStoreOptions {
    * not be. The listing is the one `readdirSync` gives where that lists each directory in code
    * point order of its names, the order of its keys included. Unset, the listing walks
    * `readdirSync`.
+   *
+   * Each path is absolute; a trailing slash and doubled slashes are normalised away. A
+   * directory need not be yielded: a path below it implies it, so a provider that yields
+   * files only still lists the whole tree. A yielded entry wins over an implied directory of
+   * the same path. An entry outside `root`, or a relative path, is skipped.
    */
   entries?: (root: string, prune: (directory: string) => boolean) => Iterable<WorkspaceEntry>;
   /**
@@ -154,20 +159,34 @@ export function createWorkspaceProjectStore(
 
   /** The scan's entries by their directory (`""` for the root, `/src` below it), each in code point order of its names. */
   function scannedChildren(entries: NonNullable<WorkspaceStoreOptions["entries"]>): Map<string, ListedChild[]> {
-    const byDirectory = new Map<string, ListedChild[]>();
+    const byDirectory = new Map<string, Map<string, ListedChild>>([["", new Map()]]);
+    /** The children of `directory`, which is created in its parent, and so on up, if the scan has not yielded it. */
+    const childrenOf = (directory: string): Map<string, ListedChild> => {
+      const known = byDirectory.get(directory);
+      if (known !== undefined) return known;
+      const children = new Map<string, ListedChild>();
+      byDirectory.set(directory, children);
+      const slash = directory.lastIndexOf("/");
+      const siblings = childrenOf(directory.slice(0, slash));
+      const name = directory.slice(slash + 1);
+      if (!siblings.has(name)) siblings.set(name, { name, type: "directory", size: () => 0 });
+      return children;
+    };
     const prune = (directory: string): boolean => SKIP.has(directory.slice(directory.lastIndexOf("/") + 1));
     for (const entry of entries(absoluteRoot, prune)) {
-      if (entry.path === absoluteRoot || !entry.path.startsWith(`${root}/`)) continue;
-      const relative = entry.path.slice(root.length);
+      const path = normalizeEntryPath(entry.path);
+      if (path === absoluteRoot || !path.startsWith(`${root}/`)) continue;
+      const relative = path.slice(root.length);
       const slash = relative.lastIndexOf("/");
-      const directory = relative.slice(0, slash);
-      const siblings = byDirectory.get(directory) ?? [];
-      const { size } = entry;
-      siblings.push({ name: relative.slice(slash + 1), type: entry.type, size: () => size });
-      byDirectory.set(directory, siblings);
+      const name = relative.slice(slash + 1);
+      const { type, size } = entry;
+      childrenOf(relative.slice(0, slash)).set(name, { name, type, size: () => size });
     }
-    for (const siblings of byDirectory.values()) siblings.sort((a, b) => compareCodePoints(a.name, b.name));
-    return byDirectory;
+    const listed = new Map<string, ListedChild[]>();
+    for (const [directory, children] of byDirectory) {
+      listed.set(directory, [...children.values()].sort((a, b) => compareCodePoints(a.name, b.name)));
+    }
+    return listed;
   }
 
   function snapshotOf(listing: Listing, revision: string): ProjectSnapshot {
@@ -322,6 +341,12 @@ function normalizeRoot(root: string): string {
   const trimmed = root.endsWith("/") ? root.slice(0, -1) : root;
   if (trimmed === "") return "";
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+/** A scanned path without doubled slashes or a trailing one, `/` kept as it is. */
+function normalizeEntryPath(path: string): string {
+  const collapsed = path.replace(/\/{2,}/g, "/");
+  return collapsed.length > 1 && collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;
 }
 
 function dirents(files: WorkspaceFiles, path: string): WorkspaceDirent[] {

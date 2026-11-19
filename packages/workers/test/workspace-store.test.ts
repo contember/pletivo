@@ -300,6 +300,66 @@ describe("createWorkspaceProjectStore", () => {
     expect([...snapshot.files.keys()]).toEqual(["src/pages/index.astro"]);
   });
 
+  test("lists the whole tree from a scan that yields files only", async () => {
+    const workspace = new FakeWorkspace();
+    for (const path of ["/site/package.json", "/site/src/pages/index.astro", "/site/src/pages/blog/post.md", "/site/node_modules/pkg/index.js"]) {
+      workspace.write(path, "x");
+    }
+    const options = { root: "/site", revision: () => workspace.revision };
+    const walked = await createWorkspaceProjectStore(workspace, options).snapshot();
+    const scanned = await createWorkspaceProjectStore(workspace, {
+      ...options,
+      entries: (root, prune) => [...workspace.entries(root, prune)].filter((entry) => entry.type === "file"),
+    }).snapshot();
+
+    expect([...scanned.files.keys()]).toEqual(["package.json", "src/pages/index.astro", "src/pages/blog/post.md"]);
+    expect([...scanned.files.keys()]).toEqual([...walked.files.keys()]);
+  });
+
+  test("does not follow a yielded symlink that a path below it would imply is a directory, in either order", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/site/src/pages/index.astro", "x");
+    const link: WorkspaceEntry = { path: "/site/src/pages/linked", type: "other", size: 0 };
+    const below: WorkspaceEntry = { path: "/site/src/pages/linked/page.astro", type: "file", size: 1 };
+    for (const scan of [[link, below], [below, link]]) {
+      const snapshot = await createWorkspaceProjectStore(workspace, {
+        root: "/site",
+        revision: () => workspace.revision,
+        entries: (root, prune) => [...workspace.entries(root, prune), ...scan],
+      }).snapshot();
+
+      expect([...snapshot.files.keys()]).toEqual(["src/pages/index.astro"]);
+    }
+  });
+
+  test("normalises a trailing or doubled slash, and skips a relative path or one outside the root", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/site/src/pages/index.astro", "x");
+    workspace.write("/site/src/pages/about.astro", "x");
+    workspace.write("/site/src/content/a.md", "x");
+    workspace.write("/site/src/rel.astro", "x");
+    workspace.write("/elsewhere/page.astro", "x");
+    const snapshot = await createWorkspaceProjectStore(workspace, {
+      root: "/site",
+      revision: () => workspace.revision,
+      entries: () => [
+        { path: "/site/", type: "directory", size: 0 },
+        { path: "/site//src/", type: "directory", size: 0 },
+        { path: "/site/src//pages/", type: "directory", size: 0 },
+        { path: "/site/src/pages/index.astro", type: "file", size: 1 },
+        { path: "/site/src/pages//about.astro", type: "file", size: 1 },
+        { path: "/site//src//content//a.md", type: "file", size: 1 },
+        { path: "site/src/rel.astro", type: "file", size: 1 },
+        { path: "src/rel.astro", type: "file", size: 1 },
+        { path: "/elsewhere/page.astro", type: "file", size: 1 },
+        { path: "/site-other/page.astro", type: "file", size: 1 },
+      ],
+    }).snapshot();
+
+    expect([...snapshot.files.keys()]).toEqual(["src/pages/about.astro", "src/pages/index.astro", "src/content/a.md"]);
+    expect(snapshot.files.get("src/content/a.md")).toBe("x");
+  });
+
   test("leaves a symlink out of a scanned listing", async () => {
     const workspace = new FakeWorkspace();
     workspace.write("/site/src/pages/index.astro", "<p>page</p>");
