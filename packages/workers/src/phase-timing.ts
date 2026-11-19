@@ -11,6 +11,10 @@ export interface PhaseTiming {
   count?: number;
 }
 
+/**
+ * Receives each phase as it ends. It must not throw: it is called inside the operation, so its
+ * error would replace the operation's result or error.
+ */
 export type PhaseSink = (timing: PhaseTiming) => void;
 
 const sinks = new AsyncLocalStorage<PhaseSink>();
