@@ -16,6 +16,7 @@
  * ```
  */
 
+import { timePhase } from "./phase-timing.ts";
 import {
   ArtifactFormatError,
   ArtifactVersionError,
@@ -273,10 +274,10 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
    */
   async function withSnapshot<T>(operation: (snapshot: ProjectSnapshot) => Promise<T>): Promise<T> {
     try {
-      return await operation(await store.snapshot());
+      return await operation(await timePhase("listing", () => store.snapshot()));
     } catch (error) {
       if (!(error instanceof WorkspaceSnapshotChangedError)) throw error;
-      return operation(await store.snapshot());
+      return operation(await timePhase("listing", () => store.snapshot()));
     }
   }
 
@@ -535,7 +536,7 @@ export function createProjectHost(options: ProjectHostOptions): ProjectHost {
           const matched = findRoute(routes, url.pathname);
           let status = matched !== null && isNotFoundRoute(matched.route) ? 404 : 200;
           try {
-            await afterWarmUpOf(url.pathname);
+            await timePhase("warm-wait", () => afterWarmUpOf(url.pathname));
             page = await renderReported(url.pathname, snapshot, url.search);
           } catch (error) {
             // As Astro's dev server does: an unmatched URL renders the project's 404 page.

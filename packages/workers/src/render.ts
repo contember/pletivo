@@ -8,6 +8,7 @@
  * `projectPaths` returns only params, the JSON-safe half.
  */
 
+import { recordPhase, timePhase } from "./phase-timing.ts";
 import {
   findRoute,
   isRouteFile,
@@ -512,7 +513,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     throw new UnsupportedRouteError(file, "only .astro, .tsx, .md and .mdx pages render here");
   }
 
-  const project = await compilePage(file, options);
+  const project = await timePhase("compile", () => compilePage(file, options));
   const rendered = await renderModule({
     project,
     file,
@@ -534,7 +535,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const islands = options.artifact?.islands ?? null;
   const islandSources = islands === null ? [] : islandCandidateSources(pageIslandClients(rendered.html, islands), files, rootDir);
   // After the render: the page's HTML is Tailwind's content.
-  const stylesheet = await pageStylesheet({
+  const stylesheet = await timePhase("tailwind", () => pageStylesheet({
     // `project.sources`: only the artifact-merged map holds `node_modules` stylesheets.
     files: project.sources,
     readBytes: projectBytes(files, options.readBytes),
@@ -549,7 +550,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
     tailwind: options.tailwind,
     tailwindIsolate: tailwindIsolateHost(options),
     assetsInlineLimit: config?.assetsInlineLimit ?? DEFAULT_ASSETS_INLINE_LIMIT,
-  });
+  }));
   const sheet = stylesheet?.css ?? "";
   return {
     html: finalizeHtml(
@@ -601,7 +602,7 @@ export async function warmPage(options: WarmPageOptions): Promise<string[]> {
   const { match } = matchPage(projectRoutes(files, pagesDir), pathname, options.artifact?.i18n ?? null);
   const file = prefix + match.route.file;
   if (match.route.isEndpoint || !isExecutableModule(file)) return [];
-  const project = await compilePage(file, options);
+  const project = await timePhase("compile", () => compilePage(file, options));
   const { payload } = await callIsolate({
     project,
     options,
@@ -709,6 +710,7 @@ async function callIsolate(input: {
     ...ISOLATE_ENTRY_MODULES,
     [ISOLATE_PROGRAM_MODULE_NAME]: programModule(project.program),
   };
+  const keyStarted = Date.now();
   const bundleId = await programHash({ mainModule: ISOLATE_ENTRY_MODULE_NAME, modules });
 
   const content = requirements.content === null ? null : options.content;
@@ -729,6 +731,7 @@ async function callIsolate(input: {
     platform: { hostAbi: WORKER_HOST_ABI, compatibilityDate, compatibilityFlags },
     policy: { outbound: outboundKind(options.outbound), env, importMetaEnv },
   });
+  recordPhase({ name: "isolate-key", ms: Date.now() - keyStarted, count: Object.keys(modules).length });
 
   const isolateEnv = {
     ...(content ? { [CONTENT_BINDING]: content.binding } : {}),
@@ -757,7 +760,8 @@ async function callIsolate(input: {
     method: "POST",
     body: JSON.stringify(requestBody),
   });
-  let response: Response;
+  let response: Response | null = null;
+  const fetchStarted = Date.now();
   try {
     response = await stub.getEntrypoint().fetch(request);
   } catch (error) {
@@ -765,6 +769,9 @@ async function callIsolate(input: {
     throw new IsolateStartError(error, typescriptSuspects(modules, options.artifact?.moduleNames));
   } finally {
     handle?.close();
+    // Also for an isolate that failed to start; `count` is how many requests it has served, 1 for a fresh one.
+    const served = Number(response?.headers.get("x-pletivo-isolate-served"));
+    recordPhase({ name: `isolate-${body.op}`, ms: Date.now() - fetchStarted, ...(Number.isFinite(served) && served > 0 ? { count: served } : {}) });
   }
   // Before the response: a failed content read is the cause of whatever the isolate says.
   throwContentFailure(handle);

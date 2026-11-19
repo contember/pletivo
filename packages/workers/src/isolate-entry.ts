@@ -223,10 +223,14 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
       // as a bundle that failed to start.
       const payload: IsolateResponse = outcome.ok ? outcome.value : errorPayload(outcome.error);
       const reply: IsolateReply = { ...payload, logs: logs.entries, droppedLogs: logs.dropped };
-      return Response.json(reply);
+      servedRequests++;
+      // How many requests this isolate has served: 1 means the render started it.
+      return Response.json(reply, { headers: { "x-pletivo-isolate-served": String(servedRequests) } });
     },
   };
 }
+
+let servedRequests = 0;
 
 /** What the isolate answers with, before its logs are attached. */
 type IsolatePayload = Exclude<IsolateResponse, IsolateErrorResponse>;
