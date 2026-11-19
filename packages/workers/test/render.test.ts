@@ -15,6 +15,7 @@ import {
 import { loadProjectArtifact } from "../src/artifact.ts";
 import { createCompileCache } from "../src/compile-cache.ts";
 import { IsolateProtocolError } from "../src/isolate-protocol.ts";
+import { type PhaseTiming, withPhaseTimings } from "../src/phase-timing.ts";
 import { astroWasmModule } from "./astro-wasm.ts";
 import { FileLoader } from "./file-loader.ts";
 
@@ -76,6 +77,22 @@ export default function Page({ __pageContext }: Props) {
 ]);
 
 const render = (pathname: string) => renderPage({ files: SITE, pathname, loader, compiler });
+
+describe("phase timings", () => {
+  test("a render reports its compile, its isolate and its stylesheet to the sink", async () => {
+    const phases: PhaseTiming[] = [];
+    await withPhaseTimings((timing) => phases.push(timing), () => render("/"));
+    expect(phases.map((phase) => phase.name)).toEqual(["compile", "isolate-key", "isolate-render", "stylesheet"]);
+    expect(phases.every((phase) => phase.ms >= 0)).toBe(true);
+    // How many requests the render isolate has served, from its response header.
+    expect(phases.find((phase) => phase.name === "isolate-render")?.count).toBeGreaterThan(0);
+  });
+
+  test("renders the same page with and without a sink", async () => {
+    const timed = await withPhaseTimings(() => {}, () => render("/"));
+    expect((await render("/")).html).toBe(timed.html);
+  });
+});
 
 describe("projectRoutes", () => {
   test("takes only page files under the pages directory, static routes first", () => {

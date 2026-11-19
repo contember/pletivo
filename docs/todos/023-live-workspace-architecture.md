@@ -289,11 +289,14 @@ stable Durable Object id and names its DO-self binding generation explicitly.
 
 ### 10.3 The store is lazy, so a read can land after a write
 
-A snapshot is a listing, not a copy of the project. `createWorkspaceProjectStore` walks
-the tree once per revision and reads no file; with `maxFileBytes` it also stats each
-one. A text file is read on its first `get` and kept for the snapshot. An image is read
-when its metadata is first asked for and again each time it is served; only the
-metadata is kept. Nothing downstream copies the files into a map either: the compile
+A snapshot is a listing, not a copy of the project. `createWorkspaceProjectStore` lists
+the tree once per revision and reads no file. By default it walks `readdirSync` per
+directory and, with `maxFileBytes`, stats each file; a provider that keeps its tree in a
+database passes `entries` instead and answers the listing, sizes included, with one scan
+of the root. A text file is read on its first `get` and kept for the snapshot; with
+`readMany`, a `getMany` (a collection's files, the feature scan's) reads its batch in one
+call. An image is read when its metadata is first asked for and again each time it is
+served; only the metadata is kept. Nothing downstream copies the files into a map either: the compile
 sees them through `ProjectFiles` overlays (`src/compile/project-files.ts`). So a render
 reads what its page reaches (§4), plus the listing.
 

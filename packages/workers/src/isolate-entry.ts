@@ -218,15 +218,20 @@ export function createIsolateEntry(program: IsolateProgram): IsolateEntry {
 
   return {
     async fetch(request, env) {
+      // Counted on arrival, so of two concurrent first requests only one reads as a cold start.
+      const served = ++servedRequests;
       const { outcome, logs } = await runWithLogCapture(() => handle(request, env));
       // An error payload, not a throw: across the Loader boundary a throw looks the same
       // as a bundle that failed to start.
       const payload: IsolateResponse = outcome.ok ? outcome.value : errorPayload(outcome.error);
       const reply: IsolateReply = { ...payload, logs: logs.entries, droppedLogs: logs.dropped };
-      return Response.json(reply);
+      // How many requests this isolate has served: 1 means the render started it.
+      return Response.json(reply, { headers: { "x-pletivo-isolate-served": String(served) } });
     },
   };
 }
+
+let servedRequests = 0;
 
 /** What the isolate answers with, before its logs are attached. */
 type IsolatePayload = Exclude<IsolateResponse, IsolateErrorResponse>;
