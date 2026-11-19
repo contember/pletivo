@@ -420,6 +420,16 @@ describe("compressHTML and the scope id", () => {
 });
 
 describe("an async cache", () => {
+  const module: SourceModule = {
+    id: "project:src/pages/async.astro",
+    kind: "astro",
+    source: "<h1>async</h1>\n<style>h1 { color: red; }</style>\n",
+    compilePath: "src/pages/async.astro",
+    executionName: "async",
+    origin: "project",
+  };
+  const options = { annotateSourceFile: false, scopedStyleStrategy: undefined, compressHTML: undefined };
+
   test("serves a held entry without a compile, and the compile waits for its set", async () => {
     const stored = new Map<string, CompiledFile>();
     /** A persistent cache backed by an async store: each answer settles on a later task. */
@@ -433,15 +443,6 @@ describe("an async cache", () => {
         stored.set(file, entry);
       },
     };
-    const module: SourceModule = {
-      id: "project:src/pages/async.astro",
-      kind: "astro",
-      source: "<h1>async</h1>\n<style>h1 { color: red; }</style>\n",
-      compilePath: "src/pages/async.astro",
-      executionName: "async",
-      origin: "project",
-    };
-    const options = { annotateSourceFile: false, scopedStyleStrategy: undefined, compressHTML: undefined };
 
     const cold = await compileCached(module, compiler, cache, options);
     expect(stored.get(module.compilePath)).toBe(cold);
@@ -450,6 +451,30 @@ describe("an async cache", () => {
     const warm = await compileCached(module, counting.compiler, cache, options);
     expect(counting.transformed).toEqual([]);
     expect(warm).toBe(cold);
+  });
+
+  // The contract: a store answers a miss for what it cannot read and drops what it cannot hold,
+  // so a rejection is the host's store failing, and the compile fails with it.
+  test("a rejecting get fails the compile", async () => {
+    const counting = countingCompiler();
+    const cache: CompileCache = {
+      get: () => Promise.reject(new Error("store unreachable")),
+      set: () => {},
+    };
+
+    await expect(compileCached(module, counting.compiler, cache, options)).rejects.toThrow("store unreachable");
+    expect(counting.transformed).toEqual([]);
+  });
+
+  test("a rejecting set fails the compile it was asked to keep", async () => {
+    const counting = countingCompiler();
+    const cache: CompileCache = {
+      get: () => undefined,
+      set: () => Promise.reject(new Error("store full")),
+    };
+
+    await expect(compileCached(module, counting.compiler, cache, options)).rejects.toThrow("store full");
+    expect(counting.transformed).toEqual([module.compilePath]);
   });
 });
 

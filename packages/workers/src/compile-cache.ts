@@ -54,7 +54,16 @@ export interface CompiledFile {
   componentPaths: readonly string[];
 }
 
-/** Either answer may be a promise, so a cache can sit over an async store; the compile awaits both. */
+/**
+ * Where compiled files are kept between renders. Either answer may be a promise, so a cache
+ * can sit over an async store; the compile awaits both.
+ *
+ * A store answers a miss for an entry it cannot read and drops one it cannot hold. A rejection
+ * is a failure of the host's store, and it fails the compile, whether from `get` or from `set`.
+ *
+ * `compileCached` reads and writes file by file, one round trip each, so a host keeps an
+ * in-memory cache such as `createCompileCache` in front of a slow store.
+ */
 export interface CompileCache {
   get(file: string): CompiledFile | undefined | Promise<CompiledFile | undefined>;
   set(file: string, entry: CompiledFile): void | Promise<void>;
