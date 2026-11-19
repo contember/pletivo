@@ -17,7 +17,7 @@ import type {
   TransformResult,
 } from "@astrojs/compiler/types";
 import { createAstroCompiler, type AstroCompiler } from "../src/astro-compiler.ts";
-import { createCompileCache, type CompileCache, type CompiledFile } from "../src/compile-cache.ts";
+import { COMPILED_FILE_FORMAT, createCompileCache, type CompileCache, type CompiledFile } from "../src/compile-cache.ts";
 import { compileProject, type CompiledProject } from "../src/compile-project.ts";
 import { compileCached } from "../src/compile/compile-file.ts";
 import type { SourceModule } from "../src/compile/source-module.ts";
@@ -475,6 +475,44 @@ describe("an async cache", () => {
 
     await expect(compileCached(module, counting.compiler, cache, options)).rejects.toThrow("store full");
     expect(counting.transformed).toEqual([module.compilePath]);
+  });
+});
+
+describe("the compiled-file format", () => {
+  test("pins the CompiledFile fields, so a change to them meets COMPILED_FILE_FORMAT", async () => {
+    // Failing here? A persistent cache keys by the format, so bump COMPILED_FILE_FORMAT and
+    // update this test: a stored entry of the old shape must not be read as the new one.
+    const compiled = await compileCached(
+      {
+        id: "project:src/pages/format.astro",
+        kind: "astro",
+        source: "<p>format</p>\n",
+        compilePath: "src/pages/format.astro",
+        executionName: "format",
+        origin: "project",
+      },
+      compiler,
+      undefined,
+      { annotateSourceFile: false, scopedStyleStrategy: undefined, compressHTML: undefined },
+    );
+    expect(COMPILED_FILE_FORMAT).toBe("1");
+    expect(Object.keys(compiled).sort()).toEqual([
+      "annotated",
+      "code",
+      "componentPaths",
+      "compressHTML",
+      "envNames",
+      "globs",
+      "importMetaEnv",
+      "kind",
+      "mdx",
+      "scopedStyleStrategy",
+      "scripts",
+      "source",
+      "specifiers",
+      "styles",
+      "trailingSlash",
+    ]);
   });
 });
 

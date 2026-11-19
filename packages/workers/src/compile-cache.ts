@@ -1,7 +1,9 @@
 /**
  * What one file compiled to, kept between renders: the work that depends only on
  * `(path, source, compiler)`. Freshness is `source ===`; see `docs/todos/023 §3–4`.
- * A cache is bound to the compiler that filled it; never share it between hosts.
+ * The check does not compare the compiler: an in-memory cache is bound to the one that
+ * filled it, and a cache that outlives the process keys by `COMPILED_FILE_FORMAT` and the
+ * host's compilers, see `CompileCache`.
  */
 
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
@@ -10,6 +12,12 @@ import { BoundedLru } from "./bounded-lru.ts";
 import type { ImportMetaGlob } from "./compile/import-meta-glob.ts";
 import type { ModuleKind } from "./compile/module-kind.ts";
 import type { AstroStyles } from "./compile/types.ts";
+
+/**
+ * The version of `CompiledFile`'s shape and meaning. Bump it whenever a field of
+ * `CompiledFile` changes, or what a compile produces for the same input does.
+ */
+export const COMPILED_FILE_FORMAT = "1";
 
 /** One file's compile, everything the file set decides left out. */
 export interface CompiledFile {
@@ -63,6 +71,10 @@ export interface CompiledFile {
  *
  * `compileCached` reads and writes file by file, one round trip each, so a host keeps an
  * in-memory cache such as `createCompileCache` in front of a slow store.
+ *
+ * A cache that outlives the process keys its entries by `COMPILED_FILE_FORMAT` plus the
+ * identity of the compilers the host runs: the Astro compiler's version for `.astro`, the
+ * `MdxCompiler` identity for `.mdx`. Sucrase and acorn are pletivo's own; the format covers them.
  */
 export interface CompileCache {
   get(file: string): CompiledFile | undefined | Promise<CompiledFile | undefined>;
