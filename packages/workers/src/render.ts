@@ -535,7 +535,7 @@ export async function renderPage(options: RenderPageOptions): Promise<RenderedPa
   const islands = options.artifact?.islands ?? null;
   const islandSources = islands === null ? [] : islandCandidateSources(pageIslandClients(rendered.html, islands), files, rootDir);
   // After the render: the page's HTML is Tailwind's content.
-  const stylesheet = await timePhase("tailwind", () => pageStylesheet({
+  const stylesheet = await timePhase("stylesheet", () => pageStylesheet({
     // `project.sources`: only the artifact-merged map holds `node_modules` stylesheets.
     files: project.sources,
     readBytes: projectBytes(files, options.readBytes),
