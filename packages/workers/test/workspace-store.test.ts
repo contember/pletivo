@@ -78,8 +78,9 @@ class FakeWorkspace implements WorkspaceFiles {
       const slash = rest.indexOf("/");
       names.set(slash === -1 ? rest : rest.slice(0, slash), slash !== -1);
     }
-    // In code point order, as a database-backed provider lists a directory.
-    return [...names].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, directory]) => ({
+    // In code point order, as a database-backed provider lists a directory: the byte order of
+    // the names' UTF-8, not JavaScript's UTF-16 `<`, which differ above U+FFFF.
+    return [...names].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map(([name, directory]) => ({
       name,
       isFile: () => !directory,
       isDirectory: () => directory,
@@ -287,6 +288,32 @@ describe("createWorkspaceProjectStore", () => {
     expect(pruned.sort()).toEqual(["/site/node_modules", "/site/src/dist"]);
     expect(workspace.readdirs).toBe(readdirs);
     expect(workspace.stats).toBe(stats);
+  });
+
+  test("orders names outside the Basic Multilingual Plane by code point, in a walk and in a scan", async () => {
+    const workspace = new FakeWorkspace();
+    // U+1F600 is a surrogate pair in UTF-16, so `<` puts it before U+FF21; code point order puts it after.
+    for (const name of ["\u{1F600}", "\uFF21", "a"]) {
+      workspace.write(`/src/pages/${name}.astro`, "x");
+      workspace.write(`/src/${name}/page.astro`, "x");
+    }
+    const options = { revision: () => workspace.revision };
+    const walked = await createWorkspaceProjectStore(workspace, options).snapshot();
+    const scanned = await createWorkspaceProjectStore(workspace, {
+      ...options,
+      entries: (root, prune) => workspace.entries(root, prune),
+    }).snapshot();
+
+    expect([...scanned.files.keys()]).toEqual([...walked.files.keys()]);
+    // Files in code point order; subdirectories are taken from a stack, so in reverse.
+    expect([...scanned.files.keys()]).toEqual([
+      "src/\u{1F600}/page.astro",
+      "src/\uFF21/page.astro",
+      "src/pages/a.astro",
+      "src/pages/\uFF21.astro",
+      "src/pages/\u{1F600}.astro",
+      "src/a/page.astro",
+    ]);
   });
 
   test("lists the workspace root from a scan that yields the root itself", async () => {
