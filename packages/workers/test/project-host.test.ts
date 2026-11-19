@@ -40,6 +40,7 @@ import {
   type CssAssetTarget,
 } from "../src/css-assets.ts";
 import { MemoryGeneratedAssetStore, type GeneratedAssetStore } from "../src/generated-asset-store.ts";
+import { type PhaseTiming, withPhaseTimings } from "../src/phase-timing.ts";
 import {
   RouteNotFoundError,
   type DynamicWorkerCode,
@@ -264,6 +265,16 @@ describe("createProjectHost", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-pletivo-page")).toBe("src/pages/index.astro");
     expect(await response.text()).toContain("<h1");
+  });
+
+  test("reports the listing and the wait for a warm-up before a page's render phases", async () => {
+    const host = hostOf(createMapProjectStore(new Map([["src/pages/index.astro", PAGE]])));
+    const phases: PhaseTiming[] = [];
+
+    const response = await withPhaseTimings((timing) => phases.push(timing), () => host.fetch(new Request("https://example.test/")));
+
+    expect(response.status).toBe(200);
+    expect(phases.map((phase) => phase.name)).toEqual(["listing", "warm-wait", "compile", "isolate-key", "isolate-render", "stylesheet"]);
   });
 
   test("serves the file the page it just rendered links to", async () => {

@@ -66,6 +66,45 @@ describe("detectProjectFeatures", () => {
     expect(singles).toEqual([]);
   });
 
+  test("counts a file the batch no longer has neither as on-demand nor as an island", async () => {
+    // Listed, then deleted before the batch read it; a single `get` would still find the old text.
+    const listed = new Map([
+      ["src/pages/index.astro", "<p>home</p>\n"],
+      ["src/pages/gone.astro", "---\nexport const prerender = false;\n---\n<Counter client:load />\n"],
+      ["src/components/Gone.tsx", "export default () => <Counter client:load />;\n"],
+    ]);
+    const deleted = new Set(["src/pages/gone.astro", "src/components/Gone.tsx"]);
+    const files = {
+      keys: () => listed.keys(),
+      has: (path: string) => listed.has(path),
+      get: (path: string) => listed.get(path),
+      getMany: (paths: readonly string[]) => paths.map((path) => (deleted.has(path) ? undefined : listed.get(path))),
+    };
+    expect(await detectProjectFeatures(files, { compiler })).toEqual({ mdx: [], islands: [], endpoints: [], onDemand: [] });
+  });
+
+  test("reads each file it scans with a single get where the store cannot batch", async () => {
+    const sources = new Map([
+      ["src/pages/index.astro", "<p>home</p>\n"],
+      ["src/pages/live.md", "---\nexport const prerender = false;\n---\n"],
+      ["src/components/Counter.tsx", "export default () => <Counter client:load />;\n"],
+      ["src/styles/site.css", "p {}\n"],
+    ]);
+    const singles: string[] = [];
+    const files = {
+      keys: () => sources.keys(),
+      has: (path: string) => sources.has(path),
+      get: (path: string) => {
+        singles.push(path);
+        return sources.get(path);
+      },
+    };
+    const features = await detectProjectFeatures(files, { compiler });
+    expect(features.onDemand).toEqual(["src/pages/live.md"]);
+    expect(features.islands).toEqual(["src/components/Counter.tsx"]);
+    expect(singles).toEqual(["src/pages/index.astro", "src/components/Counter.tsx", "src/pages/live.md"]);
+  });
+
   test("is what ProjectHost.features reports for the current snapshot", async () => {
     const host = createProjectHost({
       store: createMapProjectStore(new Map([["src/pages/index.mdx", "# hi\n"]])),
