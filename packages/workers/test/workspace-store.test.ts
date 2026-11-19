@@ -4,6 +4,7 @@ import {
   createWorkspaceProjectStore,
   WorkspaceSnapshotChangedError,
   type WorkspaceDirent,
+  type WorkspaceEntry,
   type WorkspaceFiles,
 } from "../src/workspace-store.ts";
 
@@ -11,6 +12,10 @@ class FakeWorkspace implements WorkspaceFiles {
   readonly reads: string[] = [];
   onRead: ((path: string) => void) | undefined;
   onReaddir: ((path: string) => void) | undefined;
+  onScan: ((root: string) => void) | undefined;
+  readdirs = 0;
+  stats = 0;
+  readonly #links = new Set<string>();
   readonly #text = new Map<string, string>();
   readonly #bytes = new Map<string, Uint8Array>();
   readonly #versions = new Map<string, number>();
@@ -37,8 +42,34 @@ class FakeWorkspace implements WorkspaceFiles {
     return version === undefined ? null : `v${version}`;
   }
 
+  /** What a provider's scan of `root` yields: every file and directory below it, deepest first, nothing in order. */
+  *entries(root: string, prune: (directory: string) => boolean): Iterable<WorkspaceEntry> {
+    this.onScan?.(root);
+    const prefix = root === "/" ? "/" : `${root}/`;
+    const directories = new Set<string>();
+    const found: WorkspaceEntry[] = [];
+    for (const file of [...this.#text.keys(), ...this.#bytes.keys()]) {
+      if (!file.startsWith(prefix)) continue;
+      for (let slash = file.lastIndexOf("/"); slash >= prefix.length; slash = file.lastIndexOf("/", slash - 1)) {
+        directories.add(file.slice(0, slash));
+      }
+      found.push({ path: file, type: "file", size: this.#sizeOf(file) });
+    }
+    for (const link of this.#links) if (link.startsWith(prefix)) found.push({ path: link, type: "other", size: 0 });
+    for (const directory of directories) {
+      prune(directory);
+      found.push({ path: directory, type: "directory", size: 0 });
+    }
+    yield* found.reverse();
+  }
+
+  link(path: string): void {
+    this.#links.add(path);
+  }
+
   readdirSync(path: string): WorkspaceDirent[] {
     this.onReaddir?.(path);
+    this.readdirs++;
     const prefix = path === "/" ? "/" : `${path}/`;
     const names = new Map<string, boolean>();
     for (const file of [...this.#text.keys(), ...this.#bytes.keys()]) {
@@ -47,7 +78,8 @@ class FakeWorkspace implements WorkspaceFiles {
       const slash = rest.indexOf("/");
       names.set(slash === -1 ? rest : rest.slice(0, slash), slash !== -1);
     }
-    return [...names].map(([name, directory]) => ({
+    // In code point order, as a database-backed provider lists a directory.
+    return [...names].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, directory]) => ({
       name,
       isFile: () => !directory,
       isDirectory: () => directory,
@@ -65,10 +97,15 @@ class FakeWorkspace implements WorkspaceFiles {
   }
 
   statSync(path: string): { size: number } {
+    this.stats++;
+    return { size: this.#sizeOf(path) };
+  }
+
+  #sizeOf(path: string): number {
     const text = this.#text.get(path);
-    if (text !== undefined) return { size: new TextEncoder().encode(text).byteLength };
+    if (text !== undefined) return new TextEncoder().encode(text).byteLength;
     const bytes = this.#bytes.get(path);
-    if (bytes !== undefined) return { size: bytes.byteLength };
+    if (bytes !== undefined) return bytes.byteLength;
     throw new Error(`No file ${path}`);
   }
 }
@@ -198,6 +235,92 @@ describe("createWorkspaceProjectStore", () => {
     };
     const store = createWorkspaceProjectStore(workspace, {
       revision: () => workspace.revision,
+    });
+
+    await expect(store.snapshot()).rejects.toBeInstanceOf(WorkspaceSnapshotChangedError);
+  });
+
+  test("lists from one scan what its walk lists, in the same order", async () => {
+    const workspace = new FakeWorkspace();
+    for (const path of [
+      "/site/src/pages/index.astro",
+      "/site/src/pages/a-b/x.astro",
+      "/site/src/pages/a/y.astro",
+      "/site/src/pages/a.astro",
+      "/site/src/icon.svg",
+      "/site/node_modules/pkg/index.js",
+      "/site/src/dist/out.html",
+      "/site/package.json",
+      "/outside/page.astro",
+    ]) {
+      workspace.write(path, "<p>x</p>");
+    }
+    workspace.write("/site/public/large.png", new Uint8Array(20));
+    workspace.write("/site/public/small.png", new Uint8Array(2));
+    const options = { root: "/site", revision: () => workspace.revision, maxFileBytes: 10 };
+    const walked = await createWorkspaceProjectStore(workspace, options).snapshot();
+    const pruned: string[] = [];
+    const readdirs = workspace.readdirs;
+    const stats = workspace.stats;
+    const scanned = await createWorkspaceProjectStore(workspace, {
+      ...options,
+      entries: (root, prune) =>
+        workspace.entries(root, (directory) => {
+          if (prune(directory)) pruned.push(directory);
+          return false;
+        }),
+    }).snapshot();
+
+    expect([...scanned.files.keys()]).toEqual([...walked.files.keys()]);
+    expect([...scanned.files.keys()]).toEqual([
+      "package.json",
+      "src/icon.svg",
+      "src/pages/a.astro",
+      "src/pages/index.astro",
+      "src/pages/a-b/x.astro",
+      "src/pages/a/y.astro",
+    ]);
+    expect(await scanned.assets.info("public/large.png")).toBeNull();
+    expect(scanned.readBytes?.("public/large.png")?.byteLength).toBe(20);
+    expect(scanned.readBytes?.("public/small.png")?.byteLength).toBe(2);
+    expect(scanned.readBytes?.("node_modules/pkg/index.js")).toBeUndefined();
+    expect(pruned.sort()).toEqual(["/site/node_modules", "/site/src/dist"]);
+    expect(workspace.readdirs).toBe(readdirs);
+    expect(workspace.stats).toBe(stats);
+  });
+
+  test("lists the workspace root from a scan that yields the root itself", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/src/pages/index.astro", "<p>page</p>");
+    const snapshot = await createWorkspaceProjectStore(workspace, {
+      revision: () => workspace.revision,
+      entries: (root, prune) => [{ path: root, type: "directory", size: 0 }, ...workspace.entries(root, prune)],
+    }).snapshot();
+
+    expect([...snapshot.files.keys()]).toEqual(["src/pages/index.astro"]);
+  });
+
+  test("leaves a symlink out of a scanned listing", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/site/src/pages/index.astro", "<p>page</p>");
+    workspace.link("/site/src/pages/linked.astro");
+    const snapshot = await createWorkspaceProjectStore(workspace, {
+      root: "/site",
+      revision: () => workspace.revision,
+      entries: (root, prune) => workspace.entries(root, prune),
+    }).snapshot();
+
+    expect([...snapshot.files.keys()]).toEqual(["src/pages/index.astro"]);
+    expect(snapshot.readBytes?.("src/pages/linked.astro")).toBeUndefined();
+  });
+
+  test("fails when the workspace changes during the scan", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/src/pages/index.astro", "<p>page</p>");
+    workspace.onScan = () => workspace.write("/churn.txt", "x");
+    const store = createWorkspaceProjectStore(workspace, {
+      revision: () => workspace.revision,
+      entries: (root, prune) => workspace.entries(root, prune),
     });
 
     await expect(store.snapshot()).rejects.toBeInstanceOf(WorkspaceSnapshotChangedError);

@@ -33,9 +33,28 @@ export interface WorkspaceFiles {
   statSync(path: string): { size: number };
 }
 
+/** One entry of a subtree's scan; see `WorkspaceStoreOptions.entries`. */
+export interface WorkspaceEntry {
+  /** Absolute workspace path. */
+  path: string;
+  /** `"other"` for a symlink or a device: the listing leaves it out and does not follow it. */
+  type: "file" | "directory" | "other";
+  /** Bytes, for `maxFileBytes`; read for files only. */
+  size: number;
+}
+
 export interface WorkspaceStoreOptions {
   /** Where the project starts in the workspace. Defaults to the workspace root. */
   root?: string;
+  /**
+   * Every entry below the absolute `root`, in any order, in place of a `readdirSync` per
+   * directory and a `statSync` per file: a provider that keeps its tree in a database answers
+   * it with one scan. A directory `prune` answers true for is listed, but its contents need
+   * not be. The listing is the one `readdirSync` gives where that lists each directory in code
+   * point order of its names, the order of its keys included. Unset, the listing walks
+   * `readdirSync`.
+   */
+  entries?: (root: string, prune: (directory: string) => boolean) => Iterable<WorkspaceEntry>;
   /**
    * Answers "has anything under `root` changed" without walking the tree. On an
    * unchanged revision the previous snapshot is reused, and a lazy read can notice a
@@ -100,21 +119,22 @@ export function createWorkspaceProjectStore(
     const binaryFiles = new Map<string, string>();
     const regular = new Map<string, string>();
     const directories = [""];
+    const children = options.entries === undefined ? null : scannedChildren(options.entries);
 
     while (directories.length > 0) {
       const relative = directories.pop() ?? "";
       const absolute = relative === "" ? root || "/" : `${root}${relative}`;
-      for (const entry of dirents(files, absolute)) {
-        if (entry.isDirectory()) {
+      for (const entry of children === null ? walkedChildren(absolute) : (children.get(relative) ?? [])) {
+        if (entry.type === "directory") {
           if (!SKIP.has(entry.name)) directories.push(`${relative}/${entry.name}`);
           continue;
         }
         // Symlinks and devices: a render has nothing to do with them.
-        if (!entry.isFile()) continue;
+        if (entry.type !== "file") continue;
         const key = relative === "" ? entry.name : `${relative.slice(1)}/${entry.name}`;
         const path = absolute === "/" ? `/${entry.name}` : `${absolute}/${entry.name}`;
         regular.set(key, path);
-        if (maxFileBytes !== undefined && sizeOf(files, path) > maxFileBytes) continue;
+        if (maxFileBytes !== undefined && entry.size() > maxFileBytes) continue;
         const extension = extensionOf(entry.name);
         if (BINARY.has(extension)) binaryFiles.set(key, path);
         else text.set(key, path);
@@ -122,6 +142,32 @@ export function createWorkspaceProjectStore(
       }
     }
     return { text, binary: binaryFiles, regular };
+  }
+
+  function walkedChildren(absolute: string): ListedChild[] {
+    return dirents(files, absolute).map((entry) => ({
+      name: entry.name,
+      type: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other",
+      size: () => sizeOf(files, absolute === "/" ? `/${entry.name}` : `${absolute}/${entry.name}`),
+    }));
+  }
+
+  /** The scan's entries by their directory (`""` for the root, `/src` below it), each in code point order of its names. */
+  function scannedChildren(entries: NonNullable<WorkspaceStoreOptions["entries"]>): Map<string, ListedChild[]> {
+    const byDirectory = new Map<string, ListedChild[]>();
+    const prune = (directory: string): boolean => SKIP.has(directory.slice(directory.lastIndexOf("/") + 1));
+    for (const entry of entries(absoluteRoot, prune)) {
+      if (entry.path === absoluteRoot || !entry.path.startsWith(`${root}/`)) continue;
+      const relative = entry.path.slice(root.length);
+      const slash = relative.lastIndexOf("/");
+      const directory = relative.slice(0, slash);
+      const siblings = byDirectory.get(directory) ?? [];
+      const { size } = entry;
+      siblings.push({ name: relative.slice(slash + 1), type: entry.type, size: () => size });
+      byDirectory.set(directory, siblings);
+    }
+    for (const siblings of byDirectory.values()) siblings.sort((a, b) => compareCodePoints(a.name, b.name));
+    return byDirectory;
   }
 
   function snapshotOf(listing: Listing, revision: string): ProjectSnapshot {
@@ -199,6 +245,14 @@ export function createWorkspaceProjectStore(
       return snapshot;
     },
   };
+}
+
+/** One entry of a directory, as the listing walks it. */
+interface ListedChild {
+  name: string;
+  type: WorkspaceEntry["type"];
+  /** Asked only for a file, and only with `maxFileBytes` set. */
+  size: () => number;
 }
 
 interface Listing {
@@ -309,6 +363,19 @@ function readBytes(files: WorkspaceFiles, path: string): Uint8Array<ArrayBuffer>
   const { buffer, byteOffset, byteLength } = bytes;
   // A Response body cannot be a view of a SharedArrayBuffer.
   return buffer instanceof ArrayBuffer ? new Uint8Array(buffer, byteOffset, byteLength) : new Uint8Array(bytes);
+}
+
+/** Code point order, which is the byte order of the names' UTF-8: UTF-16 code units order a surrogate pair before U+E000..U+FFFF. */
+function compareCodePoints(a: string, b: string): number {
+  const left = a[Symbol.iterator]();
+  const right = b[Symbol.iterator]();
+  while (true) {
+    const x = left.next();
+    const y = right.next();
+    if (x.done === true || y.done === true) return (x.done === true ? 0 : 1) - (y.done === true ? 0 : 1);
+    const difference = (x.value.codePointAt(0) ?? 0) - (y.value.codePointAt(0) ?? 0);
+    if (difference !== 0) return difference;
+  }
 }
 
 function extensionOf(name: string): string {
