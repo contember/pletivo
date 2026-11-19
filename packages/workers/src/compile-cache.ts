@@ -37,6 +37,8 @@ export interface CompiledFile {
   /**
    * Per raw specifier, the statically imported names; `null` when there are none.
    * Resolution maps them to `astro:env` aliases, so the resolved result is not cached.
+   * A `Map`, which JSON does not round-trip: a store that serialises entries converts it and
+   * parses the stored record back, or a hit loses the `astro:env` imports.
    */
   envNames: ReadonlyMap<string, readonly string[]> | null;
   /** The `<style>` blocks a `.astro` file declares, with its scope hash. Feeds `pageCss`. */
