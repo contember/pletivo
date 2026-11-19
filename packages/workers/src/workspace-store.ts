@@ -50,7 +50,7 @@ export interface WorkspaceStoreOptions {
    * Every entry below the absolute `root`, in any order, in place of a `readdirSync` per
    * directory and a `statSync` per file: a provider that keeps its tree in a database answers
    * it with one scan. A directory `prune` answers true for is listed, but its contents need
-   * not be. The listing is the one `readdirSync` gives where that lists each directory in code
+   * not be; `prune` never answers true for `root` itself. The listing is the one `readdirSync` gives where that lists each directory in code
    * point order of its names, the order of its keys included. Unset, the listing walks
    * `readdirSync`.
    *
@@ -172,7 +172,11 @@ export function createWorkspaceProjectStore(
       if (!siblings.has(name)) siblings.set(name, { name, type: "directory", size: () => 0 });
       return children;
     };
-    const prune = (directory: string): boolean => SKIP.has(directory.slice(directory.lastIndexOf("/") + 1));
+    // Never the root itself: a project may live in a directory named like a build product.
+    const prune = (directory: string): boolean => {
+      const path = normalizeEntryPath(directory);
+      return path !== absoluteRoot && SKIP.has(path.slice(path.lastIndexOf("/") + 1));
+    };
     for (const entry of entries(absoluteRoot, prune)) {
       const path = normalizeEntryPath(entry.path);
       if (path === absoluteRoot || !path.startsWith(`${root}/`)) continue;

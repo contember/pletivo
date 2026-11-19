@@ -300,6 +300,28 @@ describe("createWorkspaceProjectStore", () => {
     expect([...snapshot.files.keys()]).toEqual(["src/pages/index.astro"]);
   });
 
+  test("never prunes its root, even when the root is named like a build directory", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.write("/work/dist/src/pages/index.astro", "x");
+    workspace.write("/work/dist/dist/out.html", "x");
+    const asked: [string, boolean][] = [];
+    const snapshot = await createWorkspaceProjectStore(workspace, {
+      root: "/work/dist",
+      revision: () => workspace.revision,
+      entries: (root, prune) => {
+        for (const directory of [root, `${root}/`, `${root}/dist`]) asked.push([directory, prune(directory)]);
+        return workspace.entries(root, prune);
+      },
+    }).snapshot();
+
+    expect(asked).toEqual([
+      ["/work/dist", false],
+      ["/work/dist/", false],
+      ["/work/dist/dist", true],
+    ]);
+    expect([...snapshot.files.keys()]).toEqual(["src/pages/index.astro"]);
+  });
+
   test("lists the whole tree from a scan that yields files only", async () => {
     const workspace = new FakeWorkspace();
     for (const path of ["/site/package.json", "/site/src/pages/index.astro", "/site/src/pages/blog/post.md", "/site/node_modules/pkg/index.js"]) {
