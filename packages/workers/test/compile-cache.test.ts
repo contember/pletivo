@@ -479,40 +479,9 @@ describe("an async cache", () => {
 });
 
 describe("the compiled-file format", () => {
-  test("pins the CompiledFile fields, so a change to them meets COMPILED_FILE_FORMAT", async () => {
-    // Failing here? A persistent cache keys by the format, so bump COMPILED_FILE_FORMAT and
-    // update this test: a stored entry of the old shape must not be read as the new one.
-    const compiled = await compileCached(
-      {
-        id: "project:src/pages/format.astro",
-        kind: "astro",
-        source: "<p>format</p>\n",
-        compilePath: "src/pages/format.astro",
-        executionName: "format",
-        origin: "project",
-      },
-      compiler,
-      undefined,
-      { annotateSourceFile: false, scopedStyleStrategy: undefined, compressHTML: undefined },
-    );
+  test("is the version a persistent cache keys by", () => {
+    // The key lists next to it fail the typecheck when CompiledFile's shape changes.
     expect(COMPILED_FILE_FORMAT).toBe("1");
-    expect(Object.keys(compiled).sort()).toEqual([
-      "annotated",
-      "code",
-      "componentPaths",
-      "compressHTML",
-      "envNames",
-      "globs",
-      "importMetaEnv",
-      "kind",
-      "mdx",
-      "scopedStyleStrategy",
-      "scripts",
-      "source",
-      "specifiers",
-      "styles",
-      "trailingSlash",
-    ]);
   });
 });
 

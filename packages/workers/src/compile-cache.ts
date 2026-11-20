@@ -11,7 +11,7 @@ import type { ArtifactTrailingSlash } from "@pletivo/core/artifact";
 import { BoundedLru } from "./bounded-lru.ts";
 import type { ImportMetaGlob } from "./compile/import-meta-glob.ts";
 import type { ModuleKind } from "./compile/module-kind.ts";
-import type { AstroStyles } from "./compile/types.ts";
+import type { AstroStyles, StyleBlock } from "./compile/types.ts";
 
 /**
  * The version of `CompiledFile`'s shape and meaning. Bump it whenever a field of
@@ -20,6 +20,34 @@ import type { AstroStyles } from "./compile/types.ts";
  * `sucrase` and `acorn` pins in `package.json`.
  */
 export const COMPILED_FILE_FORMAT = "1";
+
+// A change to any of these key lists means bumping COMPILED_FILE_FORMAT.
+const COMPILED_FILE_KEYS = {
+  source: true,
+  kind: true,
+  code: true,
+  importMetaEnv: true,
+  specifiers: true,
+  envNames: true,
+  styles: true,
+  scripts: true,
+  annotated: true,
+  scopedStyleStrategy: true,
+  compressHTML: true,
+  trailingSlash: true,
+  globs: true,
+  mdx: true,
+  componentPaths: true,
+} satisfies Record<keyof CompiledFile, true>;
+const ASTRO_STYLES_KEYS = { scope: true, blocks: true } satisfies Record<keyof AstroStyles, true>;
+const STYLE_BLOCK_KEYS = { global: true, css: true } satisfies Record<keyof StyleBlock, true>;
+const IMPORT_META_GLOB_KEYS = {
+  placeholder: true,
+  patterns: true,
+  eager: true,
+  importName: true,
+  query: true,
+} satisfies Record<keyof ImportMetaGlob, true>;
 
 /** One file's compile, everything the file set decides left out. */
 export interface CompiledFile {
