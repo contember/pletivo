@@ -16,7 +16,8 @@ import type { AstroStyles } from "./compile/types.ts";
 /**
  * The version of `CompiledFile`'s shape and meaning. Bump it whenever a field of
  * `CompiledFile` changes, or what a compile produces for the same input does: a change to
- * this package's exact `sucrase` and `acorn` pins in `package.json`.
+ * `@pletivo/core`'s `markdownModule` (the `.md` output), or to this package's exact
+ * `sucrase` and `acorn` pins in `package.json`.
  */
 export const COMPILED_FILE_FORMAT = "1";
 

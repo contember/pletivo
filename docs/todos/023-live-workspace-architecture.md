@@ -95,9 +95,9 @@ that wrote it, and the freshness check does not compare the compiler. Such a cac
 entries by `COMPILED_FILE_FORMAT` (`compile-cache.ts`, the version of `CompiledFile`'s shape
 and meaning) plus the identity of the compilers the host runs: the Astro compiler's version
 for `.astro`, the `MdxCompiler` identity for `.mdx`. Sucrase and acorn are pinned to exact
-versions and the format covers them, so a change to either pin bumps it. The package version
-is not a key: a linked workspace reports its source manifest's, and `@astrojs/compiler` is a
-dependency range.
+versions, and `.md` output is `@pletivo/core`'s `markdownModule`; the format covers all three,
+so a change to either pin or to `markdownModule` bumps it. The package version is not a key: a
+linked workspace reports its source manifest's, and `@astrojs/compiler` is a dependency range.
 
 ## 4. Lazy reads make pruning mandatory rather than optional
 
