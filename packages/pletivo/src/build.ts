@@ -41,7 +41,7 @@ import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
 import { setBase } from "@pletivo/runtime/base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
-import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, dynamicGraphOf, recordBuildCssOutputs, registerCssPageEntry, restoreDynamicGraph } from "./js-imported-css";
+import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, dynamicGraphOf, recordBuildCssOutputs, restoreDynamicGraph } from "./js-imported-css";
 import { configureCssAssets, cssAssetBunPlugin, emittedCssAssets } from "./css-assets";
 import { resolveImageServiceConfig, type PletivoConfig } from "./config";
 import { SVELTE_CONFIG_NAMES } from "./framework-compile/svelte";
@@ -521,7 +521,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   async function importDynamicRouteModule(fullPath: string): Promise<{ default?: unknown; getStaticPaths?: (ctx: unknown) => Promise<StaticPath[]> }> {
     await assertPageLayoutSupported(fullPath, projectRoot);
     const mod = await import(fullPath);
-    registerCssPageEntry(fullPath);
     await collectPageModuleCss(fullPath, `page:${fullPath}`);
     return mod;
   }
@@ -658,7 +657,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     // Collect CSS side-effect imports from non-.astro page modules. Runs
     // unconditionally (even for cached pages) so the global stylesheet
     // stays complete — mirrors the astro plugin's onLoad collection.
-    registerCssPageEntry(fullPath);
     await collectPageModuleCss(fullPath, `page:${route.file}`);
 
     // Endpoint routes (robots.txt.ts, rss.xml.ts, api.ts) emit their GET()
@@ -910,7 +908,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         const entrypoint = await resolveEntrypoint(injected.entrypoint, projectRoot);
         await assertPageLayoutSupported(entrypoint, projectRoot);
         const mod = await import(entrypoint);
-        registerCssPageEntry(entrypoint);
         await collectPageModuleCss(entrypoint, `page:${entrypoint}`);
         const pattern = injected.pattern.replace(/^\//, "");
         const outPath = path.join(distDir, pattern);
@@ -1773,7 +1770,6 @@ async function render404Page(
     const file = Bun.file(fullPath);
     if (await file.exists()) {
       const mod = await import(fullPath);
-      registerCssPageEntry(fullPath);
       await collectPageModuleCss(fullPath, `page:${fullPath}`);
       if (typeof mod.default === "function") {
         resetIslandRegistry();
