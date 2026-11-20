@@ -131,7 +131,7 @@ export function configureJsImportedCss(rootDir: string, srcDir: string): void {
  * module*, so a page that is never registered (or never imported, e.g.
  * restored from the incremental cache) is treated as reaching everything.
  */
-export function registerCssPageEntry(file: string): void {
+function registerCssPageEntry(file: string): void {
   pageEntryFiles.add(path.resolve(file));
 }
 
@@ -527,7 +527,9 @@ const PAGE_MODULE_CSS_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mdx",
 ]);
 
+/** Register `file` as a page entry (`registerCssPageEntry`) and collect its CSS side-effect imports. */
 export async function collectPageModuleCss(file: string, key: string): Promise<void> {
+  registerCssPageEntry(file);
   if (!PAGE_MODULE_CSS_EXTENSIONS.has(path.extname(file).toLowerCase())) return;
   const code = await readTextFile(file);
   if (code === null) return;
