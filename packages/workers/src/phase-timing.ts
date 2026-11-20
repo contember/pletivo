@@ -17,26 +17,38 @@ export interface PhaseTiming {
  */
 export type PhaseSink = (timing: PhaseTiming) => void;
 
-const sinks = new AsyncLocalStorage<PhaseSink>();
+/**
+ * Runs a phase inside a span of the host's tracer, e.g. Workers' `tracing.enterSpan`, so a trace shows
+ * the phase around the I/O it does. It must return what `operation` returns and settle as it settles.
+ * A span has the same clock as `PhaseTiming`: a phase without I/O spans 0 ms.
+ */
+export type PhaseSpan = <T>(name: string, operation: () => Promise<T>) => Promise<T>;
 
-/** Run `operation` with every phase it reaches reported to `sink`. */
-export function withPhaseTimings<T>(sink: PhaseSink, operation: () => Promise<T>): Promise<T> {
-  return sinks.run(sink, operation);
+interface PhaseContext {
+  sink: PhaseSink;
+  span: PhaseSpan | undefined;
+}
+
+const contexts = new AsyncLocalStorage<PhaseContext>();
+
+/** Run `operation` with every phase it reaches reported to `sink`, and run inside `span` if given. */
+export function withPhaseTimings<T>(sink: PhaseSink, operation: () => Promise<T>, span?: PhaseSpan): Promise<T> {
+  return contexts.run({ sink, span }, operation);
 }
 
 /** Report a phase to the sink of the current operation, if there is one. */
 export function recordPhase(timing: PhaseTiming): void {
-  sinks.getStore()?.(timing);
+  contexts.getStore()?.sink(timing);
 }
 
 /** Time `operation` as `name`, also when it fails. */
 export async function timePhase<T>(name: string, operation: () => Promise<T>): Promise<T> {
-  const sink = sinks.getStore();
-  if (sink === undefined) return operation();
+  const context = contexts.getStore();
+  if (context === undefined) return operation();
   const started = Date.now();
   try {
-    return await operation();
+    return await (context.span === undefined ? operation() : context.span(name, operation));
   } finally {
-    sink({ name, ms: Date.now() - started });
+    context.sink({ name, ms: Date.now() - started });
   }
 }
