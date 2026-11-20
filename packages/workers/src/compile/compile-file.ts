@@ -49,7 +49,7 @@ export async function compileCached(
   const trailingSlash = module.kind === "md" ? options.trailingSlash : undefined;
   const mdx = module.kind === "mdx" ? mdxCompiler(module, options.mdx) : null;
   const mdxIdentity = mdx === null ? undefined : await mdx.identity();
-  const held = cache?.get(module.compilePath);
+  const held = await cache?.get(module.compilePath);
   if (
     held !== undefined &&
     held.source === module.source &&
@@ -65,7 +65,8 @@ export async function compileCached(
   const entry = mdx === null
     ? await compileFile(module, compiler, { annotateSourceFile: annotate, scopedStyleStrategy, compressHTML, trailingSlash })
     : await compileMdx(module, mdx);
-  cache?.set(module.compilePath, entry);
+  // Two compiles of one file can both miss an async store and both set; the source check keeps either entry correct.
+  await cache?.set(module.compilePath, entry);
   return entry;
 }
 

@@ -1,7 +1,9 @@
 /**
  * What one file compiled to, kept between renders: the work that depends only on
  * `(path, source, compiler)`. Freshness is `source ===`; see `docs/todos/023 §3–4`.
- * A cache is bound to the compiler that filled it; never share it between hosts.
+ * The check does not compare the compiler: an in-memory cache is bound to the one that
+ * filled it, and a cache that outlives the process keys by `COMPILED_FILE_FORMAT` and the
+ * host's compilers, see `CompileCache`.
  */
 
 import type { ScopedStyleStrategy } from "@pletivo/core/astro-host/scoped-style";
@@ -9,7 +11,43 @@ import type { ArtifactTrailingSlash } from "@pletivo/core/artifact";
 import { BoundedLru } from "./bounded-lru.ts";
 import type { ImportMetaGlob } from "./compile/import-meta-glob.ts";
 import type { ModuleKind } from "./compile/module-kind.ts";
-import type { AstroStyles } from "./compile/types.ts";
+import type { AstroStyles, StyleBlock } from "./compile/types.ts";
+
+/**
+ * The version of `CompiledFile`'s shape and meaning. Bump it whenever a field of
+ * `CompiledFile` changes, or what a compile produces for the same input does: a change to
+ * `@pletivo/core`'s `markdownModule` (the `.md` output), or to this package's exact
+ * `sucrase` and `acorn` pins in `package.json`.
+ */
+export const COMPILED_FILE_FORMAT = "1";
+
+// A change to any of these key lists means bumping COMPILED_FILE_FORMAT.
+const COMPILED_FILE_KEYS = {
+  source: true,
+  kind: true,
+  code: true,
+  importMetaEnv: true,
+  specifiers: true,
+  envNames: true,
+  styles: true,
+  scripts: true,
+  annotated: true,
+  scopedStyleStrategy: true,
+  compressHTML: true,
+  trailingSlash: true,
+  globs: true,
+  mdx: true,
+  componentPaths: true,
+} satisfies Record<keyof CompiledFile, true>;
+const ASTRO_STYLES_KEYS = { scope: true, blocks: true } satisfies Record<keyof AstroStyles, true>;
+const STYLE_BLOCK_KEYS = { global: true, css: true } satisfies Record<keyof StyleBlock, true>;
+const IMPORT_META_GLOB_KEYS = {
+  placeholder: true,
+  patterns: true,
+  eager: true,
+  importName: true,
+  query: true,
+} satisfies Record<keyof ImportMetaGlob, true>;
 
 /** One file's compile, everything the file set decides left out. */
 export interface CompiledFile {
@@ -29,6 +67,8 @@ export interface CompiledFile {
   /**
    * Per raw specifier, the statically imported names; `null` when there are none.
    * Resolution maps them to `astro:env` aliases, so the resolved result is not cached.
+   * A `Map`, which JSON does not round-trip: a store that serialises entries converts it and
+   * parses the stored record back, or a hit loses the `astro:env` imports.
    */
   envNames: ReadonlyMap<string, readonly string[]> | null;
   /** The `<style>` blocks a `.astro` file declares, with its scope hash. Feeds `pageCss`. */
@@ -54,7 +94,27 @@ export interface CompiledFile {
   componentPaths: readonly string[];
 }
 
+/**
+ * Where compiled files are kept between renders. Either answer may be a promise, so a cache
+ * can sit over an async store; the compile awaits both.
+ *
+ * A store answers a miss for an entry it cannot read and drops one it cannot hold. A rejection
+ * is a failure of the host's store, and it fails the compile, whether from `get` or from `set`.
+ *
+ * `compileCached` reads and writes file by file, one round trip each, so a host keeps an
+ * in-memory cache such as `createCompileCache` in front of a slow store.
+ *
+ * A cache that outlives the process keys its entries by `COMPILED_FILE_FORMAT` plus the
+ * identity of the compilers the host runs: the Astro compiler's version for `.astro`, the
+ * `MdxCompiler` identity for `.mdx`. Sucrase and acorn are pinned exactly; the format covers them.
+ */
 export interface CompileCache {
+  get(file: string): CompiledFile | undefined | Promise<CompiledFile | undefined>;
+  set(file: string, entry: CompiledFile): void | Promise<void>;
+}
+
+/** A cache that answers at once, as the in-memory one does. */
+export interface SyncCompileCache extends CompileCache {
   get(file: string): CompiledFile | undefined;
   set(file: string, entry: CompiledFile): void;
 }
@@ -87,7 +147,7 @@ function chargeOf(entry: CompiledFile): number {
   return charge;
 }
 
-export function createCompileCache(options: CompileCacheOptions = {}): CompileCache {
+export function createCompileCache(options: CompileCacheOptions = {}): SyncCompileCache {
   const held = new BoundedLru<CompiledFile>({
     maxEntries: DEFAULT_MAX_ENTRIES,
     maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,

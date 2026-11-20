@@ -141,8 +141,8 @@
         "@astrojs/compiler": "^3",
         "@pletivo/core": "workspace:*",
         "@pletivo/runtime": "workspace:*",
-        "acorn": "^8.16.0",
-        "sucrase": "^3",
+        "acorn": "8.18.0",
+        "sucrase": "3.35.1",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260810.1",
