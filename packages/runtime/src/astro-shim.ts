@@ -795,7 +795,7 @@ function kebab(key: string): string {
 }
 
 /** A style object as CSS text: non-empty strings and numbers, camelCase keys in kebab-case. */
-function toStyleString(style: Record<string, unknown>): string {
+function toStyleString(style: object): string {
   return Object.entries(style)
     .filter(([, v]) => (typeof v === "string" && v.trim()) || typeof v === "number")
     .map(([k, v]) => (k[0] !== "-" && k[1] !== "-" ? `${kebab(k)}:${v}` : `${k}:${v}`))
@@ -839,7 +839,7 @@ export function addAttribute(value: unknown, key: string, shouldEscape = true, t
     if (Array.isArray(value) && value.length === 2) {
       return createHtml(` ${key}="${toAttributeString(`${toStyleString(value[0])};${value[1]}`, shouldEscape)}"`);
     }
-    if (typeof value === "object") return createHtml(` ${key}="${toAttributeString(toStyleString(value as Record<string, unknown>), shouldEscape)}"`);
+    if (typeof value === "object") return createHtml(` ${key}="${toAttributeString(toStyleString(value), shouldEscape)}"`);
   }
   if (key === "className") return createHtml(` class="${toAttributeString(value, shouldEscape)}"`);
   // An http(s) URL with a query keeps its `&`, as Astro writes it.
