@@ -177,8 +177,9 @@ function rehypeHeadingIds() {
  * Render a markdown body (frontmatter already stripped) to HTML, running the
  * configured remark/rehype plugins. A fresh processor is built per call so
  * plugin config changes take effect and processors are never reused frozen.
+ * The plugins see `frontmatter` as `file.data.astro.frontmatter`, as in Astro, and may change it.
  */
-export async function renderMarkdown(body: string): Promise<string> {
+export async function renderMarkdown(body: string, frontmatter: Record<string, unknown> = {}): Promise<string> {
   const processor = unified().use(remarkParse);
   if (markdownOptions.gfm !== false) processor.use(remarkGfm);
   if (markdownOptions.remarkPlugins?.length) processor.use(markdownOptions.remarkPlugins);
@@ -190,7 +191,7 @@ export async function renderMarkdown(body: string): Promise<string> {
   processor.use(rehypeRaw);
   processor.use(rehypeStringify, { allowDangerousHtml: true });
 
-  const file = await processor.process(body.trim());
+  const file = await processor.process({ value: body.trim(), data: { astro: { frontmatter } } });
   return String(file);
 }
 

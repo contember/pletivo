@@ -51,7 +51,8 @@ export function markdownModule(options: MarkdownModuleOptions): string {
     `export const url = ${url === undefined ? "undefined" : literal(url)};`,
     "export function rawContent() { return $$body; }",
     "let $$html;",
-    "export function compiledContent() { return ($$html ??= $$renderMarkdown($$body)); }",
+    // The plugins may add to `frontmatter` (Astro's `file.data.astro.frontmatter`); a layout reads it after.
+    "export function compiledContent() { return ($$html ??= $$renderMarkdown($$body, frontmatter)); }",
     // pletivo collects no headings, as for a collection entry's `render()`.
     "export function getHeadings() { return []; }",
     "const $$page = { frontmatter, file, url, rawContent, compiledContent, getHeadings };",

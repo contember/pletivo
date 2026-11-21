@@ -949,15 +949,25 @@ function republishCollectionDeps(
  * are resolved at render time.
  */
 export async function render(entry: CollectionEntry | null | undefined): Promise<AstroRenderResult> {
-  return astroRenderResult(entry ? (components) => entry.render(components) : null);
+  const frontmatter = entry ? remarkPluginFrontmatterOf.get(entry) : undefined;
+  return astroRenderResult(entry ? (components) => entry.render(components) : null, frontmatter ? await frontmatter() : {});
 }
 
-function astroRenderResult(renderHtml: CollectionEntry["render"] | null): AstroRenderResult {
+/**
+ * A Markdown entry's frontmatter after the remark and rehype plugins ran over it, rendering it first.
+ * Absent for an MDX, Markdoc or pre-rendered entry: its `remarkPluginFrontmatter` is empty.
+ */
+const remarkPluginFrontmatterOf = new WeakMap<CollectionEntry, () => Promise<Record<string, unknown>>>();
+
+function astroRenderResult(
+  renderHtml: CollectionEntry["render"] | null,
+  remarkPluginFrontmatter: Record<string, unknown> = {},
+): AstroRenderResult {
   const Content = markNativeComponent((props?: { components?: Record<string, unknown> }) => {
     if (!renderHtml) return { __html: "" };
     return renderHtml(props?.components).then((result) => ({ __html: result.html }));
   });
-  return { Content, headings: [], remarkPluginFrontmatter: {} };
+  return { Content, headings: [], remarkPluginFrontmatter };
 }
 
 type SettledRender = { ok: true; result: RenderResult } | { ok: false; error: unknown };
@@ -974,7 +984,8 @@ function withLegacyRender(entry: InternalCollectionEntry, isMdx: boolean): void 
   entry.render = async (components) => {
     if (!isMdx) {
       const result = await renderHtml(components);
-      return { ...astroRenderResult(renderHtml), ...result };
+      const frontmatter = remarkPluginFrontmatterOf.get(entry);
+      return { ...astroRenderResult(renderHtml, frontmatter ? await frontmatter() : {}), ...result };
     }
     const settled: SettledRender = await renderHtml(components).then(
       (result): SettledRender => ({ ok: true, result }),
@@ -1316,6 +1327,8 @@ async function buildEntries(
           ? _filePath
           : null;
       let renderedHtml: string | null = null;
+      // As Astro's glob loader: the plugins get the raw frontmatter, and what they leave is `remarkPluginFrontmatter`.
+      const pluginFrontmatter: Record<string, unknown> = { ...userData };
       const entry: InternalCollectionEntry = {
         id: raw.id,
         ...(raw.slug !== undefined ? { slug: raw.slug } : {}),
@@ -1329,7 +1342,7 @@ async function buildEntries(
             );
           }
           if (renderedHtml === null) {
-            let html = preRendered ?? (await renderMarkdown(raw.body));
+            let html = preRendered ?? (await renderMarkdown(raw.body, pluginFrontmatter));
             if (config.transform) html = config.transform(html, validatedData);
             renderedHtml = html;
           }
@@ -1337,6 +1350,13 @@ async function buildEntries(
         },
       };
       attachSourcePath(entry, _filePath, _mdxFilePath);
+      if (preRendered === undefined && markdocPath === null) {
+        const renderBody = entry.render;
+        remarkPluginFrontmatterOf.set(entry, async () => {
+          await renderBody();
+          return pluginFrontmatter;
+        });
+      }
       if (raw.slug !== undefined) withLegacyRender(entry, false);
       return { kind: "ok", entry };
     }),

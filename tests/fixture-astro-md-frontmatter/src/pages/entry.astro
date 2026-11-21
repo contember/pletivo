@@ -1,0 +1,7 @@
+---
+import { getEntry, render } from "astro:content";
+
+const entry = await getEntry("docs", "entry");
+const { Content, remarkPluginFrontmatter } = await render(entry);
+---
+<p id="entry">{remarkPluginFrontmatter.injected}</p><p id="data">{String(entry.data.injected)}</p><Content />

@@ -1,0 +1,5 @@
+---
+title: Entry
+---
+
+Entry body.

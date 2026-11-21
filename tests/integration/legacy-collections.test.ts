@@ -98,7 +98,7 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
     const intro = await runWithBunContentRuntime(() => getEntry("docs", "intro"));
     const rendered = await intro?.render();
     expect(rendered?.headings).toEqual([]);
-    expect(rendered?.remarkPluginFrontmatter).toEqual({});
+    expect(rendered?.remarkPluginFrontmatter).toEqual({ title: "Intro" });
     expect(isNativeComponent(rendered?.Content)).toBe(true);
     const content = await rendered?.Content?.();
     expect(content?.__html).toContain("Welcome</h1>");
