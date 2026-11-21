@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import path from "path";
+import { pathToFileURL } from "url";
 import {
   defineCollection,
   glob,
@@ -80,6 +81,14 @@ describe("defineCollection", () => {
     const entries = await runWithBunContentRuntime(() => loader.load(fixtureRoot));
     const ids = entries.map((e) => e.id).sort();
     expect(ids).toEqual(["cs/brno-1", "cs/praha-2", "en/prague-2"]);
+  });
+
+  test("glob() takes its base as a file: URL too, as Astro does", async () => {
+    const base = pathToFileURL(path.join(fixtureRoot, "src/content/news/"));
+    const loader = glob({ base });
+    expect(loader.__globBase).toBe(path.join(fixtureRoot, "src/content/news/"));
+    const entries = await runWithBunContentRuntime(() => loader.load(fixtureRoot));
+    expect(entries.map((e) => e.id).sort()).toEqual(["cs/brno-1", "cs/praha-2", "en/prague-2"]);
   });
 
   test("glob() generateId overrides the default ID", async () => {

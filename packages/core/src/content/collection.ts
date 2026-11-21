@@ -524,8 +524,8 @@ function requireHost(): ContentHost {
 export interface GlobOptions {
   /** Glob pattern (default: "**\/*.md") */
   pattern?: string;
-  /** Base directory relative to project root */
-  base: string;
+  /** Base directory: a path relative to the project root, or a `file:` URL, as Astro takes it. */
+  base: string | URL;
   /**
    * Astro-compatible ID generator. Receives the file's path relative to
    * `base`, the absolute base URL, and the parsed frontmatter data, and
@@ -553,13 +553,14 @@ export interface GlobOptions {
  *  - `.yaml`, `.yml` → YAML parse as frontmatter, empty body
  */
 export function glob(options: GlobOptions): Loader {
+  const base = typeof options.base === "string" ? options.base : filePath(options.base);
   const loader: Loader = {
     // Raw base dir — read at dev-server startup (see getContentBaseDirs) to watch
     // content that lives outside `src/`, without having to load the collection first.
-    __globBase: options.base,
+    __globBase: base,
     async load(projectRoot: string): Promise<RawEntry[]> {
       const host = requireHost();
-      const scan = await host.scan(projectRoot, options.base, options.pattern ?? "**/*.{md,mdx}");
+      const scan = await host.scan(projectRoot, base, options.pattern ?? "**/*.{md,mdx}");
       collectionLoadStorage.getStore()?.add(scan.root);
       const entries: RawEntry[] = [];
 
@@ -578,6 +579,13 @@ export function glob(options: GlobOptions): Loader {
     },
   };
   return loader;
+}
+
+/** A `file:` URL's path, as `fileURLToPath` gives it; core cannot import it (`node:url` has none in a Worker). */
+function filePath(url: URL): string {
+  if (url.protocol !== "file:") throw new Error(`glob(): base must be a path or a file: URL, got ${url.href}`);
+  const pathname = decodeURIComponent(url.pathname);
+  return /^\/[A-Za-z]:\//.test(pathname) ? pathname.slice(1) : pathname;
 }
 
 /**
