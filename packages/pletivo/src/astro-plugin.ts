@@ -27,6 +27,8 @@ import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { stripTypes } from "./transpile";
 import { minifyCss } from "./css-minify";
+import { astroConfigModuleSource } from "./astro-config-module";
+import type { AstroConfig } from "@pletivo/core/astro-host/types";
 import { envModuleSource, parseEnvConfig, type EnvField } from "./astro-env";
 import { substituteImportMetaEnv } from "./import-meta-env";
 import { collectCssSideEffectImports } from "./js-imported-css";
@@ -699,6 +701,8 @@ export async function registerAstroPlugin(): Promise<void> {
         return { contents: `export default ${JSON.stringify(css)};`, loader: "js" };
       });
 
+      mod("astro:config/client", () => ({ loader: "js", contents: astroConfigModuleSource(requireHostConfig(), "client") }));
+      mod("astro:config/server", () => ({ loader: "js", contents: astroConfigModuleSource(requireHostConfig(), "server") }));
       mod("astro:env/client", () => ({ loader: "js", contents: envModule("client") }));
       mod("astro:env/server", () => ({ loader: "js", contents: envModule("server") }));
 
@@ -753,6 +757,12 @@ export async function registerAstroPlugin(): Promise<void> {
       });
     },
   });
+}
+
+function requireHostConfig(): AstroConfig {
+  const config = getHost()?.config;
+  if (config === undefined) throw new Error("astro:config is only available in an Astro project");
+  return config;
 }
 
 // ── astro:env support ──────────────────────────────────────────────
