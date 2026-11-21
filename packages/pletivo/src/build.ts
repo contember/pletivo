@@ -316,6 +316,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
   const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+  // Astro builds each page from a request at `site`, or at its dev server's origin.
+  const requestOrigin = siteUrl?.origin ?? (astroHost ? `http://localhost:${astroHost.config.server.port}` : "http://localhost/");
   // An Astro project names its output files by `build.format`; a native one writes `<path>/index.html`.
   const outputFormat = astroHost?.config.build.format;
   const i18n = resolveI18nConfig(astroHost?.config.i18n);
@@ -418,9 +420,6 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     localeOverride?: string,
     rewriteDepth = 0,
   ) {
-    // Astro expects `Astro.url` to be a real URL with pathname + origin.
-    // Use the configured site origin if present, else a localhost stand-in.
-    const origin = siteUrl ? siteUrl.origin : "http://localhost/";
     const urlPath = "/" + pathname.replace(/^\//, "");
     // `preferredLocale` is always undefined in static output — there's
     // no request to read Accept-Language from. `currentLocale` comes
@@ -432,7 +431,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       localeOverride ??
       (i18n ? detectRouteLocale(route, i18n).locale?.code : undefined);
     const pageContext = {
-      url: new URL(urlPath, origin),
+      url: new URL(urlPath, requestOrigin),
       site: siteUrl,
       params,
       currentLocale,
@@ -667,8 +666,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     const servedRoute = resolveScriptRoute(route, mod);
     if (servedRoute.isEndpoint) {
       const endpointFile = routeToOutputPath(servedRoute, {});
-      const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
-      const body = await renderEndpoint(mod, makeEndpointContext("/" + endpointFile, siteUrl));
+      const body = await renderEndpoint(mod, makeEndpointContext("/" + endpointFile, siteUrl, requestOrigin));
       if (body === null) {
         console.warn(`  Skipping ${route.file}: endpoint route without an exported GET()`);
         return null;
@@ -950,8 +948,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
         if (typeof mod.GET === "function") {
           // Endpoint — emit the GET() body verbatim via the raw write path.
-          const siteUrl = astroHost.config.site ? new URL(astroHost.config.site) : undefined;
-          const body = await renderEndpoint(mod, makeEndpointContext("/" + pattern, siteUrl));
+          const body = await renderEndpoint(mod, makeEndpointContext("/" + pattern, siteUrl, requestOrigin));
           if (body !== null) {
             results.push({
               file: injected.entrypoint,
@@ -1536,10 +1533,10 @@ export interface EndpointContext {
 export function makeEndpointContext(
   pathname: string,
   siteUrl: URL | undefined,
+  origin: string,
   params: RouteParams = {},
   props: Record<string, unknown> = {},
 ): EndpointContext {
-  const origin = siteUrl ? siteUrl.origin : "http://localhost/";
   const url = new URL(pathname.startsWith("/") ? pathname : "/" + pathname, origin);
   return {
     site: siteUrl,

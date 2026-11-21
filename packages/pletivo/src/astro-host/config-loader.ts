@@ -121,6 +121,7 @@ function normalizeAstroConfig(
     site: userConfig.site as string | undefined,
     base: (userConfig.base as string | undefined) ?? "/",
     trailingSlash: (userConfig.trailingSlash as string | undefined) ?? "ignore",
+    server: astroServer(userConfig.server, configName),
     build,
     integrations,
     vite: (userConfig.vite as AstroConfig["vite"]) ?? {},
@@ -135,6 +136,15 @@ function normalizeAstroConfig(
   }
 
   return { config, configuredSrcDir };
+}
+
+/** Astro's `server` options with its default port. The function form is called as Astro's build does. */
+function astroServer(server: unknown, configName: string): AstroConfig["server"] {
+  const options: unknown = typeof server === "function" ? server({ command: "preview" }) : server ?? {};
+  if (typeof options !== "object" || options === null) throw new Error(`${configName}: server must be an object`);
+  const port: unknown = Reflect.get(options, "port") ?? 4321;
+  if (typeof port !== "number") throw new Error(`${configName}: server.port must be a number`);
+  return { ...options, port };
 }
 
 /** A directory as Astro resolves one: absolute, with a trailing slash so URLs resolve inside it. */

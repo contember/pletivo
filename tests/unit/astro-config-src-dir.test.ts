@@ -57,6 +57,17 @@ describe("loadAstroConfig directories", () => {
     const dir = await projectWith(`export default { srcDir: 42 };\n`);
     await expect(loadAstroConfig(dir)).rejects.toThrow("astro.config.mjs: srcDir must be a string");
   });
+
+  test("server.port defaults to Astro's 4321; the function form is called as for a build", async () => {
+    expect((await loadAstroConfig(await projectWith(`export default {};\n`)))?.config.server).toEqual({ port: 4321 });
+    const object = await projectWith(`export default { server: { port: 8080, host: true } };\n`);
+    expect((await loadAstroConfig(object))?.config.server).toEqual({ port: 8080, host: true });
+    const fn = await projectWith(`export default { server: ({ command }) => ({ port: command === "preview" ? 5000 : 1 }) };\n`);
+    expect((await loadAstroConfig(fn))?.config.server).toEqual({ port: 5000 });
+    await expect(loadAstroConfig(await projectWith(`export default { server: { port: "80" } };\n`))).rejects.toThrow(
+      "astro.config.mjs: server.port must be a number",
+    );
+  });
 });
 
 describe("loadAstroConfig without a config file", () => {

@@ -132,6 +132,7 @@ describe("resolveCompressHTML", () => {
       outDir: root,
       base: "/",
       trailingSlash: "ignore",
+      server: { port: 4321 },
       build: { format: "directory", client: root, server: root, assets: "_astro" },
       integrations: [],
       vite: {},
