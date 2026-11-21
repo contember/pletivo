@@ -474,6 +474,15 @@ async function renderValue(value: unknown): Promise<string> {
     const slotArgs = getSlotArgs();
     return renderValue(slotArgs ? value(...slotArgs) : value());
   }
+  // As Astro's `renderToString`: a component's returned Response writes nothing.
+  if (value instanceof Response) return "";
+  if (value instanceof Uint8Array) return new TextDecoder().decode(value);
+  if (isIterable(value)) return (await Promise.all(Array.from(value, renderValue))).join("");
+  if (isAsyncIterable(value)) {
+    let out = "";
+    for await (const chunk of value) out += await renderValue(chunk);
+    return out;
+  }
   assertNotForeignElement(value);
   // Fallback: stringify + escape
   return escapeHtml(String(value));
@@ -925,9 +934,32 @@ export function createTransitionScope(
 export function unescapeHTML(value: unknown): HtmlString | Promise<HtmlString> {
   if (isHtmlString(value)) return value;
   if (value instanceof Promise) {
-    return value.then((v) => unescapeHTML(v) as HtmlString);
+    return value.then((v) => unescapeHTML(v));
   }
+  // As Astro: bytes, a Response's body, and each chunk of an iterable or a stream are HTML.
+  if (value instanceof Uint8Array) return createHtml(new TextDecoder().decode(value));
+  if (value instanceof Response && value.body) return value.text().then(createHtml);
+  if (isIterable(value)) {
+    return Promise.all(Array.from(value, unescapeHTML)).then((chunks) => createHtml(chunks.map((chunk) => chunk.__html).join("")));
+  }
+  if (isAsyncIterable(value)) return unescapeChunks(value);
   return createHtml(String(value ?? ""));
+}
+
+async function unescapeChunks(chunks: AsyncIterable<unknown>): Promise<HtmlString> {
+  let html = "";
+  for await (const chunk of chunks) html += (await unescapeHTML(chunk)).__html;
+  return createHtml(html);
+}
+
+/** An iterable object other than a string, an array, or an `HtmlString` (callers check those first). */
+function isIterable(value: unknown): value is Iterable<unknown> {
+  return typeof value === "object" && value !== null && Symbol.iterator in value;
+}
+
+/** An async iterable, a `ReadableStream` among them. */
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return typeof value === "object" && value !== null && Symbol.asyncIterator in value;
 }
 
 // ── Fragment ────────────────────────────────────────────────────────
