@@ -52,6 +52,25 @@ describe("JS-imported CSS collection", () => {
     expect(await getJsImportedCssOutput()).toContain(".external-side-effect-css");
   });
 
+  test("a `?inline`, `?raw` or `?url` CSS import is a string, not a stylesheet of the page", async () => {
+    await write("vendor/linked.css", `.linked-css { color: red; }`);
+    for (const query of ["inline", "raw", "url"]) await write(`vendor/${query}.css`, `.${query}-css { color: red; }`);
+    const sourceFile = path.join(root, "src/pages/index.astro");
+    await collectCssSideEffectImports(
+      sourceFile,
+      [
+        `import a from "../../vendor/inline.css?inline";`,
+        `import b from "../../vendor/raw.css?raw";`,
+        `import c from "../../vendor/url.css?url";`,
+        `import "../../vendor/linked.css";`,
+      ].join("\n"),
+      "astro:index",
+    );
+    const css = await getJsImportedCssOutput();
+    expect(css).toContain(".linked-css");
+    for (const query of ["inline", "raw", "url"]) expect(css).not.toContain(`.${query}-css`);
+  });
+
   test("collectPageModuleCss picks up external CSS from a non-.astro page module", async () => {
     await write("vendor/ext.css", `.tsx-external-side-effect-css { color: red; }`);
     await write(
