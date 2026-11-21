@@ -33,7 +33,7 @@ import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./a
 import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
 import { bundlePageScripts } from "./astro-host/page-scripts";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
-import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { computeCurrentLocale } from "@pletivo/core/i18n/helpers";
 import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "@pletivo/core/i18n/fallback";
 import { setImageMode, setImageService, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
@@ -437,14 +437,12 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   ) {
     const urlPath = "/" + pathname.replace(/^\//, "");
     // `preferredLocale` is always undefined in static output — there's
-    // no request to read Accept-Language from. `currentLocale` comes
-    // from the route's source directory (or the default locale for
-    // unprefixed root pages), or from an explicit override when this
-    // render is a localized fallback (rewrite of another locale's
-    // content at the target locale's URL).
+    // no request to read Accept-Language from. A localized fallback
+    // (another locale's content at the target locale's URL) overrides
+    // `currentLocale`.
     const currentLocale =
       localeOverride ??
-      (i18n ? detectRouteLocale(route, i18n).locale?.code : undefined);
+      (i18n ? computeCurrentLocale(i18n, urlPath) : undefined);
     const pageContext = {
       url: new URL(requestPath ?? (urlPath === "/" && astroRootPath !== undefined ? astroRootPath : withBase(urlPath)), requestOrigin),
       site: siteUrl,

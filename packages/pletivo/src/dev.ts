@@ -38,8 +38,7 @@ import { createSnapshotStore } from "./dev-snapshots";
 import { createIdleRecycler, isHmrTransportPath, resolveIdleRecycleMs, type IdleRecycler } from "./dev-idle-recycle";
 import { describeConfigChange, isSupervisedChild, RESTART_EXIT_CODE } from "./dev-supervisor";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
-import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
-import { parsePreferredLocales } from "@pletivo/core/i18n/helpers";
+import { computeCurrentLocale, parsePreferredLocales } from "@pletivo/core/i18n/helpers";
 import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import {
   setImageMode,
@@ -464,7 +463,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       let preferredLocaleList: string[] = [];
       if (i18n) {
         currentLocale =
-          localeOverride ?? detectRouteLocale(route, i18n).locale?.code;
+          localeOverride ?? computeCurrentLocale(i18n, pathname);
         const accept = request.headers.get("accept-language");
         const parsed = parsePreferredLocales(i18n, accept);
         preferredLocale = parsed.preferredLocale;

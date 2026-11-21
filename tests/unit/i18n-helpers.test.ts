@@ -8,6 +8,7 @@ import {
   getRelativeLocaleUrlList,
   getAbsoluteLocaleUrlList,
   fallbackChain,
+  computeCurrentLocale,
 } from "@pletivo/core/i18n/helpers";
 
 const cfgSimple = resolveI18nConfig({
@@ -187,5 +188,23 @@ describe("fallbackChain", () => {
     // Hand-insert a cycle to confirm the guard
     (cfg.fallback as Record<string, string>).en = "pt";
     expect(fallbackChain(cfg, "pt")).toEqual(["pt", "en"]);
+  });
+});
+
+describe("computeCurrentLocale", () => {
+  test("reads the locale from any segment of the path, as a dynamic [locale] route's URL has it", () => {
+    expect(computeCurrentLocale(cfgPrefixAlways, "/pt/")).toBe("pt");
+    expect(computeCurrentLocale(cfgPrefixAlways, "/blog/pt/post")).toBe("pt");
+    expect(computeCurrentLocale(cfgPrefixAlways, "/pt.html")).toBe("pt");
+  });
+
+  test("an aliased locale answers to its path with its first code, and to each code", () => {
+    expect(computeCurrentLocale(cfgAlias, "/spanish/about")).toBe("es");
+    expect(computeCurrentLocale(cfgAlias, "/es-sp/about")).toBe("es-SP");
+  });
+
+  test("a path without a locale is the default locale's, prefixDefaultLocale or not", () => {
+    expect(computeCurrentLocale(cfgPrefixAlways, "/")).toBe("en");
+    expect(computeCurrentLocale(cfgSimple, "/about")).toBe("en");
   });
 });

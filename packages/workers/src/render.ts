@@ -20,7 +20,7 @@ import {
 } from "@pletivo/core/router";
 import type { ResolvedI18nConfig } from "@pletivo/core/i18n/config";
 import { resolveFallbackRoute } from "@pletivo/core/i18n/fallback";
-import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { computeCurrentLocale } from "@pletivo/core/i18n/helpers";
 import { RouteRedirect } from "./routing.ts";
 import { projectModuleId, type ProjectArtifact } from "./artifact.ts";
 import type { ProjectFiles } from "./project-store.ts";
@@ -904,7 +904,7 @@ function matchPage(
 ): { match: { route: Route; params: RouteParams }; currentLocale: string | undefined } {
   const match = findRoute(routes, pathname);
   if (match !== null) {
-    return { match, currentLocale: i18n === null ? undefined : detectRouteLocale(match.route, i18n).locale?.code };
+    return { match, currentLocale: i18n === null ? undefined : computeCurrentLocale(i18n, pathname) };
   }
   const fallback = i18n === null ? null : resolveFallbackRoute(pathname, routes, i18n, "/");
   if (fallback === null) throw new RouteNotFoundError(pathname);

@@ -45,6 +45,27 @@ export function getPathByLocale(
 }
 
 /**
+ * `Astro.currentLocale`, as Astro's render context computes it: the first segment of
+ * `pathname` that is a locale's path or one of its codes, else the default locale.
+ * Astro reads a static route's own path and a dynamic route's request path.
+ */
+export function computeCurrentLocale(config: ResolvedI18nConfig, pathname: string): string {
+  for (const part of pathname.split("/")) {
+    const segment = part.endsWith(".html") ? part.slice(0, -".html".length) : part;
+    for (const locale of config.locales) {
+      if (locale.path === segment) return locale.code;
+      const code = locale.codes.find((candidate) => normalizeTheLocale(candidate) === normalizeTheLocale(segment));
+      if (code !== undefined) return code;
+    }
+  }
+  return config.defaultLocale.code;
+}
+
+function normalizeTheLocale(locale: string): string {
+  return locale.replaceAll("_", "-").toLowerCase();
+}
+
+/**
  * Inverse of `getPathByLocale`: resolve a URL path segment back to its
  * canonical locale code. Used by the runtime when the URL carries the
  * aliased path and we need to report `Astro.currentLocale`.
