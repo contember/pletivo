@@ -988,6 +988,24 @@ export async function getEntry<T = Record<string, unknown>>(
   return entries.find((e) => (e.slug ?? e.id) === entryId);
 }
 
+/** Astro 5's deprecated `getEntryBySlug(collection, slug)`: a content entry by its slug. */
+export async function getEntryBySlug<T = Record<string, unknown>>(
+  collection: string,
+  slug: string,
+): Promise<CollectionEntry<T> | undefined> {
+  const entries = await getCollection<T>(collection);
+  return entries.find((e) => e.slug === slug);
+}
+
+/** Astro 5's deprecated `getDataEntryById(collection, id)`: an entry by its id. */
+export async function getDataEntryById<T = Record<string, unknown>>(
+  collection: string,
+  id: string,
+): Promise<CollectionEntry<T> | undefined> {
+  const entries = await getCollection<T>(collection);
+  return entries.find((e) => e.id === id);
+}
+
 // ── Internal ──
 
 /**

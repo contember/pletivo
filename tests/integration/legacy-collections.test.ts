@@ -4,6 +4,8 @@ import {
   initCollections,
   getCollection,
   getEntry,
+  getEntryBySlug,
+  getDataEntryById,
   runWithBunContentRuntime,
   type Reference,
 } from "../../packages/pletivo/src/content/collection";
@@ -54,6 +56,13 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
     const byFrontmatterSlug = await runWithBunContentRuntime(() => getEntry("docs", "renamed"));
     expect(byFrontmatterSlug?.id).toBe("custom.md");
     expect(await runWithBunContentRuntime(() => getEntry("docs", "intro.md"))).toBeUndefined();
+  });
+
+  test("the deprecated getEntryBySlug and getDataEntryById find an entry by slug and by id", async () => {
+    expect((await runWithBunContentRuntime(() => getEntryBySlug("docs", "renamed")))?.id).toBe("custom.md");
+    expect(await runWithBunContentRuntime(() => getEntryBySlug("docs", "custom.md"))).toBeUndefined();
+    expect((await runWithBunContentRuntime(() => getDataEntryById("authors", "jane")))?.data).toBeDefined();
+    expect(await runWithBunContentRuntime(() => getDataEntryById("authors", "nobody"))).toBeUndefined();
   });
 
   test("getEntry takes a { collection, slug } lookup", async () => {

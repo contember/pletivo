@@ -563,7 +563,7 @@ export async function registerAstroPlugin(): Promise<void> {
         contents: `
           import { z } from ${JSON.stringify(projectZodPath())};
           import { defineCollectionWith, referenceWith } from ${JSON.stringify(contentCollectionPath)};
-          export { getCollection, getEntry, render } from ${JSON.stringify(contentPath)};
+          export { getCollection, getEntry, getEntryBySlug, getDataEntryById, render } from ${JSON.stringify(contentPath)};
           export { z };
           export const defineCollection = defineCollectionWith(z);
           export const reference = (collection) => referenceWith(z, collection);
