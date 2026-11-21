@@ -961,7 +961,8 @@ export function unescapeHTML(value: unknown): HtmlString | Promise<HtmlString> {
     return Promise.all(Array.from(value, unescapeHTML)).then((chunks) => createHtml(chunks.map((chunk) => chunk.__html).join("")));
   }
   if (isAsyncIterable(value)) return unescapeChunks(value);
-  return createHtml(String(value ?? ""));
+  // As Astro, which leaves a non-string primitive as is: `false` renders nothing, `true` its text.
+  return createHtml(value == null || value === false ? "" : String(value));
 }
 
 async function unescapeChunks(chunks: AsyncIterable<unknown>): Promise<HtmlString> {

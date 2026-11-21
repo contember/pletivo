@@ -25,6 +25,10 @@ describe("set:html values, as Astro's unescapeHTML takes them", () => {
     expect(await html(stream)).toBe("<u>read</u>");
   });
 
+  test("false, null and undefined are nothing; true and numbers their text", async () => {
+    expect(await Promise.all([false, null, undefined, true, 0, 1].map(html))).toEqual(["", "", "", "true", "0", "1"]);
+  });
+
   test("each chunk of an iterable or an async iterable is HTML", async () => {
     expect(await html(spans("i"))).toBe("<span>i1</span><span>i2</span>");
     expect(await html(asyncSpans())).toBe("<span>a1</span><span>a2</span>");
