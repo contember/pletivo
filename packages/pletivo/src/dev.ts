@@ -345,6 +345,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     i18n,
     (astroHost?.config.base as string | undefined) ?? "/",
     astroHost?.config.site as string | undefined,
+    { trailingSlash: astroHost?.config.trailingSlash, format: astroHost?.config.build.format },
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("dev");

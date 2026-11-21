@@ -67,6 +67,17 @@ describe("getLocaleByPath", () => {
 });
 
 describe("getRelativeLocaleUrl", () => {
+  test("ends with a slash where Astro's trailingSlash and build.format do", () => {
+    const url = (trailingSlash: string | undefined, format?: string) =>
+      getRelativeLocaleUrl(cfgSimple, "/", "pt", "about", { trailingSlash, format });
+    expect(url("ignore")).toBe("/pt/about/");
+    expect(url("ignore", "file")).toBe("/pt/about");
+    expect(url("always", "file")).toBe("/pt/about/");
+    expect(url("never")).toBe("/pt/about");
+    expect(url(undefined)).toBe("/pt/about");
+    expect(getRelativeLocaleUrl(cfgSimple, "/", "en", "", { trailingSlash: "ignore" })).toBe("/");
+  });
+
   test("non-default locale gets prefixed", () => {
     expect(getRelativeLocaleUrl(cfgSimple, "/", "pt", "about")).toBe("/pt/about");
     expect(getRelativeLocaleUrl(cfgSimple, "/", "it", "about")).toBe("/it/about");

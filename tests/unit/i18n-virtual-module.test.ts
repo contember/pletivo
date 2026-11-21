@@ -43,6 +43,15 @@ describe("astro:i18n virtual module", () => {
     expect(getRelativeLocaleUrl("es", "about")).toBe("/spanish/about");
   });
 
+  test("the configured URL ending applies unless a helper's options override it", () => {
+    const cfg = resolveI18nConfig({ defaultLocale: "en", locales: ["en", "pt"] })!;
+    setI18nRuntimeState(cfg, "/", "https://example.com", { trailingSlash: "ignore", format: "directory" });
+    expect(getRelativeLocaleUrl("pt", "about")).toBe("/pt/about/");
+    expect(getAbsoluteLocaleUrl("pt", "about")).toBe("https://example.com/pt/about/");
+    expect(getRelativeLocaleUrlList("about")).toEqual(["/about/", "/pt/about/"]);
+    expect(getRelativeLocaleUrl("pt", "about", { trailingSlash: "never" })).toBe("/pt/about");
+  });
+
   test("absolute URLs use the configured site", () => {
     const cfg = resolveI18nConfig({
       defaultLocale: "en",

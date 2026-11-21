@@ -25,7 +25,7 @@
 import { findRoute, type Route, type StaticPath, type RouteParams } from "../router";
 import type { ResolvedI18nConfig, ResolvedI18nLocale } from "./config";
 import { detectRouteLocale } from "./route-expansion";
-import { fallbackChain } from "./helpers";
+import { fallbackChain, shouldAppendForwardSlash } from "./helpers";
 
 export interface FallbackEmission {
   /** Source route whose component gets rendered for rewrite mode. */
@@ -69,7 +69,7 @@ export interface FallbackGeneratorInput {
 function redirectUrl(input: FallbackGeneratorInput, pathname: string): string {
   const path = [input.base, pathname].map((part) => part.replace(/^\/+|\/+$/g, "")).filter(Boolean).join("/");
   if (!path) return "/";
-  const append = input.trailingSlash === "always" || (input.trailingSlash !== "never" && (input.format ?? "directory") === "directory");
+  const append = shouldAppendForwardSlash(input.trailingSlash ?? "ignore", input.format ?? "directory");
   return append ? `/${path}/` : `/${path}`;
 }
 

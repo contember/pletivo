@@ -12,8 +12,12 @@
 import type { ResolvedI18nConfig } from "./config";
 
 export interface LocaleUrlOptions {
-  /** Include trailing slash (default: undefined → follows `trailingSlash`). */
-  trailingSlash?: "always" | "never" | "ignore";
+  /**
+   * Astro's `trailingSlash` and `build.format`: whether a URL ends with `/`, as
+   * `shouldAppendForwardSlash` decides. Without `trailingSlash`, it does not.
+   */
+  trailingSlash?: string;
+  format?: string;
   /** Override `normalizeLocale` behavior (Astro compat — no-op here). */
   normalizeLocale?: boolean;
   /** Override pathname separator — Astro always uses `/`. */
@@ -74,7 +78,7 @@ export function getRelativeLocaleUrl(
   base: string,
   locale: string,
   path: string = "",
-  _opts: LocaleUrlOptions = {},
+  opts: LocaleUrlOptions = {},
 ): string {
   const resolved =
     config.byCode.get(locale) ?? config.byPath.get(locale);
@@ -101,7 +105,16 @@ export function getRelativeLocaleUrl(
   if (cleanedPath) segments.push(cleanedPath);
 
   const joined = segments.join("/");
-  return joined ? `/${joined}` : "/";
+  if (!joined) return "/";
+  const append = opts.trailingSlash !== undefined && shouldAppendForwardSlash(opts.trailingSlash, opts.format ?? "directory");
+  return append ? `/${joined}/` : `/${joined}`;
+}
+
+/** Astro's `shouldAppendForwardSlash`: whether a page URL ends with `/`. */
+export function shouldAppendForwardSlash(trailingSlash: string, format: string): boolean {
+  if (trailingSlash === "always") return true;
+  if (trailingSlash === "never") return false;
+  return format === "directory";
 }
 
 /**
