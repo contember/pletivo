@@ -953,11 +953,13 @@ export interface MarkdownPage {
 
 /**
  * A `.md` module's `Content`: its HTML, inside `Layout` when the frontmatter names one,
- * with the props Astro gives a Markdown layout.
+ * with the props Astro gives a Markdown layout. `charset` starts it with
+ * `<meta charset="utf-8">`, as Astro does for a page without a layout.
  */
-export function markdownContent(page: MarkdownPage, Layout: unknown): AstroComponentFactory {
+export function markdownContent(page: MarkdownPage, Layout: unknown, charset = false): AstroComponentFactory {
   return createComponent(async (result) => {
-    const html = createHtml(await page.compiledContent());
+    const compiled = await page.compiledContent();
+    const html = createHtml(charset ? `<meta charset="utf-8">${compiled}` : compiled);
     if (Layout === null) return html;
     const { layout: _layout, ...content } = page.frontmatter;
     content.file = page.file;

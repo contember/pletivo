@@ -31,6 +31,17 @@ describe("markdownModule", () => {
     expect(line(compile("x\n", "src/content/a.md"), "export default")).toBe("export default Content;");
   });
 
+  test("in an Astro project, a page without a layout is its content after Astro's charset", () => {
+    const code = markdownModule({ source: "x\n", file: "src/pages/a.md", label: "a", root: "", base: "/", astro: true, runtime: "runtime", markdown: "markdown" });
+    expect(line(code, "export const Content")).toBe("export const Content = $$markdownContent($$page, null, true);");
+    expect(line(code, "export default")).toBe("export default Content;");
+    // A layout writes its own head; a file outside pages/ is not a page.
+    const withLayout = markdownModule({ source: "---\nlayout: ./L.astro\n---\nx\n", file: "src/pages/a.md", label: "a", root: "", base: "/", astro: true, runtime: "runtime", markdown: "markdown" });
+    expect(line(withLayout, "export const Content")).toBe("export const Content = $$markdownContent($$page, $$Layout);");
+    const entry = markdownModule({ source: "x\n", file: "src/content/a.md", label: "a", root: "", base: "/", astro: true, runtime: "runtime", markdown: "markdown" });
+    expect(line(entry, "export const Content")).toBe("export const Content = $$markdownContent($$page, null);");
+  });
+
   test("gives a page Astro's url and any other file none", () => {
     expect(line(compile("x\n", "src/pages/docs/a.md"), "export const url")).toBe('export const url = "/docs/a";');
     expect(line(compile("x\n", "src/pages/docs/index.md"), "export const url")).toBe('export const url = "/docs";');

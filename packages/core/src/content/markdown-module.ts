@@ -22,6 +22,11 @@ export interface MarkdownModuleOptions {
   base: string;
   /** Astro's `trailingSlash`: `"always"` ends a page's `url` with `/`. Absent is `"ignore"`. */
   trailingSlash?: string;
+  /**
+   * The project is an Astro project: a page without a layout renders as Astro's does,
+   * `<meta charset="utf-8">` and the content, with no document around it.
+   */
+  astro?: boolean;
   /** Specifier of the module exporting `markdownContent` and `markdownDocument` (the Astro shim). */
   runtime: string;
   /** Specifier of the module exporting `renderMarkdown`, with the project's plugins configured. */
@@ -34,6 +39,8 @@ export function markdownModule(options: MarkdownModuleOptions): string {
   const page = parseMarkdownPage(source, label);
   const layout = layoutSpecifier(markdownLayout(page.frontmatter, label), file, root);
   const url = markdownPageUrl(file, base, options.trailingSlash);
+  // Astro's `Content` of a page without a layout starts with the charset, wherever it renders.
+  const astroPage = options.astro === true && url !== undefined && layout === null;
   const lines = [
     `import { markdownContent as $$markdownContent, markdownDocument as $$markdownDocument } from ${literal(options.runtime)};`,
     `import { renderMarkdown as $$renderMarkdown } from ${literal(options.markdown)};`,
@@ -48,9 +55,9 @@ export function markdownModule(options: MarkdownModuleOptions): string {
     // pletivo collects no headings, as for a collection entry's `render()`.
     "export function getHeadings() { return []; }",
     "const $$page = { frontmatter, file, url, rawContent, compiledContent, getHeadings };",
-    `export const Content = $$markdownContent($$page, ${layout === null ? "null" : "$$Layout"});`,
-    // A page without a layout keeps pletivo's minimal document; Astro emits the bare content.
-    `export default ${layout === null && url !== undefined ? "$$markdownDocument($$page)" : "Content"};`,
+    `export const Content = $$markdownContent($$page, ${layout === null ? "null" : "$$Layout"}${astroPage ? ", true" : ""});`,
+    // In a pletivo-native project a page without a layout keeps pletivo's minimal document.
+    `export default ${layout === null && url !== undefined && !options.astro ? "$$markdownDocument($$page)" : "Content"};`,
     "",
   ];
   return lines.join("\n");

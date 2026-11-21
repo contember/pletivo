@@ -192,7 +192,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const srcDirError = srcDirMismatch(projectRoot, config.srcDir, astroHost?.configuredSrcDir);
   if (srcDirError) throw new ProjectConfigError(srcDirError);
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
-  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash);
+  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash, astroHost !== null);
   // Before initCollections: content.config.ts is the first project module imported.
   installImportMetaEnv({ mode: "build", base: config.base, astroConfig: astroHost?.config });
   configureMdx(resolveMdxOptions(config, astroHost?.config));

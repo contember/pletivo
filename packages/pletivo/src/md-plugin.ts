@@ -17,11 +17,11 @@ import { collectCssSideEffectImports } from "./js-imported-css";
 const markdownContentPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "markdown-content.ts");
 
 let registered = false;
-let settings: { projectRoot: string; base: string; trailingSlash: string | undefined } | null = null;
+let settings: { projectRoot: string; base: string; trailingSlash: string | undefined; astro: boolean } | null = null;
 
-/** The project a `.md` module's root-relative `layout:` and its `url` are read against. */
-export function configureMdModules(projectRoot: string, base: string, trailingSlash: string | undefined): void {
-  settings = { projectRoot, base, trailingSlash };
+/** The project a `.md` module's root-relative `layout:` and its `url` are read against; `astro` when it is an Astro project. */
+export function configureMdModules(projectRoot: string, base: string, trailingSlash: string | undefined, astro: boolean): void {
+  settings = { projectRoot, base, trailingSlash, astro };
 }
 
 export async function registerMdPlugin(): Promise<void> {
@@ -64,6 +64,7 @@ export function compileMdModule(source: string, file: string): string {
     root: projectRoot,
     base: settings?.base ?? "/",
     trailingSlash: settings?.trailingSlash,
+    astro: settings?.astro ?? false,
     runtime: markdownContentPath,
     markdown: markdownContentPath,
   });
