@@ -39,6 +39,8 @@ export interface MarkdownOptions {
   remarkRehype?: Record<string, unknown>;
   /** GitHub Flavored Markdown — on by default, matching Astro. */
   gfm?: boolean;
+  /** Run right after `remark-rehype`, where Astro runs its syntax highlighter. */
+  afterRemarkRehype?: PluggableList;
 }
 
 let markdownOptions: MarkdownOptions = {};
@@ -181,6 +183,7 @@ export async function renderMarkdown(body: string): Promise<string> {
   if (markdownOptions.gfm !== false) processor.use(remarkGfm);
   if (markdownOptions.remarkPlugins?.length) processor.use(markdownOptions.remarkPlugins);
   processor.use(remarkRehype, { allowDangerousHtml: true, ...markdownOptions.remarkRehype });
+  if (markdownOptions.afterRemarkRehype?.length) processor.use(markdownOptions.afterRemarkRehype);
   processor.use(rehypeHeadingIds);
   if (markdownOptions.rehypePlugins?.length) processor.use(markdownOptions.rehypePlugins);
   // Last, as in Astro: raw HTML is re-serialized like the rest (`<a\n href>` → `<a href>`).

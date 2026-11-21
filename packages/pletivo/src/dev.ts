@@ -68,6 +68,7 @@ import { clearCollectedCss, clearJsImportedCssImportCache, collectCssSideEffectI
 import type { PletivoConfig } from "./config";
 import type { Server, ServerWebSocket } from "bun";
 import { createRequire } from "module";
+import { withAstroMarkdownDefaults } from "./astro-markdown";
 
 const require_ = createRequire(import.meta.url);
 const { version: PLETIVO_VERSION } = require_("../package.json");
@@ -239,7 +240,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
 
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
   configureMdx(resolveMdxOptions(config, astroHost?.config));
-  configureMarkdown(resolveMarkdownOptions(astroHost?.config));
+  const markdownOptions = resolveMarkdownOptions(astroHost?.config);
+  configureMarkdown(astroHost ? await withAstroMarkdownDefaults(astroHost.config, markdownOptions) : markdownOptions);
   configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash, astroHost !== null);
   configureJsImportedCss(projectRoot, config.srcDir);
   // Before any project module loads: the renderers decide how its framework components compile.

@@ -54,6 +54,7 @@ import { escapeRegex } from "@pletivo/core/escape-regex";
 import { pageDoctype } from "@pletivo/core/page-doctype";
 import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
+import { withAstroMarkdownDefaults } from "./astro-markdown";
 
 /** Shape a dynamic page module is used through: its default export + getStaticPaths. */
 interface DynamicMod {
@@ -196,7 +197,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // Before initCollections: content.config.ts is the first project module imported.
   installImportMetaEnv({ mode: "build", base: config.base, astroConfig: astroHost?.config });
   configureMdx(resolveMdxOptions(config, astroHost?.config));
-  configureMarkdown(resolveMarkdownOptions(astroHost?.config));
+  const markdownOptions = resolveMarkdownOptions(astroHost?.config);
+  configureMarkdown(astroHost ? await withAstroMarkdownDefaults(astroHost.config, markdownOptions) : markdownOptions);
   configureScss(readScssOptions(astroHost?.config.vite));
   clearJsImportedCss();
   // Before any project module loads: the renderers decide how its framework components compile.

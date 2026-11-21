@@ -124,13 +124,15 @@ describe("resolveMdxOptions", () => {
     const markdown = { syntaxHighlight: "prism", shikiConfig: { theme: "nord" } };
     const highlight = (mdx: Record<string, unknown>) =>
       resolveMdxOptions(emptyPletivoConfig, { root, srcDir, markdown, [MDX_INTEGRATION_OPTIONS_KEY]: mdx }).astro?.highlight;
-    expect(highlight({})).toEqual({ projectRoot: "/project/", syntaxHighlight: { type: "prism" }, shikiConfig: { theme: "nord" } });
+    expect(highlight({})).toEqual({ subject: "MDX", projectRoot: "/project/", syntaxHighlight: { type: "prism" }, shikiConfig: { theme: "nord" } });
     expect(highlight({ syntaxHighlight: false, shikiConfig: { wrap: true } })).toEqual({
+      subject: "MDX",
       projectRoot: "/project/",
       syntaxHighlight: false,
       shikiConfig: { wrap: true },
     });
     expect(highlight({ extendMarkdownConfig: false })).toEqual({
+      subject: "MDX",
       projectRoot: "/project/",
       syntaxHighlight: { type: "shiki", excludeLangs: ["math"] },
       shikiConfig: {},

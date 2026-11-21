@@ -212,6 +212,7 @@ function astroMdxSettings(
     pagesDir: path.join(fileURLToPath(srcDir), "pages"),
     experimentalHeadingIdCompat: headingIdCompat ?? false,
     highlight: {
+      subject: "MDX",
       projectRoot: fileURLToPath(root),
       syntaxHighlight: mdxIntegration?.syntaxHighlight ?? (extendMarkdownConfig ? syntaxHighlight : SYNTAX_HIGHLIGHT_DEFAULT),
       shikiConfig: mdxIntegration?.shikiConfig ?? (extendMarkdownConfig ? shikiConfig : {}),
