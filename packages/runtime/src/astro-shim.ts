@@ -965,9 +965,41 @@ export async function renderAstroPage(
   // The page returned a Response: a redirect folds into a meta-refresh page,
   // a rewrite's HTML body is the page's content (same rules as build.ts).
   if (out instanceof Response) {
-    return out.headers.get("location") ? redirectPageHtml(out) : await out.text();
+    return out.headers.get("location") ? redirectPageHtml(out, pageContext) : await out.text();
   }
   return (out as HtmlString).__html;
+}
+
+export interface RedirectTemplate {
+  /** The response status: a 302 waits 2 s before the refresh, so search engines read it as temporary. */
+  status: number;
+  /** Where to, as the page wrote it. */
+  location: string;
+  /** The redirecting page's path, base included. */
+  from?: string;
+  /** Astro's `site`: the canonical link is absolute against it. */
+  site?: URL;
+  /** Astro's `compressHTML`, true unless configured: the template's newlines are dropped. */
+  compressHTML?: boolean;
+}
+
+/**
+ * The page a static build writes for a redirect, as Astro's `redirectTemplate`
+ * writes it. The location is escaped, which Astro does not do.
+ */
+export function redirectTemplate({ status, location, from, site, compressHTML = true }: RedirectTemplate): string {
+  const delay = status === 302 ? 2 : 0;
+  const relative = escapeAttr(location);
+  const absolute = escapeAttr(site ? new URL(location, site).href : location);
+  const html = `<!doctype html>
+<title>Redirecting to: ${relative}</title>
+<meta http-equiv="refresh" content="${delay};url=${relative}">
+<meta name="robots" content="noindex">
+<link rel="canonical" href="${absolute}">
+<body>
+	<a href="${relative}">Redirecting ${from ? `from <code>${escapeHtml(from)}</code> ` : ""}to <code>${relative}</code></a>
+</body>`;
+  return compressHTML ? html.replaceAll("\n", "") : html;
 }
 
 /**
@@ -976,18 +1008,10 @@ export async function renderAstroPage(
  * Returns "" for a Response that isn't a redirect — the caller decides what
  * to do with it.
  */
-export function redirectPageHtml(response: Response): string {
+export function redirectPageHtml(response: Response, page: Pick<PageContext, "url" | "site"> = {}): string {
   const location = response.headers.get("location");
   if (!location) return "";
-  const href = escapeAttr(location);
-  return (
-    `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-    `<title>Redirecting to: ${escapeHtml(location)}</title>` +
-    `<meta http-equiv="refresh" content="0;url=${href}">` +
-    `<meta name="robots" content="noindex">` +
-    `<link rel="canonical" href="${href}">` +
-    `</head><body><a href="${href}">Redirecting to ${escapeHtml(location)}</a></body></html>`
-  );
+  return redirectTemplate({ status: response.status, location, from: page.url?.pathname, site: page.site });
 }
 
 // ── Markdown modules ────────────────────────────────────────────────

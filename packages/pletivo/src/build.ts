@@ -11,7 +11,7 @@ import {
   runWithBunContentRuntime,
 } from "./content/collection";
 import { resetIslandRegistry } from "@pletivo/runtime/island";
-import { runInPage, runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
+import { runInPage, runWithRenderTracking, redirectPageHtml, redirectTemplate, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
 import { finalizeIslandScripts } from "@pletivo/runtime/astro-islands/index";
 import { bundleCss, stylesheetsForPage, type CssBundle, type Stylesheet } from "./css";
@@ -859,7 +859,14 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       const label = `[i18n ${emission.mode}] ${emission.targetPathname}`;
 
       if (emission.mode === "redirect") {
-        const html = redirectHtml(emission.redirectTo ?? "/");
+        // Astro serves these through its i18n middleware, which redirects with a 302.
+        const html = redirectTemplate({
+          status: 302,
+          location: emission.redirectTo ?? "/",
+          from: astroRequestPath(emission.targetPathname, astroBase, astroHost?.config.trailingSlash, astroHost?.config.build.format),
+          site: siteUrl,
+          compressHTML: resolveCompressHTML(astroHost?.config) ?? true,
+        });
         results.push({
           file: emission.sourceRoute.file,
           label,
@@ -1474,14 +1481,15 @@ function pathnameToOutputPath(pathname: string): string {
 }
 
 /**
- * Build the static HTML document for a meta-refresh redirect. Uses
- * both an HTTP-equiv refresh header (works without JS) and a
- * canonical link so crawlers see it as a redirect. Matches the
- * shape Astro emits for its own i18n redirect pages.
+ * The path of the request Astro's static build renders `pathname` with (`getUrlForPath`):
+ * the base for the root, else the base, the path and the format's ending.
  */
-function redirectHtml(destination: string): string {
-  const safe = destination.replace(/"/g, "&quot;");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${safe}"><link rel="canonical" href="${safe}"></head><body></body></html>`;
+function astroRequestPath(pathname: string, base: string, trailingSlash: string | undefined, format: string | undefined): string {
+  const basePath = `/${base.replace(/^\/+|\/+$/g, "")}`;
+  const clean = pathname.replace(/^\/+|\/+$/g, "");
+  if (!clean) return basePath;
+  const ending = format === "file" ? ".html" : trailingSlash === "never" ? "" : "/";
+  return `${basePath === "/" ? "" : basePath}/${clean}${ending}`;
 }
 
 /** Collect capture group 1 of `regex` across `html`. Caller must reset lastIndex. */
@@ -1560,7 +1568,7 @@ async function renderComponent(
   if (result instanceof Response) {
     // `return Astro.redirect(...)` — a static file can't send a 3xx, so emit
     // the meta-refresh page Astro's static output produces.
-    if (result.headers.get("location")) return redirectPageHtml(result);
+    if (result.headers.get("location")) return redirectPageHtml(result, ctx.__pageContext);
     // `return Astro.rewrite(...)`: the rewritten route's HTML, written at
     // this route's path.
     if ((result.headers.get("content-type") ?? "").includes("html")) {
