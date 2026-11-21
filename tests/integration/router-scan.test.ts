@@ -7,6 +7,10 @@ import { scanRoutes } from "../../packages/pletivo/src/router";
 const fixturePages = path.join(import.meta.dir, "../fixture/src/pages");
 
 describe("scanRoutes", () => {
+  test("a missing pages directory has no routes", async () => {
+    expect(await scanRoutes(path.join(import.meta.dir, "../fixture/src/no-such-pages"))).toEqual([]);
+  });
+
   test("finds all page files", async () => {
     const routes = await scanRoutes(fixturePages);
     expect(routes.length).toBe(6);

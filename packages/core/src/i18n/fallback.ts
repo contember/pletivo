@@ -10,10 +10,10 @@
  *      with `fallbackType: "redirect"` the target URL serves a
  *      meta-refresh redirect document.
  *
- *   2. **Default-locale redirects** — when
+ *   2. **The default-locale redirect** — when
  *      `prefixDefaultLocale: true && redirectToDefaultLocale: true`,
- *      every default-locale page also emits a redirect from its
- *      unprefixed URL to the prefixed one.
+ *      the root redirects to the default locale, as Astro's i18n
+ *      middleware does.
  *
  * Both kinds are produced as `FallbackEmission` records consumed by
  * build.ts (write static files) and dev.ts (match synthetic URLs).
@@ -22,10 +22,10 @@
  * emissions without touching the filesystem.
  */
 
-import { findRoute, type Route, type StaticPath, type RouteParams } from "../router";
+import { findRoute, routePath, type Route, type StaticPath, type RouteParams } from "../router";
 import type { ResolvedI18nConfig, ResolvedI18nLocale } from "./config";
 import { detectRouteLocale } from "./route-expansion";
-import { fallbackChain } from "./helpers";
+import { fallbackChain, shouldAppendForwardSlash } from "./helpers";
 
 export interface FallbackEmission {
   /** Source route whose component gets rendered for rewrite mode. */
@@ -57,6 +57,20 @@ export interface FallbackGeneratorInput {
   dynamicPaths: Map<string, StaticPath[]>;
   /** Astro `base` URL prefix (e.g. `"/new-site"`), stripped of trailing slash. */
   base: string;
+  /** Astro's `trailingSlash` and `build.format`, which decide whether a redirect's target ends with `/`. */
+  trailingSlash?: string;
+  format?: string;
+}
+
+/**
+ * The URL a static build redirects to: `pathname` under `base`, ending with `/` where Astro's
+ * `shouldAppendForwardSlash` says so, as the request path it is derived from does.
+ */
+function redirectUrl(input: FallbackGeneratorInput, pathname: string): string {
+  const path = [input.base, pathname].map((part) => part.replace(/^\/+|\/+$/g, "")).filter(Boolean).join("/");
+  if (!path) return "/";
+  const append = shouldAppendForwardSlash(input.trailingSlash ?? "ignore", input.format ?? "directory");
+  return append ? `/${path}/` : `/${path}`;
 }
 
 export function generateFallbackEmissions(
@@ -132,7 +146,7 @@ function localelessPathname(
 function generateLocaleFallbacks(
   input: FallbackGeneratorInput,
 ): FallbackEmission[] {
-  const { routes, i18n, dynamicPaths, base } = input;
+  const { routes, i18n, dynamicPaths } = input;
   if (Object.keys(i18n.fallback).length === 0) return [];
 
   const groups = groupByLocalelessKey(routes, i18n);
@@ -178,10 +192,10 @@ function generateLocaleFallbacks(
               sourceRoute,
               sp.params,
               sp.props ?? {},
-              rewriteRouteWithPrefix(sourceRoute, newPrefix, sp.params),
+              rewriteRouteWithPrefix(sourceRoute, newPrefix, sp.params, detectRouteLocale(sourceRoute, i18n).hasLocaleInPath),
               targetLocale.code,
               i18n.routing.fallbackType,
-              base,
+              input,
             ),
           );
         }
@@ -194,7 +208,7 @@ function generateLocaleFallbacks(
             targetPathname,
             targetLocale.code,
             i18n.routing.fallbackType,
-            base,
+            input,
           ),
         );
       }
@@ -211,7 +225,7 @@ function makeFallbackEmission(
   targetPathname: string,
   targetLocaleCode: string,
   mode: "rewrite" | "redirect",
-  base: string,
+  input: FallbackGeneratorInput,
 ): FallbackEmission {
   if (mode === "rewrite") {
     return {
@@ -234,7 +248,7 @@ function makeFallbackEmission(
     targetPathname,
     targetLocale: undefined,
     mode,
-    redirectTo: joinUrl(base, sourcePathname),
+    redirectTo: redirectUrl(input, sourcePathname),
   };
 }
 
@@ -243,53 +257,32 @@ function makeFallbackEmission(
 function generateDefaultLocaleRedirects(
   input: FallbackGeneratorInput,
 ): FallbackEmission[] {
-  const { routes, i18n, dynamicPaths, base } = input;
-  if (!i18n.routing.prefixDefaultLocale) return [];
-  if (!i18n.routing.redirectToDefaultLocale) return [];
+  const { routes, i18n } = input;
+  const source = rootRedirectSource(routes, i18n);
+  if (source === null) return [];
+  return [
+    {
+      sourceRoute: source,
+      sourceParams: {},
+      sourceProps: {},
+      targetPathname: "",
+      targetLocale: undefined,
+      mode: "redirect",
+      redirectTo: redirectUrl(input, i18n.rawDefaultLocale),
+    },
+  ];
+}
 
-  const out: FallbackEmission[] = [];
-  const defaultLocale = i18n.defaultLocale;
-
-  for (const r of routes) {
-    const detection = detectRouteLocale(r, i18n);
-    if (!detection.locale) continue;
-    if (detection.locale.code !== defaultLocale.code) continue;
-    if (!detection.hasLocaleInPath) continue;
-
-    const key = localelessPathname(r, detection.locale, detection.hasLocaleInPath);
-
-    void key; // key is the stripped variant; we re-derive below.
-
-    if (r.isDynamic) {
-      const paths = dynamicPaths.get(r.file) ?? [];
-      for (const sp of paths) {
-        const targetPathname = rewriteRouteWithPrefix(r, "", sp.params);
-        const destination = materializeRoute(r, sp.params);
-        out.push({
-          sourceRoute: r,
-          sourceParams: sp.params,
-          sourceProps: sp.props ?? {},
-          targetPathname,
-          targetLocale: undefined,
-          mode: "redirect",
-          redirectTo: joinUrl(base, destination),
-        });
-      }
-    } else {
-      const destination = materializeRoute(r, {});
-      out.push({
-        sourceRoute: r,
-        sourceParams: {},
-        sourceProps: {},
-        targetPathname: rewriteRouteWithPrefix(r, "", {}),
-        targetLocale: undefined,
-        mode: "redirect",
-        redirectTo: joinUrl(base, destination),
-      });
-    }
-  }
-
-  return out;
+/**
+ * The page Astro's i18n middleware turns into the redirect to the default locale. It redirects
+ * only the root: a page there (which `prefixDefaultLocale` requires; pletivo also takes the
+ * default locale's index), under `redirectToDefaultLocale`. Any other path without a locale has no
+ * route, as in Astro.
+ */
+function rootRedirectSource(routes: Route[], i18n: ResolvedI18nConfig): Route | null {
+  if (!i18n.routing.prefixDefaultLocale || !i18n.routing.redirectToDefaultLocale) return null;
+  const root = routes.find((route) => !route.isDynamic && routePath(route) === "/");
+  return root ?? routes.find((route) => !route.isDynamic && routePath(route) === `/${i18n.defaultLocale.path}`) ?? null;
 }
 
 // ── Path utilities ──────────────────────────────────────────────────
@@ -298,35 +291,25 @@ function materializeRoute(
   route: Route,
   params: RouteParams,
 ): string {
-  return rewriteRouteWithPrefix(route, keepOriginalPrefix, params);
+  return rewriteRouteWithPrefix(route, "", params, false);
 }
 
-/** Sentinel that tells `rewriteRouteWithPrefix` to keep the first static segment. */
-const keepOriginalPrefix = Symbol("keep-original-prefix") as unknown as string;
-
 /**
- * Materialize a route's URL pathname with dynamic params substituted,
- * optionally replacing the leading static segment (the locale dir)
- * with a new prefix. Pass `""` to strip the leading segment entirely
- * (default-locale under `prefixDefaultLocale: false`), or
- * `keepOriginalPrefix` to leave it untouched.
+ * Materialize a route's URL pathname with dynamic params substituted, prefixed with
+ * `newPrefix` (none when `""`). A route with its locale in its path (`hasLocaleInPath`)
+ * loses that leading locale segment, which the prefix replaces; any other keeps every segment.
  */
 function rewriteRouteWithPrefix(
   route: Route,
-  newPrefix: string | typeof keepOriginalPrefix,
+  newPrefix: string,
   params: RouteParams,
+  hasLocaleInPath: boolean,
 ): string {
   const parts: string[] = [];
-  if (typeof newPrefix === "string" && newPrefix !== keepOriginalPrefix) {
-    if (newPrefix) parts.push(newPrefix);
-  }
+  if (newPrefix) parts.push(newPrefix);
   for (let i = 0; i < route.segments.length; i++) {
     const seg = route.segments[i]!;
-    // Skip the leading locale directory segment when the caller wants
-    // to replace it. With `keepOriginalPrefix` we emit every segment.
-    if (i === 0 && seg.type === "static" && newPrefix !== keepOriginalPrefix) {
-      continue;
-    }
+    if (i === 0 && seg.type === "static" && hasLocaleInPath) continue;
     if (seg.type === "static") {
       parts.push(seg.value);
     } else if (seg.type === "param") {
@@ -450,9 +433,8 @@ export function resolveFallbackRoute(
 }
 
 /**
- * Detect if the incoming request should be redirected from its
- * unprefixed URL to the default-locale-prefixed URL. Matches the
- * static-build behavior of `redirectToDefaultLocale: true`.
+ * The redirect a request for the root gets under `redirectToDefaultLocale`, as the static
+ * build's: to the default locale's index. Any other path is not redirected.
  */
 export function resolveDefaultLocaleRedirect(
   pathname: string,
@@ -460,25 +442,7 @@ export function resolveDefaultLocaleRedirect(
   i18n: ResolvedI18nConfig,
   base: string,
 ): string | null {
-  if (!i18n.routing.prefixDefaultLocale) return null;
-  if (!i18n.routing.redirectToDefaultLocale) return null;
-
-  const cleaned = pathname.replace(/^\/+|\/+$/g, "");
-  const firstSlash = cleaned.indexOf("/");
-  const firstSegment = firstSlash === -1 ? cleaned : cleaned.slice(0, firstSlash);
-
-  // Already prefixed with a known locale — no redirect needed.
-  if (i18n.byPath.has(firstSegment)) return null;
-
-  // Match the unprefixed path against the default locale's source
-  // routes. If a match exists, emit a redirect to the prefixed URL.
-  const defaultPrefix = i18n.defaultLocale.path;
-  const candidate = cleaned ? `/${defaultPrefix}/${cleaned}` : `/${defaultPrefix}`;
-  const match = findRoute(routes, candidate);
-  if (!match) return null;
-  const detection = detectRouteLocale(match.route, i18n);
-  if (detection.locale?.code !== i18n.defaultLocale.code) return null;
-  if (!detection.hasLocaleInPath) return null;
-
-  return joinUrl(base, candidate.replace(/^\//, ""));
+  if (pathname.replace(/^\/+|\/+$/g, "") !== "") return null;
+  if (rootRedirectSource(routes, i18n) === null) return null;
+  return joinUrl(base, i18n.defaultLocale.path);
 }

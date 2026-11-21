@@ -57,4 +57,57 @@ describe("loadAstroConfig directories", () => {
     const dir = await projectWith(`export default { srcDir: 42 };\n`);
     await expect(loadAstroConfig(dir)).rejects.toThrow("astro.config.mjs: srcDir must be a string");
   });
+
+  test("redirects are parsed as Astro's schema has them", async () => {
+    const ok = await projectWith(`export default { redirects: { "/a": "/b", "/c": { status: 302, destination: "/d" } } };\n`);
+    expect((await loadAstroConfig(ok))?.config.redirects).toEqual({ "/a": "/b", "/c": { status: 302, destination: "/d" } });
+    await expect(loadAstroConfig(await projectWith(`export default { redirects: { "/a": { status: 200, destination: "/b" } } };\n`))).rejects.toThrow(
+      'astro.config.mjs: redirects["/a"] must be a destination or { status: 300 | 301 | 302 | 303 | 304 | 307 | 308, destination }',
+    );
+    await expect(loadAstroConfig(await projectWith(`export default { redirects: { "/a": { status: 301 } } };\n`))).rejects.toThrow(
+      'redirects["/a"] must be a destination',
+    );
+  });
+
+  test("server.port defaults to Astro's 4321; the function form is called as for a build", async () => {
+    expect((await loadAstroConfig(await projectWith(`export default {};\n`)))?.config.server).toEqual({ port: 4321 });
+    const object = await projectWith(`export default { server: { port: 8080, host: true } };\n`);
+    expect((await loadAstroConfig(object))?.config.server).toEqual({ port: 8080, host: true });
+    const fn = await projectWith(`export default { server: ({ command }) => ({ port: command === "preview" ? 5000 : 1 }) };\n`);
+    expect((await loadAstroConfig(fn))?.config.server).toEqual({ port: 5000 });
+    await expect(loadAstroConfig(await projectWith(`export default { server: { port: "80" } };\n`))).rejects.toThrow(
+      "astro.config.mjs: server.port must be a number",
+    );
+  });
+});
+
+describe("loadAstroConfig without a config file", () => {
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  async function projectWithPackage(pkg: object | null): Promise<string> {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-astro-no-config-")));
+    dirs.push(dir);
+    if (pkg) await fs.writeFile(path.join(dir, "package.json"), JSON.stringify(pkg));
+    return dir;
+  }
+
+  test("a project that depends on astro gets Astro's defaults, as astro build does", async () => {
+    for (const field of ["dependencies", "devDependencies"]) {
+      const dir = await projectWithPackage({ [field]: { astro: "^5.0.0" } });
+      const loaded = await loadAstroConfig(dir);
+      expect(loaded?.configuredSrcDir).toBeUndefined();
+      expect(loaded?.config.srcDir.href).toBe(`file://${dir}/src/`);
+      expect(loaded?.config.base).toBe("/");
+      expect(loaded?.config.build.format).toBe("directory");
+      expect(loaded?.config.integrations).toEqual([]);
+    }
+  });
+
+  test("a project without astro among its dependencies, or without package.json, stays pletivo-native", async () => {
+    expect(await loadAstroConfig(await projectWithPackage({ dependencies: { preact: "^10" } }))).toBeNull();
+    expect(await loadAstroConfig(await projectWithPackage(null))).toBeNull();
+  });
 });

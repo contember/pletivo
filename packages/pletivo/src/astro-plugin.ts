@@ -26,6 +26,10 @@ import { imageUrlFor, probeAndRegisterImage } from "./image";
 import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { stripTypes } from "./transpile";
+import { minifyCss } from "./css-minify";
+import { astroConfigModuleSource } from "./astro-config-module";
+import type { AstroConfig } from "@pletivo/core/astro-host/types";
+import { envModuleSource, parseEnvConfig, type EnvField } from "./astro-env";
 import { substituteImportMetaEnv } from "./import-meta-env";
 import { collectCssSideEffectImports } from "./js-imported-css";
 import { assertRenderableImports } from "./framework-components";
@@ -206,7 +210,7 @@ export function setHoistedBundleCache(hash: string, bytes: Uint8Array<ArrayBuffe
  * basename from the entrypoint specifier (not the resolved path), so
  * callers must rename `pletivo:hoisted:<hash>.js` outputs themselves.
  */
-export function hoistedScriptBunPlugin(): BunPlugin {
+export function hoistedScriptBunPlugin(mode: "dev" | "build"): BunPlugin {
   const resolveFilter = new RegExp(`^${HOISTED_PREFIX}[a-f0-9]+$`);
   // 16-hex-char filename (matches our `Bun.hash().padStart(16,"0")` output).
   const loadFilter = /\/[a-f0-9]{16}\.js$/;
@@ -227,6 +231,16 @@ export function hoistedScriptBunPlugin(): BunPlugin {
         const entry = hoistedScriptByHash.get(m[1]);
         if (!entry) return undefined;
         return { contents: entry.code, loader: "js" };
+      });
+      // As Astro's client build: a component imported in browser code is an empty module, and in dev
+      // a function that says so when called; the server component never reaches the browser.
+      // A page script reads its public client variables, as Astro's client build inlines them.
+      build.onResolve({ filter: /^astro:env\/client$/ }, () => ({ path: "astro:env/client", namespace: "pletivo-astro-env" }));
+      build.onLoad({ filter: /.*/, namespace: "pletivo-astro-env" }, () => ({ contents: envModule("client"), loader: "js" }));
+      build.onLoad({ filter: /\.astro$/ }, (args) => {
+        const message = `Astro components cannot be used in the browser.\nTried to render "${args.path}".`;
+        const contents = mode === "dev" ? `export default () => { throw new Error(${JSON.stringify(message)}); };` : "export default {};";
+        return { contents, loader: "js" };
       });
     },
   };
@@ -563,7 +577,7 @@ export async function registerAstroPlugin(): Promise<void> {
         contents: `
           import { z } from ${JSON.stringify(projectZodPath())};
           import { defineCollectionWith, referenceWith } from ${JSON.stringify(contentCollectionPath)};
-          export { getCollection, getEntry, render } from ${JSON.stringify(contentPath)};
+          export { getCollection, getEntry, getEntryBySlug, getDataEntryById, render } from ${JSON.stringify(contentPath)};
           export { z };
           export const defineCollection = defineCollectionWith(z);
           export const reference = (collection) => referenceWith(z, collection);
@@ -680,18 +694,17 @@ export async function registerAstroPlugin(): Promise<void> {
         },
       );
 
-      // `astro:env/client` and `astro:env/server` — type-safe env vars.
-      // For SSG, both are resolved at build time from process.env.
-      // The schema in astro.config defines which vars exist; the modules
-      // re-export them so `import { X } from "astro:env/client"` works.
-      mod("astro:env/client", () => ({
-        loader: "ts",
-        contents: generateEnvModule("client"),
-      }));
-      mod("astro:env/server", () => ({
-        loader: "ts",
-        contents: generateEnvModule("server"),
-      }));
+      // Vite's `?inline` CSS: the stylesheet as a string, minified as Vite's build minifies it,
+      // and not a stylesheet of the page (`isCssSpecifier`). Bun's own `?raw` is the text.
+      build.onLoad({ filter: /\.css\?(?:.*&)?inline(?:&|$)/ }, async (args) => {
+        const css = (await minifyCss(await Bun.file(stripQuery(args.path)).text())).trimEnd();
+        return { contents: `export default ${JSON.stringify(css)};`, loader: "js" };
+      });
+
+      mod("astro:config/client", () => ({ loader: "js", contents: astroConfigModuleSource(requireHostConfig(), "client") }));
+      mod("astro:config/server", () => ({ loader: "js", contents: astroConfigModuleSource(requireHostConfig(), "server") }));
+      mod("astro:env/client", () => ({ loader: "js", contents: envModule("client") }));
+      mod("astro:env/server", () => ({ loader: "js", contents: envModule("server") }));
 
       // `astro/container` — experimental Container API shim. Lets
       // integrations render `.astro` components directly (typically
@@ -746,43 +759,22 @@ export async function registerAstroPlugin(): Promise<void> {
   });
 }
 
-// ── astro:env support ──────────────────────────────────────────────
-
-/** Env schema fields recorded by envField helpers in astro.config. */
-const envSchema: Array<{ name: string; context: string; access: string }> = [];
-
-/** Store env schema from Astro config for virtual module generation. */
-export function setEnvSchema(schema: Record<string, unknown> | undefined): void {
-  envSchema.length = 0;
-  if (!schema || typeof schema !== "object") return;
-  for (const [name, def] of Object.entries(schema)) {
-    if (def && typeof def === "object") {
-      const d = def as Record<string, unknown>;
-      envSchema.push({
-        name,
-        context: (d.context as string) ?? "server",
-        access: (d.access as string) ?? "secret",
-      });
-    }
-  }
+function requireHostConfig(): AstroConfig {
+  const config = getHost()?.config;
+  if (config === undefined) throw new Error("astro:config is only available in an Astro project");
+  return config;
 }
 
-/**
- * Generate a virtual module that exports env vars for the given context.
- * For SSG all vars are available at build time from process.env.
- */
-function generateEnvModule(context: "client" | "server"): string {
-  const exports: string[] = [];
-  for (const field of envSchema) {
-    if (field.context === context || context === "server") {
-      exports.push(
-        `export const ${field.name} = process.env[${JSON.stringify(field.name)}] ?? import.meta.env?.[${JSON.stringify(field.name)}] ?? undefined;`,
-      );
-    }
-  }
-  // Even if no schema fields match, export an empty module to avoid import errors
-  if (exports.length === 0) {
-    return "// No env fields defined for this context\nexport {};";
-  }
-  return exports.join("\n");
+// ── astro:env support ──────────────────────────────────────────────
+
+let envFields: EnvField[] = [];
+
+/** Parse the Astro config's `env` for `astro:env/*`; throws on a malformed schema. */
+export function setEnvConfig(env: unknown): void {
+  envFields = parseEnvConfig(env);
+}
+
+/** `astro:env/client` or `astro:env/server`, from the schema and `process.env` (Bun loads `.env`). */
+function envModule(context: "client" | "server"): string {
+  return envModuleSource(envFields, context, process.env);
 }

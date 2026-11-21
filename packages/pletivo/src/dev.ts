@@ -17,6 +17,7 @@ import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, 
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
 import { pageDoctype } from "@pletivo/core/page-doctype";
 import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
+import { configRedirects, findConfigRedirect } from "@pletivo/core/astro-host/redirects";
 import { bundlePageScripts } from "./astro-host/page-scripts";
 import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
 import { configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
@@ -37,8 +38,7 @@ import { createSnapshotStore } from "./dev-snapshots";
 import { createIdleRecycler, isHmrTransportPath, resolveIdleRecycleMs, type IdleRecycler } from "./dev-idle-recycle";
 import { describeConfigChange, isSupervisedChild, RESTART_EXIT_CODE } from "./dev-supervisor";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
-import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
-import { parsePreferredLocales } from "@pletivo/core/i18n/helpers";
+import { computeCurrentLocale, parsePreferredLocales } from "@pletivo/core/i18n/helpers";
 import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import {
   setImageMode,
@@ -68,6 +68,8 @@ import { clearCollectedCss, clearJsImportedCssImportCache, collectCssSideEffectI
 import type { PletivoConfig } from "./config";
 import type { Server, ServerWebSocket } from "bun";
 import { createRequire } from "module";
+import { withAstroMarkdownDefaults } from "./astro-markdown";
+import { registerHtmlPlugin } from "./html-plugin";
 
 const require_ = createRequire(import.meta.url);
 const { version: PLETIVO_VERSION } = require_("../package.json");
@@ -232,6 +234,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });
+  if (astroHost) await registerHtmlPlugin();
   const srcDirError = srcDirMismatch(projectRoot, config.srcDir, astroHost?.configuredSrcDir);
   if (srcDirError) throw new ProjectConfigError(srcDirError);
   // Before initCollections: content.config.ts is the first project module imported.
@@ -239,8 +242,9 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
 
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
   configureMdx(resolveMdxOptions(config, astroHost?.config));
-  configureMarkdown(resolveMarkdownOptions(astroHost?.config));
-  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash);
+  const markdownOptions = resolveMarkdownOptions(astroHost?.config);
+  configureMarkdown(astroHost ? await withAstroMarkdownDefaults(astroHost.config, markdownOptions) : markdownOptions);
+  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash, astroHost !== null);
   configureJsImportedCss(projectRoot, config.srcDir);
   // Before any project module loads: the renderers decide how its framework components compile.
   // Rewired after a failed astro:config:setup recovers, which may register renderers.
@@ -325,7 +329,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   }
 
   await initCollections(projectRoot, config.srcDir);
-  let routes = await scanRoutes(pagesDir);
+  let routes = await scanRoutes(pagesDir, { html: astroHost !== null });
   // Resolve i18n once per dev-server start; renderPage uses it to set
   // Astro.currentLocale from the matched route and Astro.preferredLocale
   // from the incoming request's Accept-Language header. Null when the
@@ -340,6 +344,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     i18n,
     (astroHost?.config.base as string | undefined) ?? "/",
     astroHost?.config.site as string | undefined,
+    { trailingSlash: astroHost?.config.trailingSlash, format: astroHost?.config.build.format },
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("dev");
@@ -399,7 +404,9 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         `Astro.rewrite("${target}") exceeded ${MAX_REWRITE_DEPTH} hops (a cycle?)`,
       );
     }
-    const rawPath = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    // As Astro: a target under the base is routed without it.
+    const slashed = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    const rawPath = stripBase(slashed) ?? slashed;
     const routePath = rawPath === "/" ? "/" : rawPath.replace(/\/$/, "");
     for (const route of routes) {
       const params = matchRoute(route, routePath);
@@ -456,7 +463,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       let preferredLocaleList: string[] = [];
       if (i18n) {
         currentLocale =
-          localeOverride ?? detectRouteLocale(route, i18n).locale?.code;
+          localeOverride ?? computeCurrentLocale(i18n, pathname);
         const accept = request.headers.get("accept-language");
         const parsed = parsePreferredLocales(i18n, accept);
         preferredLocale = parsed.preferredLocale;
@@ -620,7 +627,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       format: "esm",
       target: "browser",
       minify: false,
-      plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin()],
+      plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin("dev")],
     });
     if (result.success) {
       await recordBuildCssOutputs(result.outputs, `hoisted:${hash}`);
@@ -712,7 +719,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   ): Promise<Record<string, unknown> | null> {
     if (!route.isDynamic) return {};
     if (typeof mod.getStaticPaths === "function") {
-      const paginate = createPaginate(route, config.base || "/");
+      const paginate = createPaginate(route, config.base || "/", astroHost?.config.trailingSlash);
       const staticPaths: StaticPath[] = await mod.getStaticPaths({ paginate });
       const match = staticPaths.find((sp) => {
         return Object.entries(params).every(([k, v]) => sp.params[k] === v);
@@ -870,7 +877,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     // Explicit config override first; fall back to the pages/404.* convention.
     const candidates: string[] = [];
     if (notFoundPagePath) candidates.push(notFoundPagePath);
-    for (const ext of [".tsx", ".jsx", ".astro"]) {
+    for (const ext of astroHost ? [".tsx", ".jsx", ".astro", ".html"] : [".tsx", ".jsx", ".astro"]) {
       candidates.push(path.join(pagesDir, `404${ext}`));
     }
     for (const fullPath of candidates) {
@@ -1347,6 +1354,9 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       // route's getStaticPaths doesn't contain the params we cascade to
       // the next matching route instead of falling through to 404.
       const routePath = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+      // `redirects` from the Astro config, ahead of the page of the same route, as Astro dev answers them.
+      const redirect = astroHost ? findConfigRedirect(configRedirects(astroHost.config, routes).redirects, routePath) : undefined;
+      if (redirect) return new Response(null, { status: redirect.status, headers: { Location: redirect.location } });
       for (const route of routes) {
         const params = matchRoute(route, routePath);
         if (params !== null) {
@@ -1538,7 +1548,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       }
 
       if (filename.startsWith("pages/")) {
-        routes = await scanRoutes(pagesDir);
+        routes = await scanRoutes(pagesDir, { html: astroHost !== null });
       }
 
       // Forward to Astro host watcher — integrations like Nua CMS subscribe

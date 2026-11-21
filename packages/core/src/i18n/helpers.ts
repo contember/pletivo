@@ -12,8 +12,12 @@
 import type { ResolvedI18nConfig } from "./config";
 
 export interface LocaleUrlOptions {
-  /** Include trailing slash (default: undefined → follows `trailingSlash`). */
-  trailingSlash?: "always" | "never" | "ignore";
+  /**
+   * Astro's `trailingSlash` and `build.format`: whether a URL ends with `/`, as
+   * `shouldAppendForwardSlash` decides. Without `trailingSlash`, it does not.
+   */
+  trailingSlash?: string;
+  format?: string;
   /** Override `normalizeLocale` behavior (Astro compat — no-op here). */
   normalizeLocale?: boolean;
   /** Override pathname separator — Astro always uses `/`. */
@@ -38,6 +42,27 @@ export function getPathByLocale(
     );
   }
   return resolved.path;
+}
+
+/**
+ * `Astro.currentLocale`, as Astro's render context computes it: the first segment of
+ * `pathname` that is a locale's path or one of its codes, else the default locale.
+ * Astro reads a static route's own path and a dynamic route's request path.
+ */
+export function computeCurrentLocale(config: ResolvedI18nConfig, pathname: string): string {
+  for (const part of pathname.split("/")) {
+    const segment = part.endsWith(".html") ? part.slice(0, -".html".length) : part;
+    for (const locale of config.locales) {
+      if (locale.path === segment) return locale.code;
+      const code = locale.codes.find((candidate) => normalizeTheLocale(candidate) === normalizeTheLocale(segment));
+      if (code !== undefined) return code;
+    }
+  }
+  return config.defaultLocale.code;
+}
+
+function normalizeTheLocale(locale: string): string {
+  return locale.replaceAll("_", "-").toLowerCase();
 }
 
 /**
@@ -74,7 +99,7 @@ export function getRelativeLocaleUrl(
   base: string,
   locale: string,
   path: string = "",
-  _opts: LocaleUrlOptions = {},
+  opts: LocaleUrlOptions = {},
 ): string {
   const resolved =
     config.byCode.get(locale) ?? config.byPath.get(locale);
@@ -101,7 +126,16 @@ export function getRelativeLocaleUrl(
   if (cleanedPath) segments.push(cleanedPath);
 
   const joined = segments.join("/");
-  return joined ? `/${joined}` : "/";
+  if (!joined) return "/";
+  const append = opts.trailingSlash !== undefined && shouldAppendForwardSlash(opts.trailingSlash, opts.format ?? "directory");
+  return append ? `/${joined}/` : `/${joined}`;
+}
+
+/** Astro's `shouldAppendForwardSlash`: whether a page URL ends with `/`. */
+export function shouldAppendForwardSlash(trailingSlash: string, format: string): boolean {
+  if (trailingSlash === "always") return true;
+  if (trailingSlash === "never") return false;
+  return format === "directory";
 }
 
 /**

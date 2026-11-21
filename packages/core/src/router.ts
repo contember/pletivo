@@ -50,7 +50,7 @@ export function isRouteFile(file: string): boolean {
  * Parse a page file path into a Route
  */
 export function parseRoute(file: string): Route {
-  const name = file.replace(/\.(tsx|jsx|ts|js|astro|mdx|md)$/, "");
+  const name = file.replace(/\.(tsx|jsx|ts|js|astro|mdx|md|html)$/, "");
   const parts = name.split("/").filter(Boolean);
   const segments: RouteSegment[] = [];
   let isDynamic = false;
@@ -85,6 +85,53 @@ export function parseRoute(file: string): Route {
   }
 
   return { file, segments, isDynamic, priority, isEndpoint };
+}
+
+/**
+ * Astro's `routeComparator`: the order routes are matched in, and the route that keeps
+ * a path two routes build. Per segment, a static one comes first (two static ones
+ * alphabetically), then a param before a rest; a longer route before a shorter one,
+ * except that a route one rest segment longer comes after; an endpoint before a page;
+ * then the route path alphabetically.
+ */
+export function compareRoutes(a: Route, b: Route): number {
+  const commonLength = Math.min(a.segments.length, b.segments.length);
+  for (let index = 0; index < commonLength; index++) {
+    const aSegment = a.segments[index]!;
+    const bSegment = b.segments[index]!;
+    const aIsStatic = aSegment.type === "static";
+    const bIsStatic = bSegment.type === "static";
+    if (aIsStatic && bIsStatic && aSegment.value !== bSegment.value) {
+      return aSegment.value.localeCompare(bSegment.value);
+    }
+    if (aIsStatic !== bIsStatic) return aIsStatic ? -1 : 1;
+    const aIsRest = aSegment.type === "rest";
+    const bIsRest = bSegment.type === "rest";
+    if (aIsRest !== bIsRest) return aIsRest ? 1 : -1;
+  }
+
+  const aLength = a.segments.length;
+  const bLength = b.segments.length;
+  if (aLength !== bLength) {
+    const aEndsInRest = a.segments.at(-1)?.type === "rest";
+    const bEndsInRest = b.segments.at(-1)?.type === "rest";
+    if (aEndsInRest !== bEndsInRest && Math.abs(aLength - bLength) === 1) {
+      if (aLength > bLength && aEndsInRest) return 1;
+      if (bLength > aLength && bEndsInRest) return -1;
+    }
+    return aLength > bLength ? -1 : 1;
+  }
+
+  if (a.isEndpoint !== b.isEndpoint) return a.isEndpoint ? -1 : 1;
+  return routePath(a).localeCompare(routePath(b));
+}
+
+/** A route as Astro names it: `/blog/[slug]`, `/[...rest]`, `/`. */
+export function routePath(route: Route): string {
+  const parts = route.segments.map((segment) =>
+    segment.type === "static" ? segment.value : segment.type === "param" ? `[${segment.value}]` : `[...${segment.value}]`,
+  );
+  return `/${parts.join("/")}`;
 }
 
 /**
@@ -143,7 +190,29 @@ export function matchRoute(route: Route, pathname: string): RouteParams | null {
 /**
  * Generate the output path for a route with given params
  */
-export function routeToOutputPath(route: Route, params: RouteParams): string {
+/** Astro's `build.format`: how a page's path becomes its output file. */
+export type OutputFormat = "directory" | "file" | "preserve";
+
+/** Astro writes these pages as `<status>.html` even under the `directory` format. */
+const STATUS_CODE_PAGES = new Set(["404", "500"]);
+
+/**
+ * A page's output file from its path segments, as Astro's `getOutFolder` / `getOutFile`
+ * name it under `format`. `index` is a route written as an `index.*` file.
+ */
+export function pageOutputPath(parts: readonly string[], format: OutputFormat, index: boolean): string {
+  if (parts.length === 0) return "index.html";
+  const joined = parts.join("/");
+  if (format === "file" || (format === "preserve" && !index)) return `${joined}.html`;
+  if (format === "directory" && parts.length === 1 && STATUS_CODE_PAGES.has(joined)) return `${joined}.html`;
+  return path.join(joined, "index.html");
+}
+
+/**
+ * The output file of `route` with `params`. Without `format` every page is
+ * `<path>/index.html`; with Astro's `build.format`, see `pageOutputPath`.
+ */
+export function routeToOutputPath(route: Route, params: RouteParams, format?: OutputFormat): string {
   const parts: string[] = [];
   for (const seg of route.segments) {
     if (seg.type === "static") {
@@ -171,14 +240,20 @@ export function routeToOutputPath(route: Route, params: RouteParams): string {
     }
   }
 
+  // Endpoints own their filename — no index.html directory wrapper.
+  if (route.isEndpoint && parts.length > 0) {
+    return path.join(...parts);
+  }
+  if (format !== undefined) return pageOutputPath(parts, format, isIndexRoute(route));
   if (parts.length === 0) {
     return "index.html";
   }
-  // Endpoints own their filename — no index.html directory wrapper.
-  if (route.isEndpoint) {
-    return path.join(...parts);
-  }
   return path.join(...parts, "index.html");
+}
+
+/** The route is written as an `index.*` file, which the `preserve` format keeps as `index.html`. */
+function isIndexRoute(route: Route): boolean {
+  return /(^|\/)index\.[^/]+$/.test(route.file);
 }
 
 /**

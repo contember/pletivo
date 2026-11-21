@@ -89,6 +89,11 @@ describe("Astro project .astro compile options", () => {
     expect(uncompressed.subject).toBe(astro.html);
   });
 
+  test("compressHTML: false keeps the newlines of an Astro.redirect page, as Astro's build does", async () => {
+    const moved = await Bun.file(path.join(uncompressedRoot, "dist/moved/index.html")).text();
+    expect(moved).toStartWith('<!doctype html>\n<title>Redirecting to: /target</title>\n');
+  });
+
   test("the scope id is the one Astro computes for the root-relative path", async () => {
     const { scope } = await astroCompile(compressedRoot, true);
     expect(scope).toBe("t7m3ubvd");
@@ -132,6 +137,7 @@ describe("resolveCompressHTML", () => {
       outDir: root,
       base: "/",
       trailingSlash: "ignore",
+      server: { port: 4321 },
       build: { format: "directory", client: root, server: root, assets: "_astro" },
       integrations: [],
       vite: {},

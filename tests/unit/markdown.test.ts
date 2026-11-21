@@ -1,10 +1,14 @@
-import { describe, test, expect } from "bun:test";
-import { astroMarkdownSettings, parseMarkdown } from "@pletivo/core/content/markdown";
+import { beforeAll, describe, test, expect } from "bun:test";
+import { astroMarkdownSettings, configureMarkdown, parseMarkdown } from "@pletivo/core/content/markdown";
 
 // `parseMarkdown` runs the unified/remark pipeline (remark-parse → remark-gfm →
 // remark-rehype → heading-id slugs → rehype-raw → rehype-stringify) and is async. HTML is
 // rehype-stringify output, so block elements carry remark's whitespace and `<`
 // is escaped as `&#x3C;`.
+
+// The options are process-wide, and a build of an Astro project in this process installs
+// Astro's defaults (Shiki, smartypants, its heading ids). These tests are about pletivo's own.
+beforeAll(() => configureMarkdown({}));
 
 describe("frontmatter parsing", () => {
   test("extracts key-value pairs", async () => {

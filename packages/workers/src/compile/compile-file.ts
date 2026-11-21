@@ -45,7 +45,8 @@ export async function compileCached(
   const astro = module.kind === "astro";
   const annotate = options.annotateSourceFile && astro;
   const scopedStyleStrategy = astro ? options.scopedStyleStrategy : undefined;
-  const compressHTML = astro ? options.compressHTML : undefined;
+  // A `.md` page renders as Astro's when the project is one, which `compressHTML` marks.
+  const compressHTML = astro || module.kind === "md" ? options.compressHTML : undefined;
   const trailingSlash = module.kind === "md" ? options.trailingSlash : undefined;
   const mdx = module.kind === "mdx" ? mdxCompiler(module, options.mdx) : null;
   const mdxIdentity = mdx === null ? undefined : await mdx.identity();
@@ -107,7 +108,8 @@ async function compileFile(
     return fileEntry(source, `export default ${JSON.stringify(value)};\n`, null, kind, [], compilePath);
   }
   if (kind === "md") {
-    return { ...fileEntry(source, compileMarkdown(source, compilePath, trailingSlash), null, kind, [], compilePath), trailingSlash };
+    const code = compileMarkdown(source, compilePath, trailingSlash, compressHTML !== undefined);
+    return { ...fileEntry(source, code, null, kind, [], compilePath), trailingSlash, compressHTML };
   }
   if (kind === "tsx" || kind === "jsx") assertPletivoJsx(source, compilePath);
   if (kind === "ts" || kind === "tsx" || kind === "jsx") {
@@ -265,7 +267,7 @@ function fileEntry(
  * A `.md` file as the module the Bun host loads; its Markdown renders in the isolate,
  * where the project's plugins run. Paths are project paths: the root is `""`, `base` is `/`.
  */
-function compileMarkdown(source: string, file: string, trailingSlash: ArtifactTrailingSlash | undefined): string {
+function compileMarkdown(source: string, file: string, trailingSlash: ArtifactTrailingSlash | undefined, astro: boolean): string {
   try {
     return markdownModule({
       source,
@@ -274,6 +276,7 @@ function compileMarkdown(source: string, file: string, trailingSlash: ArtifactTr
       root: "",
       base: "/",
       trailingSlash,
+      astro,
       runtime: "pletivo/astro-shim",
       markdown: MARKDOWN_SPECIFIER,
     });

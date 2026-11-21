@@ -16,7 +16,6 @@ en/index.html
 en/start/index.html
 index.html
 pt/index.html
-start/index.html
 
 --- pletivo:conformance en/index.html ---
 <!DOCTYPE html><html> <head><title>English Home</title></head> <body> <h1>English Home</h1> <p data-test="current-locale">en</p> </body></html>
@@ -25,10 +24,7 @@ start/index.html
 <!DOCTYPE html><html> <head><title>Start</title></head> <body> <h1>Start</h1> <p data-test="current-locale">en</p> </body></html>
 
 --- pletivo:conformance index.html ---
-<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/new-site/en"><link rel="canonical" href="/new-site/en"></head><body></body></html>
+<!doctype html><title>Redirecting to: /new-site/en/</title><meta http-equiv="refresh" content="2;url=/new-site/en/"><meta name="robots" content="noindex"><link rel="canonical" href="/new-site/en/"><body>	<a href="/new-site/en/">Redirecting from <code>/new-site</code> to <code>/new-site/en/</code></a></body>
 
 --- pletivo:conformance pt/index.html ---
 <!DOCTYPE html><html> <head><title>Home PT</title></head> <body> <h1>Home PT</h1> <p data-test="current-locale">pt</p> </body></html>
-
---- pletivo:conformance start/index.html ---
-<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/new-site/en/start"><link rel="canonical" href="/new-site/en/start"></head><body></body></html>

@@ -41,6 +41,8 @@ export interface AstroConfig {
   site?: string;
   base: string;
   trailingSlash: string;
+  /** `port` defaults to Astro's 4321: a build's request origin when no `site` is set. */
+  server: { port: number; [key: string]: unknown };
   build: {
     format: "file" | "directory" | "preserve";
     client: URL;

@@ -325,6 +325,8 @@ export interface PageContext {
    * reading it there throws instead.
    */
   clientAddress?: string;
+  /** The project's `compressHTML`, for the page `Astro.redirect` turns into. Default true, as Astro's. */
+  compressHTML?: boolean;
 }
 
 type SlotFn = (...args: unknown[]) => unknown;
@@ -453,12 +455,12 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
  * - HtmlString → raw
  * - Promise → awaited
  * - Array → joined
- * - null/undefined/false → empty
+ * - a falsy value other than 0 → empty; `true` → "true", as Astro's `renderChild`
  * - number → stringified
  * - string → HTML-escaped (text content default)
  */
 async function renderValue(value: unknown): Promise<string> {
-  if (value == null || value === false || value === true) return "";
+  if (!value && value !== 0) return "";
   if (typeof value === "string") return escapeHtml(value);
   if (typeof value === "number" || typeof value === "bigint") return String(value);
   if (isHtmlString(value)) return value.__html;
@@ -473,6 +475,15 @@ async function renderValue(value: unknown): Promise<string> {
   if (typeof value === "function") {
     const slotArgs = getSlotArgs();
     return renderValue(slotArgs ? value(...slotArgs) : value());
+  }
+  // As Astro's `renderToString`: a component's returned Response writes nothing.
+  if (value instanceof Response) return "";
+  if (value instanceof Uint8Array) return new TextDecoder().decode(value);
+  if (isIterable(value)) return (await Promise.all(Array.from(value, renderValue))).join("");
+  if (isAsyncIterable(value)) {
+    let out = "";
+    for await (const chunk of value) out += await renderValue(chunk);
+    return out;
   }
   assertNotForeignElement(value);
   // Fallback: stringify + escape
@@ -696,7 +707,7 @@ export async function renderComponent(
     assertElementName(tag);
     let attrs = "";
     for (const [k, v] of Object.entries(cleanProps)) {
-      attrs += addAttribute(v, k).__html;
+      attrs += addAttribute(v, k, true, tag).__html;
     }
     const childHtml = slots.default
       ? await renderValue(slots.default())
@@ -745,29 +756,98 @@ export async function renderSlot(
   return createHtml("");
 }
 
+/** A piece of an `.html` component: its text verbatim, or a `<slot>` with the trimmed text it falls back to. */
+export type HtmlComponentPart = string | { slot: string; fallback: string };
+
+/**
+ * Astro's `.html` component (`vite-plugin-html`): the file's text, each slot the content
+ * passed for it or the fallback. Props are ignored, as in Astro.
+ */
+export function htmlComponent(parts: HtmlComponentPart[]): AstroComponentFactory {
+  return createComponent(async (result, _props, slots) => {
+    let html = "";
+    for (const part of parts) {
+      if (typeof part === "string") html += part;
+      else html += slots[part.slot] ? (await renderSlot(result, slots[part.slot])).__html : part.fallback;
+    }
+    return createHtml(html);
+  });
+}
+
 export function mergeSlots(...args: SlotsRecord[]): SlotsRecord {
   return Object.assign({}, ...args);
 }
 
 // ── Attributes ──────────────────────────────────────────────────────
 
+/** HTML attributes whose presence is the value; Astro's list. */
+const HTML_BOOLEAN_ATTRIBUTES =
+  /^(?:allowfullscreen|async|autofocus|autoplay|checked|controls|default|defer|disabled|disablepictureinpicture|disableremoteplayback|formnovalidate|hidden|inert|loop|muted|nomodule|novalidate|open|playsinline|readonly|required|reversed|scoped|seamless|selected|itemscope)$/i;
+
+/** Astro's attribute escape: `&` and `"` as numeric references. */
+function toAttributeString(value: unknown, escape = true): string {
+  const text = String(value);
+  return escape ? text.replace(/&/g, "&#38;").replace(/"/g, "&#34;") : text;
+}
+
+function kebab(key: string): string {
+  return key.toLowerCase() === key ? key : key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+}
+
+/** A style object as CSS text: non-empty strings and numbers, camelCase keys in kebab-case. */
+function toStyleString(style: object): string {
+  return Object.entries(style)
+    .filter(([, v]) => (typeof v === "string" && v.trim()) || typeof v === "number")
+    .map(([k, v]) => (k[0] !== "-" && k[1] !== "-" ? `${kebab(k)}:${v}` : `${k}:${v}`))
+    .join(";");
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function booleanAttribute(key: string, value: unknown, tagName: string): HtmlString {
+  // A custom element gets the value as a string: its own code decides what it means.
+  if (tagName.includes("-")) return createHtml(` ${key}="${toAttributeString(value)}"`);
+  return createHtml(value ? ` ${key}` : "");
+}
+
 /**
  * Render a single attribute as an HTML fragment, for interpolation inside
- * a tag: `<meta${$$addAttribute(value, "content")}>`.
+ * a tag: `<meta${$$addAttribute(value, "content")}>`. Astro's rules: `false`
+ * and `true` are written as strings except on boolean attributes, a style
+ * object becomes CSS text, an empty string a bare attribute.
  */
-export function addAttribute(value: unknown, key: string): HtmlString {
-  if (value == null || value === false) return createHtml("");
+export function addAttribute(value: unknown, key: string, shouldEscape = true, tagName = ""): HtmlString {
+  if (value == null) return createHtml("");
+  if (key === "set:html" || key === "set:text") {
+    console.warn(`[pletivo] The "${key}" directive cannot be applied dynamically at runtime; it is not rendered as an attribute.`);
+    return createHtml("");
+  }
   if (key === "class:list") {
     const cls = normalizeClassList(value);
     if (!cls) return createHtml("");
-    return createHtml(` class="${escapeAttr(cls)}"`);
+    return createHtml(` class="${toAttributeString(cls, shouldEscape)}"`);
   }
-  if (value === true) return createHtml(` ${key}`);
-  // HtmlString (e.g. from defineStyleVars) — extract raw content
-  if (isHtmlString(value)) {
-    return createHtml(` ${key}="${escapeAttr(value.__html)}"`);
+  // An HtmlString (e.g. from defineStyleVars) is written as its text, like any other value.
+  if (key === "style" && !isHtmlString(value)) {
+    if (Array.isArray(value) && value.length === 2) {
+      return createHtml(` ${key}="${toAttributeString(`${toStyleString(value[0])};${value[1]}`, shouldEscape)}"`);
+    }
+    if (typeof value === "object") return createHtml(` ${key}="${toAttributeString(toStyleString(value), shouldEscape)}"`);
   }
-  return createHtml(` ${key}="${escapeAttr(String(value))}"`);
+  if (key === "className") return createHtml(` class="${toAttributeString(value, shouldEscape)}"`);
+  // An http(s) URL with a query keeps its `&`, as Astro writes it.
+  if (typeof value === "string" && value.includes("&") && isHttpUrl(value)) return createHtml(` ${key}="${value}"`);
+  if (HTML_BOOLEAN_ATTRIBUTES.test(key)) return booleanAttribute(key, value, tagName);
+  if (value === "") return createHtml(` ${key}`);
+  if ((key === "popover" || key === "download") && typeof value === "boolean") return booleanAttribute(key, value, tagName);
+  return createHtml(` ${key}="${toAttributeString(value, shouldEscape)}"`);
 }
 
 /** Render an object of attributes. */
@@ -790,7 +870,7 @@ export function spreadAttributes(
   }
   let out = "";
   for (const [k, v] of Object.entries(values)) {
-    out += addAttribute(v, k).__html;
+    out += addAttribute(v, k, true, _name ?? "").__html;
   }
   return createHtml(out);
 }
@@ -847,9 +927,17 @@ export function defineStyleVars(defs: Record<string, unknown> | Record<string, u
 export function defineScriptVars(vars: Record<string, unknown>): HtmlString {
   let output = "";
   for (const [key, value] of Object.entries(vars)) {
-    output += `const ${key} = ${JSON.stringify(value)?.replace(/<\/script>/g, "\\x3C/script>")};\n`;
+    output += `const ${toIdent(key)} = ${JSON.stringify(value)?.replace(/<\/script>/g, "\\x3C/script>")};\n`;
   }
   return createHtml(output);
+}
+
+/** A `define:vars` key as a JavaScript identifier, as Astro makes it: `dash-case` → `dashCase`. */
+function toIdent(key: string): string {
+  return key.trim().replace(/(?!^)\b\w|\s+|\W+/g, (match: string, index: number) => {
+    if (/\W/.test(match)) return "";
+    return index === 0 ? match : match.toUpperCase();
+  });
 }
 
 export function renderTransition(
@@ -874,9 +962,33 @@ export function createTransitionScope(
 export function unescapeHTML(value: unknown): HtmlString | Promise<HtmlString> {
   if (isHtmlString(value)) return value;
   if (value instanceof Promise) {
-    return value.then((v) => unescapeHTML(v) as HtmlString);
+    return value.then((v) => unescapeHTML(v));
   }
-  return createHtml(String(value ?? ""));
+  // As Astro: bytes, a Response's body, and each chunk of an iterable or a stream are HTML.
+  if (value instanceof Uint8Array) return createHtml(new TextDecoder().decode(value));
+  if (value instanceof Response && value.body) return value.text().then(createHtml);
+  if (isIterable(value)) {
+    return Promise.all(Array.from(value, unescapeHTML)).then((chunks) => createHtml(chunks.map((chunk) => chunk.__html).join("")));
+  }
+  if (isAsyncIterable(value)) return unescapeChunks(value);
+  // As Astro, which leaves a non-string primitive as is: `false` renders nothing, `true` its text.
+  return createHtml(value == null || value === false ? "" : String(value));
+}
+
+async function unescapeChunks(chunks: AsyncIterable<unknown>): Promise<HtmlString> {
+  let html = "";
+  for await (const chunk of chunks) html += (await unescapeHTML(chunk)).__html;
+  return createHtml(html);
+}
+
+/** An iterable object other than a string, an array, or an `HtmlString` (callers check those first). */
+function isIterable(value: unknown): value is Iterable<unknown> {
+  return typeof value === "object" && value !== null && Symbol.iterator in value;
+}
+
+/** An async iterable, a `ReadableStream` among them. */
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return typeof value === "object" && value !== null && Symbol.asyncIterator in value;
 }
 
 // ── Fragment ────────────────────────────────────────────────────────
@@ -914,9 +1026,41 @@ export async function renderAstroPage(
   // The page returned a Response: a redirect folds into a meta-refresh page,
   // a rewrite's HTML body is the page's content (same rules as build.ts).
   if (out instanceof Response) {
-    return out.headers.get("location") ? redirectPageHtml(out) : await out.text();
+    return out.headers.get("location") ? redirectPageHtml(out, pageContext) : await out.text();
   }
   return (out as HtmlString).__html;
+}
+
+export interface RedirectTemplate {
+  /** The response status: a 302 waits 2 s before the refresh, so search engines read it as temporary. */
+  status: number;
+  /** Where to, as the page wrote it. */
+  location: string;
+  /** The redirecting page's path, base included. */
+  from?: string;
+  /** Astro's `site`: the canonical link is absolute against it. */
+  site?: URL;
+  /** Astro's `compressHTML`, true unless configured: the template's newlines are dropped. */
+  compressHTML?: boolean;
+}
+
+/**
+ * The page a static build writes for a redirect, as Astro's `redirectTemplate`
+ * writes it. The location is escaped, which Astro does not do.
+ */
+export function redirectTemplate({ status, location, from, site, compressHTML = true }: RedirectTemplate): string {
+  const delay = status === 302 ? 2 : 0;
+  const relative = escapeAttr(location);
+  const absolute = escapeAttr(site ? new URL(location, site).href : location);
+  const html = `<!doctype html>
+<title>Redirecting to: ${relative}</title>
+<meta http-equiv="refresh" content="${delay};url=${relative}">
+<meta name="robots" content="noindex">
+<link rel="canonical" href="${absolute}">
+<body>
+	<a href="${relative}">Redirecting ${from ? `from <code>${escapeHtml(from)}</code> ` : ""}to <code>${relative}</code></a>
+</body>`;
+  return compressHTML ? html.replaceAll("\n", "") : html;
 }
 
 /**
@@ -925,18 +1069,10 @@ export async function renderAstroPage(
  * Returns "" for a Response that isn't a redirect — the caller decides what
  * to do with it.
  */
-export function redirectPageHtml(response: Response): string {
+export function redirectPageHtml(response: Response, page: Pick<PageContext, "url" | "site" | "compressHTML"> = {}): string {
   const location = response.headers.get("location");
   if (!location) return "";
-  const href = escapeAttr(location);
-  return (
-    `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-    `<title>Redirecting to: ${escapeHtml(location)}</title>` +
-    `<meta http-equiv="refresh" content="0;url=${href}">` +
-    `<meta name="robots" content="noindex">` +
-    `<link rel="canonical" href="${href}">` +
-    `</head><body><a href="${href}">Redirecting to ${escapeHtml(location)}</a></body></html>`
-  );
+  return redirectTemplate({ status: response.status, location, from: page.url?.pathname, site: page.site, compressHTML: page.compressHTML });
 }
 
 // ── Markdown modules ────────────────────────────────────────────────
@@ -953,11 +1089,13 @@ export interface MarkdownPage {
 
 /**
  * A `.md` module's `Content`: its HTML, inside `Layout` when the frontmatter names one,
- * with the props Astro gives a Markdown layout.
+ * with the props Astro gives a Markdown layout. `charset` starts it with
+ * `<meta charset="utf-8">`, as Astro does for a page without a layout.
  */
-export function markdownContent(page: MarkdownPage, Layout: unknown): AstroComponentFactory {
+export function markdownContent(page: MarkdownPage, Layout: unknown, charset = false): AstroComponentFactory {
   return createComponent(async (result) => {
-    const html = createHtml(await page.compiledContent());
+    const compiled = await page.compiledContent();
+    const html = createHtml(charset ? `<meta charset="utf-8">${compiled}` : compiled);
     if (Layout === null) return html;
     const { layout: _layout, ...content } = page.frontmatter;
     content.file = page.file;

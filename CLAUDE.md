@@ -20,6 +20,9 @@ bun test packages/workers/test           # Workers host (its own CI step)
 # Astro's official examples: build with Astro and pletivo, compare (docs/todos/024)
 bun tests/astro-examples/run.ts [--astro <checkout>] [--only basics,blog]
 
+# Astro's own test fixtures (a fixed subset): build with Astro and pletivo, compare (docs/todos/028)
+bun tests/astro-fixtures/run.ts --astro <checkout> [--only a,b] [--pletivo <checkout>]
+
 # Benchmark (pletivo vs native Astro build)
 scripts/benchmark.sh                     # 5 runs (default)
 RUNS=10 scripts/benchmark.sh

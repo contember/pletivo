@@ -79,6 +79,7 @@ describe("buildAstroRoutes with i18n", () => {
     outDir: new URL("file:///project/dist/"),
     base: "/",
     trailingSlash: "ignore",
+    server: { port: 4321 },
     build: {
       format: "directory",
       client: new URL("file:///project/dist/client/"),

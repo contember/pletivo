@@ -31,6 +31,8 @@ interface I18nRuntimeState {
   config: ResolvedI18nConfig;
   base: string;
   site: string | undefined;
+  /** What every helper's URL ending follows unless its own options say otherwise, as in Astro. */
+  urlOptions: LocaleUrlOptions;
 }
 
 let state: I18nRuntimeState | null = null;
@@ -45,8 +47,9 @@ export function setI18nRuntimeState(
   config: ResolvedI18nConfig | null,
   base: string,
   site: string | undefined,
+  urlOptions: LocaleUrlOptions = {},
 ): void {
-  state = config ? { config, base, site } : null;
+  state = config ? { config, base, site, urlOptions } : null;
 }
 
 /** For tests — reset to a clean slate. */
@@ -81,8 +84,8 @@ export function getRelativeLocaleUrl(
   path: string = "",
   opts: LocaleUrlOptions = {},
 ): string {
-  const { config, base } = requireState("getRelativeLocaleUrl");
-  return _getRelativeLocaleUrl(config, base, locale, path, opts);
+  const { config, base, urlOptions } = requireState("getRelativeLocaleUrl");
+  return _getRelativeLocaleUrl(config, base, locale, path, { ...urlOptions, ...opts });
 }
 
 export function getAbsoluteLocaleUrl(
@@ -90,24 +93,24 @@ export function getAbsoluteLocaleUrl(
   path: string = "",
   opts: LocaleUrlOptions = {},
 ): string {
-  const { config, base, site } = requireState("getAbsoluteLocaleUrl");
-  return _getAbsoluteLocaleUrl(config, base, site, locale, path, opts);
+  const { config, base, site, urlOptions } = requireState("getAbsoluteLocaleUrl");
+  return _getAbsoluteLocaleUrl(config, base, site, locale, path, { ...urlOptions, ...opts });
 }
 
 export function getRelativeLocaleUrlList(
   path: string = "",
   opts: LocaleUrlOptions = {},
 ): string[] {
-  const { config, base } = requireState("getRelativeLocaleUrlList");
-  return _getRelativeLocaleUrlList(config, base, path, opts);
+  const { config, base, urlOptions } = requireState("getRelativeLocaleUrlList");
+  return _getRelativeLocaleUrlList(config, base, path, { ...urlOptions, ...opts });
 }
 
 export function getAbsoluteLocaleUrlList(
   path: string = "",
   opts: LocaleUrlOptions = {},
 ): string[] {
-  const { config, base, site } = requireState("getAbsoluteLocaleUrlList");
-  return _getAbsoluteLocaleUrlList(config, base, site, path, opts);
+  const { config, base, site, urlOptions } = requireState("getAbsoluteLocaleUrlList");
+  return _getAbsoluteLocaleUrlList(config, base, site, path, { ...urlOptions, ...opts });
 }
 
 /**

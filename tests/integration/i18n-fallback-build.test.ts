@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import { build } from "../../packages/pletivo/src/build";
 import type { PletivoConfig } from "../../packages/pletivo/src/config";
 
@@ -89,14 +90,13 @@ describe("i18n prefixDefaultLocale + redirectToDefaultLocale build", () => {
     );
   });
 
-  test("emits meta-refresh redirect from unprefixed default-locale URLs", async () => {
+  test("redirects only the root to the default locale, as Astro's i18n middleware does", async () => {
     const rootRedirect = await readFile(prefixDist, "index.html");
     expect(rootRedirect).toContain("http-equiv=\"refresh\"");
     expect(rootRedirect).toContain("/new-site/en");
 
-    const startRedirect = await readFile(prefixDist, "start/index.html");
-    expect(startRedirect).toContain("http-equiv=\"refresh\"");
-    expect(startRedirect).toContain("/new-site/en/start");
+    // Astro has no route for an unprefixed default-locale page.
+    expect(existsSync(path.join(prefixDist, "start/index.html"))).toBe(false);
   });
 
   test("non-default locales do not emit unprefixed redirects", async () => {

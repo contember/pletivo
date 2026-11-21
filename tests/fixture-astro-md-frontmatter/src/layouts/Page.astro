@@ -1,0 +1,4 @@
+---
+const { frontmatter, headings } = Astro.props;
+---
+<p id="layout">{frontmatter.injected}</p><p id="headings">{JSON.stringify(headings)}</p><slot />

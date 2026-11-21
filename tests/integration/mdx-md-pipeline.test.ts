@@ -130,7 +130,7 @@ describe(".mdx compilation", () => {
       astro: {
         pagesDir: path.join(dir, "pages"),
         experimentalHeadingIdCompat: false,
-        highlight: { projectRoot: dir, syntaxHighlight: false, shikiConfig: {} },
+        highlight: { subject: "MDX", projectRoot: dir, syntaxHighlight: false, shikiConfig: {} },
       },
     });
     const file = path.join(dir, "injected.mdx");

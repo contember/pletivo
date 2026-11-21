@@ -18,6 +18,7 @@ function astroConfig(overrides: Partial<AstroConfig>): AstroConfig {
     outDir: new URL("dist/", root),
     base: "/",
     trailingSlash: "ignore",
+    server: { port: 4321 },
     build: { format: "directory", client: root, server: root, assets: "_astro" },
     integrations: [],
     vite: {},

@@ -3,6 +3,7 @@ import {
   AstroCookies,
   createComponent,
   redirectPageHtml,
+  redirectTemplate,
   renderAstroPage,
   renderComponent,
   type AstroGlobal,
@@ -220,7 +221,8 @@ describe("Astro.redirect", () => {
     }, "page");
 
     const html = await renderAstroPage(page, {}, {});
-    expect(html).toContain('<meta http-equiv="refresh" content="0;url=/kontakty">');
+    // Astro.redirect defaults to a 302, which Astro's template delays by 2 s.
+    expect(html).toContain('<meta http-equiv="refresh" content="2;url=/kontakty">');
     expect(html).toContain('<meta name="robots" content="noindex">');
     expect(html).toContain('<link rel="canonical" href="/kontakty">');
   });
@@ -229,9 +231,21 @@ describe("Astro.redirect", () => {
     const html = redirectPageHtml(
       new Response(null, { status: 302, headers: { location: '/a"b&c' } }),
     );
-    expect(html).toContain('content="0;url=/a&quot;b&amp;c"');
+    expect(html).toContain('content="2;url=/a&quot;b&amp;c"');
     expect(html).not.toContain('"b&c"');
     expect(redirectPageHtml(new Response("body", { status: 200 }))).toBe("");
+  });
+
+  test("redirectTemplate writes Astro's page: no delay for a 301, the source path, an absolute canonical", () => {
+    expect(redirectTemplate({ status: 301, location: "/en/", from: "/new-site", site: new URL("https://example.com") })).toBe(
+      '<!doctype html><title>Redirecting to: /en/</title><meta http-equiv="refresh" content="0;url=/en/">' +
+        '<meta name="robots" content="noindex"><link rel="canonical" href="https://example.com/en/">' +
+        '<body>\t<a href="/en/">Redirecting from <code>/new-site</code> to <code>/en/</code></a></body>',
+    );
+    // compressHTML: false keeps the template's newlines.
+    expect(redirectTemplate({ status: 302, location: "/a", compressHTML: false })).toStartWith(
+      '<!doctype html>\n<title>Redirecting to: /a</title>\n<meta http-equiv="refresh" content="2;url=/a">\n',
+    );
   });
 });
 

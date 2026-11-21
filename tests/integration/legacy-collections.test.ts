@@ -4,6 +4,8 @@ import {
   initCollections,
   getCollection,
   getEntry,
+  getEntryBySlug,
+  getDataEntryById,
   runWithBunContentRuntime,
   type Reference,
 } from "../../packages/pletivo/src/content/collection";
@@ -31,7 +33,18 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
 
   // A fresh generation per test, so a collection's load (and its warnings) belongs to the test.
   beforeEach(async () => {
-    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
+    // The orphan/ folder's auto-generation warning is asserted in its own test.
+    await warningsOf(() => runWithBunContentRuntime(() => initCollections(fixtureRoot)));
+  });
+
+  test("getCollection returns a new array on each call, so a page may sort or splice it", async () => {
+    const first = await runWithBunContentRuntime(() => getCollection("docs"));
+    const count = first.length;
+    first.splice(0, 1);
+    first.reverse();
+    const second = await runWithBunContentRuntime(() => getCollection("docs"));
+    expect(second).toHaveLength(count);
+    expect(second[0].id).toBe("Guides/Getting Started.md");
   });
 
   test("a content collection reads src/content/<name>/, skipping _-prefixed paths and data files", async () => {
@@ -54,6 +67,13 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
     const byFrontmatterSlug = await runWithBunContentRuntime(() => getEntry("docs", "renamed"));
     expect(byFrontmatterSlug?.id).toBe("custom.md");
     expect(await runWithBunContentRuntime(() => getEntry("docs", "intro.md"))).toBeUndefined();
+  });
+
+  test("the deprecated getEntryBySlug and getDataEntryById find an entry by slug and by id", async () => {
+    expect((await runWithBunContentRuntime(() => getEntryBySlug("docs", "renamed")))?.id).toBe("custom.md");
+    expect(await runWithBunContentRuntime(() => getEntryBySlug("docs", "custom.md"))).toBeUndefined();
+    expect((await runWithBunContentRuntime(() => getDataEntryById("authors", "jane")))?.data).toBeDefined();
+    expect(await runWithBunContentRuntime(() => getDataEntryById("authors", "nobody"))).toBeUndefined();
   });
 
   test("getEntry takes a { collection, slug } lookup", async () => {
@@ -87,8 +107,8 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
   test("render() also returns Astro's Content, headings and remarkPluginFrontmatter", async () => {
     const intro = await runWithBunContentRuntime(() => getEntry("docs", "intro"));
     const rendered = await intro?.render();
-    expect(rendered?.headings).toEqual([]);
-    expect(rendered?.remarkPluginFrontmatter).toEqual({});
+    expect(rendered?.headings).toEqual([{ depth: 1, slug: "welcome", text: "Welcome" }]);
+    expect(rendered?.remarkPluginFrontmatter).toEqual({ title: "Intro" });
     expect(isNativeComponent(rendered?.Content)).toBe(true);
     const content = await rendered?.Content?.();
     expect(content?.__html).toContain("Welcome</h1>");
@@ -173,5 +193,15 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
       { id: "jane", slug: undefined, name: "Jane" },
       { id: "team/john", slug: undefined, name: "John" },
     ]);
+  });
+  test("an undefined src/content/ folder becomes a content collection, as Astro 5 auto-generates it", async () => {
+    const warnings = await warningsOf(() => runWithBunContentRuntime(() => initCollections(fixtureRoot)));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("The following collections have been auto-generated: orphan");
+    const entries = await runWithBunContentRuntime(() => getCollection("orphan"));
+    expect(entries.map((e) => ({ id: e.id, slug: e.slug, title: e.data.title }))).toEqual([
+      { id: "first.md", slug: "first", title: "Orphan" },
+    ]);
+    expect(runWithBunContentRuntime(() => getCollection("_hidden"))).rejects.toThrow('Collection "_hidden" not found');
   });
 });

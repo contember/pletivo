@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import { scanRoutes } from "./router";
-import { matchRoute, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { compareRoutes, matchRoute, pageOutputPath, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
 import { escapeStyleEnd } from "@pletivo/core/inline-style";
 import {
@@ -11,7 +11,7 @@ import {
   runWithBunContentRuntime,
 } from "./content/collection";
 import { resetIslandRegistry } from "@pletivo/runtime/island";
-import { runInPage, runWithRenderTracking, redirectPageHtml, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
+import { runInPage, runWithRenderTracking, redirectPageHtml, redirectTemplate, AstroCookies, MAX_REWRITE_DEPTH, type AstroResponse, type PageContext } from "@pletivo/runtime/astro-shim";
 import { hydrationScript } from "@pletivo/runtime/hydration";
 import { finalizeIslandScripts } from "@pletivo/runtime/astro-islands/index";
 import { bundleCss, stylesheetsForPage, type CssBundle, type Stylesheet } from "./css";
@@ -33,12 +33,12 @@ import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./a
 import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
 import { bundlePageScripts } from "./astro-host/page-scripts";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
-import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { computeCurrentLocale, shouldAppendForwardSlash } from "@pletivo/core/i18n/helpers";
 import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "@pletivo/core/i18n/fallback";
 import { setImageMode, setImageService, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
 import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
-import { setBase } from "@pletivo/runtime/base";
+import { setBase, stripBase, withBase } from "@pletivo/runtime/base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, dynamicGraphOf, recordBuildCssOutputs, restoreDynamicGraph } from "./js-imported-css";
@@ -53,7 +53,10 @@ import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { escapeRegex } from "@pletivo/core/escape-regex";
 import { pageDoctype } from "@pletivo/core/page-doctype";
 import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
+import { configRedirects } from "@pletivo/core/astro-host/redirects";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
+import { withAstroMarkdownDefaults } from "./astro-markdown";
+import { registerHtmlPlugin } from "./html-plugin";
 
 /** Shape a dynamic page module is used through: its default export + getStaticPaths. */
 interface DynamicMod {
@@ -189,14 +192,16 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   await registerScssPlugin(projectRoot);
   await registerProjectSourcePlugin(projectRoot, config.srcDir);
   const astroHost = await initAstroHost(projectRoot, "build");
+  if (astroHost) await registerHtmlPlugin();
   const srcDirError = srcDirMismatch(projectRoot, config.srcDir, astroHost?.configuredSrcDir);
   if (srcDirError) throw new ProjectConfigError(srcDirError);
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
-  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash);
+  configureMdModules(projectRoot, config.base, astroHost?.config.trailingSlash, astroHost !== null);
   // Before initCollections: content.config.ts is the first project module imported.
   installImportMetaEnv({ mode: "build", base: config.base, astroConfig: astroHost?.config });
   configureMdx(resolveMdxOptions(config, astroHost?.config));
-  configureMarkdown(resolveMarkdownOptions(astroHost?.config));
+  const markdownOptions = resolveMarkdownOptions(astroHost?.config);
+  configureMarkdown(astroHost ? await withAstroMarkdownDefaults(astroHost.config, markdownOptions) : markdownOptions);
   configureScss(readScssOptions(astroHost?.config.vite));
   clearJsImportedCss();
   // Before any project module loads: the renderers decide how its framework components compile.
@@ -305,17 +310,24 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
   // Scan routes
   const tScan = performance.now();
-  const routes = await scanRoutes(pagesDir);
+  const routes = await scanRoutes(pagesDir, { html: astroHost !== null });
   phase("scanRoutes", tScan);
   console.log(`Found ${routes.length} routes`);
 
   // Render all pages — static pages in parallel, dynamic sequentially
   const staticRoutes = routes.filter(
-    (r) => !r.isDynamic && r.file !== "404.tsx" && r.file !== "404.jsx" && r.file !== "404.astro",
+    (r) => !r.isDynamic && r.file !== "404.tsx" && r.file !== "404.jsx" && r.file !== "404.astro" && r.file !== "404.html",
   );
   const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
   const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+  // Astro builds each page from a request at `site`, or at its dev server's origin.
+  const requestOrigin = siteUrl?.origin ?? (astroHost ? `http://localhost:${astroHost.config.server.port}` : "http://localhost/");
+  // Astro's root page is requested at its base as configured, `trailingSlash` applied (`getUrlForPath`).
+  const pageCompressHTML = resolveCompressHTML(astroHost?.config) ?? true;
+  const astroRootPath = astroHost ? astroBasePath(astroHost.config.base, astroHost.config.trailingSlash) : undefined;
+  // An Astro project names its output files by `build.format`; a native one writes `<path>/index.html`.
+  const outputFormat = astroHost?.config.build.format;
   const i18n = resolveI18nConfig(astroHost?.config.i18n);
   // Install runtime state for the `astro:i18n` virtual module. Must
   // run before any .astro page module is imported, so that helpers
@@ -324,6 +336,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     i18n,
     (astroHost?.config.base as string | undefined) ?? "/",
     astroHost?.config.site as string | undefined,
+    { trailingSlash: astroHost?.config.trailingSlash, format: astroHost?.config.build.format },
   );
   setBase((astroHost?.config.base as string | undefined) ?? config.base ?? "/");
   setImageMode("build");
@@ -372,7 +385,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         `Astro.rewrite("${target}") exceeded ${MAX_REWRITE_DEPTH} hops (a cycle?)`,
       );
     }
-    const rawPath = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    // As Astro: a target under the base is routed without it.
+    const slashed = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    const rawPath = stripBase(slashed) ?? slashed;
     const routePath = rawPath === "/" ? "/" : rawPath.replace(/\/$/, "");
     for (const route of routes) {
       const params = matchRoute(route, routePath);
@@ -398,7 +413,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         if (!match) continue;
         props = match.props || {};
       }
-      const ctx = makePageContext(routePath, params, route, undefined, depth + 1);
+      const requestPath = astroHost
+        ? astroRewritePath(slashed, astroRootPath ?? "/", astroHost.config.trailingSlash, astroHost.config.build.format)
+        : undefined;
+      const ctx = makePageContext(routePath, params, route, undefined, depth + 1, requestPath);
       const html = await renderComponent(mod.default, props, ctx);
       if (html === null) continue;
       // A chain of rewrites ends at the innermost page.
@@ -409,28 +427,31 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     return null;
   }
 
+  /** An Astro project's page is requested under its base, the root at the base as configured; a native one's is not. */
+  function astroRequestUrlPath(urlPath: string): string {
+    if (astroRootPath === undefined) return urlPath;
+    return urlPath === "/" ? astroRootPath : withBase(urlPath);
+  }
+
   function makePageContext(
     pathname: string,
     params: RouteParams,
     route: Route,
     localeOverride?: string,
     rewriteDepth = 0,
+    /** The request path when it is not the page's, as for a rewrite target. */
+    requestPath?: string,
   ) {
-    // Astro expects `Astro.url` to be a real URL with pathname + origin.
-    // Use the configured site origin if present, else a localhost stand-in.
-    const origin = siteUrl ? siteUrl.origin : "http://localhost/";
     const urlPath = "/" + pathname.replace(/^\//, "");
     // `preferredLocale` is always undefined in static output — there's
-    // no request to read Accept-Language from. `currentLocale` comes
-    // from the route's source directory (or the default locale for
-    // unprefixed root pages), or from an explicit override when this
-    // render is a localized fallback (rewrite of another locale's
-    // content at the target locale's URL).
+    // no request to read Accept-Language from. A localized fallback
+    // (another locale's content at the target locale's URL) overrides
+    // `currentLocale`.
     const currentLocale =
       localeOverride ??
-      (i18n ? detectRouteLocale(route, i18n).locale?.code : undefined);
+      (i18n ? computeCurrentLocale(i18n, urlPath) : undefined);
     const pageContext = {
-      url: new URL(urlPath, origin),
+      url: new URL(requestPath ?? astroRequestUrlPath(urlPath), requestOrigin),
       site: siteUrl,
       params,
       currentLocale,
@@ -446,6 +467,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       cookies: new AstroCookies(),
       rewrite: (target: string): Promise<Response | null> =>
         resolveRewrite(target, rewriteDepth, pageContext),
+      compressHTML: pageCompressHTML,
       // No request during a build, so `Astro.clientAddress` throws if read.
     };
     return { __pageContext: pageContext };
@@ -549,7 +571,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       }
       if (typeof mod.default !== "function") return null;
       if (typeof mod.getStaticPaths !== "function") return null;
-      const paginate = createPaginate(route, base || "/");
+      const paginate = createPaginate(route, base || "/", astroHost?.config.trailingSlash);
       return (await mod.getStaticPaths({ paginate })) as StaticPath[];
     });
     if (!sp) continue;
@@ -613,7 +635,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         dynamicMods.set(routeFile, mod);
       }
       if (typeof mod.getStaticPaths !== "function") return [] as StaticPath[];
-      const paginate = createPaginate(route, base || "/");
+      const paginate = createPaginate(route, base || "/", astroHost?.config.trailingSlash);
       return await mod.getStaticPaths({ paginate });
     })();
     dynamicStaticPathsCache.set(routeFile, fetch);
@@ -648,7 +670,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   /** `forceRender` skips the route's cache entry: the late pass after `bundleCss` uses it. */
   async function renderStaticRoute(route: Route, forceRender: boolean): Promise<PageResult | null> {
     const fullPath = path.join(pagesDir, route.file);
-    const outFile = routeToOutputPath(route, {});
+    const outFile = routeToOutputPath(route, {}, outputFormat);
     const outPath = path.join(distDir, outFile);
     const routeKey = `${route.file}::__static__`;
 
@@ -665,8 +687,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     const servedRoute = resolveScriptRoute(route, mod);
     if (servedRoute.isEndpoint) {
       const endpointFile = routeToOutputPath(servedRoute, {});
-      const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
-      const body = await renderEndpoint(mod, makeEndpointContext("/" + endpointFile, siteUrl));
+      const body = await renderEndpoint(mod, makeEndpointContext("/" + endpointFile, siteUrl, requestOrigin));
       if (body === null) {
         console.warn(`  Skipping ${route.file}: endpoint route without an exported GET()`);
         return null;
@@ -775,7 +796,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       return (await propsIndexPromise).get(paramsKey);
     };
     const renderSlug = async (params: RouteParams, forceRender: boolean): Promise<PageResult | null> => {
-      const outFile = routeToOutputPath(route, params);
+      const outFile = routeToOutputPath(route, params, outputFormat);
       const outPath = path.join(distDir, outFile);
       const pathname = toPathname(outPath, distDir);
       const ctx = makePageContext(pathname, params, route);
@@ -826,6 +847,29 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   }
   phase("dynamic routes", tDynamic);
 
+  // As in Astro, a path two routes build is the page of the higher-priority route
+  // (`compareRoutes`): a static route's over a dynamic one's, `[a]`'s over `[b]`'s.
+  const routeByFile = new Map(routes.map((route) => [route.file, route]));
+  const outranks = (result: PageResult, owner: PageResult): boolean => {
+    const route = routeByFile.get(result.file);
+    const ownerRoute = routeByFile.get(owner.file);
+    return route !== undefined && ownerRoute !== undefined && compareRoutes(route, ownerRoute) < 0;
+  };
+  const pathOwners = new Map<string, PageResult>();
+  for (const result of results) {
+    const owner = pathOwners.get(result.outPath);
+    if (owner === undefined || outranks(result, owner)) pathOwners.set(result.outPath, result);
+  }
+  for (const result of results) {
+    const owner = pathOwners.get(result.outPath);
+    if (owner === undefined || owner === result) continue;
+    console.warn(
+      `  Skipping ${result.label}: ${path.relative(distDir, result.outPath)} is built by the higher-priority route ${owner.file}`,
+    );
+  }
+  const routeResults = results.filter((result) => pathOwners.get(result.outPath) === result);
+  results.splice(0, results.length, ...routeResults);
+
   // Render i18n fallback emissions + default-locale redirects. Each
   // emission produces either a rewrite (render source component with
   // target locale override) or a redirect HTML document. Fallback
@@ -852,14 +896,27 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       i18n,
       dynamicPaths,
       base: astroBase,
+      trailingSlash: astroHost?.config.trailingSlash,
+      format: outputFormat,
     });
     for (const emission of emissions) {
-      const outFile = pathnameToOutputPath(emission.targetPathname);
+      const outFile = pageOutputPath(
+        emission.targetPathname.split("/").filter(Boolean),
+        outputFormat ?? "directory",
+        /(^|\/)index\.[^/]+$/.test(emission.sourceRoute.file),
+      );
       const outPath = path.join(distDir, outFile);
       const label = `[i18n ${emission.mode}] ${emission.targetPathname}`;
 
       if (emission.mode === "redirect") {
-        const html = redirectHtml(emission.redirectTo ?? "/");
+        // Astro serves these through its i18n middleware, which redirects with a 302.
+        const html = redirectTemplate({
+          status: 302,
+          location: emission.redirectTo ?? "/",
+          from: astroRequestPath(emission.targetPathname, astroBase, astroHost?.config.trailingSlash, astroHost?.config.build.format),
+          site: siteUrl,
+          compressHTML: resolveCompressHTML(astroHost?.config) ?? true,
+        });
         results.push({
           file: emission.sourceRoute.file,
           label,
@@ -914,8 +971,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
         if (typeof mod.GET === "function") {
           // Endpoint — emit the GET() body verbatim via the raw write path.
-          const siteUrl = astroHost.config.site ? new URL(astroHost.config.site) : undefined;
-          const body = await renderEndpoint(mod, makeEndpointContext("/" + pattern, siteUrl));
+          const body = await renderEndpoint(mod, makeEndpointContext("/" + pattern, siteUrl, requestOrigin));
           if (body !== null) {
             results.push({
               file: injected.entrypoint,
@@ -966,6 +1022,27 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   if (result404) {
     const cssEntry404 = cssEntryOf(ctx404, result404.entry);
     results.push({ file: result404.file, entryFile: cssEntry404, label: result404.file, pageEntry: cssEntry404, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles, partial: partialOf(ctx404, result404.partial) });
+  }
+
+  // `redirects` from the Astro config, as Astro's static build writes them: pushed last,
+  // so a redirect replaces the page of its route, as Astro drops that page.
+  if (astroHost) {
+    const { redirects, dynamic } = configRedirects(astroHost.config, routes);
+    for (const source of dynamic) console.warn(`  Skipping redirect ${source}: pletivo builds only redirects from a static path`);
+    for (const redirect of redirects) {
+      results.push({
+        file: redirect.source,
+        label: `[redirect] ${redirect.source}`,
+        outPath: path.join(distDir, pageOutputPath(redirect.parts, outputFormat ?? "directory", false)),
+        html: redirectTemplate({
+          status: redirect.status,
+          location: redirect.location,
+          from: astroRequestPath(redirect.source, astroHost.config.base, astroHost.config.trailingSlash, outputFormat),
+          site: siteUrl,
+          compressHTML: resolveCompressHTML(astroHost.config) ?? true,
+        }),
+      });
+    }
   }
 
   // Deduplicate by output path — later entries win. The main use case
@@ -1177,8 +1254,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   if (astroHost) {
     const tDone = performance.now();
     await astroHost.runBuildGenerated(distDir);
+    const append = shouldAppendForwardSlash(astroHost.config.trailingSlash, astroHost.config.build.format);
     const pageEntries = dedupedResults.map((r) => ({
-      pathname: toPathname(r.outPath, distDir),
+      pathname: r.raw ? path.relative(distDir, r.outPath) : astroPageName(r.outPath, distDir, append),
     }));
     const cachedRoutes =
       (astroHost as unknown as { __cachedRoutes?: import("./astro-host").AstroRoute[] }).__cachedRoutes ?? [];
@@ -1462,26 +1540,58 @@ function toPathname(outPath: string, distDir: string): string {
 }
 
 /**
- * Convert an i18n-synthesized URL pathname (e.g. `"it/blog/hello"`)
- * into the `dist/`-relative file path under pletivo's directory
- * output format (always `<segments>/index.html`, or just `index.html`
- * for the empty string).
+ * A page's name as Astro's `addPageName` gives it to `astro:build:done`: its path without the
+ * leading slash, ending with `/` where `shouldAppendForwardSlash` says so, whatever file holds it.
  */
-function pathnameToOutputPath(pathname: string): string {
-  const clean = pathname.replace(/^\/+|\/+$/g, "");
-  if (!clean) return "index.html";
-  return path.posix.join(clean, "index.html");
+function astroPageName(outPath: string, distDir: string, append: boolean): string {
+  const rel = path.relative(distDir, outPath).split(path.sep).join("/");
+  const route = rel === "index.html" ? "" : rel.endsWith("/index.html") ? rel.slice(0, -"/index.html".length) : rel.replace(/\.html$/, "");
+  return append && route !== "" ? `${route}/` : route;
+}
+
+
+/**
+ * The request path Astro renders an `Astro.rewrite(target)` with (`findRouteToRewrite`): the target
+ * without the base, its trailing slash as `trailingSlash` and the format ask, joined to the base again.
+ */
+function astroRewritePath(target: string, base: string, trailingSlash: string, format: string): string {
+  const append = trailingSlash === "always" || (trailingSlash === "ignore" && format === "directory");
+  const withoutTrailing = (p: string) => (p.endsWith("/") ? p.slice(0, -1) : p);
+  let pathname = target;
+  if (base !== "/") {
+    if (target === base || target === withoutTrailing(base)) {
+      pathname = append ? "/" : "";
+    } else if (target.startsWith(base)) {
+      pathname = (append ? (target.endsWith("/") ? target : `${target}/`) : withoutTrailing(target)).slice(base.length);
+    }
+  }
+  if (!pathname.startsWith("/") && append && target.endsWith("/")) pathname = `/${pathname}`;
+  if (pathname === "/" && base !== "/" && !append) pathname = "";
+  if (format === "file") pathname = pathname.replace(/\.html$/, "");
+  if (base !== "/" && (pathname === "" || pathname === "/") && !append) return withoutTrailing(base);
+  // Astro's `joinPaths(base, pathname)`.
+  if (pathname === "") return withoutTrailing(base) || "/";
+  return `${withoutTrailing(base)}/${pathname.replace(/^\//, "")}`;
+}
+
+/** Astro's normalized `base`: a leading slash, and a trailing one as `trailingSlash` asks. */
+function astroBasePath(base: string, trailingSlash: string): string {
+  const leading = base.startsWith("/") ? base : `/${base}`;
+  if (trailingSlash === "never") return leading === "/" ? "/" : leading.replace(/\/$/, "");
+  if (trailingSlash === "always") return leading.endsWith("/") ? leading : `${leading}/`;
+  return leading;
 }
 
 /**
- * Build the static HTML document for a meta-refresh redirect. Uses
- * both an HTTP-equiv refresh header (works without JS) and a
- * canonical link so crawlers see it as a redirect. Matches the
- * shape Astro emits for its own i18n redirect pages.
+ * The path of the request Astro's static build renders `pathname` with (`getUrlForPath`):
+ * the base for the root, else the base, the path and the format's ending.
  */
-function redirectHtml(destination: string): string {
-  const safe = destination.replace(/"/g, "&quot;");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${safe}"><link rel="canonical" href="${safe}"></head><body></body></html>`;
+function astroRequestPath(pathname: string, base: string, trailingSlash: string | undefined, format: string | undefined): string {
+  const basePath = `/${base.replace(/^\/+|\/+$/g, "")}`;
+  const clean = pathname.replace(/^\/+|\/+$/g, "");
+  if (!clean) return basePath;
+  const ending = format === "file" ? ".html" : trailingSlash === "never" ? "" : "/";
+  return `${basePath === "/" ? "" : basePath}/${clean}${ending}`;
 }
 
 /** Collect capture group 1 of `regex` across `html`. Caller must reset lastIndex. */
@@ -1510,10 +1620,10 @@ export interface EndpointContext {
 export function makeEndpointContext(
   pathname: string,
   siteUrl: URL | undefined,
+  origin: string,
   params: RouteParams = {},
   props: Record<string, unknown> = {},
 ): EndpointContext {
-  const origin = siteUrl ? siteUrl.origin : "http://localhost/";
   const url = new URL(pathname.startsWith("/") ? pathname : "/" + pathname, origin);
   return {
     site: siteUrl,
@@ -1560,7 +1670,7 @@ async function renderComponent(
   if (result instanceof Response) {
     // `return Astro.redirect(...)` — a static file can't send a 3xx, so emit
     // the meta-refresh page Astro's static output produces.
-    if (result.headers.get("location")) return redirectPageHtml(result);
+    if (result.headers.get("location")) return redirectPageHtml(result, ctx.__pageContext);
     // `return Astro.rewrite(...)`: the rewritten route's HTML, written at
     // this route's path.
     if ((result.headers.get("content-type") ?? "").includes("html")) {
@@ -1765,7 +1875,7 @@ async function render404Page(
   pagesDir: string,
   pageContext: { __pageContext: PageContext },
 ): Promise<{ file: string; entry: string; html: string; renderedModules: Set<string>; tsxStyles: string[]; partial: boolean } | null> {
-  for (const ext of [".tsx", ".jsx", ".astro"]) {
+  for (const ext of [".tsx", ".jsx", ".astro", ".html"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
     if (await file.exists()) {
@@ -1833,7 +1943,7 @@ async function bundleHoistedScripts(
     format: "esm",
     target: "browser",
     minify: true,
-    plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin(), cssAssetBunPlugin()],
+    plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin("build"), cssAssetBunPlugin()],
   });
 
   if (!result.success) {

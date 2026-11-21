@@ -101,15 +101,15 @@ describe("i18n build", () => {
 
     // Default locale (en, prefixDefault=false): no prefix
     expect(html).toContain(
-      '<link rel="alternate" hreflang="en" href="https://example.com/about">',
+      '<link rel="alternate" hreflang="en" href="https://example.com/about/">',
     );
     // Non-default bare-string locale: prefixed
     expect(html).toContain(
-      '<link rel="alternate" hreflang="pt" href="https://example.com/pt/about">',
+      '<link rel="alternate" hreflang="pt" href="https://example.com/pt/about/">',
     );
     // Aliased locale (es → path "spanish"): prefixed with PATH alias
     expect(html).toContain(
-      '<link rel="alternate" hreflang="es" href="https://example.com/spanish/about">',
+      '<link rel="alternate" hreflang="es" href="https://example.com/spanish/about/">',
     );
   });
 

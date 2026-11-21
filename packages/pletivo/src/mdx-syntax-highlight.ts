@@ -14,6 +14,8 @@ export type ShikiConfig = Record<string, unknown>;
 
 /** What picks and configures the highlighter. One per resolved config: it owns one highlighter. */
 export interface AstroHighlight {
+  /** What the highlighter renders, as its warnings name it. */
+  subject: "MDX" | "Markdown";
   /** The project root, absolute: Astro's highlighters load from its `astro`. */
   projectRoot: string;
   syntaxHighlight: SyntaxHighlight;
@@ -126,46 +128,56 @@ function isTransformer(value: unknown): value is Transformer {
   return typeof value === "function";
 }
 
-/**
- * Without `astro` (pletivo's own `astro/config` stands in) or Astro 7's optional
- * `@astrojs/markdown-remark`, MDX builds unhighlighted, as before Astro's highlighters were used.
- */
-function warnUnhighlighted(missing: "astro" | "@astrojs/markdown-remark", reason: string): null {
-  console.warn(
-    `MDX code blocks are not highlighted: ${reason}. ` +
-      `Install \`${missing}\`, or set \`syntaxHighlight: false\` in \`markdown\` or in \`mdx()\` to silence this warning.`,
-  );
-  return null;
-}
-
-async function loadAstroHighlighter(projectRoot: string, name: "rehypeShiki" | "rehypePrism"): Promise<Attacher | null> {
+/** `@astrojs/markdown-remark` as the project's `astro` resolves it, or why it cannot be. */
+export function resolveAstroMarkdownRemark(projectRoot: string): { entry: string } | { missing: "astro" | "@astrojs/markdown-remark"; reason: string } {
   let astroDir: string;
   try {
     astroDir = path.dirname(Bun.resolveSync("astro/package.json", projectRoot));
   } catch {
-    return warnUnhighlighted("astro", `\`astro\` cannot be resolved from ${projectRoot}`);
+    return { missing: "astro", reason: `\`astro\` cannot be resolved from ${projectRoot}` };
   }
   // From astro's own directory: an isolated install does not hoist astro's dependencies.
-  let entry: string;
   try {
-    entry = Bun.resolveSync("@astrojs/markdown-remark", astroDir);
+    return { entry: Bun.resolveSync("@astrojs/markdown-remark", astroDir) };
   } catch {
-    return warnUnhighlighted(
-      "@astrojs/markdown-remark",
-      `\`@astrojs/markdown-remark\` cannot be resolved from the project's astro at ${astroDir}`,
-    );
+    return {
+      missing: "@astrojs/markdown-remark",
+      reason: `\`@astrojs/markdown-remark\` cannot be resolved from the project's astro at ${astroDir}`,
+    };
   }
-  const mod: unknown = await import(entry);
+}
+
+/**
+ * Without `astro` (pletivo's own `astro/config` stands in) or Astro 7's optional
+ * `@astrojs/markdown-remark`, code blocks render unhighlighted, as before Astro's highlighters were used.
+ */
+function warnUnhighlighted(subject: AstroHighlight["subject"], missing: "astro" | "@astrojs/markdown-remark", reason: string): null {
+  const config = subject === "MDX" ? "in `markdown` or in `mdx()`" : "in `markdown`";
+  console.warn(
+    `${subject} code blocks are not highlighted: ${reason}. ` +
+      `Install \`${missing}\`, or set \`syntaxHighlight: false\` ${config} to silence this warning.`,
+  );
+  return null;
+}
+
+async function loadAstroHighlighter(
+  subject: AstroHighlight["subject"],
+  projectRoot: string,
+  name: "rehypeShiki" | "rehypePrism",
+): Promise<Attacher | null> {
+  const resolved = resolveAstroMarkdownRemark(projectRoot);
+  if ("missing" in resolved) return warnUnhighlighted(subject, resolved.missing, resolved.reason);
+  const mod: unknown = await import(resolved.entry);
   const attacher = isRecord(mod) ? mod[name] : undefined;
   if (!isFunction(attacher)) {
-    return warnUnhighlighted("@astrojs/markdown-remark", `\`@astrojs/markdown-remark\` at ${entry} does not export ${name}`);
+    return warnUnhighlighted(subject, "@astrojs/markdown-remark", `\`@astrojs/markdown-remark\` at ${resolved.entry} does not export ${name}`);
   }
   return attacher;
 }
 
-async function createHighlighter({ projectRoot, syntaxHighlight, shikiConfig }: AstroHighlight): Promise<Transformer | null> {
+async function createHighlighter({ subject, projectRoot, syntaxHighlight, shikiConfig }: AstroHighlight): Promise<Transformer | null> {
   if (!syntaxHighlight) return null;
-  const attacher = await loadAstroHighlighter(projectRoot, syntaxHighlight.type === "shiki" ? "rehypeShiki" : "rehypePrism");
+  const attacher = await loadAstroHighlighter(subject, projectRoot, syntaxHighlight.type === "shiki" ? "rehypeShiki" : "rehypePrism");
   if (!attacher) return null;
   const transformer =
     syntaxHighlight.type === "shiki" ? attacher(shikiConfig, syntaxHighlight.excludeLangs) : attacher(syntaxHighlight.excludeLangs);

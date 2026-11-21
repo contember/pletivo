@@ -46,8 +46,9 @@ const PAGE_PARAM = "page";
 /**
  * Build a paginate function bound to a specific route + base. Called
  * once per dynamic route before evaluating its `getStaticPaths`.
+ * `trailingSlash` is an Astro project's setting; a native project passes none.
  */
-export function createPaginate(route: Route, base: string): PaginateFunction {
+export function createPaginate(route: Route, base: string, trailingSlash?: string): PaginateFunction {
   // The param-kind check is deferred to the first call — getStaticPaths
   // receives `{ paginate }` on every dynamic route regardless of whether
   // that specific route paginates, so eager validation would break
@@ -82,7 +83,7 @@ export function createPaginate(route: Route, base: string): PaginateFunction {
         includesFirstPageNumber || pageNum > 1 ? String(pageNum) : undefined;
       baseParams[PAGE_PARAM] = pageParamValue;
 
-      const current = buildUrl(route, baseParams, base);
+      const current = buildUrl(route, baseParams, base, trailingSlash);
       const next =
         pageNum === lastPage
           ? undefined
@@ -90,6 +91,7 @@ export function createPaginate(route: Route, base: string): PaginateFunction {
               route,
               { ...baseParams, [PAGE_PARAM]: String(pageNum + 1) },
               base,
+              trailingSlash,
             );
       const prev =
         pageNum === 1
@@ -104,6 +106,7 @@ export function createPaginate(route: Route, base: string): PaginateFunction {
                     : String(pageNum - 1),
               },
               base,
+              trailingSlash,
             );
       const first =
         pageNum === 1
@@ -115,6 +118,7 @@ export function createPaginate(route: Route, base: string): PaginateFunction {
                 [PAGE_PARAM]: includesFirstPageNumber ? "1" : undefined,
               },
               base,
+              trailingSlash,
             );
       const last =
         pageNum === lastPage
@@ -123,6 +127,7 @@ export function createPaginate(route: Route, base: string): PaginateFunction {
               route,
               { ...baseParams, [PAGE_PARAM]: String(lastPage) },
               base,
+              trailingSlash,
             );
 
       const page: PaginatePage<T> = {
@@ -146,14 +151,16 @@ export function createPaginate(route: Route, base: string): PaginateFunction {
 }
 
 /**
- * Build an absolute URL path (with trailing slash) for the given route
- * and params. Omits `undefined` rest/param segments so `[...page]` with
- * `page: undefined` yields the unprefixed first-page URL.
+ * Build an absolute URL path for the given route and params. Omits `undefined`
+ * rest/param segments so `[...page]` with `page: undefined` yields the
+ * unprefixed first-page URL. A native project's URL ends with a slash; an Astro
+ * project's ends as Astro's route generator ends it, see `astroPageUrl`.
  */
 function buildUrl(
   route: Route,
   params: Record<string, string | undefined>,
   base: string,
+  trailingSlash: string | undefined,
 ): string {
   const parts: string[] = [];
   for (const seg of route.segments) {
@@ -167,7 +174,18 @@ function buildUrl(
       if (v !== undefined && v !== "") parts.push(...String(v).split("/"));
     }
   }
+  if (trailingSlash !== undefined) return astroPageUrl(route, parts, base, trailingSlash);
   const cleanedBase = base.replace(/^\/+|\/+$/g, "");
   const joined = [cleanedBase, ...parts].filter(Boolean).join("/");
   return "/" + (joined ? joined + "/" : "");
+}
+
+/**
+ * Astro's `routeMatch.generate` joined to the base as its paginate does: a
+ * trailing slash only under `trailingSlash: "always"`, but `base` keeps its own.
+ */
+function astroPageUrl(route: Route, parts: string[], base: string, trailingSlash: string): string {
+  const trailing = trailingSlash === "always" && route.segments.length > 0 ? "/" : "";
+  const generated = parts.map((part) => `/${part}`).join("") + trailing || "/";
+  return `${base.replace(/\/$/, "")}/${generated.replace(/^\//, "")}`;
 }

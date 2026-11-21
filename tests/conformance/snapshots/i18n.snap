@@ -20,10 +20,10 @@ pt/about/index.html
 spanish/about/index.html
 
 --- pletivo:conformance hreflang-demo/index.html ---
-<!DOCTYPE html><html lang="en"> <head><title>hreflang demo</title><link rel="alternate" hreflang="en" href="https://example.com/about"><link rel="alternate" hreflang="pt" href="https://example.com/pt/about"><link rel="alternate" hreflang="es" href="https://example.com/spanish/about"></head> <body> <h1>hreflang demo</h1> </body></html>
+<!DOCTYPE html><html lang="en"> <head><title>hreflang demo</title><link rel="alternate" hreflang="en" href="https://example.com/about/"><link rel="alternate" hreflang="pt" href="https://example.com/pt/about/"><link rel="alternate" hreflang="es" href="https://example.com/spanish/about/"></head> <body> <h1>hreflang demo</h1> </body></html>
 
 --- pletivo:conformance index.html ---
-<!DOCTYPE html><html> <head><title>Home</title></head> <body> <h1>Home</h1> <p data-test="current-locale">currentLocale=en</p> <p data-test="about-pt">aboutPt=/pt/about</p> <p data-test="about-es">aboutEs=/spanish/about</p> <p data-test="about-abs-pt">aboutAbsPt=https://example.com/pt/about</p> <p data-test="spain-path">spainPath=spanish</p> <p data-test="spanish-locale">spanishLocale=es</p> </body></html>
+<!DOCTYPE html><html> <head><title>Home</title></head> <body> <h1>Home</h1> <p data-test="current-locale">currentLocale=en</p> <p data-test="about-pt">aboutPt=/pt/about/</p> <p data-test="about-es">aboutEs=/spanish/about/</p> <p data-test="about-abs-pt">aboutAbsPt=https://example.com/pt/about/</p> <p data-test="spain-path">spainPath=spanish</p> <p data-test="spanish-locale">spanishLocale=es</p> </body></html>
 
 --- pletivo:conformance pt/about/index.html ---
 <!DOCTYPE html><html> <head><title>Sobre</title></head> <body> <h1>Sobre</h1> <p data-test="current-locale">pt</p> </body></html>

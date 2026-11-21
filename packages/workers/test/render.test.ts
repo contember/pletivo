@@ -99,9 +99,9 @@ describe("projectRoutes", () => {
     expect(projectRoutes(SITE).map((route) => route.file)).toEqual([
       "index.astro",
       "about.md",
+      "notes.mdx",
       "plain.astro",
       "tsx.tsx",
-      "notes.mdx",
       "blog/[slug].astro",
     ]);
   });

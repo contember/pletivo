@@ -356,7 +356,7 @@ async function renderPageComponent(
   // A static file cannot send a 3xx, so a redirect becomes the meta-refresh page
   // Astro's static output emits. Any other Response has no static equivalent.
   if (output instanceof Response) {
-    return output.headers.get("location") ? redirectPageHtml(output) : "";
+    return output.headers.get("location") ? redirectPageHtml(output, pageContext) : "";
   }
   if (isRecord(output) && typeof output.__html === "string") return output.__html;
   return "";

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { isRouteFile, parseRoute, matchRoute, resolveScriptRoute, routeToOutputPath, findRoute } from "@pletivo/core/router";
+import { compareRoutes, isRouteFile, parseRoute, matchRoute, resolveScriptRoute, routeToOutputPath, findRoute } from "@pletivo/core/router";
 
 describe("isRouteFile", () => {
   test("a _-prefixed file is not a route", () => {
@@ -316,5 +316,53 @@ describe("endpoint routes", () => {
     // `.astro`/`.md` always render HTML — only .ts/.js opt into raw output.
     expect(parseRoute("weird.name.astro").isEndpoint).toBe(false);
     expect(parseRoute("weird.name.md").isEndpoint).toBe(false);
+  });
+});
+
+describe("routeToOutputPath with Astro's build.format", () => {
+  const out = (file: string, format: "directory" | "file" | "preserve", params = {}) =>
+    routeToOutputPath(parseRoute(file), params, format);
+
+  test("directory: <path>/index.html, but the 404 and 500 pages are <status>.html", () => {
+    expect(out("about.astro", "directory")).toBe("about/index.html");
+    expect(out("index.astro", "directory")).toBe("index.html");
+    expect(out("404.md", "directory")).toBe("404.html");
+    expect(out("500.astro", "directory")).toBe("500.html");
+    expect(out("blog/404.astro", "directory")).toBe("blog/404/index.html");
+  });
+
+  test("file: <path>.html, the root index.html", () => {
+    expect(out("one.astro", "file")).toBe("one.html");
+    expect(out("sub/page.astro", "file")).toBe("sub/page.html");
+    expect(out("sub/index.astro", "file")).toBe("sub.html");
+    expect(out("index.astro", "file")).toBe("index.html");
+    expect(out("[locale].astro", "file", { locale: "en-us" })).toBe("en-us.html");
+  });
+
+  test("preserve: an index route keeps index.html, any other page is <path>.html", () => {
+    expect(out("sub/index.astro", "preserve")).toBe("sub/index.html");
+    expect(out("sub/page.astro", "preserve")).toBe("sub/page.html");
+  });
+
+  test("an endpoint keeps its own file name under every format", () => {
+    expect(out("rss.xml.ts", "file")).toBe("rss.xml");
+  });
+});
+
+describe("compareRoutes, Astro's route priority", () => {
+  const order = (...files: string[]) => files.map(parseRoute).sort(compareRoutes).map((route) => route.file);
+
+  test("a static segment before a param, a param before a rest", () => {
+    expect(order("[...slug].astro", "[page].astro", "about.astro")).toEqual(["about.astro", "[page].astro", "[...slug].astro"]);
+  });
+
+  test("equal routes alphabetically, an endpoint before a page", () => {
+    expect(order("[foo].astro", "[bar].astro")).toEqual(["[bar].astro", "[foo].astro"]);
+    expect(order("feed.xml.astro", "feed.xml.ts")).toEqual(["feed.xml.ts", "feed.xml.astro"]);
+  });
+
+  test("a longer route first, except one rest segment longer", () => {
+    expect(order("blog.astro", "blog/[slug].astro")).toEqual(["blog/[slug].astro", "blog.astro"]);
+    expect(order("tags/[...page].astro", "tags/index.astro")).toEqual(["tags/index.astro", "tags/[...page].astro"]);
   });
 });

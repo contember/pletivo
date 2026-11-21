@@ -17,7 +17,8 @@ import { z } from "zod";
 import { slug as githubSlug } from "github-slugger";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { markNativeComponent } from "@pletivo/runtime/astro-islands/native";
-import { renderMarkdown, parseFrontmatter, parseYamlObject } from "./markdown";
+import { renderMarkdownWithHeadings, parseFrontmatter, parseYamlObject } from "./markdown";
+import type { MarkdownHeading } from "./mdx-heading-ids";
 import type { ImageMetadata } from "../image-service";
 
 // ── Types ──
@@ -299,12 +300,18 @@ export interface CollectionConfig {
   transform?: (html: string, data: Record<string, unknown>) => string;
 }
 
-/** What Astro's `render(entry)` returns. pletivo collects no headings, so `headings` is empty. */
+/** What Astro's `render(entry)` returns. Only a Markdown entry's `headings` and `remarkPluginFrontmatter` are filled. */
 export interface AstroRenderResult {
   Content: (props?: { components?: Record<string, unknown> }) =>
     | { __html: string }
     | Promise<{ __html: string }>;
-  headings: unknown[];
+  headings: MarkdownHeading[];
+  remarkPluginFrontmatter: Record<string, unknown>;
+}
+
+/** What rendering a Markdown entry tells beyond its HTML. */
+interface MarkdownMetadata {
+  headings: MarkdownHeading[];
   remarkPluginFrontmatter: Record<string, unknown>;
 }
 
@@ -517,8 +524,8 @@ function requireHost(): ContentHost {
 export interface GlobOptions {
   /** Glob pattern (default: "**\/*.md") */
   pattern?: string;
-  /** Base directory relative to project root */
-  base: string;
+  /** Base directory: a path relative to the project root, or a `file:` URL, as Astro takes it. */
+  base: string | URL;
   /**
    * Astro-compatible ID generator. Receives the file's path relative to
    * `base`, the absolute base URL, and the parsed frontmatter data, and
@@ -546,13 +553,14 @@ export interface GlobOptions {
  *  - `.yaml`, `.yml` → YAML parse as frontmatter, empty body
  */
 export function glob(options: GlobOptions): Loader {
+  const base = typeof options.base === "string" ? options.base : filePath(options.base);
   const loader: Loader = {
     // Raw base dir — read at dev-server startup (see getContentBaseDirs) to watch
     // content that lives outside `src/`, without having to load the collection first.
-    __globBase: options.base,
+    __globBase: base,
     async load(projectRoot: string): Promise<RawEntry[]> {
       const host = requireHost();
-      const scan = await host.scan(projectRoot, options.base, options.pattern ?? "**/*.{md,mdx}");
+      const scan = await host.scan(projectRoot, base, options.pattern ?? "**/*.{md,mdx}");
       collectionLoadStorage.getStore()?.add(scan.root);
       const entries: RawEntry[] = [];
 
@@ -571,6 +579,13 @@ export function glob(options: GlobOptions): Loader {
     },
   };
   return loader;
+}
+
+/** A `file:` URL's path, as `fileURLToPath` gives it; core cannot import it (`node:url` has none in a Worker). */
+function filePath(url: URL): string {
+  if (url.protocol !== "file:") throw new Error(`glob(): base must be a path or a file: URL, got ${url.href}`);
+  const pathname = decodeURIComponent(url.pathname);
+  return /^\/[A-Za-z]:\//.test(pathname) ? pathname.slice(1) : pathname;
 }
 
 /**
@@ -801,6 +816,7 @@ export async function initCollections(projectRoot: string, srcDir = "src"): Prom
 
   generation.configLoad = runtime.host
     .loadConfig(projectRoot, generation.configVersion, srcDir)
+    .then((config) => withOrphanCollections(runtime.host, projectRoot, srcDir, config))
     .then((config) => {
       if (state.current === generation) generation.collectionsConfig = config;
     });
@@ -812,6 +828,39 @@ export async function initCollections(projectRoot: string, srcDir = "src"): Prom
     awaited = state.current;
     await awaited.configLoad;
   }
+}
+
+/**
+ * Astro 5's `autogenerateCollections`: unless a collection has a loader, every
+ * top-level folder of `<srcDir>/content/` not starting with `_` or `.` and not
+ * defined becomes a legacy content collection, with Astro's deprecation warning.
+ * Only folders holding a content file are seen: a host scans files, and the
+ * Workers host reads every file a scan reports.
+ */
+async function withOrphanCollections(
+  host: ContentHost,
+  projectRoot: string,
+  srcDir: string,
+  config: Record<string, CollectionConfig>,
+): Promise<Record<string, CollectionConfig>> {
+  if (Object.values(config).some((collection) => collection.loader !== undefined || collection.directory !== undefined)) {
+    return config;
+  }
+  const scan = await host.scan(projectRoot, joinRelative(srcDir, "content"), `*/${LEGACY_CONTENT_PATTERN}`);
+  const orphans = new Set<string>();
+  for (const { entry } of scan.files) {
+    const name = entry.slice(0, entry.indexOf("/"));
+    if (!name.startsWith("_") && !name.startsWith(".") && !Object.hasOwn(config, name)) orphans.add(name);
+  }
+  if (orphans.size === 0) return config;
+  console.warn(
+    `Auto-generating collections for folders in "${joinRelative(srcDir, "content/")}" that are not defined as collections.\n` +
+      `This is deprecated, so you should define these collections yourself in "${joinRelative(srcDir, "content.config.ts")}".\n` +
+      `The following collections have been auto-generated: ${[...orphans].join(", ")}`,
+  );
+  const collections = { ...config };
+  for (const name of orphans) collections[name] = {};
+  return collections;
 }
 
 /**
@@ -887,10 +936,8 @@ export async function getCollection(
   // pages that hit the warm `collectionCache` would record nothing
   // and would happily serve stale HTML after a content edit.
   republishCollectionDeps(runtime, generation, name);
-  if (filter) {
-    entries = entries.filter(filter);
-  }
-  return entries;
+  // A new array on each call, as Astro's: a page that sorts or splices it leaves the cache alone.
+  return filter ? entries.filter(filter) : [...entries];
 }
 
 function republishCollectionDeps(
@@ -915,15 +962,26 @@ function republishCollectionDeps(
  * are resolved at render time.
  */
 export async function render(entry: CollectionEntry | null | undefined): Promise<AstroRenderResult> {
-  return astroRenderResult(entry ? (components) => entry.render(components) : null);
+  return astroRenderResult(entry ? (components) => entry.render(components) : null, await markdownMetadata(entry));
 }
 
-function astroRenderResult(renderHtml: CollectionEntry["render"] | null): AstroRenderResult {
+/**
+ * A Markdown entry's headings and its frontmatter after the plugins ran over it, rendering it first,
+ * as Astro's glob loader does. Absent for an MDX, Markdoc or pre-rendered entry: both are empty.
+ */
+const markdownMetadataOf = new WeakMap<CollectionEntry, () => Promise<MarkdownMetadata>>();
+
+async function markdownMetadata(entry: CollectionEntry | null | undefined): Promise<MarkdownMetadata> {
+  const metadata = entry ? markdownMetadataOf.get(entry) : undefined;
+  return metadata ? await metadata() : { headings: [], remarkPluginFrontmatter: {} };
+}
+
+function astroRenderResult(renderHtml: CollectionEntry["render"] | null, metadata: MarkdownMetadata): AstroRenderResult {
   const Content = markNativeComponent((props?: { components?: Record<string, unknown> }) => {
     if (!renderHtml) return { __html: "" };
     return renderHtml(props?.components).then((result) => ({ __html: result.html }));
   });
-  return { Content, headings: [], remarkPluginFrontmatter: {} };
+  return { Content, ...metadata };
 }
 
 type SettledRender = { ok: true; result: RenderResult } | { ok: false; error: unknown };
@@ -940,7 +998,7 @@ function withLegacyRender(entry: InternalCollectionEntry, isMdx: boolean): void 
   entry.render = async (components) => {
     if (!isMdx) {
       const result = await renderHtml(components);
-      return { ...astroRenderResult(renderHtml), ...result };
+      return { ...astroRenderResult(renderHtml, await markdownMetadata(entry)), ...result };
     }
     const settled: SettledRender = await renderHtml(components).then(
       (result): SettledRender => ({ ok: true, result }),
@@ -950,7 +1008,7 @@ function withLegacyRender(entry: InternalCollectionEntry, isMdx: boolean): void 
       if (!settled.ok) throw settled.error;
       return settled.result.html;
     };
-    const rendered = astroRenderResult(renderHtml);
+    const rendered = astroRenderResult(renderHtml, await markdownMetadata(entry));
     return {
       ...rendered,
       Content: markNativeComponent((props?: { components?: Record<string, unknown> }) =>
@@ -986,6 +1044,24 @@ export async function getEntry<T = Record<string, unknown>>(
   }
   const entries = await getCollection<T>(collectionName);
   return entries.find((e) => (e.slug ?? e.id) === entryId);
+}
+
+/** Astro 5's deprecated `getEntryBySlug(collection, slug)`: a content entry by its slug. */
+export async function getEntryBySlug<T = Record<string, unknown>>(
+  collection: string,
+  slug: string,
+): Promise<CollectionEntry<T> | undefined> {
+  const entries = await getCollection<T>(collection);
+  return entries.find((e) => e.slug === slug);
+}
+
+/** Astro 5's deprecated `getDataEntryById(collection, id)`: an entry by its id. */
+export async function getDataEntryById<T = Record<string, unknown>>(
+  collection: string,
+  id: string,
+): Promise<CollectionEntry<T> | undefined> {
+  const entries = await getCollection<T>(collection);
+  return entries.find((e) => e.id === id);
 }
 
 // ── Internal ──
@@ -1264,6 +1340,9 @@ async function buildEntries(
           ? _filePath
           : null;
       let renderedHtml: string | null = null;
+      // As Astro's glob loader: the plugins get the raw frontmatter, and what they leave is `remarkPluginFrontmatter`.
+      const pluginFrontmatter: Record<string, unknown> = { ...userData };
+      let headings: MarkdownHeading[] = [];
       const entry: InternalCollectionEntry = {
         id: raw.id,
         ...(raw.slug !== undefined ? { slug: raw.slug } : {}),
@@ -1277,7 +1356,12 @@ async function buildEntries(
             );
           }
           if (renderedHtml === null) {
-            let html = preRendered ?? (await renderMarkdown(raw.body));
+            let html = preRendered;
+            if (html === undefined) {
+              const rendered = await renderMarkdownWithHeadings(raw.body, pluginFrontmatter);
+              html = rendered.html;
+              headings = rendered.headings;
+            }
             if (config.transform) html = config.transform(html, validatedData);
             renderedHtml = html;
           }
@@ -1285,6 +1369,13 @@ async function buildEntries(
         },
       };
       attachSourcePath(entry, _filePath, _mdxFilePath);
+      if (preRendered === undefined && markdocPath === null) {
+        const renderBody = entry.render;
+        markdownMetadataOf.set(entry, async () => {
+          await renderBody();
+          return { headings, remarkPluginFrontmatter: pluginFrontmatter };
+        });
+      }
       if (raw.slug !== undefined) withLegacyRender(entry, false);
       return { kind: "ok", entry };
     }),

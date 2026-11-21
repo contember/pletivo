@@ -158,13 +158,10 @@ describe(".md page with layout: frontmatter", () => {
     expect(html).toContain("<p>Rooted body.</p>");
   });
 
-  test("a page without a layout keeps the minimal document", async () => {
+  test("a page without a layout is Astro's charset and its content, with no document around it", async () => {
     const root = await fixtureWithout(MDX_PAGE);
     await build(root, config);
-    expect(await built(root, "plain")).toStartWith(
-      '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Plain</title>',
-    );
-    expect(await built(root, "plain")).toContain("<body><p>A Markdown page without a layout.</p></body></html>");
+    expect(await built(root, "plain")).toBe('<!DOCTYPE html><meta charset="utf-8"><p>A Markdown page without a layout.</p>');
   });
 
   test("an incremental build re-renders the page when its layout changes, and only it", async () => {

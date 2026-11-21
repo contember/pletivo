@@ -10,6 +10,7 @@
 
 import { recordPhase, timePhase } from "./phase-timing.ts";
 import {
+  compareRoutes,
   findRoute,
   isRouteFile,
   parseRoute,
@@ -19,7 +20,7 @@ import {
 } from "@pletivo/core/router";
 import type { ResolvedI18nConfig } from "@pletivo/core/i18n/config";
 import { resolveFallbackRoute } from "@pletivo/core/i18n/fallback";
-import { detectRouteLocale } from "@pletivo/core/i18n/route-expansion";
+import { computeCurrentLocale } from "@pletivo/core/i18n/helpers";
 import { RouteRedirect } from "./routing.ts";
 import { projectModuleId, type ProjectArtifact } from "./artifact.ts";
 import type { ProjectFiles } from "./project-store.ts";
@@ -382,7 +383,7 @@ const PAGE_EXTENSIONS = [".astro", ".md", ".mdx", ".tsx", ".jsx", ".ts", ".js"];
 
 /**
  * The project's routes, ordered the way `scanRoutes` orders them on the Bun host:
- * static before dynamic, then by specificity.
+ * static before dynamic, then by specificity, then in Astro's order.
  */
 export function projectRoutes(
   files: ProjectFiles,
@@ -399,7 +400,7 @@ export function projectRoutes(
   }
   routes.sort((a, b) => {
     if (a.isDynamic !== b.isDynamic) return (a.isDynamic ? 1 : 0) - (b.isDynamic ? 1 : 0);
-    return a.priority - b.priority;
+    return a.priority - b.priority || compareRoutes(a, b);
   });
   return routes;
 }
@@ -863,7 +864,8 @@ async function renderModule(input: {
 }): Promise<IsolateRender> {
   const { project, file, params, route, site, currentLocale, options } = input;
 
-  // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost stand-in.
+  // `Astro.url`'s origin: the configured site, or a localhost stand-in. The Bun build uses
+  // Astro's `http://localhost:<server.port>` for an Astro project (docs/todos/016).
   const origin = site ? new URL(site).origin : "http://localhost/";
   const { bundleId, payload, logs } = await callIsolate({
     project,
@@ -903,7 +905,7 @@ function matchPage(
 ): { match: { route: Route; params: RouteParams }; currentLocale: string | undefined } {
   const match = findRoute(routes, pathname);
   if (match !== null) {
-    return { match, currentLocale: i18n === null ? undefined : detectRouteLocale(match.route, i18n).locale?.code };
+    return { match, currentLocale: i18n === null ? undefined : computeCurrentLocale(i18n, pathname) };
   }
   const fallback = i18n === null ? null : resolveFallbackRoute(pathname, routes, i18n, "/");
   if (fallback === null) throw new RouteNotFoundError(pathname);

@@ -8,6 +8,7 @@ import {
   getRelativeLocaleUrlList,
   getAbsoluteLocaleUrlList,
   fallbackChain,
+  computeCurrentLocale,
 } from "@pletivo/core/i18n/helpers";
 
 const cfgSimple = resolveI18nConfig({
@@ -67,6 +68,17 @@ describe("getLocaleByPath", () => {
 });
 
 describe("getRelativeLocaleUrl", () => {
+  test("ends with a slash where Astro's trailingSlash and build.format do", () => {
+    const url = (trailingSlash: string | undefined, format?: string) =>
+      getRelativeLocaleUrl(cfgSimple, "/", "pt", "about", { trailingSlash, format });
+    expect(url("ignore")).toBe("/pt/about/");
+    expect(url("ignore", "file")).toBe("/pt/about");
+    expect(url("always", "file")).toBe("/pt/about/");
+    expect(url("never")).toBe("/pt/about");
+    expect(url(undefined)).toBe("/pt/about");
+    expect(getRelativeLocaleUrl(cfgSimple, "/", "en", "", { trailingSlash: "ignore" })).toBe("/");
+  });
+
   test("non-default locale gets prefixed", () => {
     expect(getRelativeLocaleUrl(cfgSimple, "/", "pt", "about")).toBe("/pt/about");
     expect(getRelativeLocaleUrl(cfgSimple, "/", "it", "about")).toBe("/it/about");
@@ -176,5 +188,23 @@ describe("fallbackChain", () => {
     // Hand-insert a cycle to confirm the guard
     (cfg.fallback as Record<string, string>).en = "pt";
     expect(fallbackChain(cfg, "pt")).toEqual(["pt", "en"]);
+  });
+});
+
+describe("computeCurrentLocale", () => {
+  test("reads the locale from any segment of the path, as a dynamic [locale] route's URL has it", () => {
+    expect(computeCurrentLocale(cfgPrefixAlways, "/pt/")).toBe("pt");
+    expect(computeCurrentLocale(cfgPrefixAlways, "/blog/pt/post")).toBe("pt");
+    expect(computeCurrentLocale(cfgPrefixAlways, "/pt.html")).toBe("pt");
+  });
+
+  test("an aliased locale answers to its path with its first code, and to each code", () => {
+    expect(computeCurrentLocale(cfgAlias, "/spanish/about")).toBe("es");
+    expect(computeCurrentLocale(cfgAlias, "/es-sp/about")).toBe("es-SP");
+  });
+
+  test("a path without a locale is the default locale's, prefixDefaultLocale or not", () => {
+    expect(computeCurrentLocale(cfgPrefixAlways, "/")).toBe("en");
+    expect(computeCurrentLocale(cfgSimple, "/about")).toBe("en");
   });
 });

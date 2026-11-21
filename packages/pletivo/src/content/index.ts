@@ -2,6 +2,8 @@ export {
   defineCollection,
   getCollection,
   getEntry,
+  getEntryBySlug,
+  getDataEntryById,
   glob,
   initCollections,
   reference,

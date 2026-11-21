@@ -27,6 +27,7 @@ import {
   type PluggableList,
 } from "@pletivo/core/content/mdx";
 import { resolveComponentPath } from "./astro-plugin";
+import { parseHeadingIdCompat } from "./astro-markdown";
 import {
   astroHighlightPlugins,
   parseMdxShikiConfig,
@@ -202,16 +203,13 @@ function astroMdxSettings(
 ): AstroMdxSettings {
   const { root, srcDir, experimental, markdown } = astroConfig;
   if (!root || !srcDir) throw new Error("astro config: root and srcDir must be set");
-  const headingIdCompat = experimental && typeof experimental === "object" ? Reflect.get(experimental, "headingIdCompat") : undefined;
-  if (headingIdCompat !== undefined && typeof headingIdCompat !== "boolean") {
-    throw new Error(`astro config: experimental.headingIdCompat must be a boolean, got ${JSON.stringify(headingIdCompat)}`);
-  }
   const syntaxHighlight = parseSyntaxHighlight(markdown?.syntaxHighlight, "astro config: markdown");
   const shikiConfig = parseShikiConfig(markdown?.shikiConfig, "astro config: markdown");
   return {
     pagesDir: path.join(fileURLToPath(srcDir), "pages"),
-    experimentalHeadingIdCompat: headingIdCompat ?? false,
+    experimentalHeadingIdCompat: parseHeadingIdCompat(experimental),
     highlight: {
+      subject: "MDX",
       projectRoot: fileURLToPath(root),
       syntaxHighlight: mdxIntegration?.syntaxHighlight ?? (extendMarkdownConfig ? syntaxHighlight : SYNTAX_HIGHLIGHT_DEFAULT),
       shikiConfig: mdxIntegration?.shikiConfig ?? (extendMarkdownConfig ? shikiConfig : {}),

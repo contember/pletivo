@@ -7,7 +7,7 @@
 
 import path from "path";
 import { pathToFileURL } from "url";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import type { AstroConfig, AstroIntegration } from "@pletivo/core/astro-host/types";
 import { ASTRO_CONFIG_FILES } from "@pletivo/core/prepare-inputs";
 
@@ -36,11 +36,33 @@ export interface LoadedAstroConfig {
   configuredSrcDir: string | undefined;
 }
 
+/**
+ * Whether the project's `package.json` names `astro` as a dependency. Astro needs no
+ * config file, so such a project is an Astro project with Astro's defaults.
+ */
+export function dependsOnAstro(projectRoot: string): boolean {
+  const file = path.join(projectRoot, "package.json");
+  if (!existsSync(file)) return false;
+  let pkg: unknown;
+  try {
+    pkg = JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(`${file}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+  }
+  if (typeof pkg !== "object" || pkg === null) return false;
+  return ["dependencies", "devDependencies"].some((field) => {
+    const deps: unknown = Reflect.get(pkg, field);
+    return typeof deps === "object" && deps !== null && "astro" in deps;
+  });
+}
+
 export async function loadAstroConfig(
   projectRoot: string,
 ): Promise<LoadedAstroConfig | null> {
   const configPath = findAstroConfig(projectRoot);
-  if (!configPath) return null;
+  if (!configPath) {
+    return dependsOnAstro(projectRoot) ? normalizeAstroConfig(projectRoot, {}, "astro config") : null;
+  }
 
   let mod: { default?: unknown } | unknown;
   try {
@@ -55,11 +77,17 @@ export async function loadAstroConfig(
     (mod as { default?: unknown })?.default ?? (mod as unknown);
   if (!raw || typeof raw !== "object") return null;
 
-  const userConfig = raw as Record<string, unknown>;
+  return normalizeAstroConfig(projectRoot, raw as Record<string, unknown>, path.basename(configPath));
+}
 
+function normalizeAstroConfig(
+  projectRoot: string,
+  userConfig: Record<string, unknown>,
+  configName: string,
+): LoadedAstroConfig {
   const configuredSrcDir = userConfig.srcDir;
   if (configuredSrcDir !== undefined && typeof configuredSrcDir !== "string") {
-    throw new Error(`${path.basename(configPath)}: srcDir must be a string`);
+    throw new Error(`${configName}: srcDir must be a string`);
   }
 
   const rootUrl = pathToFileURL(projectRoot + path.sep);
@@ -93,11 +121,11 @@ export async function loadAstroConfig(
     site: userConfig.site as string | undefined,
     base: (userConfig.base as string | undefined) ?? "/",
     trailingSlash: (userConfig.trailingSlash as string | undefined) ?? "ignore",
+    server: astroServer(userConfig.server, configName),
     build,
     integrations,
     vite: (userConfig.vite as AstroConfig["vite"]) ?? {},
-    redirects:
-      (userConfig.redirects as AstroConfig["redirects"]) ?? {},
+    redirects: astroRedirects(userConfig.redirects, configName),
     i18n: userConfig.i18n as AstroConfig["i18n"],
   };
 
@@ -107,6 +135,41 @@ export async function loadAstroConfig(
   }
 
   return { config, configuredSrcDir };
+}
+
+const REDIRECT_STATUSES = new Set([300, 301, 302, 303, 304, 307, 308]);
+
+/** Astro's `redirects` schema: a destination, or a status Astro allows with its destination. */
+function astroRedirects(redirects: unknown, configName: string): AstroConfig["redirects"] {
+  if (redirects === undefined) return {};
+  if (typeof redirects !== "object" || redirects === null || Array.isArray(redirects)) {
+    throw new Error(`${configName}: redirects must be an object`);
+  }
+  const parsed: AstroConfig["redirects"] = {};
+  for (const [source, target] of Object.entries(redirects)) {
+    if (typeof target === "string") {
+      parsed[source] = target;
+      continue;
+    }
+    const status: unknown = typeof target === "object" && target !== null ? Reflect.get(target, "status") : undefined;
+    const destination: unknown = typeof target === "object" && target !== null ? Reflect.get(target, "destination") : undefined;
+    if (typeof status !== "number" || !REDIRECT_STATUSES.has(status) || typeof destination !== "string") {
+      throw new Error(
+        `${configName}: redirects[${JSON.stringify(source)}] must be a destination or { status: 300 | 301 | 302 | 303 | 304 | 307 | 308, destination }`,
+      );
+    }
+    parsed[source] = { status, destination };
+  }
+  return parsed;
+}
+
+/** Astro's `server` options with its default port. The function form is called as Astro's build does. */
+function astroServer(server: unknown, configName: string): AstroConfig["server"] {
+  const options: unknown = typeof server === "function" ? server({ command: "preview" }) : server ?? {};
+  if (typeof options !== "object" || options === null) throw new Error(`${configName}: server must be an object`);
+  const port: unknown = Reflect.get(options, "port") ?? 4321;
+  if (typeof port !== "number") throw new Error(`${configName}: server.port must be a number`);
+  return { ...options, port };
 }
 
 /** A directory as Astro resolves one: absolute, with a trailing slash so URLs resolve inside it. */

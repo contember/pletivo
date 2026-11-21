@@ -905,6 +905,8 @@ function fileExistsSync(file: string): boolean {
 }
 
 function isCssSpecifier(sourceFile: string, specifier: string): boolean {
+  // Vite's `?inline`, `?raw` and `?url` import a string, not a stylesheet of the page.
+  if (/\?(?:.*&)?(?:inline|raw|url)(?:&|$)/.test(specifier)) return false;
   const clean = specifier.split(/[?#]/, 1)[0];
   if (/\.module\.css$/i.test(clean)) return false;
   if (/\.(scss|sass)$/i.test(clean)) return false;
