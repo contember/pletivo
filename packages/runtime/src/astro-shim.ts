@@ -696,7 +696,7 @@ export async function renderComponent(
     assertElementName(tag);
     let attrs = "";
     for (const [k, v] of Object.entries(cleanProps)) {
-      attrs += addAttribute(v, k).__html;
+      attrs += addAttribute(v, k, true, tag).__html;
     }
     const childHtml = slots.default
       ? await renderValue(slots.default())
@@ -751,23 +751,74 @@ export function mergeSlots(...args: SlotsRecord[]): SlotsRecord {
 
 // ── Attributes ──────────────────────────────────────────────────────
 
+/** HTML attributes whose presence is the value; Astro's list. */
+const HTML_BOOLEAN_ATTRIBUTES =
+  /^(?:allowfullscreen|async|autofocus|autoplay|checked|controls|default|defer|disabled|disablepictureinpicture|disableremoteplayback|formnovalidate|hidden|inert|loop|muted|nomodule|novalidate|open|playsinline|readonly|required|reversed|scoped|seamless|selected|itemscope)$/i;
+
+/** Astro's attribute escape: `&` and `"` as numeric references. */
+function toAttributeString(value: unknown, escape = true): string {
+  const text = String(value);
+  return escape ? text.replace(/&/g, "&#38;").replace(/"/g, "&#34;") : text;
+}
+
+function kebab(key: string): string {
+  return key.toLowerCase() === key ? key : key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+}
+
+/** A style object as CSS text: non-empty strings and numbers, camelCase keys in kebab-case. */
+function toStyleString(style: Record<string, unknown>): string {
+  return Object.entries(style)
+    .filter(([, v]) => (typeof v === "string" && v.trim()) || typeof v === "number")
+    .map(([k, v]) => (k[0] !== "-" && k[1] !== "-" ? `${kebab(k)}:${v}` : `${k}:${v}`))
+    .join(";");
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function booleanAttribute(key: string, value: unknown, tagName: string): HtmlString {
+  // A custom element gets the value as a string: its own code decides what it means.
+  if (tagName.includes("-")) return createHtml(` ${key}="${toAttributeString(value)}"`);
+  return createHtml(value ? ` ${key}` : "");
+}
+
 /**
  * Render a single attribute as an HTML fragment, for interpolation inside
- * a tag: `<meta${$$addAttribute(value, "content")}>`.
+ * a tag: `<meta${$$addAttribute(value, "content")}>`. Astro's rules: `false`
+ * and `true` are written as strings except on boolean attributes, a style
+ * object becomes CSS text, an empty string a bare attribute.
  */
-export function addAttribute(value: unknown, key: string): HtmlString {
-  if (value == null || value === false) return createHtml("");
+export function addAttribute(value: unknown, key: string, shouldEscape = true, tagName = ""): HtmlString {
+  if (value == null) return createHtml("");
+  if (key === "set:html" || key === "set:text") {
+    console.warn(`[pletivo] The "${key}" directive cannot be applied dynamically at runtime; it is not rendered as an attribute.`);
+    return createHtml("");
+  }
   if (key === "class:list") {
     const cls = normalizeClassList(value);
     if (!cls) return createHtml("");
-    return createHtml(` class="${escapeAttr(cls)}"`);
+    return createHtml(` class="${toAttributeString(cls, shouldEscape)}"`);
   }
-  if (value === true) return createHtml(` ${key}`);
-  // HtmlString (e.g. from defineStyleVars) — extract raw content
-  if (isHtmlString(value)) {
-    return createHtml(` ${key}="${escapeAttr(value.__html)}"`);
+  // An HtmlString (e.g. from defineStyleVars) is written as its text, like any other value.
+  if (key === "style" && !isHtmlString(value)) {
+    if (Array.isArray(value) && value.length === 2) {
+      return createHtml(` ${key}="${toAttributeString(`${toStyleString(value[0])};${value[1]}`, shouldEscape)}"`);
+    }
+    if (typeof value === "object") return createHtml(` ${key}="${toAttributeString(toStyleString(value as Record<string, unknown>), shouldEscape)}"`);
   }
-  return createHtml(` ${key}="${escapeAttr(String(value))}"`);
+  if (key === "className") return createHtml(` class="${toAttributeString(value, shouldEscape)}"`);
+  // An http(s) URL with a query keeps its `&`, as Astro writes it.
+  if (typeof value === "string" && value.includes("&") && isHttpUrl(value)) return createHtml(` ${key}="${value}"`);
+  if (HTML_BOOLEAN_ATTRIBUTES.test(key)) return booleanAttribute(key, value, tagName);
+  if (value === "") return createHtml(` ${key}`);
+  if ((key === "popover" || key === "download") && typeof value === "boolean") return booleanAttribute(key, value, tagName);
+  return createHtml(` ${key}="${toAttributeString(value, shouldEscape)}"`);
 }
 
 /** Render an object of attributes. */
@@ -790,7 +841,7 @@ export function spreadAttributes(
   }
   let out = "";
   for (const [k, v] of Object.entries(values)) {
-    out += addAttribute(v, k).__html;
+    out += addAttribute(v, k, true, _name ?? "").__html;
   }
   return createHtml(out);
 }
