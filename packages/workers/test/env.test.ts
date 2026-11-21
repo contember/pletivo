@@ -56,7 +56,7 @@ describe("astro:env values", () => {
   });
 
   test("let the server module see the client half too, as the Bun host does", async () => {
-    // `generateEnvModule("server")` in astro-plugin.ts exports every field regardless
+    // `envModuleSource(…, "server")` in astro-env.ts exports every field regardless
     // of its context; only the client module is filtered.
     const files = new Map<string, string>([
       [

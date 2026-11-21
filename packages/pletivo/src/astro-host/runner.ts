@@ -144,14 +144,9 @@ export async function initAstroHost(
   const { config, configuredSrcDir } = loaded;
   configureVitePluginHost(projectRoot);
 
-  // Seed astro:env virtual module with the env.schema from config
-  try {
-    const { setEnvSchema } = await import("../astro-plugin");
-    const env = (config as Record<string, unknown>).env as Record<string, unknown> | undefined;
-    setEnvSchema(env?.schema as Record<string, unknown> | undefined);
-  } catch {
-    // astro-plugin not yet loaded — env module will be empty
-  }
+  // astro:env's modules read the parsed schema; a malformed one fails the config load.
+  const { setEnvConfig } = await import("../astro-plugin");
+  setEnvConfig(config.env);
 
   const server = createServerShim(projectRoot, hmrBroadcast);
   const injectedPageScripts: string[] = [];

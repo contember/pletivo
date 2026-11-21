@@ -1,0 +1,9 @@
+---
+import { GREETING } from "astro:env/client";
+import { RETRIES } from "astro:env/server";
+---
+<p id="server">{GREETING} {typeof RETRIES} {RETRIES}</p>
+<script>
+  import { GREETING } from "astro:env/client";
+  console.log(GREETING);
+</script>
