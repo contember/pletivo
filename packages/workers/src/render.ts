@@ -864,7 +864,8 @@ async function renderModule(input: {
 }): Promise<IsolateRender> {
   const { project, file, params, route, site, currentLocale, options } = input;
 
-  // The origin `build.ts` gives `Astro.url`: the configured site, or a localhost stand-in.
+  // `Astro.url`'s origin: the configured site, or a localhost stand-in. The Bun build uses
+  // Astro's `http://localhost:<server.port>` for an Astro project (docs/todos/016).
   const origin = site ? new URL(site).origin : "http://localhost/";
   const { bundleId, payload, logs } = await callIsolate({
     project,

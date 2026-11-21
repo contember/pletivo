@@ -624,9 +624,10 @@ theoretical for now, and what will end it.
 
 Vite's import suffixes are no longer among them: `?raw`, `?inline` and `?url` are
 answered as of the second dogfood run, which is where they turned up — 28 of that
-site's 29 routes stopped on `?raw` alone. `?inline` follows the Bun host (the
-file's text) rather than Vite (a data: URI); the two hosts agreeing is worth more
-than matching Vite here, but it is a divergence, not an oversight. See
+site's 29 routes stopped on `?raw` alone. `?inline` here is the file's text, where
+Vite gives a data: URI. For a `.css` file the Bun host now follows Vite's build (the
+minified stylesheet text, [028](028-astro-fixtures.md)) and this host does not; for any
+other file both hosts give the text. Both are divergences, not oversights. See
 [022](022-dogfood-ssr-workers.md) items 3 and 4.
 
 `tests/fixture` still cannot run here, and collections are no longer the reason:
@@ -666,6 +667,41 @@ Known follow-ups:
    [012](012-endpoint-routes.md)). This host classifies by filename only:
    `detectProjectFeatures` does not list it under `endpoints`, `projectPaths`
    enumerates `/api` as a page, and rendering it fails with `has no default export`.
+
+## Astro behaviour only the Bun host has (028)
+
+The fixture run of [028](028-astro-fixtures.md) changed the Bun host where it differed
+from Astro's build. These changes did not reach this host. Each is a divergence
+between the hosts until it is ported:
+
+- `paginate()` URLs in an Astro project follow `trailingSlash` and `build.format`.
+- A `.md` page or entry in an Astro project renders with Astro's markdown defaults:
+  smartypants, the Shiki highlighter and Astro's heading ids
+  (`experimentalHeadingIdCompat` included). The artifact carries no field for them.
+- An `.html` file in `src/pages` is a page, and an imported `.html` file is a
+  component, as Astro's Vite plugin has them.
+- `astro:i18n` URL helpers end a URL with `/` where `trailingSlash` and
+  `build.format` say so. This host gives the helpers neither, so its URLs have no
+  trailing slash.
+- `astro:env`: the Bun host validates public variables and applies the schema's
+  default and type (`packages/pletivo/src/astro-env.ts`); this host passes the
+  strings the outer host gives it.
+- An Astro project's page is built from Astro's request origin: `site`, else
+  `http://localhost:<server.port>`. This host still uses `http://localhost/` without
+  a `site` (`render.ts`).
+- An Astro project's page is requested under its `base` (`Astro.url` carries it), and
+  an `Astro.rewrite` target under the base routes without it. This host renders paths
+  without the base.
+- Output files are named by `build.format` (`about.html` under `"file"`); this host
+  serves routes, not files, so only the URL form matters there.
+- A page that returns `Astro.redirect` is written with the project's `compressHTML`;
+  this host's page context does not carry it, so it is always compressed.
+- `astro:config/client` and `astro:config/server` exist only in the Bun host
+  (`packages/pletivo/src/astro-config-module.ts`).
+- Config redirects: the Bun host builds and serves them with Astro's status rule
+  (a destination that names a route gets the configured status, any other a 301,
+  `packages/core/src/astro-host/redirects.ts`). This host answers every match with
+  the configured status.
 
 ## Parity that does hold
 
