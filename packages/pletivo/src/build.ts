@@ -33,7 +33,7 @@ import { initAstroHost, buildAstroRoutes, type PletivoRouteWithPaths } from "./a
 import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
 import { bundlePageScripts } from "./astro-host/page-scripts";
 import { resolveI18nConfig } from "@pletivo/core/i18n/config";
-import { computeCurrentLocale } from "@pletivo/core/i18n/helpers";
+import { computeCurrentLocale, shouldAppendForwardSlash } from "@pletivo/core/i18n/helpers";
 import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "@pletivo/core/i18n/fallback";
 import { setImageMode, setImageService, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
@@ -1246,8 +1246,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   if (astroHost) {
     const tDone = performance.now();
     await astroHost.runBuildGenerated(distDir);
+    const append = shouldAppendForwardSlash(astroHost.config.trailingSlash, astroHost.config.build.format);
     const pageEntries = dedupedResults.map((r) => ({
-      pathname: toPathname(r.outPath, distDir),
+      pathname: r.raw ? path.relative(distDir, r.outPath) : astroPageName(r.outPath, distDir, append),
     }));
     const cachedRoutes =
       (astroHost as unknown as { __cachedRoutes?: import("./astro-host").AstroRoute[] }).__cachedRoutes ?? [];
@@ -1528,6 +1529,16 @@ function toPathname(outPath: string, distDir: string): string {
   if (rel === "index.html") return "";
   if (rel.endsWith("/index.html")) return rel.slice(0, -"index.html".length);
   return rel;
+}
+
+/**
+ * A page's name as Astro's `addPageName` gives it to `astro:build:done`: its path without the
+ * leading slash, ending with `/` where `shouldAppendForwardSlash` says so, whatever file holds it.
+ */
+function astroPageName(outPath: string, distDir: string, append: boolean): string {
+  const rel = path.relative(distDir, outPath).split(path.sep).join("/");
+  const route = rel === "index.html" ? "" : rel.endsWith("/index.html") ? rel.slice(0, -"/index.html".length) : rel.replace(/\.html$/, "");
+  return append && route !== "" ? `${route}/` : route;
 }
 
 
