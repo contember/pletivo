@@ -29,3 +29,10 @@ test("a .md page gets curly quotes, dashes and ellipses, and Shiki before the us
     '<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="js" data-seen="">',
   );
 });
+
+test("a .md heading gets Astro's github-slugger id, after the user's rehype plugins", async () => {
+  if (exitCode !== 0) throw new Error(`build failed:\n${output}`);
+  const html = await Bun.file(path.join(root, "dist/index.html")).text();
+  expect(html).toContain('<h2 data-no-id="" id="foo--bar">Foo &#x26; Bar</h2>');
+  expect(html).toContain('<h2 data-no-id="" id="foo--bar-1">Foo &#x26; Bar</h2>');
+});

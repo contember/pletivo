@@ -1,6 +1,6 @@
-// Port of Astro's `rehypeHeadingIds` for MDX: a heading without a string `id` gets a unique
-// github-slugger slug of its text. Unlike Astro, a `{frontmatter.x}` heading slugs the expression's
-// source: pletivo's MDX has no `frontmatter` binding.
+// Port of Astro's `rehypeHeadingIds`, for MDX and for `.md` in an Astro project: a heading without
+// a string `id` gets a unique github-slugger slug of its text. Unlike Astro, a `{frontmatter.x}`
+// heading slugs the expression's source: pletivo's MDX has no `frontmatter` binding.
 import Slugger from "github-slugger";
 import type { Transformer } from "unified";
 

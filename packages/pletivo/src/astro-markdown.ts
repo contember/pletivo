@@ -1,7 +1,8 @@
 /**
  * `.md` in an Astro project renders with `@astrojs/markdown-remark`'s defaults: `remark-smartypants`
- * after GFM, and Astro's syntax highlighter right after remark-rehype. Both load from the project's
- * own `@astrojs/markdown-remark`, as MDX's highlighter does (`mdx-syntax-highlight.ts`).
+ * after GFM, Astro's syntax highlighter right after remark-rehype, and its heading ids last. The
+ * first two load from the project's own `@astrojs/markdown-remark`, as MDX's highlighter does
+ * (`mdx-syntax-highlight.ts`).
  */
 import path from "path";
 import { fileURLToPath } from "url";
@@ -13,6 +14,16 @@ import { astroHighlightPlugins, parseShikiConfig, parseSyntaxHighlight, resolveA
 interface AstroMarkdownSource {
   root: URL;
   markdown?: unknown;
+  experimental?: unknown;
+}
+
+/** Astro's `experimental.headingIdCompat`, which `.md` and `.mdx` heading ids follow. */
+export function parseHeadingIdCompat(experimental: unknown): boolean {
+  const headingIdCompat = typeof experimental === "object" && experimental !== null ? Reflect.get(experimental, "headingIdCompat") : undefined;
+  if (headingIdCompat !== undefined && typeof headingIdCompat !== "boolean") {
+    throw new Error(`astro config: experimental.headingIdCompat must be a boolean, got ${JSON.stringify(headingIdCompat)}`);
+  }
+  return headingIdCompat ?? false;
 }
 
 /** `options` with Astro's default plugins around the configured ones. */
@@ -32,6 +43,7 @@ export async function withAstroMarkdownDefaults(config: AstroMarkdownSource, opt
     ...options,
     remarkPlugins: [...(smartypants ? await loadSmartypants(projectRoot) : []), ...(options.remarkPlugins ?? [])],
     afterRemarkRehype: highlight,
+    astroHeadingIds: { experimentalHeadingIdCompat: parseHeadingIdCompat(config.experimental) },
   };
 }
 

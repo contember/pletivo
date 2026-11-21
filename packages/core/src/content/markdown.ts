@@ -12,6 +12,7 @@
 
 import yaml from "js-yaml";
 import { splitFrontmatter } from "./frontmatter";
+import { rehypeMdxHeadingIds, type MdxHeadingIdsOptions } from "./mdx-heading-ids";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -41,6 +42,11 @@ export interface MarkdownOptions {
   gfm?: boolean;
   /** Run right after `remark-rehype`, where Astro runs its syntax highlighter. */
   afterRemarkRehype?: PluggableList;
+  /**
+   * Astro's heading ids: github-slugger slugs, given after the user's rehype plugins. Absent:
+   * pletivo's own slugs, given before them, which a pletivo-native site's anchors rely on.
+   */
+  astroHeadingIds?: MdxHeadingIdsOptions;
 }
 
 let markdownOptions: MarkdownOptions = {};
@@ -185,8 +191,9 @@ export async function renderMarkdown(body: string, frontmatter: Record<string, u
   if (markdownOptions.remarkPlugins?.length) processor.use(markdownOptions.remarkPlugins);
   processor.use(remarkRehype, { allowDangerousHtml: true, ...markdownOptions.remarkRehype });
   if (markdownOptions.afterRemarkRehype?.length) processor.use(markdownOptions.afterRemarkRehype);
-  processor.use(rehypeHeadingIds);
+  if (!markdownOptions.astroHeadingIds) processor.use(rehypeHeadingIds);
   if (markdownOptions.rehypePlugins?.length) processor.use(markdownOptions.rehypePlugins);
+  if (markdownOptions.astroHeadingIds) processor.use(rehypeMdxHeadingIds, markdownOptions.astroHeadingIds);
   // Last, as in Astro: raw HTML is re-serialized like the rest (`<a\n href>` → `<a href>`).
   processor.use(rehypeRaw);
   processor.use(rehypeStringify, { allowDangerousHtml: true });
