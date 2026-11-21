@@ -26,6 +26,7 @@ import { imageUrlFor, probeAndRegisterImage } from "./image";
 import { registerUrlAsset } from "./url-asset";
 import { applyDevCacheBust, getDevVersion, stripQuery } from "@pletivo/core/dev-cache";
 import { stripTypes } from "./transpile";
+import { minifyCss } from "./css-minify";
 import { substituteImportMetaEnv } from "./import-meta-env";
 import { collectCssSideEffectImports } from "./js-imported-css";
 import { assertRenderableImports } from "./framework-components";
@@ -679,6 +680,13 @@ export async function registerAstroPlugin(): Promise<void> {
           };
         },
       );
+
+      // Vite's `?inline` CSS: the stylesheet as a string, minified as Vite's build minifies it,
+      // and not a stylesheet of the page (`isCssSpecifier`). Bun's own `?raw` is the text.
+      build.onLoad({ filter: /\.css\?(?:.*&)?inline(?:&|$)/ }, async (args) => {
+        const css = (await minifyCss(await Bun.file(stripQuery(args.path)).text())).trimEnd();
+        return { contents: `export default ${JSON.stringify(css)};`, loader: "js" };
+      });
 
       // `astro:env/client` and `astro:env/server` — type-safe env vars.
       // For SSG, both are resolved at build time from process.env.
