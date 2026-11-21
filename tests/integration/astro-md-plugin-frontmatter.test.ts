@@ -25,13 +25,16 @@ async function built(file: string): Promise<string> {
   return Bun.file(path.join(root, "dist", file)).text();
 }
 
-test("a .md page's layout gets the frontmatter the plugins left", async () => {
-  expect(await built("page/index.html")).toContain('<p id="layout">injected into Page</p>');
+test("a .md page's layout gets the frontmatter the plugins left, and the headings", async () => {
+  const html = await built("page/index.html");
+  expect(html).toContain('<p id="layout">injected into Page</p>');
+  expect(html).toContain('<p id="headings">[{&quot;depth&quot;:2,&quot;slug&quot;:&quot;section-one&quot;,&quot;text&quot;:&quot;Section one&quot;}]</p>');
 });
 
-test("render(entry) returns it as remarkPluginFrontmatter, and the entry's data stays as validated", async () => {
+test("render(entry) returns it as remarkPluginFrontmatter, with the headings; the entry's data stays as validated", async () => {
   const html = await built("entry/index.html");
   expect(html).toContain('<p id="entry">injected into Entry</p>');
   expect(html).toContain('<p id="data">undefined</p>');
+  expect(html).toContain('<p id="headings">[{&quot;depth&quot;:2,&quot;slug&quot;:&quot;part--one&quot;,&quot;text&quot;:&quot;Part &amp; One&quot;}]</p>');
   expect(html).toContain("<p>Entry body.</p>");
 });

@@ -25,7 +25,7 @@ export type HostAlias =
  * Every supported public spelling converges on one generated singleton module.
  * Its keys are also the only externals an artifact may bind to.
  */
-/** What a compiled `.md` module imports `renderMarkdown` from. Internal: no project spells it. */
+/** What a compiled `.md` module imports `renderMarkdownWithHeadings` from. Internal: no project spells it. */
 export const MARKDOWN_SPECIFIER = "pletivo:markdown";
 
 export const HOST_ALIASES: ReadonlyMap<string, HostAlias> = new Map([

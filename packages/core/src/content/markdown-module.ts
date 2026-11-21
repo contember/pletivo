@@ -29,7 +29,7 @@ export interface MarkdownModuleOptions {
   astro?: boolean;
   /** Specifier of the module exporting `markdownContent` and `markdownDocument` (the Astro shim). */
   runtime: string;
-  /** Specifier of the module exporting `renderMarkdown`, with the project's plugins configured. */
+  /** Specifier of the module exporting `renderMarkdownWithHeadings`, with the project's plugins configured. */
   markdown: string;
 }
 
@@ -43,7 +43,7 @@ export function markdownModule(options: MarkdownModuleOptions): string {
   const astroPage = options.astro === true && url !== undefined && layout === null;
   const lines = [
     `import { markdownContent as $$markdownContent, markdownDocument as $$markdownDocument } from ${literal(options.runtime)};`,
-    `import { renderMarkdown as $$renderMarkdown } from ${literal(options.markdown)};`,
+    `import { renderMarkdownWithHeadings as $$renderMarkdown } from ${literal(options.markdown)};`,
     ...(layout === null ? [] : [`import $$Layout from ${literal(layout)};`]),
     `const $$body = ${literal(page.body)};`,
     `export const frontmatter = ${literal(page.frontmatter)};`,
@@ -51,10 +51,11 @@ export function markdownModule(options: MarkdownModuleOptions): string {
     `export const url = ${url === undefined ? "undefined" : literal(url)};`,
     "export function rawContent() { return $$body; }",
     "let $$html;",
+    "let $$headings = [];",
     // The plugins may add to `frontmatter` (Astro's `file.data.astro.frontmatter`); a layout reads it after.
-    "export function compiledContent() { return ($$html ??= $$renderMarkdown($$body, frontmatter)); }",
-    // pletivo collects no headings, as for a collection entry's `render()`.
-    "export function getHeadings() { return []; }",
+    "export function compiledContent() { return ($$html ??= $$renderMarkdown($$body, frontmatter).then((rendered) => { $$headings = rendered.headings; return rendered.html; })); }",
+    // Rendered lazily: the headings are known once the content renders, which a layout's props wait for.
+    "export function getHeadings() { return $$headings; }",
     "const $$page = { frontmatter, file, url, rawContent, compiledContent, getHeadings };",
     `export const Content = $$markdownContent($$page, ${layout === null ? "null" : "$$Layout"}${astroPage ? ", true" : ""});`,
     // In a pletivo-native project a page without a layout keeps pletivo's minimal document.

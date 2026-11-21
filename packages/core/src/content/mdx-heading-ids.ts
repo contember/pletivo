@@ -4,9 +4,18 @@
 import Slugger from "github-slugger";
 import type { Transformer } from "unified";
 
+/** A heading as Astro's `getHeadings()` lists it. */
+export interface MarkdownHeading {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
 export interface MdxHeadingIdsOptions {
   /** Astro's `experimental.headingIdCompat`: keep a trailing `-` in the slug. */
   experimentalHeadingIdCompat?: boolean;
+  /** Receives each heading in document order, an explicit id's included, as Astro collects them. */
+  heading?: (heading: MarkdownHeading) => void;
 }
 
 interface HastElement {
@@ -59,12 +68,16 @@ export function rehypeMdxHeadingIds(options: MdxHeadingIdsOptions = {}): Transfo
   return (tree) => {
     const slugger = new Slugger();
     visitElements(tree, (node) => {
-      if (node.tagName[0] !== "h" || !/h([0-6])/.test(node.tagName)) return;
+      const level = node.tagName[0] === "h" ? /h([0-6])/.exec(node.tagName) : null;
+      if (!level) return;
       const properties = (node.properties ??= {});
-      if (typeof properties.id === "string") return;
-      let slug = slugger.slug(headingText(node));
-      if (!options.experimentalHeadingIdCompat && slug.endsWith("-")) slug = slug.slice(0, -1);
-      properties.id = slug;
+      const text = headingText(node);
+      if (typeof properties.id !== "string") {
+        let slug = slugger.slug(text);
+        if (!options.experimentalHeadingIdCompat && slug.endsWith("-")) slug = slug.slice(0, -1);
+        properties.id = slug;
+      }
+      options.heading?.({ depth: Number(level[1]), slug: String(properties.id), text });
     });
   };
 }

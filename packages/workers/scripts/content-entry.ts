@@ -5,4 +5,4 @@
  */
 
 export * from "@pletivo/core/content/collection";
-export { configureMarkdown, renderMarkdown } from "@pletivo/core/content/markdown";
+export { configureMarkdown, renderMarkdownWithHeadings } from "@pletivo/core/content/markdown";

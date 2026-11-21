@@ -12,7 +12,7 @@
 
 import yaml from "js-yaml";
 import { splitFrontmatter } from "./frontmatter";
-import { rehypeMdxHeadingIds, type MdxHeadingIdsOptions } from "./mdx-heading-ids";
+import { rehypeMdxHeadingIds, type MarkdownHeading, type MdxHeadingIdsOptions } from "./mdx-heading-ids";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -46,7 +46,7 @@ export interface MarkdownOptions {
    * Astro's heading ids: github-slugger slugs, given after the user's rehype plugins. Absent:
    * pletivo's own slugs, given before them, which a pletivo-native site's anchors rely on.
    */
-  astroHeadingIds?: MdxHeadingIdsOptions;
+  astroHeadingIds?: Pick<MdxHeadingIdsOptions, "experimentalHeadingIdCompat">;
 }
 
 let markdownOptions: MarkdownOptions = {};
@@ -160,23 +160,32 @@ function hastTextContent(node: any): string {
  * preserving pletivo's prior heading-anchor behavior. Skips headings that
  * already carry an explicit id.
  */
-function rehypeHeadingIds() {
+function rehypeHeadingIds(options: { heading: (heading: MarkdownHeading) => void }) {
   return (tree: any) => {
     const seen = new Map<string, number>();
     const visit = (node: any) => {
       if (node?.type === "element" && /^h[1-6]$/.test(node.tagName)) {
         // Skip headings with no sluggable text (e.g. a bare `#`) — they'd
         // otherwise pick up a meaningless uniquified id like `-1`.
-        const base = slugify(hastTextContent(node));
+        const text = hastTextContent(node);
+        const base = slugify(text);
         if (base) {
           node.properties = node.properties ?? {};
           if (node.properties.id == null) node.properties.id = uniqueSlug(base, seen);
         }
+        const id = node.properties?.id;
+        options.heading({ depth: Number(node.tagName[1]), slug: id == null ? "" : String(id), text });
       }
       (node?.children ?? []).forEach(visit);
     };
     visit(tree);
   };
+}
+
+/** A Markdown body rendered: its HTML and its headings, as Astro's `getHeadings()` lists them. */
+export interface RenderedMarkdown {
+  html: string;
+  headings: MarkdownHeading[];
 }
 
 /**
@@ -186,20 +195,29 @@ function rehypeHeadingIds() {
  * The plugins see `frontmatter` as `file.data.astro.frontmatter`, as in Astro, and may change it.
  */
 export async function renderMarkdown(body: string, frontmatter: Record<string, unknown> = {}): Promise<string> {
+  return (await renderMarkdownWithHeadings(body, frontmatter)).html;
+}
+
+/** `renderMarkdown`, with the headings the heading-id plugin saw. */
+export async function renderMarkdownWithHeadings(body: string, frontmatter: Record<string, unknown> = {}): Promise<RenderedMarkdown> {
+  const headings: MarkdownHeading[] = [];
+  const heading = (found: MarkdownHeading): void => {
+    headings.push(found);
+  };
   const processor = unified().use(remarkParse);
   if (markdownOptions.gfm !== false) processor.use(remarkGfm);
   if (markdownOptions.remarkPlugins?.length) processor.use(markdownOptions.remarkPlugins);
   processor.use(remarkRehype, { allowDangerousHtml: true, ...markdownOptions.remarkRehype });
   if (markdownOptions.afterRemarkRehype?.length) processor.use(markdownOptions.afterRemarkRehype);
-  if (!markdownOptions.astroHeadingIds) processor.use(rehypeHeadingIds);
+  if (!markdownOptions.astroHeadingIds) processor.use(rehypeHeadingIds, { heading });
   if (markdownOptions.rehypePlugins?.length) processor.use(markdownOptions.rehypePlugins);
-  if (markdownOptions.astroHeadingIds) processor.use(rehypeMdxHeadingIds, markdownOptions.astroHeadingIds);
+  if (markdownOptions.astroHeadingIds) processor.use(rehypeMdxHeadingIds, { ...markdownOptions.astroHeadingIds, heading });
   // Last, as in Astro: raw HTML is re-serialized like the rest (`<a\n href>` → `<a href>`).
   processor.use(rehypeRaw);
   processor.use(rehypeStringify, { allowDangerousHtml: true });
 
   const file = await processor.process({ value: body.trim(), data: { astro: { frontmatter } } });
-  return String(file);
+  return { html: String(file), headings };
 }
 
 /**
