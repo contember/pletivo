@@ -207,7 +207,7 @@ export function setHoistedBundleCache(hash: string, bytes: Uint8Array<ArrayBuffe
  * basename from the entrypoint specifier (not the resolved path), so
  * callers must rename `pletivo:hoisted:<hash>.js` outputs themselves.
  */
-export function hoistedScriptBunPlugin(): BunPlugin {
+export function hoistedScriptBunPlugin(mode: "dev" | "build"): BunPlugin {
   const resolveFilter = new RegExp(`^${HOISTED_PREFIX}[a-f0-9]+$`);
   // 16-hex-char filename (matches our `Bun.hash().padStart(16,"0")` output).
   const loadFilter = /\/[a-f0-9]{16}\.js$/;
@@ -228,6 +228,13 @@ export function hoistedScriptBunPlugin(): BunPlugin {
         const entry = hoistedScriptByHash.get(m[1]);
         if (!entry) return undefined;
         return { contents: entry.code, loader: "js" };
+      });
+      // As Astro's client build: a component imported in browser code is an empty module, and in dev
+      // a function that says so when called; the server component never reaches the browser.
+      build.onLoad({ filter: /\.astro$/ }, (args) => {
+        const message = `Astro components cannot be used in the browser.\nTried to render "${args.path}".`;
+        const contents = mode === "dev" ? `export default () => { throw new Error(${JSON.stringify(message)}); };` : "export default {};";
+        return { contents, loader: "js" };
       });
     },
   };

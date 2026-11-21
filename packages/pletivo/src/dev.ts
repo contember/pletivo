@@ -628,7 +628,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       format: "esm",
       target: "browser",
       minify: false,
-      plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin()],
+      plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin("dev")],
     });
     if (result.success) {
       await recordBuildCssOutputs(result.outputs, `hoisted:${hash}`);

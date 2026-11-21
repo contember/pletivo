@@ -1926,7 +1926,7 @@ async function bundleHoistedScripts(
     format: "esm",
     target: "browser",
     minify: true,
-    plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin(), cssAssetBunPlugin()],
+    plugins: [cssSideEffectBunPlugin(), hoistedScriptBunPlugin("build"), cssAssetBunPlugin()],
   });
 
   if (!result.success) {
