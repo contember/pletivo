@@ -168,6 +168,14 @@ describe("generateFallbackEmissions — rewrite mode", () => {
     expect(itEmissions.find((e) => e.targetPathname === "it/blog/hello")!.sourceProps)
       .toEqual({ title: "Hello" });
   });
+
+  test("a default-locale dynamic route without a locale directory keeps every segment", () => {
+    // `blog/[slug]` is the default locale's under prefixDefaultLocale: false; `blog` is no locale.
+    const routes = makeRoutes(["blog/[slug].astro"]);
+    const dynamicPaths = new Map([["blog/[slug].astro", [{ params: { slug: "hello" } }]]]);
+    const emissions = generateFallbackEmissions({ routes, i18n: cfg, dynamicPaths, base: "/" });
+    expect(emissions.filter((e) => e.targetLocale === "it").map((e) => e.targetPathname)).toEqual(["it/blog/hello"]);
+  });
 });
 
 describe("generateFallbackEmissions — redirect mode", () => {

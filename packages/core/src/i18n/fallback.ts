@@ -192,7 +192,7 @@ function generateLocaleFallbacks(
               sourceRoute,
               sp.params,
               sp.props ?? {},
-              rewriteRouteWithPrefix(sourceRoute, newPrefix, sp.params),
+              rewriteRouteWithPrefix(sourceRoute, newPrefix, sp.params, detectRouteLocale(sourceRoute, i18n).hasLocaleInPath),
               targetLocale.code,
               i18n.routing.fallbackType,
               input,
@@ -277,7 +277,7 @@ function generateDefaultLocaleRedirects(
     if (r.isDynamic) {
       const paths = dynamicPaths.get(r.file) ?? [];
       for (const sp of paths) {
-        const targetPathname = rewriteRouteWithPrefix(r, "", sp.params);
+        const targetPathname = rewriteRouteWithPrefix(r, "", sp.params, true);
         const destination = materializeRoute(r, sp.params);
         out.push({
           sourceRoute: r,
@@ -295,7 +295,7 @@ function generateDefaultLocaleRedirects(
         sourceRoute: r,
         sourceParams: {},
         sourceProps: {},
-        targetPathname: rewriteRouteWithPrefix(r, "", {}),
+        targetPathname: rewriteRouteWithPrefix(r, "", {}, true),
         targetLocale: undefined,
         mode: "redirect",
         redirectTo: redirectUrl(input, destination),
@@ -312,35 +312,25 @@ function materializeRoute(
   route: Route,
   params: RouteParams,
 ): string {
-  return rewriteRouteWithPrefix(route, keepOriginalPrefix, params);
+  return rewriteRouteWithPrefix(route, "", params, false);
 }
 
-/** Sentinel that tells `rewriteRouteWithPrefix` to keep the first static segment. */
-const keepOriginalPrefix = Symbol("keep-original-prefix") as unknown as string;
-
 /**
- * Materialize a route's URL pathname with dynamic params substituted,
- * optionally replacing the leading static segment (the locale dir)
- * with a new prefix. Pass `""` to strip the leading segment entirely
- * (default-locale under `prefixDefaultLocale: false`), or
- * `keepOriginalPrefix` to leave it untouched.
+ * Materialize a route's URL pathname with dynamic params substituted, prefixed with
+ * `newPrefix` (none when `""`). A route with its locale in its path (`hasLocaleInPath`)
+ * loses that leading locale segment, which the prefix replaces; any other keeps every segment.
  */
 function rewriteRouteWithPrefix(
   route: Route,
-  newPrefix: string | typeof keepOriginalPrefix,
+  newPrefix: string,
   params: RouteParams,
+  hasLocaleInPath: boolean,
 ): string {
   const parts: string[] = [];
-  if (typeof newPrefix === "string" && newPrefix !== keepOriginalPrefix) {
-    if (newPrefix) parts.push(newPrefix);
-  }
+  if (newPrefix) parts.push(newPrefix);
   for (let i = 0; i < route.segments.length; i++) {
     const seg = route.segments[i]!;
-    // Skip the leading locale directory segment when the caller wants
-    // to replace it. With `keepOriginalPrefix` we emit every segment.
-    if (i === 0 && seg.type === "static" && newPrefix !== keepOriginalPrefix) {
-      continue;
-    }
+    if (i === 0 && seg.type === "static" && hasLocaleInPath) continue;
     if (seg.type === "static") {
       parts.push(seg.value);
     } else if (seg.type === "param") {
