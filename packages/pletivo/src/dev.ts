@@ -69,6 +69,7 @@ import type { PletivoConfig } from "./config";
 import type { Server, ServerWebSocket } from "bun";
 import { createRequire } from "module";
 import { withAstroMarkdownDefaults } from "./astro-markdown";
+import { registerHtmlPlugin } from "./html-plugin";
 
 const require_ = createRequire(import.meta.url);
 const { version: PLETIVO_VERSION } = require_("../package.json");
@@ -233,6 +234,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   const astroHost = await initAstroHost(projectRoot, "dev", (payload) => {
     broadcastHmr(JSON.stringify(payload));
   });
+  if (astroHost) await registerHtmlPlugin();
   const srcDirError = srcDirMismatch(projectRoot, config.srcDir, astroHost?.configuredSrcDir);
   if (srcDirError) throw new ProjectConfigError(srcDirError);
   // Before initCollections: content.config.ts is the first project module imported.
@@ -327,7 +329,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   }
 
   await initCollections(projectRoot, config.srcDir);
-  let routes = await scanRoutes(pagesDir);
+  let routes = await scanRoutes(pagesDir, { html: astroHost !== null });
   // Resolve i18n once per dev-server start; renderPage uses it to set
   // Astro.currentLocale from the matched route and Astro.preferredLocale
   // from the incoming request's Accept-Language header. Null when the
@@ -872,7 +874,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
     // Explicit config override first; fall back to the pages/404.* convention.
     const candidates: string[] = [];
     if (notFoundPagePath) candidates.push(notFoundPagePath);
-    for (const ext of [".tsx", ".jsx", ".astro"]) {
+    for (const ext of astroHost ? [".tsx", ".jsx", ".astro", ".html"] : [".tsx", ".jsx", ".astro"]) {
       candidates.push(path.join(pagesDir, `404${ext}`));
     }
     for (const fullPath of candidates) {
@@ -1540,7 +1542,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       }
 
       if (filename.startsWith("pages/")) {
-        routes = await scanRoutes(pagesDir);
+        routes = await scanRoutes(pagesDir, { html: astroHost !== null });
       }
 
       // Forward to Astro host watcher — integrations like Nua CMS subscribe

@@ -55,6 +55,7 @@ import { pageDoctype } from "@pletivo/core/page-doctype";
 import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
 import { withAstroMarkdownDefaults } from "./astro-markdown";
+import { registerHtmlPlugin } from "./html-plugin";
 
 /** Shape a dynamic page module is used through: its default export + getStaticPaths. */
 interface DynamicMod {
@@ -190,6 +191,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   await registerScssPlugin(projectRoot);
   await registerProjectSourcePlugin(projectRoot, config.srcDir);
   const astroHost = await initAstroHost(projectRoot, "build");
+  if (astroHost) await registerHtmlPlugin();
   const srcDirError = srcDirMismatch(projectRoot, config.srcDir, astroHost?.configuredSrcDir);
   if (srcDirError) throw new ProjectConfigError(srcDirError);
   configureScopedStyleStrategy(resolveScopedStyleStrategy(astroHost?.config));
@@ -307,13 +309,13 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
 
   // Scan routes
   const tScan = performance.now();
-  const routes = await scanRoutes(pagesDir);
+  const routes = await scanRoutes(pagesDir, { html: astroHost !== null });
   phase("scanRoutes", tScan);
   console.log(`Found ${routes.length} routes`);
 
   // Render all pages — static pages in parallel, dynamic sequentially
   const staticRoutes = routes.filter(
-    (r) => !r.isDynamic && r.file !== "404.tsx" && r.file !== "404.jsx" && r.file !== "404.astro",
+    (r) => !r.isDynamic && r.file !== "404.tsx" && r.file !== "404.jsx" && r.file !== "404.astro" && r.file !== "404.html",
   );
   const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
@@ -1790,7 +1792,7 @@ async function render404Page(
   pagesDir: string,
   pageContext: { __pageContext: PageContext },
 ): Promise<{ file: string; entry: string; html: string; renderedModules: Set<string>; tsxStyles: string[]; partial: boolean } | null> {
-  for (const ext of [".tsx", ".jsx", ".astro"]) {
+  for (const ext of [".tsx", ".jsx", ".astro", ".html"]) {
     const fullPath = path.join(pagesDir, `404${ext}`);
     const file = Bun.file(fullPath);
     if (await file.exists()) {

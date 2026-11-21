@@ -7,10 +7,11 @@ export * from "@pletivo/core/router";
 /**
  * Scan pages directory and return sorted routes (static first, then by priority)
  */
-export async function scanRoutes(pagesDir: string): Promise<Route[]> {
+export async function scanRoutes(pagesDir: string, { html = false } = {}): Promise<Route[]> {
   // As in Astro, a project without a pages directory builds no pages.
   if (!existsSync(pagesDir)) return [];
-  const glob = new Glob("**/*.{tsx,jsx,ts,js,astro,mdx,md}");
+  // `.html` pages are Astro's (`html-plugin.ts`); a native project's stay files Bun bundles.
+  const glob = new Glob(html ? "**/*.{tsx,jsx,ts,js,astro,mdx,md,html}" : "**/*.{tsx,jsx,ts,js,astro,mdx,md}");
   const routes: Route[] = [];
 
   // `dot`, so `isRouteFile` decides on dot entries, as it lets `.well-known` through.

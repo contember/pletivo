@@ -754,6 +754,24 @@ export async function renderSlot(
   return createHtml("");
 }
 
+/** A piece of an `.html` component: its text verbatim, or a `<slot>` with the trimmed text it falls back to. */
+export type HtmlComponentPart = string | { slot: string; fallback: string };
+
+/**
+ * Astro's `.html` component (`vite-plugin-html`): the file's text, each slot the content
+ * passed for it or the fallback. Props are ignored, as in Astro.
+ */
+export function htmlComponent(parts: HtmlComponentPart[]): AstroComponentFactory {
+  return createComponent(async (result, _props, slots) => {
+    let html = "";
+    for (const part of parts) {
+      if (typeof part === "string") html += part;
+      else html += slots[part.slot] ? (await renderSlot(result, slots[part.slot])).__html : part.fallback;
+    }
+    return createHtml(html);
+  });
+}
+
 export function mergeSlots(...args: SlotsRecord[]): SlotsRecord {
   return Object.assign({}, ...args);
 }

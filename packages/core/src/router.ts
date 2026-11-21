@@ -50,7 +50,7 @@ export function isRouteFile(file: string): boolean {
  * Parse a page file path into a Route
  */
 export function parseRoute(file: string): Route {
-  const name = file.replace(/\.(tsx|jsx|ts|js|astro|mdx|md)$/, "");
+  const name = file.replace(/\.(tsx|jsx|ts|js|astro|mdx|md|html)$/, "");
   const parts = name.split("/").filter(Boolean);
   const segments: RouteSegment[] = [];
   let isDynamic = false;
