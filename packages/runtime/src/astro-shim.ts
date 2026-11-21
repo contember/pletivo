@@ -925,9 +925,17 @@ export function defineStyleVars(defs: Record<string, unknown> | Record<string, u
 export function defineScriptVars(vars: Record<string, unknown>): HtmlString {
   let output = "";
   for (const [key, value] of Object.entries(vars)) {
-    output += `const ${key} = ${JSON.stringify(value)?.replace(/<\/script>/g, "\\x3C/script>")};\n`;
+    output += `const ${toIdent(key)} = ${JSON.stringify(value)?.replace(/<\/script>/g, "\\x3C/script>")};\n`;
   }
   return createHtml(output);
+}
+
+/** A `define:vars` key as a JavaScript identifier, as Astro makes it: `dash-case` → `dashCase`. */
+function toIdent(key: string): string {
+  return key.trim().replace(/(?!^)\b\w|\s+|\W+/g, (match: string, index: number) => {
+    if (/\W/.test(match)) return "";
+    return index === 0 ? match : match.toUpperCase();
+  });
 }
 
 export function renderTransition(

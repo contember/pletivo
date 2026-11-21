@@ -71,4 +71,9 @@ describe("defineScriptVars", () => {
     const result = defineScriptVars({ x: null });
     expect(result.__html).toBe("const x = null;\n");
   });
+
+  test("makes each key an identifier, as Astro does", () => {
+    const result = defineScriptVars({ "dash-case": 1, " two words ": 2, snake_case: 3 });
+    expect(result.__html).toBe("const dashCase = 1;\nconst twoWords = 2;\nconst snake_case = 3;\n");
+  });
 });
