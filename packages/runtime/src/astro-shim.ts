@@ -453,12 +453,12 @@ function makeResult(pageContext: PageContext = {}): AstroResult {
  * - HtmlString → raw
  * - Promise → awaited
  * - Array → joined
- * - null/undefined/false → empty
+ * - a falsy value other than 0 → empty; `true` → "true", as Astro's `renderChild`
  * - number → stringified
  * - string → HTML-escaped (text content default)
  */
 async function renderValue(value: unknown): Promise<string> {
-  if (value == null || value === false || value === true) return "";
+  if (!value && value !== 0) return "";
   if (typeof value === "string") return escapeHtml(value);
   if (typeof value === "number" || typeof value === "bigint") return String(value);
   if (isHtmlString(value)) return value.__html;

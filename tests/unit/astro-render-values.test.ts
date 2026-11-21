@@ -36,6 +36,11 @@ describe("set:html values, as Astro's unescapeHTML takes them", () => {
 });
 
 describe("template expressions, as Astro's renderChild takes them", () => {
+  test("a falsy value other than 0 renders nothing; true renders its text", async () => {
+    const out = await render`${true}|${false}|${null}|${undefined}|${""}|${NaN}|${0}`;
+    expect(out.__html).toBe("true||||||0");
+  });
+
   test("a Response renders nothing; an iterable's chunks are escaped text", async () => {
     const out = await render`<p>${new Response("x", { status: 302 })}</p><p>${spans("i")}</p><p>${asyncSpans()}</p>`;
     expect(out.__html).toBe(
