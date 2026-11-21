@@ -58,3 +58,34 @@ describe("loadAstroConfig directories", () => {
     await expect(loadAstroConfig(dir)).rejects.toThrow("astro.config.mjs: srcDir must be a string");
   });
 });
+
+describe("loadAstroConfig without a config file", () => {
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  async function projectWithPackage(pkg: object | null): Promise<string> {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-astro-no-config-")));
+    dirs.push(dir);
+    if (pkg) await fs.writeFile(path.join(dir, "package.json"), JSON.stringify(pkg));
+    return dir;
+  }
+
+  test("a project that depends on astro gets Astro's defaults, as astro build does", async () => {
+    for (const field of ["dependencies", "devDependencies"]) {
+      const dir = await projectWithPackage({ [field]: { astro: "^5.0.0" } });
+      const loaded = await loadAstroConfig(dir);
+      expect(loaded?.configuredSrcDir).toBeUndefined();
+      expect(loaded?.config.srcDir.href).toBe(`file://${dir}/src/`);
+      expect(loaded?.config.base).toBe("/");
+      expect(loaded?.config.build.format).toBe("directory");
+      expect(loaded?.config.integrations).toEqual([]);
+    }
+  });
+
+  test("a project without astro among its dependencies, or without package.json, stays pletivo-native", async () => {
+    expect(await loadAstroConfig(await projectWithPackage({ dependencies: { preact: "^10" } }))).toBeNull();
+    expect(await loadAstroConfig(await projectWithPackage(null))).toBeNull();
+  });
+});
