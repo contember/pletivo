@@ -38,7 +38,7 @@ import { setI18nRuntimeState } from "@pletivo/core/i18n/virtual-module";
 import { generateFallbackEmissions, type FallbackEmission } from "@pletivo/core/i18n/fallback";
 import { setImageMode, setImageService, setSharpResolveBase, clearTransforms, getTransforms, getImportedImages, processImages } from "./image";
 import { setUrlAssetMode, getUrlAssets, clearUrlAssets } from "./url-asset";
-import { setBase } from "@pletivo/runtime/base";
+import { setBase, stripBase, withBase } from "@pletivo/runtime/base";
 import { registerCssModulesPlugin, getCssModulesOutput, clearCssModules } from "./css-modules";
 import { registerScssPlugin, configureScss, clearScss } from "./scss";
 import { clearJsImportedCss, collectCssSideEffectImports, collectPageModuleCss, configureJsImportedCss, cssSideEffectBunPlugin, dynamicGraphOf, recordBuildCssOutputs, restoreDynamicGraph } from "./js-imported-css";
@@ -322,6 +322,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
   // Astro builds each page from a request at `site`, or at its dev server's origin.
   const requestOrigin = siteUrl?.origin ?? (astroHost ? `http://localhost:${astroHost.config.server.port}` : "http://localhost/");
+  // Astro's root page is requested at its base as configured, `trailingSlash` applied (`getUrlForPath`).
+  const astroRootPath = astroHost ? astroBasePath(astroHost.config.base, astroHost.config.trailingSlash) : undefined;
   // An Astro project names its output files by `build.format`; a native one writes `<path>/index.html`.
   const outputFormat = astroHost?.config.build.format;
   const i18n = resolveI18nConfig(astroHost?.config.i18n);
@@ -380,7 +382,9 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         `Astro.rewrite("${target}") exceeded ${MAX_REWRITE_DEPTH} hops (a cycle?)`,
       );
     }
-    const rawPath = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    // As Astro: a target under the base is routed without it.
+    const slashed = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    const rawPath = stripBase(slashed) ?? slashed;
     const routePath = rawPath === "/" ? "/" : rawPath.replace(/\/$/, "");
     for (const route of routes) {
       const params = matchRoute(route, routePath);
@@ -406,7 +410,10 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         if (!match) continue;
         props = match.props || {};
       }
-      const ctx = makePageContext(routePath, params, route, undefined, depth + 1);
+      const requestPath = astroHost
+        ? astroRewritePath(slashed, astroRootPath ?? "/", astroHost.config.trailingSlash, astroHost.config.build.format)
+        : undefined;
+      const ctx = makePageContext(routePath, params, route, undefined, depth + 1, requestPath);
       const html = await renderComponent(mod.default, props, ctx);
       if (html === null) continue;
       // A chain of rewrites ends at the innermost page.
@@ -423,6 +430,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     route: Route,
     localeOverride?: string,
     rewriteDepth = 0,
+    /** The request path when it is not the page's, as for a rewrite target. */
+    requestPath?: string,
   ) {
     const urlPath = "/" + pathname.replace(/^\//, "");
     // `preferredLocale` is always undefined in static output — there's
@@ -435,7 +444,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       localeOverride ??
       (i18n ? detectRouteLocale(route, i18n).locale?.code : undefined);
     const pageContext = {
-      url: new URL(urlPath, requestOrigin),
+      url: new URL(requestPath ?? (urlPath === "/" && astroRootPath !== undefined ? astroRootPath : withBase(urlPath)), requestOrigin),
       site: siteUrl,
       params,
       currentLocale,
@@ -1498,6 +1507,38 @@ function toPathname(outPath: string, distDir: string): string {
   return rel;
 }
 
+
+/**
+ * The request path Astro renders an `Astro.rewrite(target)` with (`findRouteToRewrite`): the target
+ * without the base, its trailing slash as `trailingSlash` and the format ask, joined to the base again.
+ */
+function astroRewritePath(target: string, base: string, trailingSlash: string, format: string): string {
+  const append = trailingSlash === "always" || (trailingSlash === "ignore" && format === "directory");
+  const withoutTrailing = (p: string) => (p.endsWith("/") ? p.slice(0, -1) : p);
+  let pathname = target;
+  if (base !== "/") {
+    if (target === base || target === withoutTrailing(base)) {
+      pathname = append ? "/" : "";
+    } else if (target.startsWith(base)) {
+      pathname = (append ? (target.endsWith("/") ? target : `${target}/`) : withoutTrailing(target)).slice(base.length);
+    }
+  }
+  if (!pathname.startsWith("/") && append && target.endsWith("/")) pathname = `/${pathname}`;
+  if (pathname === "/" && base !== "/" && !append) pathname = "";
+  if (format === "file") pathname = pathname.replace(/\.html$/, "");
+  if (base !== "/" && (pathname === "" || pathname === "/") && !append) return withoutTrailing(base);
+  // Astro's `joinPaths(base, pathname)`.
+  if (pathname === "") return withoutTrailing(base) || "/";
+  return `${withoutTrailing(base)}/${pathname.replace(/^\//, "")}`;
+}
+
+/** Astro's normalized `base`: a leading slash, and a trailing one as `trailingSlash` asks. */
+function astroBasePath(base: string, trailingSlash: string): string {
+  const leading = base.startsWith("/") ? base : `/${base}`;
+  if (trailingSlash === "never") return leading === "/" ? "/" : leading.replace(/\/$/, "");
+  if (trailingSlash === "always") return leading.endsWith("/") ? leading : `${leading}/`;
+  return leading;
+}
 
 /**
  * The path of the request Astro's static build renders `pathname` with (`getUrlForPath`):

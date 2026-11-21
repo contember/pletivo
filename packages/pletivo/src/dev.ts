@@ -403,7 +403,9 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
         `Astro.rewrite("${target}") exceeded ${MAX_REWRITE_DEPTH} hops (a cycle?)`,
       );
     }
-    const rawPath = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    // As Astro: a target under the base is routed without it.
+    const slashed = (target.split("?")[0] || "/").replace(/^\/+/, "/");
+    const rawPath = stripBase(slashed) ?? slashed;
     const routePath = rawPath === "/" ? "/" : rawPath.replace(/\/$/, "");
     for (const route of routes) {
       const params = matchRoute(route, routePath);
