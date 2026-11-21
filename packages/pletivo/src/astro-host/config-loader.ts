@@ -125,8 +125,7 @@ function normalizeAstroConfig(
     build,
     integrations,
     vite: (userConfig.vite as AstroConfig["vite"]) ?? {},
-    redirects:
-      (userConfig.redirects as AstroConfig["redirects"]) ?? {},
+    redirects: astroRedirects(userConfig.redirects, configName),
     i18n: userConfig.i18n as AstroConfig["i18n"],
   };
 
@@ -136,6 +135,32 @@ function normalizeAstroConfig(
   }
 
   return { config, configuredSrcDir };
+}
+
+const REDIRECT_STATUSES = new Set([300, 301, 302, 303, 304, 307, 308]);
+
+/** Astro's `redirects` schema: a destination, or a status Astro allows with its destination. */
+function astroRedirects(redirects: unknown, configName: string): AstroConfig["redirects"] {
+  if (redirects === undefined) return {};
+  if (typeof redirects !== "object" || redirects === null || Array.isArray(redirects)) {
+    throw new Error(`${configName}: redirects must be an object`);
+  }
+  const parsed: AstroConfig["redirects"] = {};
+  for (const [source, target] of Object.entries(redirects)) {
+    if (typeof target === "string") {
+      parsed[source] = target;
+      continue;
+    }
+    const status: unknown = typeof target === "object" && target !== null ? Reflect.get(target, "status") : undefined;
+    const destination: unknown = typeof target === "object" && target !== null ? Reflect.get(target, "destination") : undefined;
+    if (typeof status !== "number" || !REDIRECT_STATUSES.has(status) || typeof destination !== "string") {
+      throw new Error(
+        `${configName}: redirects[${JSON.stringify(source)}] must be a destination or { status: 300 | 301 | 302 | 303 | 304 | 307 | 308, destination }`,
+      );
+    }
+    parsed[source] = { status, destination };
+  }
+  return parsed;
 }
 
 /** Astro's `server` options with its default port. The function form is called as Astro's build does. */

@@ -58,6 +58,17 @@ describe("loadAstroConfig directories", () => {
     await expect(loadAstroConfig(dir)).rejects.toThrow("astro.config.mjs: srcDir must be a string");
   });
 
+  test("redirects are parsed as Astro's schema has them", async () => {
+    const ok = await projectWith(`export default { redirects: { "/a": "/b", "/c": { status: 302, destination: "/d" } } };\n`);
+    expect((await loadAstroConfig(ok))?.config.redirects).toEqual({ "/a": "/b", "/c": { status: 302, destination: "/d" } });
+    await expect(loadAstroConfig(await projectWith(`export default { redirects: { "/a": { status: 200, destination: "/b" } } };\n`))).rejects.toThrow(
+      'astro.config.mjs: redirects["/a"] must be a destination or { status: 300 | 301 | 302 | 303 | 304 | 307 | 308, destination }',
+    );
+    await expect(loadAstroConfig(await projectWith(`export default { redirects: { "/a": { status: 301 } } };\n`))).rejects.toThrow(
+      'redirects["/a"] must be a destination',
+    );
+  });
+
   test("server.port defaults to Astro's 4321; the function form is called as for a build", async () => {
     expect((await loadAstroConfig(await projectWith(`export default {};\n`)))?.config.server).toEqual({ port: 4321 });
     const object = await projectWith(`export default { server: { port: 8080, host: true } };\n`);
