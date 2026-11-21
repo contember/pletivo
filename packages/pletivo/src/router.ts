@@ -1,4 +1,5 @@
 import { Glob } from "bun";
+import { existsSync } from "fs";
 import { isRouteFile, parseRoute, type Route } from "@pletivo/core/router";
 
 export * from "@pletivo/core/router";
@@ -7,6 +8,8 @@ export * from "@pletivo/core/router";
  * Scan pages directory and return sorted routes (static first, then by priority)
  */
 export async function scanRoutes(pagesDir: string): Promise<Route[]> {
+  // As in Astro, a project without a pages directory builds no pages.
+  if (!existsSync(pagesDir)) return [];
   const glob = new Glob("**/*.{tsx,jsx,ts,js,astro,mdx,md}");
   const routes: Route[] = [];
 

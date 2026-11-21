@@ -1,5 +1,6 @@
 import path from "path";
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import { Glob } from "bun";
 import { getScssOutput } from "./scss";
 import { cssPreludeRules, type CssPreludeRule } from "@pletivo/core/css-imports";
@@ -125,7 +126,9 @@ async function buildCss(projectRoot: string, srcDir: string): Promise<{
   const srcPath = path.join(projectRoot, srcDir);
   const cssFiles: string[] = [];
   const glob = new Glob("**/*.css");
-  for await (const file of glob.scan(srcPath)) {
+  // A project may have no source directory at all; Astro builds it.
+  const scanned = existsSync(srcPath) ? glob.scan(srcPath) : [];
+  for await (const file of scanned) {
     // Skip CSS Modules — they're handled by the css-modules plugin
     if (file.endsWith(".module.css")) continue;
     cssFiles.push(file);
