@@ -801,6 +801,7 @@ export async function initCollections(projectRoot: string, srcDir = "src"): Prom
 
   generation.configLoad = runtime.host
     .loadConfig(projectRoot, generation.configVersion, srcDir)
+    .then((config) => withOrphanCollections(runtime.host, projectRoot, srcDir, config))
     .then((config) => {
       if (state.current === generation) generation.collectionsConfig = config;
     });
@@ -812,6 +813,39 @@ export async function initCollections(projectRoot: string, srcDir = "src"): Prom
     awaited = state.current;
     await awaited.configLoad;
   }
+}
+
+/**
+ * Astro 5's `autogenerateCollections`: unless a collection has a loader, every
+ * top-level folder of `<srcDir>/content/` not starting with `_` or `.` and not
+ * defined becomes a legacy content collection, with Astro's deprecation warning.
+ * Only folders holding a content file are seen: a host scans files, and the
+ * Workers host reads every file a scan reports.
+ */
+async function withOrphanCollections(
+  host: ContentHost,
+  projectRoot: string,
+  srcDir: string,
+  config: Record<string, CollectionConfig>,
+): Promise<Record<string, CollectionConfig>> {
+  if (Object.values(config).some((collection) => collection.loader !== undefined || collection.directory !== undefined)) {
+    return config;
+  }
+  const scan = await host.scan(projectRoot, joinRelative(srcDir, "content"), `*/${LEGACY_CONTENT_PATTERN}`);
+  const orphans = new Set<string>();
+  for (const { entry } of scan.files) {
+    const name = entry.slice(0, entry.indexOf("/"));
+    if (!name.startsWith("_") && !name.startsWith(".") && !Object.hasOwn(config, name)) orphans.add(name);
+  }
+  if (orphans.size === 0) return config;
+  console.warn(
+    `Auto-generating collections for folders in "${joinRelative(srcDir, "content/")}" that are not defined as collections.\n` +
+      `This is deprecated, so you should define these collections yourself in "${joinRelative(srcDir, "content.config.ts")}".\n` +
+      `The following collections have been auto-generated: ${[...orphans].join(", ")}`,
+  );
+  const collections = { ...config };
+  for (const name of orphans) collections[name] = {};
+  return collections;
 }
 
 /**

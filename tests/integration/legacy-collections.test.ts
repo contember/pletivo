@@ -33,7 +33,8 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
 
   // A fresh generation per test, so a collection's load (and its warnings) belongs to the test.
   beforeEach(async () => {
-    await runWithBunContentRuntime(() => initCollections(fixtureRoot));
+    // The orphan/ folder's auto-generation warning is asserted in its own test.
+    await warningsOf(() => runWithBunContentRuntime(() => initCollections(fixtureRoot)));
   });
 
   test("a content collection reads src/content/<name>/, skipping _-prefixed paths and data files", async () => {
@@ -182,5 +183,15 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
       { id: "jane", slug: undefined, name: "Jane" },
       { id: "team/john", slug: undefined, name: "John" },
     ]);
+  });
+  test("an undefined src/content/ folder becomes a content collection, as Astro 5 auto-generates it", async () => {
+    const warnings = await warningsOf(() => runWithBunContentRuntime(() => initCollections(fixtureRoot)));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("The following collections have been auto-generated: orphan");
+    const entries = await runWithBunContentRuntime(() => getCollection("orphan"));
+    expect(entries.map((e) => ({ id: e.id, slug: e.slug, title: e.data.title }))).toEqual([
+      { id: "first.md", slug: "first", title: "Orphan" },
+    ]);
+    expect(runWithBunContentRuntime(() => getCollection("_hidden"))).rejects.toThrow('Collection "_hidden" not found');
   });
 });
