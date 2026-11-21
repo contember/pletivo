@@ -232,8 +232,8 @@ describe("generateFallbackEmissions — prefixDefaultLocale redirects", () => {
     routing: { prefixDefaultLocale: true },
   })!;
 
-  test("emits unprefixed → prefixed redirects for default-locale pages", () => {
-    const routes = makeRoutes(["en/start.astro", "en/blog/index.astro"]);
+  test("redirects only the root to the default locale, as Astro's i18n middleware does", () => {
+    const routes = makeRoutes(["index.astro", "en/index.astro", "en/start.astro", "en/blog/index.astro"]);
     const emissions = generateFallbackEmissions({
       routes,
       i18n: cfg,
@@ -241,9 +241,13 @@ describe("generateFallbackEmissions — prefixDefaultLocale redirects", () => {
       base: "/",
     });
     const redirects = emissions.filter((e) => e.mode === "redirect");
-    const map = new Map(redirects.map((e) => [e.targetPathname, e.redirectTo]));
-    expect(map.get("start")).toBe("/en/start/");
-    expect(map.get("blog")).toBe("/en/blog/");
+    expect(redirects.map((e) => [e.targetPathname, e.redirectTo, e.sourceRoute.file])).toEqual([["", "/en/", "index.astro"]]);
+  });
+
+  test("without a root page, the default locale's index is redirected to", () => {
+    const routes = makeRoutes(["en/index.astro"]);
+    const emissions = generateFallbackEmissions({ routes, i18n: cfg, dynamicPaths: new Map(), base: "/docs" });
+    expect(emissions.map((e) => [e.targetPathname, e.redirectTo])).toEqual([["", "/docs/en/"]]);
   });
 
   test("suppressed when redirectToDefaultLocale is false", () => {
@@ -265,36 +269,11 @@ describe("generateFallbackEmissions — prefixDefaultLocale redirects", () => {
     expect(emissions.filter((e) => e.mode === "redirect")).toEqual([]);
   });
 
-  test("non-default locales do not emit unprefixed redirects", () => {
-    const routes = makeRoutes(["en/start.astro", "pt/start.astro"]);
-    const emissions = generateFallbackEmissions({
-      routes,
-      i18n: cfg,
-      dynamicPaths: new Map(),
-      base: "/",
-    });
-    const redirects = emissions.filter((e) => e.mode === "redirect");
-    // Only the en default-locale file emits a redirect.
-    expect(redirects.map((e) => e.targetPathname)).toEqual(["start"]);
-  });
-
-  test("dynamic default-locale pages redirect per static path", () => {
-    const routes = makeRoutes(["en/blog/[slug].astro"]);
-    const dynamicPaths = new Map();
-    dynamicPaths.set("en/blog/[slug].astro", [
-      { params: { slug: "hello" } },
-      { params: { slug: "world" } },
-    ]);
-    const emissions = generateFallbackEmissions({
-      routes,
-      i18n: cfg,
-      dynamicPaths,
-      base: "/",
-    });
-    const redirects = emissions.filter((e) => e.mode === "redirect");
-    const map = new Map(redirects.map((e) => [e.targetPathname, e.redirectTo]));
-    expect(map.get("blog/hello")).toBe("/en/blog/hello/");
-    expect(map.get("blog/world")).toBe("/en/blog/world/");
+  test("no redirect without a root page or a default-locale index", () => {
+    const routes = makeRoutes(["en/start.astro", "pt/index.astro"]);
+    const dynamicPaths = new Map([["en/start.astro", []]]);
+    const emissions = generateFallbackEmissions({ routes, i18n: cfg, dynamicPaths, base: "/" });
+    expect(emissions.filter((e) => e.mode === "redirect")).toEqual([]);
   });
 });
 
@@ -391,10 +370,9 @@ describe("resolveDefaultLocaleRedirect", () => {
     routing: { prefixDefaultLocale: true },
   })!;
 
-  test("unprefixed URL for default-locale page → redirect", () => {
-    const routes = makeRoutes(["en/start.astro"]);
-    const dest = resolveDefaultLocaleRedirect("/start", routes, cfg, "/");
-    expect(dest).toBe("/en/start");
+  test("an unprefixed URL other than the root is not redirected, as in Astro", () => {
+    const routes = makeRoutes(["index.astro", "en/start.astro"]);
+    expect(resolveDefaultLocaleRedirect("/start", routes, cfg, "/")).toBeNull();
   });
 
   test("root URL redirects to /en when en/index exists", () => {
@@ -404,9 +382,9 @@ describe("resolveDefaultLocaleRedirect", () => {
   });
 
   test("honors base path in redirect destination", () => {
-    const routes = makeRoutes(["en/start.astro"]);
-    const dest = resolveDefaultLocaleRedirect("/start", routes, cfg, "/new-site");
-    expect(dest).toBe("/new-site/en/start");
+    const routes = makeRoutes(["index.astro"]);
+    const dest = resolveDefaultLocaleRedirect("/", routes, cfg, "/new-site");
+    expect(dest).toBe("/new-site/en");
   });
 
   test("URL already under a locale prefix is left alone", () => {
@@ -419,8 +397,8 @@ describe("resolveDefaultLocaleRedirect", () => {
       defaultLocale: "en",
       locales: ["en", "pt"],
     })!;
-    const routes = makeRoutes(["start.astro"]);
-    expect(resolveDefaultLocaleRedirect("/start", routes, noPrefix, "/")).toBeNull();
+    const routes = makeRoutes(["index.astro"]);
+    expect(resolveDefaultLocaleRedirect("/", routes, noPrefix, "/")).toBeNull();
   });
 
   test("returns null when redirectToDefaultLocale is false", () => {
@@ -429,16 +407,16 @@ describe("resolveDefaultLocaleRedirect", () => {
       locales: ["en", "pt"],
       routing: { prefixDefaultLocale: true, redirectToDefaultLocale: false },
     })!;
-    const routes = makeRoutes(["en/start.astro"]);
+    const routes = makeRoutes(["en/index.astro"]);
     expect(
-      resolveDefaultLocaleRedirect("/start", routes, noRedirect, "/"),
+      resolveDefaultLocaleRedirect("/", routes, noRedirect, "/"),
     ).toBeNull();
   });
 
-  test("returns null when the candidate doesn't exist under the default locale", () => {
+  test("returns null when there is neither a root page nor a default-locale index", () => {
     const routes = makeRoutes(["en/start.astro"]);
     expect(
-      resolveDefaultLocaleRedirect("/nope", routes, cfg, "/"),
+      resolveDefaultLocaleRedirect("/", routes, cfg, "/"),
     ).toBeNull();
   });
 });

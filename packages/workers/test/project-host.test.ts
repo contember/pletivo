@@ -679,12 +679,17 @@ describe("createProjectHost", () => {
       expect(await host.paths()).toEqual([{ file: "src/pages/index.astro", pathname: "/", params: {} }]);
     });
 
-    test("redirects an unprefixed path to the default locale when it is prefixed", async () => {
+    test("redirects the root to the default locale when it is prefixed, and no other path", async () => {
       const host = routingHost(
         { i18n: { defaultLocale: "en", locales: ["en", "de"], routing: { prefixDefaultLocale: true } } },
-        { "src/pages/en/about.astro": LOCALE_PAGE.replace('"es"', '"de"') },
+        {
+          "src/pages/en/index.astro": LOCALE_PAGE.replace('"es"', '"de"'),
+          "src/pages/en/about.astro": LOCALE_PAGE.replace('"es"', '"de"'),
+        },
       );
-      expect(await get(host, "/about")).toMatchObject({ status: 302, location: "/en/about" });
+      expect(await get(host, "/")).toMatchObject({ status: 302, location: "/en" });
+      // As in Astro, which has no route for an unprefixed default-locale page.
+      expect(await get(host, "/about")).toMatchObject({ status: 404, location: null });
     });
   });
 
