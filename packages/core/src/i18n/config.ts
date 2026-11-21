@@ -52,9 +52,9 @@ export interface ResolvedI18nRouting {
   /**
    * How fallback locales fill missing pages:
    *   - `"redirect"` → emit a static redirect document pointing at the
-   *     fallback locale's URL
+   *     fallback locale's URL (Astro default)
    *   - `"rewrite"` → render the fallback source page at the localized
-   *     URL (Astro default)
+   *     URL
    */
   fallbackType: "rewrite" | "redirect";
 }
@@ -116,8 +116,9 @@ export function resolveI18nConfig(
   const routing: ResolvedI18nRouting = {
     prefixDefaultLocale: userRouting.prefixDefaultLocale === true,
     redirectToDefaultLocale: userRouting.redirectToDefaultLocale !== false,
+    // Astro's schema defaults it to "redirect"; `routing: "manual"` rewrites (`toFallbackType`).
     fallbackType:
-      userRouting.fallbackType === "redirect" ? "redirect" : "rewrite",
+      raw.routing === "manual" || userRouting.fallbackType === "rewrite" ? "rewrite" : "redirect",
   };
 
   const fallback: Record<string, string> = {};

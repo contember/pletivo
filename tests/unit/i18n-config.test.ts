@@ -94,14 +94,14 @@ describe("resolveI18nConfig", () => {
     expect(cfg.byPath.get("es")).toBeUndefined();
   });
 
-  test("routing defaults: prefixDefault=false, redirect=true, fallback=rewrite", () => {
+  test("routing defaults, as Astro's schema: prefixDefault=false, redirect=true, fallback=redirect", () => {
     const cfg = resolveI18nConfig({
       defaultLocale: "en",
       locales: ["en"],
     })!;
     expect(cfg.routing.prefixDefaultLocale).toBe(false);
     expect(cfg.routing.redirectToDefaultLocale).toBe(true);
-    expect(cfg.routing.fallbackType).toBe("rewrite");
+    expect(cfg.routing.fallbackType).toBe("redirect");
   });
 
   test("routing prefixDefaultLocale true", () => {
@@ -120,6 +120,11 @@ describe("resolveI18nConfig", () => {
       routing: { prefixDefaultLocale: true, redirectToDefaultLocale: false },
     })!;
     expect(cfg.routing.redirectToDefaultLocale).toBe(false);
+  });
+
+  test("routing: manual falls back by rewriting, as Astro's toFallbackType", () => {
+    const cfg = resolveI18nConfig({ defaultLocale: "en", locales: ["en"], routing: "manual" })!;
+    expect(cfg.routing.fallbackType).toBe("rewrite");
   });
 
   test("routing fallbackType redirect", () => {

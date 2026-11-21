@@ -657,7 +657,7 @@ describe("createProjectHost", () => {
     });
 
     test("renders a page a locale lacks from its fallback, or redirects to it", async () => {
-      const rewrite = routingHost({ i18n: I18N }, LOCALIZED);
+      const rewrite = routingHost({ i18n: { ...I18N, routing: { fallbackType: "rewrite" } } }, LOCALIZED);
       const page = await get(rewrite, "/spanish/about");
       expect(page.status).toBe(200);
       expect(page.body).toContain("locale=es");

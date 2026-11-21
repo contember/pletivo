@@ -15,6 +15,7 @@ describe("generateFallbackEmissions — rewrite mode", () => {
     defaultLocale: "en",
     locales: ["en", "pt", "it"],
     fallback: { it: "en", pt: "en" },
+    routing: { fallbackType: "rewrite" },
   })!;
 
   test("no emissions when every locale already has the file", () => {
@@ -80,6 +81,7 @@ describe("generateFallbackEmissions — rewrite mode", () => {
       defaultLocale: "en",
       locales: ["en", "pt", "it"],
       fallback: { it: "pt", pt: "en" },
+      routing: { fallbackType: "rewrite" },
     })!;
     const routes = makeRoutes(["en/start.astro"]);
     const emissions = generateFallbackEmissions({
@@ -99,6 +101,7 @@ describe("generateFallbackEmissions — rewrite mode", () => {
       defaultLocale: "en",
       locales: ["en", { path: "spanish", codes: ["es"] }],
       fallback: { es: "en" },
+      routing: { fallbackType: "rewrite" },
     })!;
     const routes = makeRoutes(["en/start.astro"]);
     const emissions = generateFallbackEmissions({
@@ -279,6 +282,7 @@ describe("resolveFallbackRoute (dev-server lookup)", () => {
     defaultLocale: "en",
     locales: ["en", "pt", "it"],
     fallback: { it: "en", pt: "en" },
+    routing: { fallbackType: "rewrite" },
   })!;
 
   test("finds fallback source under non-default locale URL", () => {

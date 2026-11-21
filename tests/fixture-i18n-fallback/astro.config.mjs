@@ -6,5 +6,6 @@ export default {
       pt: "en",
       it: "en",
     },
+    routing: { fallbackType: "rewrite" },
   },
 };
