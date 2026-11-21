@@ -551,7 +551,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       }
       if (typeof mod.default !== "function") return null;
       if (typeof mod.getStaticPaths !== "function") return null;
-      const paginate = createPaginate(route, base || "/");
+      const paginate = createPaginate(route, base || "/", astroHost?.config.trailingSlash);
       return (await mod.getStaticPaths({ paginate })) as StaticPath[];
     });
     if (!sp) continue;
@@ -615,7 +615,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
         dynamicMods.set(routeFile, mod);
       }
       if (typeof mod.getStaticPaths !== "function") return [] as StaticPath[];
-      const paginate = createPaginate(route, base || "/");
+      const paginate = createPaginate(route, base || "/", astroHost?.config.trailingSlash);
       return await mod.getStaticPaths({ paginate });
     })();
     dynamicStaticPathsCache.set(routeFile, fetch);

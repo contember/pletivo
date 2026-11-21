@@ -712,7 +712,7 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
   ): Promise<Record<string, unknown> | null> {
     if (!route.isDynamic) return {};
     if (typeof mod.getStaticPaths === "function") {
-      const paginate = createPaginate(route, config.base || "/");
+      const paginate = createPaginate(route, config.base || "/", astroHost?.config.trailingSlash);
       const staticPaths: StaticPath[] = await mod.getStaticPaths({ paginate });
       const match = staticPaths.find((sp) => {
         return Object.entries(params).every(([k, v]) => sp.params[k] === v);
