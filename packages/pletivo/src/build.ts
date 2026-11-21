@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import { scanRoutes } from "./router";
-import { matchRoute, pageOutputPath, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { compareRoutes, matchRoute, pageOutputPath, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
 import { escapeStyleEnd } from "@pletivo/core/inline-style";
 import {
@@ -827,6 +827,29 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     }
   }
   phase("dynamic routes", tDynamic);
+
+  // As in Astro, a path two routes build is the page of the higher-priority route
+  // (`compareRoutes`): a static route's over a dynamic one's, `[a]`'s over `[b]`'s.
+  const routeByFile = new Map(routes.map((route) => [route.file, route]));
+  const outranks = (result: PageResult, owner: PageResult): boolean => {
+    const route = routeByFile.get(result.file);
+    const ownerRoute = routeByFile.get(owner.file);
+    return route !== undefined && ownerRoute !== undefined && compareRoutes(route, ownerRoute) < 0;
+  };
+  const pathOwners = new Map<string, PageResult>();
+  for (const result of results) {
+    const owner = pathOwners.get(result.outPath);
+    if (owner === undefined || outranks(result, owner)) pathOwners.set(result.outPath, result);
+  }
+  for (const result of results) {
+    const owner = pathOwners.get(result.outPath);
+    if (owner === undefined || owner === result) continue;
+    console.warn(
+      `  Skipping ${result.label}: ${path.relative(distDir, result.outPath)} is built by the higher-priority route ${owner.file}`,
+    );
+  }
+  const routeResults = results.filter((result) => pathOwners.get(result.outPath) === result);
+  results.splice(0, results.length, ...routeResults);
 
   // Render i18n fallback emissions + default-locale redirects. Each
   // emission produces either a rewrite (render source component with

@@ -1,6 +1,6 @@
 import { Glob } from "bun";
 import { existsSync } from "fs";
-import { isRouteFile, parseRoute, type Route } from "@pletivo/core/router";
+import { compareRoutes, isRouteFile, parseRoute, type Route } from "@pletivo/core/router";
 
 export * from "@pletivo/core/router";
 
@@ -19,10 +19,10 @@ export async function scanRoutes(pagesDir: string): Promise<Route[]> {
     routes.push(parseRoute(file));
   }
 
-  // Sort: static routes first, then by priority (lower = higher priority)
+  // Static routes first, then by priority (lower = higher priority), then in Astro's order.
   routes.sort((a, b) => {
     if (a.isDynamic !== b.isDynamic) return a.isDynamic ? 1 : -1;
-    return a.priority - b.priority;
+    return a.priority - b.priority || compareRoutes(a, b);
   });
 
   return routes;

@@ -88,6 +88,53 @@ export function parseRoute(file: string): Route {
 }
 
 /**
+ * Astro's `routeComparator`: the order routes are matched in, and the route that keeps
+ * a path two routes build. Per segment, a static one comes first (two static ones
+ * alphabetically), then a param before a rest; a longer route before a shorter one,
+ * except that a route one rest segment longer comes after; an endpoint before a page;
+ * then the route path alphabetically.
+ */
+export function compareRoutes(a: Route, b: Route): number {
+  const commonLength = Math.min(a.segments.length, b.segments.length);
+  for (let index = 0; index < commonLength; index++) {
+    const aSegment = a.segments[index]!;
+    const bSegment = b.segments[index]!;
+    const aIsStatic = aSegment.type === "static";
+    const bIsStatic = bSegment.type === "static";
+    if (aIsStatic && bIsStatic && aSegment.value !== bSegment.value) {
+      return aSegment.value.localeCompare(bSegment.value);
+    }
+    if (aIsStatic !== bIsStatic) return aIsStatic ? -1 : 1;
+    const aIsRest = aSegment.type === "rest";
+    const bIsRest = bSegment.type === "rest";
+    if (aIsRest !== bIsRest) return aIsRest ? 1 : -1;
+  }
+
+  const aLength = a.segments.length;
+  const bLength = b.segments.length;
+  if (aLength !== bLength) {
+    const aEndsInRest = a.segments.at(-1)?.type === "rest";
+    const bEndsInRest = b.segments.at(-1)?.type === "rest";
+    if (aEndsInRest !== bEndsInRest && Math.abs(aLength - bLength) === 1) {
+      if (aLength > bLength && aEndsInRest) return 1;
+      if (bLength > aLength && bEndsInRest) return -1;
+    }
+    return aLength > bLength ? -1 : 1;
+  }
+
+  if (a.isEndpoint !== b.isEndpoint) return a.isEndpoint ? -1 : 1;
+  return routePath(a).localeCompare(routePath(b));
+}
+
+/** A route as Astro names it: `/blog/[slug]`, `/[...rest]`, `/`. */
+function routePath(route: Route): string {
+  const parts = route.segments.map((segment) =>
+    segment.type === "static" ? segment.value : segment.type === "param" ? `[${segment.value}]` : `[...${segment.value}]`,
+  );
+  return `/${parts.join("/")}`;
+}
+
+/**
  * Settle an extensionless `.ts`/`.js` route once its module is loaded. Astro
  * makes every script page an endpoint (`api.ts` → `/api`), but pletivo also
  * renders a script page's default export as HTML, so the exports decide.

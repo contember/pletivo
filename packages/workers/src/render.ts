@@ -10,6 +10,7 @@
 
 import { recordPhase, timePhase } from "./phase-timing.ts";
 import {
+  compareRoutes,
   findRoute,
   isRouteFile,
   parseRoute,
@@ -382,7 +383,7 @@ const PAGE_EXTENSIONS = [".astro", ".md", ".mdx", ".tsx", ".jsx", ".ts", ".js"];
 
 /**
  * The project's routes, ordered the way `scanRoutes` orders them on the Bun host:
- * static before dynamic, then by specificity.
+ * static before dynamic, then by specificity, then in Astro's order.
  */
 export function projectRoutes(
   files: ProjectFiles,
@@ -399,7 +400,7 @@ export function projectRoutes(
   }
   routes.sort((a, b) => {
     if (a.isDynamic !== b.isDynamic) return (a.isDynamic ? 1 : 0) - (b.isDynamic ? 1 : 0);
-    return a.priority - b.priority;
+    return a.priority - b.priority || compareRoutes(a, b);
   });
   return routes;
 }

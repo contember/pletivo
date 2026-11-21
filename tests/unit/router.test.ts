@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { isRouteFile, parseRoute, matchRoute, resolveScriptRoute, routeToOutputPath, findRoute } from "@pletivo/core/router";
+import { compareRoutes, isRouteFile, parseRoute, matchRoute, resolveScriptRoute, routeToOutputPath, findRoute } from "@pletivo/core/router";
 
 describe("isRouteFile", () => {
   test("a _-prefixed file is not a route", () => {
@@ -346,5 +346,23 @@ describe("routeToOutputPath with Astro's build.format", () => {
 
   test("an endpoint keeps its own file name under every format", () => {
     expect(out("rss.xml.ts", "file")).toBe("rss.xml");
+  });
+});
+
+describe("compareRoutes, Astro's route priority", () => {
+  const order = (...files: string[]) => files.map(parseRoute).sort(compareRoutes).map((route) => route.file);
+
+  test("a static segment before a param, a param before a rest", () => {
+    expect(order("[...slug].astro", "[page].astro", "about.astro")).toEqual(["about.astro", "[page].astro", "[...slug].astro"]);
+  });
+
+  test("equal routes alphabetically, an endpoint before a page", () => {
+    expect(order("[foo].astro", "[bar].astro")).toEqual(["[bar].astro", "[foo].astro"]);
+    expect(order("feed.xml.astro", "feed.xml.ts")).toEqual(["feed.xml.ts", "feed.xml.astro"]);
+  });
+
+  test("a longer route first, except one rest segment longer", () => {
+    expect(order("blog.astro", "blog/[slug].astro")).toEqual(["blog/[slug].astro", "blog.astro"]);
+    expect(order("tags/[...page].astro", "tags/index.astro")).toEqual(["tags/index.astro", "tags/[...page].astro"]);
   });
 });
