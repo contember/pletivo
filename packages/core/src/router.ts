@@ -127,7 +127,7 @@ export function compareRoutes(a: Route, b: Route): number {
 }
 
 /** A route as Astro names it: `/blog/[slug]`, `/[...rest]`, `/`. */
-function routePath(route: Route): string {
+export function routePath(route: Route): string {
   const parts = route.segments.map((segment) =>
     segment.type === "static" ? segment.value : segment.type === "param" ? `[${segment.value}]` : `[...${segment.value}]`,
   );

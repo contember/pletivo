@@ -53,6 +53,7 @@ import { extractEntryFilePaths } from "@pletivo/core/incremental/extract-deps";
 import { escapeRegex } from "@pletivo/core/escape-regex";
 import { pageDoctype } from "@pletivo/core/page-doctype";
 import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
+import { configRedirects } from "@pletivo/core/astro-host/redirects";
 import { phase, timeSync, timeAsync, flushProfile } from "@pletivo/core/profile";
 import { withAstroMarkdownDefaults } from "./astro-markdown";
 import { registerHtmlPlugin } from "./html-plugin";
@@ -1012,6 +1013,27 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   if (result404) {
     const cssEntry404 = cssEntryOf(ctx404, result404.entry);
     results.push({ file: result404.file, entryFile: cssEntry404, label: result404.file, pageEntry: cssEntry404, outPath: path.join(distDir, "404.html"), html: result404.html, renderedModules: result404.renderedModules, tsxStyles: result404.tsxStyles, partial: partialOf(ctx404, result404.partial) });
+  }
+
+  // `redirects` from the Astro config, as Astro's static build writes them: pushed last,
+  // so a redirect replaces the page of its route, as Astro drops that page.
+  if (astroHost) {
+    const { redirects, dynamic } = configRedirects(astroHost.config, routes);
+    for (const source of dynamic) console.warn(`  Skipping redirect ${source}: pletivo builds only redirects from a static path`);
+    for (const redirect of redirects) {
+      results.push({
+        file: redirect.source,
+        label: `[redirect] ${redirect.source}`,
+        outPath: path.join(distDir, pageOutputPath(redirect.parts, outputFormat ?? "directory", false)),
+        html: redirectTemplate({
+          status: redirect.status,
+          location: redirect.location,
+          from: astroRequestPath(redirect.source, astroHost.config.base, astroHost.config.trailingSlash, outputFormat),
+          site: siteUrl,
+          compressHTML: resolveCompressHTML(astroHost.config) ?? true,
+        }),
+      });
+    }
   }
 
   // Deduplicate by output path — later entries win. The main use case

@@ -17,6 +17,7 @@ import { configureScopedStyleStrategy, registerAstroPlugin, getAstroCssForPage, 
 import { bumpDevVersion, getDevVersion } from "@pletivo/core/dev-cache";
 import { pageDoctype } from "@pletivo/core/page-doctype";
 import { resolveCompressHTML } from "@pletivo/core/astro-host/compile-options";
+import { configRedirects, findConfigRedirect } from "@pletivo/core/astro-host/redirects";
 import { bundlePageScripts } from "./astro-host/page-scripts";
 import { ProjectConfigError, srcDirMismatch } from "./astro-host/config-loader";
 import { configureMarkdown, resolveMarkdownOptions } from "@pletivo/core/content/markdown";
@@ -1353,6 +1354,9 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       // route's getStaticPaths doesn't contain the params we cascade to
       // the next matching route instead of falling through to 404.
       const routePath = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+      // `redirects` from the Astro config, ahead of the page of the same route, as Astro dev answers them.
+      const redirect = astroHost ? findConfigRedirect(configRedirects(astroHost.config, routes).redirects, routePath) : undefined;
+      if (redirect) return new Response(null, { status: redirect.status, headers: { Location: redirect.location } });
       for (const route of routes) {
         const params = matchRoute(route, routePath);
         if (params !== null) {
