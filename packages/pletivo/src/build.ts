@@ -426,6 +426,12 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
     return null;
   }
 
+  /** An Astro project's page is requested under its base, the root at the base as configured; a native one's is not. */
+  function astroRequestUrlPath(urlPath: string): string {
+    if (astroRootPath === undefined) return urlPath;
+    return urlPath === "/" ? astroRootPath : withBase(urlPath);
+  }
+
   function makePageContext(
     pathname: string,
     params: RouteParams,
@@ -444,7 +450,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       localeOverride ??
       (i18n ? computeCurrentLocale(i18n, urlPath) : undefined);
     const pageContext = {
-      url: new URL(requestPath ?? (urlPath === "/" && astroRootPath !== undefined ? astroRootPath : withBase(urlPath)), requestOrigin),
+      url: new URL(requestPath ?? astroRequestUrlPath(urlPath), requestOrigin),
       site: siteUrl,
       params,
       currentLocale,
