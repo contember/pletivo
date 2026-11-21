@@ -37,6 +37,16 @@ describe("collections defined without a loader (Astro 5 legacy collections)", ()
     await warningsOf(() => runWithBunContentRuntime(() => initCollections(fixtureRoot)));
   });
 
+  test("getCollection returns a new array on each call, so a page may sort or splice it", async () => {
+    const first = await runWithBunContentRuntime(() => getCollection("docs"));
+    const count = first.length;
+    first.splice(0, 1);
+    first.reverse();
+    const second = await runWithBunContentRuntime(() => getCollection("docs"));
+    expect(second).toHaveLength(count);
+    expect(second[0].id).toBe("Guides/Getting Started.md");
+  });
+
   test("a content collection reads src/content/<name>/, skipping _-prefixed paths and data files", async () => {
     const entries = await runWithBunContentRuntime(() => getCollection("docs"));
     expect(entries.map((e) => ({ id: e.id, slug: e.slug }))).toEqual([

@@ -921,10 +921,8 @@ export async function getCollection(
   // pages that hit the warm `collectionCache` would record nothing
   // and would happily serve stale HTML after a content edit.
   republishCollectionDeps(runtime, generation, name);
-  if (filter) {
-    entries = entries.filter(filter);
-  }
-  return entries;
+  // A new array on each call, as Astro's: a page that sorts or splices it leaves the cache alone.
+  return filter ? entries.filter(filter) : [...entries];
 }
 
 function republishCollectionDeps(
