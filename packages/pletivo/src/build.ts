@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import { scanRoutes } from "./router";
-import { matchRoute, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
+import { matchRoute, pageOutputPath, resolveScriptRoute, routeToOutputPath, type Route, type RouteParams, type StaticPath } from "@pletivo/core/router";
 import { createPaginate } from "@pletivo/core/paginate";
 import { escapeStyleEnd } from "@pletivo/core/inline-style";
 import {
@@ -316,6 +316,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
   const siteUrl = astroHost?.config.site ? new URL(astroHost.config.site) : undefined;
+  // An Astro project names its output files by `build.format`; a native one writes `<path>/index.html`.
+  const outputFormat = astroHost?.config.build.format;
   const i18n = resolveI18nConfig(astroHost?.config.i18n);
   // Install runtime state for the `astro:i18n` virtual module. Must
   // run before any .astro page module is imported, so that helpers
@@ -648,7 +650,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   /** `forceRender` skips the route's cache entry: the late pass after `bundleCss` uses it. */
   async function renderStaticRoute(route: Route, forceRender: boolean): Promise<PageResult | null> {
     const fullPath = path.join(pagesDir, route.file);
-    const outFile = routeToOutputPath(route, {});
+    const outFile = routeToOutputPath(route, {}, outputFormat);
     const outPath = path.join(distDir, outFile);
     const routeKey = `${route.file}::__static__`;
 
@@ -775,7 +777,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       return (await propsIndexPromise).get(paramsKey);
     };
     const renderSlug = async (params: RouteParams, forceRender: boolean): Promise<PageResult | null> => {
-      const outFile = routeToOutputPath(route, params);
+      const outFile = routeToOutputPath(route, params, outputFormat);
       const outPath = path.join(distDir, outFile);
       const pathname = toPathname(outPath, distDir);
       const ctx = makePageContext(pathname, params, route);
@@ -854,7 +856,11 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       base: astroBase,
     });
     for (const emission of emissions) {
-      const outFile = pathnameToOutputPath(emission.targetPathname);
+      const outFile = pageOutputPath(
+        emission.targetPathname.split("/").filter(Boolean),
+        outputFormat ?? "directory",
+        /(^|\/)index\.[^/]+$/.test(emission.sourceRoute.file),
+      );
       const outPath = path.join(distDir, outFile);
       const label = `[i18n ${emission.mode}] ${emission.targetPathname}`;
 
@@ -1468,17 +1474,6 @@ function toPathname(outPath: string, distDir: string): string {
   return rel;
 }
 
-/**
- * Convert an i18n-synthesized URL pathname (e.g. `"it/blog/hello"`)
- * into the `dist/`-relative file path under pletivo's directory
- * output format (always `<segments>/index.html`, or just `index.html`
- * for the empty string).
- */
-function pathnameToOutputPath(pathname: string): string {
-  const clean = pathname.replace(/^\/+|\/+$/g, "");
-  if (!clean) return "index.html";
-  return path.posix.join(clean, "index.html");
-}
 
 /**
  * The path of the request Astro's static build renders `pathname` with (`getUrlForPath`):

@@ -318,3 +318,33 @@ describe("endpoint routes", () => {
     expect(parseRoute("weird.name.md").isEndpoint).toBe(false);
   });
 });
+
+describe("routeToOutputPath with Astro's build.format", () => {
+  const out = (file: string, format: "directory" | "file" | "preserve", params = {}) =>
+    routeToOutputPath(parseRoute(file), params, format);
+
+  test("directory: <path>/index.html, but the 404 and 500 pages are <status>.html", () => {
+    expect(out("about.astro", "directory")).toBe("about/index.html");
+    expect(out("index.astro", "directory")).toBe("index.html");
+    expect(out("404.md", "directory")).toBe("404.html");
+    expect(out("500.astro", "directory")).toBe("500.html");
+    expect(out("blog/404.astro", "directory")).toBe("blog/404/index.html");
+  });
+
+  test("file: <path>.html, the root index.html", () => {
+    expect(out("one.astro", "file")).toBe("one.html");
+    expect(out("sub/page.astro", "file")).toBe("sub/page.html");
+    expect(out("sub/index.astro", "file")).toBe("sub.html");
+    expect(out("index.astro", "file")).toBe("index.html");
+    expect(out("[locale].astro", "file", { locale: "en-us" })).toBe("en-us.html");
+  });
+
+  test("preserve: an index route keeps index.html, any other page is <path>.html", () => {
+    expect(out("sub/index.astro", "preserve")).toBe("sub/index.html");
+    expect(out("sub/page.astro", "preserve")).toBe("sub/page.html");
+  });
+
+  test("an endpoint keeps its own file name under every format", () => {
+    expect(out("rss.xml.ts", "file")).toBe("rss.xml");
+  });
+});
