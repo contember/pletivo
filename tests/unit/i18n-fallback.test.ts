@@ -189,7 +189,20 @@ describe("generateFallbackEmissions — redirect mode", () => {
     const it = emissions.find((e) => e.targetLocale === undefined)!;
     expect(it.mode).toBe("redirect");
     expect(it.targetPathname).toBe("it/start");
-    expect(it.redirectTo).toBe("/en/start");
+    expect(it.redirectTo).toBe("/en/start/");
+  });
+
+  test("ends a destination with a slash only where Astro's trailingSlash and build.format do", () => {
+    const routes = makeRoutes(["en/start.astro", "en/index.astro"]);
+    const targets = (trailingSlash: string, format: string, base: string) =>
+      generateFallbackEmissions({ routes, i18n: cfg, dynamicPaths: new Map(), base, trailingSlash, format })
+        .filter((e) => e.mode === "redirect")
+        .map((e) => e.redirectTo)
+        .sort();
+    expect(targets("ignore", "directory", "new-site")).toEqual(["/new-site/en/", "/new-site/en/start/"]);
+    expect(targets("never", "directory", "/new-site")).toEqual(["/new-site/en", "/new-site/en/start"]);
+    expect(targets("ignore", "file", "/")).toEqual(["/en", "/en/start"]);
+    expect(targets("always", "file", "/")).toEqual(["/en/", "/en/start/"]);
   });
 
   test("honors base prefix in redirect destinations", () => {
@@ -200,7 +213,7 @@ describe("generateFallbackEmissions — redirect mode", () => {
       dynamicPaths: new Map(),
       base: "/new-site",
     });
-    expect(emissions[0]!.redirectTo).toBe("/new-site/en/start");
+    expect(emissions[0]!.redirectTo).toBe("/new-site/en/start/");
   });
 });
 
@@ -221,8 +234,8 @@ describe("generateFallbackEmissions — prefixDefaultLocale redirects", () => {
     });
     const redirects = emissions.filter((e) => e.mode === "redirect");
     const map = new Map(redirects.map((e) => [e.targetPathname, e.redirectTo]));
-    expect(map.get("start")).toBe("/en/start");
-    expect(map.get("blog")).toBe("/en/blog");
+    expect(map.get("start")).toBe("/en/start/");
+    expect(map.get("blog")).toBe("/en/blog/");
   });
 
   test("suppressed when redirectToDefaultLocale is false", () => {
@@ -272,8 +285,8 @@ describe("generateFallbackEmissions — prefixDefaultLocale redirects", () => {
     });
     const redirects = emissions.filter((e) => e.mode === "redirect");
     const map = new Map(redirects.map((e) => [e.targetPathname, e.redirectTo]));
-    expect(map.get("blog/hello")).toBe("/en/blog/hello");
-    expect(map.get("blog/world")).toBe("/en/blog/world");
+    expect(map.get("blog/hello")).toBe("/en/blog/hello/");
+    expect(map.get("blog/world")).toBe("/en/blog/world/");
   });
 });
 

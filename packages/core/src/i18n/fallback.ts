@@ -57,6 +57,20 @@ export interface FallbackGeneratorInput {
   dynamicPaths: Map<string, StaticPath[]>;
   /** Astro `base` URL prefix (e.g. `"/new-site"`), stripped of trailing slash. */
   base: string;
+  /** Astro's `trailingSlash` and `build.format`, which decide whether a redirect's target ends with `/`. */
+  trailingSlash?: string;
+  format?: string;
+}
+
+/**
+ * The URL a static build redirects to: `pathname` under `base`, ending with `/` where Astro's
+ * `shouldAppendForwardSlash` says so, as the request path it is derived from does.
+ */
+function redirectUrl(input: FallbackGeneratorInput, pathname: string): string {
+  const path = [input.base, pathname].map((part) => part.replace(/^\/+|\/+$/g, "")).filter(Boolean).join("/");
+  if (!path) return "/";
+  const append = input.trailingSlash === "always" || (input.trailingSlash !== "never" && (input.format ?? "directory") === "directory");
+  return append ? `/${path}/` : `/${path}`;
 }
 
 export function generateFallbackEmissions(
@@ -132,7 +146,7 @@ function localelessPathname(
 function generateLocaleFallbacks(
   input: FallbackGeneratorInput,
 ): FallbackEmission[] {
-  const { routes, i18n, dynamicPaths, base } = input;
+  const { routes, i18n, dynamicPaths } = input;
   if (Object.keys(i18n.fallback).length === 0) return [];
 
   const groups = groupByLocalelessKey(routes, i18n);
@@ -181,7 +195,7 @@ function generateLocaleFallbacks(
               rewriteRouteWithPrefix(sourceRoute, newPrefix, sp.params),
               targetLocale.code,
               i18n.routing.fallbackType,
-              base,
+              input,
             ),
           );
         }
@@ -194,7 +208,7 @@ function generateLocaleFallbacks(
             targetPathname,
             targetLocale.code,
             i18n.routing.fallbackType,
-            base,
+            input,
           ),
         );
       }
@@ -211,7 +225,7 @@ function makeFallbackEmission(
   targetPathname: string,
   targetLocaleCode: string,
   mode: "rewrite" | "redirect",
-  base: string,
+  input: FallbackGeneratorInput,
 ): FallbackEmission {
   if (mode === "rewrite") {
     return {
@@ -234,7 +248,7 @@ function makeFallbackEmission(
     targetPathname,
     targetLocale: undefined,
     mode,
-    redirectTo: joinUrl(base, sourcePathname),
+    redirectTo: redirectUrl(input, sourcePathname),
   };
 }
 
@@ -243,7 +257,7 @@ function makeFallbackEmission(
 function generateDefaultLocaleRedirects(
   input: FallbackGeneratorInput,
 ): FallbackEmission[] {
-  const { routes, i18n, dynamicPaths, base } = input;
+  const { routes, i18n, dynamicPaths } = input;
   if (!i18n.routing.prefixDefaultLocale) return [];
   if (!i18n.routing.redirectToDefaultLocale) return [];
 
@@ -272,7 +286,7 @@ function generateDefaultLocaleRedirects(
           targetPathname,
           targetLocale: undefined,
           mode: "redirect",
-          redirectTo: joinUrl(base, destination),
+          redirectTo: redirectUrl(input, destination),
         });
       }
     } else {
@@ -284,7 +298,7 @@ function generateDefaultLocaleRedirects(
         targetPathname: rewriteRouteWithPrefix(r, "", {}),
         targetLocale: undefined,
         mode: "redirect",
-        redirectTo: joinUrl(base, destination),
+        redirectTo: redirectUrl(input, destination),
       });
     }
   }

@@ -889,6 +889,8 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       i18n,
       dynamicPaths,
       base: astroBase,
+      trailingSlash: astroHost?.config.trailingSlash,
+      format: outputFormat,
     });
     for (const emission of emissions) {
       const outFile = pageOutputPath(
