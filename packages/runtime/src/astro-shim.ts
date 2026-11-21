@@ -325,6 +325,8 @@ export interface PageContext {
    * reading it there throws instead.
    */
   clientAddress?: string;
+  /** The project's `compressHTML`, for the page `Astro.redirect` turns into. Default true, as Astro's. */
+  compressHTML?: boolean;
 }
 
 type SlotFn = (...args: unknown[]) => unknown;
@@ -1067,10 +1069,10 @@ export function redirectTemplate({ status, location, from, site, compressHTML = 
  * Returns "" for a Response that isn't a redirect — the caller decides what
  * to do with it.
  */
-export function redirectPageHtml(response: Response, page: Pick<PageContext, "url" | "site"> = {}): string {
+export function redirectPageHtml(response: Response, page: Pick<PageContext, "url" | "site" | "compressHTML"> = {}): string {
   const location = response.headers.get("location");
   if (!location) return "";
-  return redirectTemplate({ status: response.status, location, from: page.url?.pathname, site: page.site });
+  return redirectTemplate({ status: response.status, location, from: page.url?.pathname, site: page.site, compressHTML: page.compressHTML });
 }
 
 // ── Markdown modules ────────────────────────────────────────────────

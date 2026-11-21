@@ -324,6 +324,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
   // Astro builds each page from a request at `site`, or at its dev server's origin.
   const requestOrigin = siteUrl?.origin ?? (astroHost ? `http://localhost:${astroHost.config.server.port}` : "http://localhost/");
   // Astro's root page is requested at its base as configured, `trailingSlash` applied (`getUrlForPath`).
+  const pageCompressHTML = resolveCompressHTML(astroHost?.config) ?? true;
   const astroRootPath = astroHost ? astroBasePath(astroHost.config.base, astroHost.config.trailingSlash) : undefined;
   // An Astro project names its output files by `build.format`; a native one writes `<path>/index.html`.
   const outputFormat = astroHost?.config.build.format;
@@ -466,6 +467,7 @@ async function buildWithContentRuntime(projectRoot: string, config: PletivoConfi
       cookies: new AstroCookies(),
       rewrite: (target: string): Promise<Response | null> =>
         resolveRewrite(target, rewriteDepth, pageContext),
+      compressHTML: pageCompressHTML,
       // No request during a build, so `Astro.clientAddress` throws if read.
     };
     return { __pageContext: pageContext };
