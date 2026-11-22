@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 const cli = path.resolve(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
@@ -65,25 +66,16 @@ describe(".-prefixed files under src/pages, build", () => {
 });
 
 describe(".-prefixed files under src/pages, dev", () => {
-  const port = 7300 + Math.floor(Math.random() * 1000);
-  const base = `http://localhost:${port}`;
-  let server: ReturnType<typeof Bun.spawn> | null = null;
+  let server: DevServer | null = null;
+  let base = "";
 
   beforeAll(async () => {
-    server = Bun.spawn(["bun", cli, "dev", String(port), "--no-restart"], { cwd: root, stdout: "pipe", stderr: "pipe" });
-    for (let i = 0; i < 100; i++) {
-      try {
-        await fetch(base);
-        return;
-      } catch {
-        await Bun.sleep(100);
-      }
-    }
-    throw new Error("Dev server did not start in time");
+    server = await startDevServer({ cwd: root, args: ["--no-restart"], timeoutMs: 25_000 });
+    base = server.url;
   }, 30_000);
 
-  afterAll(() => {
-    server?.kill();
+  afterAll(async () => {
+    await server?.stop();
   });
 
   test("serves the .well-known endpoint at its path", async () => {

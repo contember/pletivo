@@ -7,6 +7,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 import { build } from "../../packages/pletivo/src/build";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import { prepare } from "../../packages/pletivo/src/prepare/index";
@@ -14,7 +15,6 @@ import type { PletivoConfig } from "../../packages/pletivo/src/config";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-astro-page-scripts");
 const distDir = path.join(fixtureRoot, "dist");
-const cli = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
 const config: PletivoConfig = {
   host: "localhost",
@@ -89,24 +89,16 @@ describe("injectScript('page') bundling", () => {
   }, 60_000);
 
   describe("dev", () => {
-    let server: ReturnType<typeof Bun.spawn> | undefined;
+    let server: DevServer | undefined;
     let html: string;
 
     beforeAll(async () => {
-      const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-      const port = probe.port;
-      probe.stop(true);
-      server = Bun.spawn(["bun", cli, "dev", "--host", "127.0.0.1", "--port", String(port), "--no-restart"], {
-        cwd: fixtureRoot,
-        stdout: "ignore",
-        stderr: "inherit",
-      });
-      html = await fetchWhenUp(`http://127.0.0.1:${port}/`);
+      server = await startDevServer({ cwd: fixtureRoot, args: ["--host", "127.0.0.1", "--no-restart"], timeoutMs: 45_000 });
+      html = await fetchWhenUp(`${server.url}/`);
     }, 60_000);
 
     afterAll(async () => {
-      server?.kill();
-      await server?.exited;
+      await server?.stop();
     });
 
     test("serves the module the build emits", () => {

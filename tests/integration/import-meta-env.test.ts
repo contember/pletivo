@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 import fs from "fs/promises";
 import { build } from "../../packages/pletivo/src/build";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
@@ -7,7 +8,6 @@ import type { PletivoConfig } from "../../packages/pletivo/src/config";
 
 const astroFixture = path.join(import.meta.dir, "../fixture-astro-import-meta-env");
 const nativeFixture = path.join(import.meta.dir, "../fixture-native-import-meta-env");
-const cli = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
 const config: PletivoConfig = {
   host: "localhost",
@@ -101,22 +101,14 @@ describe("import.meta.env in a pletivo-native project build", () => {
 });
 
 describe("import.meta.env under pletivo dev", () => {
-  const servers: ReturnType<typeof Bun.spawn>[] = [];
+  const servers: DevServer[] = [];
   let astroIndex: string;
   let nativeIndex: string;
 
   async function devPage(cwd: string, pathname: string): Promise<string> {
-    const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    const port = probe.port;
-    probe.stop(true);
-    servers.push(
-      Bun.spawn(["bun", cli, "dev", "--host", "127.0.0.1", "--port", String(port), "--no-restart"], {
-        cwd,
-        stdout: "ignore",
-        stderr: "inherit",
-      }),
-    );
-    return fetchWhenUp(`http://127.0.0.1:${port}${pathname}`);
+    const server = await startDevServer({ cwd, args: ["--host", "127.0.0.1", "--no-restart"], timeoutMs: 45_000 });
+    servers.push(server);
+    return fetchWhenUp(`${server.url}${pathname}`);
   }
 
   beforeAll(async () => {
@@ -127,8 +119,7 @@ describe("import.meta.env under pletivo dev", () => {
   }, 60_000);
 
   afterAll(async () => {
-    for (const server of servers) server.kill();
-    await Promise.all(servers.map((server) => server.exited));
+    await Promise.all(servers.map((server) => server.stop()));
   });
 
   test("modules see the development built-ins", () => {
