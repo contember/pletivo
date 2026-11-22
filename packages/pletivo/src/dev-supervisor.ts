@@ -54,8 +54,6 @@ const RESPAWN_DELAY_MS = 200;
 /** A child that ran at least this long is treated as healthy — budget resets. */
 const HEALTHY_UPTIME_MS = 10_000;
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 export interface SupervisorOptions {
   /** argv for the child, minus the runtime — defaults to this process's own. */
   argv?: string[];
@@ -85,10 +83,24 @@ export async function superviseDev(options: SupervisorOptions = {}): Promise<num
   let crashes = 0;
   let current: ReturnType<typeof Bun.spawn> | null = null;
   let stopping = false;
+  let wakeUp: (() => void) | null = null;
+
+  // A signal must cut a pending backoff short, or the loop wakes up and spawns a child after shutdown.
+  const pause = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(done, ms);
+      function done() {
+        clearTimeout(timer);
+        wakeUp = null;
+        resolve();
+      }
+      wakeUp = done;
+    });
 
   const forward = (signal: NodeJS.Signals) => {
     stopping = true;
     current?.kill(signal);
+    wakeUp?.();
   };
   const onSigint = () => forward("SIGINT");
   const onSigterm = () => forward("SIGTERM");
@@ -96,7 +108,7 @@ export async function superviseDev(options: SupervisorOptions = {}): Promise<num
   process.on("SIGTERM", onSigterm);
 
   try {
-    for (;;) {
+    while (!stopping) {
       const startedAt = now();
       current = Bun.spawn([process.execPath, ...runtimeFlags, ...argv], {
         cwd: process.cwd(),
@@ -110,7 +122,7 @@ export async function superviseDev(options: SupervisorOptions = {}): Promise<num
 
       if (code === RESTART_EXIT_CODE) {
         crashes = 0;
-        await sleep(respawnDelayMs);
+        await pause(respawnDelayMs);
         continue;
       }
 
@@ -132,8 +144,9 @@ export async function superviseDev(options: SupervisorOptions = {}): Promise<num
       console.error(
         `  pletivo dev exited with code ${code} — restarting in ${delay}ms (${crashes}/${maxCrashRetries})`,
       );
-      await sleep(delay);
+      await pause(delay);
     }
+    return 0;
   } finally {
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
