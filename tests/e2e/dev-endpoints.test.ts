@@ -1,33 +1,19 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-endpoint-routes");
-const cliPath = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
-const PORT = 7789 + Math.floor(Math.random() * 1000);
-const BASE = `http://localhost:${PORT}`;
 
-let serverProcess: ReturnType<typeof Bun.spawn>;
+let server: DevServer;
+let BASE: string;
 
 beforeAll(async () => {
-  serverProcess = Bun.spawn(["bun", "run", cliPath, "dev", String(PORT)], {
-    cwd: fixtureRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  for (let i = 0; i < 50; i++) {
-    try {
-      await fetch(BASE);
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  throw new Error("Dev server did not start in time");
+  server = await startDevServer({ cwd: fixtureRoot });
+  BASE = server.url;
 });
 
-afterAll(() => {
-  serverProcess.kill();
+afterAll(async () => {
+  await server.stop();
 });
 
 describe("dev server - endpoint routes", () => {

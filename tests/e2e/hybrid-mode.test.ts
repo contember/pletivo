@@ -2,55 +2,35 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
 import fs from "fs";
 import os from "os";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-hybrid");
-const cliPath = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
 const DEBUG_HEADER = "x-test-debug";
 const MARKER = path.join(os.tmpdir(), `pletivo-hybrid-${process.pid}.marker`);
 
-let serverProcess: ReturnType<typeof Bun.spawn>;
-let PORT: number;
+let server: DevServer;
 let BASE: string;
 
-async function waitReady(base: string) {
-  for (let i = 0; i < 50; i++) {
-    try {
-      const r = await fetch(base);
-      if (r.status === 200 || r.status === 404) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error("Dev server did not start in time");
-}
-
 beforeAll(async () => {
-  PORT = 5567 + Math.floor(Math.random() * 1000);
-  BASE = `http://localhost:${PORT}`;
   // Ensure marker is absent so first renders succeed
   try { fs.unlinkSync(MARKER); } catch {}
 
-  serverProcess = Bun.spawn(
-    [
-      "bun", "run", cliPath, "dev",
-      `--port=${PORT}`,
+  server = await startDevServer({
+    cwd: fixtureRoot,
+    args: [
       "--404-page=./src/error-pages/404.tsx",
       "--error-page=./src/error-pages/building.tsx",
       "--stale",
       `--debug-header=${DEBUG_HEADER}`,
     ],
-    {
-      cwd: fixtureRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, PLETIVO_TEST_BREAK_MARKER: MARKER },
-    },
-  );
-  await waitReady(BASE);
+    env: { ...process.env, PLETIVO_TEST_BREAK_MARKER: MARKER },
+  });
+  BASE = server.url;
 });
 
-afterAll(() => {
-  serverProcess.kill();
+afterAll(async () => {
+  await server.stop();
   try { fs.unlinkSync(MARKER); } catch {}
 });
 

@@ -1,34 +1,22 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 // A `.md` page renders inside the layout its `layout:` names. An `.mdx` page's
 // `layout:` is not applied yet, so dev says so on the error overlay instead of serving
 // the page without its layout.
 const fixtureRoot = path.join(import.meta.dir, "../fixture-md-page-layout");
-const PORT = 6789 + Math.floor(Math.random() * 1000);
-const BASE = `http://localhost:${PORT}`;
 
-let serverProcess: ReturnType<typeof Bun.spawn>;
+let server: DevServer;
+let BASE: string;
 
 beforeAll(async () => {
-  serverProcess = Bun.spawn(
-    ["bun", "run", path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts"), "dev", String(PORT), "--no-restart"],
-    { cwd: fixtureRoot, stdout: "pipe", stderr: "pipe" },
-  );
-
-  for (let i = 0; i < 50; i++) {
-    try {
-      await fetch(BASE);
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  throw new Error("Dev server did not start in time");
+  server = await startDevServer({ cwd: fixtureRoot, args: ["--no-restart"] });
+  BASE = server.url;
 });
 
-afterAll(() => {
-  serverProcess.kill();
+afterAll(async () => {
+  await server.stop();
 });
 
 describe("dev server - .md/.mdx page with layout: frontmatter", () => {

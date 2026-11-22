@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 // End-to-end cover for the SSR-shaped Astro globals — `Astro.response`,
 // `Astro.locals`, `Astro.cookies`, `Astro.redirect`, `Astro.clientAddress`.
@@ -10,31 +11,17 @@ import path from "path";
 // headers/cookies (a file has neither), and warns that it did.
 const fixtureRoot = path.join(import.meta.dir, "../fixture-ssr-globals");
 const cliPath = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
-const PORT = 5678 + Math.floor(Math.random() * 1000);
-const BASE = `http://localhost:${PORT}`;
 
-let serverProcess: ReturnType<typeof Bun.spawn>;
+let server: DevServer;
+let BASE: string;
 
 beforeAll(async () => {
-  serverProcess = Bun.spawn(["bun", "run", cliPath, "dev", String(PORT)], {
-    cwd: fixtureRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  for (let i = 0; i < 50; i++) {
-    try {
-      await fetch(BASE);
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  throw new Error("Dev server did not start in time");
+  server = await startDevServer({ cwd: fixtureRoot });
+  BASE = server.url;
 });
 
 afterAll(async () => {
-  serverProcess.kill();
+  await server.stop();
   await fs.rm(path.join(fixtureRoot, "dist"), { recursive: true, force: true });
 });
 
@@ -117,29 +104,16 @@ describe("build - SSR-shaped Astro globals", () => {
 // Astro does — so its fixture is dev-only and its build is expected to fail.
 describe("Astro.clientAddress", () => {
   const devRoot = path.join(import.meta.dir, "../fixture-ssr-globals-dev");
-  const devPort = PORT + 1;
-  const devBase = `http://localhost:${devPort}`;
-  let devProcess: ReturnType<typeof Bun.spawn>;
+  let devServer: DevServer;
+  let devBase: string;
 
   beforeAll(async () => {
-    devProcess = Bun.spawn(["bun", "run", cliPath, "dev", String(devPort)], {
-      cwd: devRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    for (let i = 0; i < 50; i++) {
-      try {
-        await fetch(devBase);
-        return;
-      } catch {
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-    throw new Error("Dev server did not start in time");
+    devServer = await startDevServer({ cwd: devRoot });
+    devBase = devServer.url;
   });
 
   afterAll(async () => {
-    devProcess.kill();
+    await devServer.stop();
     await fs.rm(path.join(devRoot, "dist"), { recursive: true, force: true });
   });
 
@@ -224,28 +198,15 @@ describe("Astro.rewrite", () => {
 // unmatched target would otherwise hang the build used above.
 describe("bad Astro.rewrite targets", () => {
   const loopRoot = path.join(import.meta.dir, "../fixture-ssr-globals-loop");
-  const loopPort = PORT + 2;
-  const loopBase = `http://localhost:${loopPort}`;
-  let loopProcess: ReturnType<typeof Bun.spawn>;
+  let loopServer: DevServer;
+  let loopBase: string;
 
   beforeAll(async () => {
-    loopProcess = Bun.spawn(["bun", "run", cliPath, "dev", String(loopPort)], {
-      cwd: loopRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    for (let i = 0; i < 50; i++) {
-      try {
-        await fetch(loopBase);
-        return;
-      } catch {
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-    throw new Error("Dev server did not start in time");
+    loopServer = await startDevServer({ cwd: loopRoot });
+    loopBase = loopServer.url;
   });
 
-  afterAll(() => loopProcess.kill());
+  afterAll(() => loopServer.stop());
 
   test("a rewrite cycle stops at the hop limit instead of hanging", async () => {
     const html = await (await fetch(loopBase + "/loop")).text();
