@@ -9,6 +9,10 @@ export interface DevServer {
   url: string;
   /** stdout and stderr so far, interleaved by arrival. */
   output(): string;
+  /** Resolves with the exit code once the process has ended and its output is fully read. */
+  exited: Promise<number>;
+  /** Exit code, or null while the process runs. */
+  exitCode(): number | null;
   stop(): Promise<void>;
 }
 
@@ -72,5 +76,5 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
     const reason = exitCode === null ? `did not report a URL within ${timeoutMs}ms` : `exited with code ${exitCode} before reporting a URL`;
     throw new Error(`pletivo dev ${reason}:\n${output}`);
   }
-  return { url, output: () => output, stop };
+  return { url, output: () => output, exited: drained.then(() => proc.exited), exitCode: () => proc.exitCode, stop };
 }

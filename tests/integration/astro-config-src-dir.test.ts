@@ -59,8 +59,8 @@ describe("srcDir set only in astro.config", () => {
 
   test("dev stops before serving", async () => {
     const root = await project("dev", ASTRO_ONLY);
-    const port = 7800 + Math.floor(Math.random() * 1000);
-    const result = await runCli(root, ["dev", String(port), "--no-restart"]);
+    // Port 0: should dev bind after all, it cannot collide with another process.
+    const result = await runCli(root, ["dev", "--port=0", "--no-restart"]);
     expect(result.exitCode).not.toBe(0);
     expect(result.output).toContain(EXPECTED_ERROR);
     expect(result.output).not.toContain("    at ");

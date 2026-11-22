@@ -7,15 +7,14 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 const template = path.join(import.meta.dir, "../fixture-astro-renderers-multi");
-const cli = path.resolve(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
 let root = "";
 let downloads = "";
 let base = "";
-let server: ReturnType<typeof Bun.spawn> | null = null;
-let output = "";
+let server: DevServer | null = null;
 
 beforeAll(async () => {
   try {
@@ -33,44 +32,13 @@ async function startServer(): Promise<void> {
   root = await fs.mkdtemp(path.join(import.meta.dir, "../.renderers-dev-multi-"));
   downloads = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-renderers-dev-multi-"));
   await fs.cp(template, root, { recursive: true });
-  const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-  const port = probe.port;
-  probe.stop(true);
-  base = `http://127.0.0.1:${port}`;
-  const child = Bun.spawn([process.execPath, cli, "dev", "--host", "127.0.0.1", "--port", String(port), "--no-restart"], {
-    cwd: root,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  server = child;
-  const decoder = new TextDecoder();
-  const collect = async (stream: ReadableStream<Uint8Array>) => {
-    for await (const chunk of stream) output += decoder.decode(chunk);
-  };
-  const drained = Promise.all([collect(child.stdout), collect(child.stderr)]);
-  let exitCode: number | null = null;
-  void child.exited.then((code) => {
-    exitCode = code;
-  });
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (exitCode !== null) {
-      await drained;
-      throw new Error(`the dev server exited with ${exitCode} before it served:\n${output}`);
-    }
-    try {
-      await fetch(`${base}/__hmr_ping`);
-      return;
-    } catch {
-      await Bun.sleep(100);
-    }
-  }
-  throw new Error(`the dev server did not start:\n${output}`);
+  server = await startDevServer({ cwd: root, args: ["--host", "127.0.0.1", "--no-restart"], timeoutMs: 45_000 });
+  base = server.url;
 }
 
 async function cleanup(): Promise<void> {
   if (server) {
-    if (server.exitCode === null) process.kill(server.pid);
-    await server.exited;
+    await server.stop();
     server = null;
   }
   if (root) await fs.rm(root, { recursive: true, force: true });
@@ -142,7 +110,7 @@ async function evaluate(urls: readonly string[]): Promise<unknown> {
 test("every island's component, renderer and before-hydration modules load, and its client entry and the preamble run", async () => {
   const response = await fetch(`${base}/`);
   const html = await response.text();
-  expect({ status: response.status, output }).toMatchObject({ status: 200 });
+  expect({ status: response.status, output: server?.output() }).toMatchObject({ status: 200 });
 
   const found = islands(html);
   expect(found).toHaveLength(5);
