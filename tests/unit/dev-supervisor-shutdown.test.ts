@@ -24,7 +24,7 @@ import { superviseDev } from ${JSON.stringify(supervisorModule)}
 process.exit(await superviseDev({
   argv: [${JSON.stringify(childPath)}, ${JSON.stringify(runsPath)}],
   runtimeFlags: [],
-  backoffMs: [2000],
+  backoffMs: [10000],
 }))
 `;
 
@@ -48,15 +48,21 @@ test("SIGTERM during the crash backoff stops the supervisor without spawning ano
   await fs.writeFile(runsPath, "0");
 
   const supervisor = Bun.spawn([process.execPath, supervisorPath], {
-    env: { ...process.env, PLETIVO_DEV_CHILD: undefined },
     stdout: "inherit",
     stderr: "pipe",
   });
 
-  // The supervisor logs this after the first child crashed and before its backoff sleep.
-  await waitForStderr(supervisor.stderr, "restarting in 2000ms");
-  supervisor.kill("SIGTERM");
+  try {
+    // The supervisor logs this after the first child crashed and before its backoff sleep.
+    await waitForStderr(supervisor.stderr, "restarting in 10000ms");
+    const signalledAt = performance.now();
+    supervisor.kill("SIGTERM");
 
-  expect(await supervisor.exited).toBe(0);
-  expect(Number(await fs.readFile(runsPath, "utf8"))).toBe(1);
-}, 10_000);
+    expect(await supervisor.exited).toBe(0);
+    expect(Number(await fs.readFile(runsPath, "utf8"))).toBe(1);
+    // Well under the 10 s backoff: the signal cuts the sleep short instead of waiting it out.
+    expect(performance.now() - signalledAt).toBeLessThan(5000);
+  } finally {
+    supervisor.kill("SIGKILL");
+  }
+}, 20_000);
