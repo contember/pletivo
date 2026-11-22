@@ -7,16 +7,16 @@ import { startDevServer, type DevServer } from "../support/dev-server";
 // the page without its layout.
 const fixtureRoot = path.join(import.meta.dir, "../fixture-md-page-layout");
 
-let server: DevServer;
+let server: DevServer | undefined;
 let BASE: string;
 
 beforeAll(async () => {
   server = await startDevServer({ cwd: fixtureRoot, args: ["--no-restart"] });
   BASE = server.url;
-});
+}, 30_000);
 
 afterAll(async () => {
-  await server.stop();
+  await server?.stop();
 });
 
 describe("dev server - .md/.mdx page with layout: frontmatter", () => {

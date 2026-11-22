@@ -12,16 +12,16 @@ import { startDevServer, type DevServer } from "../support/dev-server";
 const fixtureRoot = path.join(import.meta.dir, "../fixture-ssr-globals");
 const cliPath = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
-let server: DevServer;
+let server: DevServer | undefined;
 let BASE: string;
 
 beforeAll(async () => {
   server = await startDevServer({ cwd: fixtureRoot });
   BASE = server.url;
-});
+}, 30_000);
 
 afterAll(async () => {
-  await server.stop();
+  await server?.stop();
   await fs.rm(path.join(fixtureRoot, "dist"), { recursive: true, force: true });
 });
 
@@ -104,16 +104,16 @@ describe("build - SSR-shaped Astro globals", () => {
 // Astro does — so its fixture is dev-only and its build is expected to fail.
 describe("Astro.clientAddress", () => {
   const devRoot = path.join(import.meta.dir, "../fixture-ssr-globals-dev");
-  let devServer: DevServer;
+  let devServer: DevServer | undefined;
   let devBase: string;
 
   beforeAll(async () => {
     devServer = await startDevServer({ cwd: devRoot });
     devBase = devServer.url;
-  });
+  }, 30_000);
 
   afterAll(async () => {
-    await devServer.stop();
+    await devServer?.stop();
     await fs.rm(path.join(devRoot, "dist"), { recursive: true, force: true });
   });
 
@@ -198,15 +198,15 @@ describe("Astro.rewrite", () => {
 // unmatched target would otherwise hang the build used above.
 describe("bad Astro.rewrite targets", () => {
   const loopRoot = path.join(import.meta.dir, "../fixture-ssr-globals-loop");
-  let loopServer: DevServer;
+  let loopServer: DevServer | undefined;
   let loopBase: string;
 
   beforeAll(async () => {
     loopServer = await startDevServer({ cwd: loopRoot });
     loopBase = loopServer.url;
-  });
+  }, 30_000);
 
-  afterAll(() => loopServer.stop());
+  afterAll(() => loopServer?.stop());
 
   test("a rewrite cycle stops at the hop limit instead of hanging", async () => {
     const html = await (await fetch(loopBase + "/loop")).text();

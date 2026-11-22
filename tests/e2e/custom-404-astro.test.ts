@@ -8,16 +8,16 @@ import { startDevServer, type DevServer } from "../support/dev-server";
 // Astro-style pageContext as the normal render path.
 const fixtureRoot = path.join(import.meta.dir, "../fixture-404-astro");
 
-let server: DevServer;
+let server: DevServer | undefined;
 let BASE: string;
 
 beforeAll(async () => {
   server = await startDevServer({ cwd: fixtureRoot });
   BASE = server.url;
-});
+}, 30_000);
 
 afterAll(async () => {
-  await server.stop();
+  await server?.stop();
 });
 
 describe("dev server - custom 404.astro reading Astro.url", () => {

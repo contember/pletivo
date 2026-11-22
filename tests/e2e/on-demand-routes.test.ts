@@ -14,16 +14,16 @@ import { startDevServer, type DevServer } from "../support/dev-server";
 const fixtureRoot = path.join(import.meta.dir, "../fixture-on-demand-routes");
 const cliPath = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
-let server: DevServer;
+let server: DevServer | undefined;
 let BASE: string;
 
 beforeAll(async () => {
   server = await startDevServer({ cwd: fixtureRoot });
   BASE = server.url;
-});
+}, 30_000);
 
 afterAll(async () => {
-  await server.stop();
+  await server?.stop();
   await fs.rm(path.join(fixtureRoot, "dist"), { recursive: true, force: true });
 });
 

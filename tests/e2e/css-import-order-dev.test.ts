@@ -6,7 +6,7 @@ import { startDevServer, type DevServer } from "../support/dev-server";
 // The page imports z.css, then a component that imports a.css: path order would be a, z.
 const fixtureRoot = path.join(import.meta.dir, "../fixture-astro-css-import-order");
 
-let server: DevServer;
+let server: DevServer | undefined;
 let BASE: string;
 
 beforeAll(async () => {
@@ -15,7 +15,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  await server.stop();
+  await server?.stop();
 });
 
 test("dev serves source CSS in import order once the page rendered", async () => {

@@ -1,7 +1,8 @@
 import path from "path";
 
 const cliPath = path.resolve(import.meta.dir, "../../packages/pletivo/src/cli.ts");
-const READY_LINE = /dev server running at (http:\/\/\S+)/;
+// Anchored on the whitespace after the URL, so a read that splits the line mid-port is not taken.
+const READY_LINE = /dev server running at (http:\/\/\S+)\s/;
 
 export interface DevServer {
   /** Origin the server bound, without a trailing slash. */
@@ -66,8 +67,10 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
   onOutput = () => {};
 
   if (url === null) {
+    const exitCode = proc.exitCode;
     await stop();
-    throw new Error(`pletivo dev did not report a URL within ${timeoutMs}ms:\n${output}`);
+    const reason = exitCode === null ? `did not report a URL within ${timeoutMs}ms` : `exited with code ${exitCode} before reporting a URL`;
+    throw new Error(`pletivo dev ${reason}:\n${output}`);
   }
   return { url, output: () => output, stop };
 }

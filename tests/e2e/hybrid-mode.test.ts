@@ -9,7 +9,7 @@ const fixtureRoot = path.join(import.meta.dir, "../fixture-hybrid");
 const DEBUG_HEADER = "x-test-debug";
 const MARKER = path.join(os.tmpdir(), `pletivo-hybrid-${process.pid}.marker`);
 
-let server: DevServer;
+let server: DevServer | undefined;
 let BASE: string;
 
 beforeAll(async () => {
@@ -27,10 +27,10 @@ beforeAll(async () => {
     env: { ...process.env, PLETIVO_TEST_BREAK_MARKER: MARKER },
   });
   BASE = server.url;
-});
+}, 30_000);
 
 afterAll(async () => {
-  await server.stop();
+  await server?.stop();
   try { fs.unlinkSync(MARKER); } catch {}
 });
 

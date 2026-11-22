@@ -17,8 +17,7 @@ function page(marker: string): string {
 }
 
 let root: string;
-
-let server: DevServer;
+let server: DevServer | undefined;
 let BASE: string;
 
 beforeAll(async () => {
@@ -44,10 +43,10 @@ beforeAll(async () => {
   }
   server = await startDevServer({ cwd: root, args: ["--no-restart"] });
   BASE = server.url;
-});
+}, 30_000);
 
 afterAll(async () => {
-  await server.stop();
+  await server?.stop();
   await fs.rm(root, { recursive: true, force: true });
 });
 
