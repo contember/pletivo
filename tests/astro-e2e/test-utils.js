@@ -2,42 +2,7 @@ import { test as testBase } from "@playwright/test";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const PLETIVO_CLI = path.resolve(
-  __dirname,
-  "../../packages/pletivo/src/cli.ts",
-);
-
-// Assign unique ports per test file. Scan tests/ dir at import time.
-const testsDir = path.join(__dirname, "tests");
-const testFileToPort = new Map();
-if (fs.existsSync(testsDir)) {
-  const testFiles = fs.readdirSync(testsDir).filter((f) => f.endsWith(".test.js")).sort();
-  for (let i = 0; i < testFiles.length; i++) {
-    testFileToPort.set(testFiles[i], 5100 + i);
-  }
-}
-
-/**
- * Wait for a server to respond at the given URL.
- */
-async function waitForServer(url, maxAttempts = 60, intervalMs = 250) {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const res = await fetch(url);
-      if (res.ok || res.status === 404) return; // server is up
-    } catch {
-      // not ready yet
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  throw new Error(
-    `Server at ${url} did not start within ${(maxAttempts * intervalMs) / 1000}s`,
-  );
-}
+import { startPletivoDev } from "./dev-server.js";
 
 /**
  * Drop-in replacement for Astro's e2e testFactory.
@@ -54,59 +19,37 @@ export function testFactory(testFile, inlineConfig) {
       ? fileURLToPath(testFile)
       : String(testFile);
   const testFileName = path.basename(testFilePath);
-  const port = testFileToPort.get(testFileName) || 5199;
 
   const fixtureRoot = path.resolve(path.dirname(testFilePath), inlineConfig.root);
 
   /** Cache of original file contents for resetAllFiles() */
   const fileCache = new Map();
-  let serverProc = null;
+  let server = null;
+
+  const origin = () => {
+    if (!server) throw new Error(`${testFileName}: start the dev server before resolving a URL`);
+    return server.url();
+  };
 
   const fixture = {
     async startDevServer() {
-      serverProc = spawn("bun", ["run", PLETIVO_CLI, "dev", `--port=${port}`], {
-        cwd: fixtureRoot,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
-      });
-
-      // Log stderr for debugging
-      serverProc.stderr.on("data", (data) => {
-        const msg = data.toString().trim();
-        if (msg) process.stderr.write(`[pletivo:${testFileName}] ${msg}\n`);
-      });
-
-      // Fail fast if process exits during startup
-      const exitPromise = new Promise((_, reject) => {
-        serverProc.on("exit", (code) => {
-          if (code !== null && code !== 0) {
-            reject(new Error(`pletivo dev exited with code ${code}`));
-          }
-        });
-      });
-
-      await Promise.race([
-        waitForServer(`http://localhost:${port}`),
-        exitPromise,
-      ]);
-
+      server = await startPletivoDev({ cwd: fixtureRoot, label: testFileName });
       return {
         async stop() {
-          if (serverProc) {
-            serverProc.kill("SIGINT");
-            await new Promise((resolve) => serverProc.on("close", resolve));
-            serverProc = null;
+          if (server) {
+            await server.stop();
+            server = null;
           }
         },
       };
     },
 
     resolveUrl(p) {
-      return `http://localhost:${port}${p}`;
+      return `${origin()}${p}`;
     },
 
     async fetch(p) {
-      return fetch(`http://localhost:${port}${p}`);
+      return fetch(`${origin()}${p}`);
     },
 
     async editFile(filePath, transform) {

@@ -8,35 +8,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { BUN, PLETIVO_CLI, startPletivoDev } from "./dev-server.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const PLETIVO_CLI = path.resolve(
-  __dirname,
-  "../../packages/pletivo/src/cli.ts",
-);
-
-// Resolve bun binary path — node's execFile needs an absolute path
-// since bun may not be on node's default PATH.
-const BUN = (() => {
-  // Check common locations first (fastest)
-  const candidates = [
-    process.env.BUN_INSTALL && path.join(process.env.BUN_INSTALL, "bin/bun"),
-    path.join(process.env.HOME || "", ".bun/bin/bun"),
-    "/usr/local/bin/bun",
-  ].filter(Boolean);
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  // Fallback: try which
-  try {
-    return execFileSync("/usr/bin/which", ["bun"]).toString().trim();
-  } catch {
-    return "bun";
-  }
-})();
 
 /**
  * Promisified exec that runs bun with the pletivo CLI.
@@ -61,27 +37,6 @@ function runPletivo(args, cwd) {
 }
 
 /**
- * Wait for a server to respond.
- */
-async function waitForServer(url, maxAttempts = 60, intervalMs = 250) {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const res = await fetch(url);
-      if (res.ok || res.status === 404) return;
-    } catch {
-      // not ready
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  throw new Error(
-    `Server at ${url} did not start within ${(maxAttempts * intervalMs) / 1000}s`,
-  );
-}
-
-// Port counter for dev servers
-let nextPort = 6100;
-
-/**
  * Load a pletivo fixture. API-compatible with Astro's loadFixture().
  *
  * @param {object} inlineConfig
@@ -101,10 +56,9 @@ export async function loadFixture(inlineConfig) {
   }
 
   const outDir = path.join(root, "dist");
-  const port = nextPort++;
   const fileCache = new Map();
 
-  let devProc = null;
+  let server = null;
 
   const fixture = {
     config: { outDir: new URL(`file://${outDir}/`), root: new URL(`file://${root}/`) },
@@ -140,7 +94,8 @@ export async function loadFixture(inlineConfig) {
     },
 
     resolveUrl(url) {
-      return `http://localhost:${port}${url.replace(/^\/?/, "/")}`;
+      if (!server) throw new Error(`${root}: start the dev server before resolving a URL`);
+      return `${server.url()}${url.replace(/^\/?/, "/")}`;
     },
 
     async fetch(url, init) {
@@ -148,24 +103,12 @@ export async function loadFixture(inlineConfig) {
     },
 
     async startDevServer() {
-      const { spawn } = await import("node:child_process");
-      devProc = spawn(BUN, ["run", PLETIVO_CLI, "dev", `--port=${port}`], {
-        cwd: root,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-
-      devProc.stderr.on("data", (data) => {
-        const msg = data.toString().trim();
-        if (msg) process.stderr.write(`[pletivo:dev] ${msg}\n`);
-      });
-
-      await waitForServer(`http://localhost:${port}`);
+      server = await startPletivoDev({ cwd: root, label: "dev" });
       return {
         async stop() {
-          if (devProc) {
-            devProc.kill("SIGINT");
-            await new Promise((resolve) => devProc.on("close", resolve));
-            devProc = null;
+          if (server) {
+            await server.stop();
+            server = null;
           }
         },
       };
