@@ -47,12 +47,10 @@ describe("an .astro component inside MDX content rendered by a page", () => {
   });
 
   describe("dev", () => {
-    let server: DevServer | undefined;
-    let base: string;
+    let server: DevServer;
 
     beforeAll(async () => {
       server = await startDevServer({ cwd: fixtureRoot, args: ["--host", "127.0.0.1", "--no-restart"], timeoutMs: 45_000 });
-      base = server.url;
     }, 60_000);
 
     afterAll(async () => {
@@ -61,22 +59,23 @@ describe("an .astro component inside MDX content rendered by a page", () => {
 
     test("from an .astro page: Astro.url and Astro.locals are the page's", async () => {
       // Dev serves the route without the trailing slash a build writes.
-      expect(await fetchWhenUp(`${base}/docs/intro/`)).toContain("path /docs/intro, locals set by the page");
+      expect(await fetchWhenUp(server, "/docs/intro/")).toContain("path /docs/intro, locals set by the page");
     }, 60_000);
 
     test("from a .tsx page: Astro.url is the page's", async () => {
-      expect(await fetchWhenUp(`${base}/tsx-page/`)).toContain("path /tsx-page, locals undefined");
+      expect(await fetchWhenUp(server, "/tsx-page/")).toContain("path /tsx-page, locals undefined");
     }, 60_000);
   });
 });
 
 /** The page body once the dev server answers it with a 200. */
-async function fetchWhenUp(url: string): Promise<string> {
+async function fetchWhenUp(server: DevServer, pathname: string): Promise<string> {
+  const url = `${server.url}${pathname}`;
   const deadline = Date.now() + 50_000;
   while (Date.now() < deadline) {
     const response = await fetch(url).catch(() => undefined);
     if (response?.ok) return await response.text();
     await Bun.sleep(250);
   }
-  throw new Error(`dev server did not serve ${url} in time`);
+  throw new Error(`dev server did not serve ${url} in time:\n${server.output()}`);
 }

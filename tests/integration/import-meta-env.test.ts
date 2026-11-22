@@ -108,7 +108,7 @@ describe("import.meta.env under pletivo dev", () => {
   async function devPage(cwd: string, pathname: string): Promise<string> {
     const server = await startDevServer({ cwd, args: ["--host", "127.0.0.1", "--no-restart"], timeoutMs: 45_000 });
     servers.push(server);
-    return fetchWhenUp(`${server.url}${pathname}`);
+    return fetchWhenUp(server, pathname);
   }
 
   beforeAll(async () => {
@@ -134,12 +134,13 @@ describe("import.meta.env under pletivo dev", () => {
 });
 
 /** The page body once the dev server answers it with a 200. */
-async function fetchWhenUp(url: string): Promise<string> {
+async function fetchWhenUp(server: DevServer, pathname: string): Promise<string> {
+  const url = `${server.url}${pathname}`;
   const deadline = Date.now() + 50_000;
   while (Date.now() < deadline) {
     const response = await fetch(url).catch(() => undefined);
     if (response?.ok) return await response.text();
     await Bun.sleep(250);
   }
-  throw new Error(`dev server did not serve ${url} in time`);
+  throw new Error(`dev server did not serve ${url} in time:\n${server.output()}`);
 }

@@ -69,6 +69,6 @@ test("a hook that passes only on a retry is retried at start, so the supervised 
     // Past the rate limit on request-triggered retries, so each request could retry.
     await Bun.sleep(1100);
   }
-  expect(dev.server.exitCode()).toBeNull();
+  expect(dev.server.running()).toBe(true);
   expect(dev.server.output()).not.toContain("restarting dev server");
 }, 60_000);

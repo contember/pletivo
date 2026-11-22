@@ -94,7 +94,7 @@ describe("injectScript('page') bundling", () => {
 
     beforeAll(async () => {
       server = await startDevServer({ cwd: fixtureRoot, args: ["--host", "127.0.0.1", "--no-restart"], timeoutMs: 45_000 });
-      html = await fetchWhenUp(`${server.url}/`);
+      html = await fetchWhenUp(server, "/");
     }, 60_000);
 
     afterAll(async () => {
@@ -129,12 +129,13 @@ describe("page script served by a plugin from astro:build:setup", () => {
 });
 
 /** The page body once the dev server answers it with a 200. */
-async function fetchWhenUp(url: string): Promise<string> {
+async function fetchWhenUp(server: DevServer, pathname: string): Promise<string> {
+  const url = `${server.url}${pathname}`;
   const deadline = Date.now() + 50_000;
   while (Date.now() < deadline) {
     const response = await fetch(url).catch(() => undefined);
     if (response?.ok) return await response.text();
     await Bun.sleep(250);
   }
-  throw new Error(`dev server did not serve ${url} in time`);
+  throw new Error(`dev server did not serve ${url} in time:\n${server.output()}`);
 }
