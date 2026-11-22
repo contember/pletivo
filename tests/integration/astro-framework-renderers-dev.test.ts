@@ -5,15 +5,13 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 const template = path.join(import.meta.dir, "../fixture-astro-renderers-dev");
-const cli = path.resolve(import.meta.dir, "../../packages/pletivo/src/cli.ts");
-const PORT = 5600 + Math.floor(Math.random() * 1000);
-const BASE = `http://localhost:${PORT}`;
 
 let root = "";
-let server: ReturnType<typeof Bun.spawn> | null = null;
-let output = "";
+let server: DevServer | null = null;
+let BASE = "";
 
 const ISLAND_SCRIPT = 'customElements.define("astro-island"';
 const directiveScript = (directive: string) => `(self.Astro||(self.Astro={})).${directive}=`;
@@ -22,32 +20,16 @@ beforeAll(async () => {
   root = await fs.mkdtemp(path.join(import.meta.dir, "../.renderers-dev-"));
   await fs.cp(template, root, { recursive: true });
   await writeLibrary(path.join(root, "node_modules/fake-vue-lib"));
-  const child = Bun.spawn(["bun", cli, "dev", String(PORT), "--no-restart", "--error-page=src/errors/Error.astro"], {
+  server = await startDevServer({
     cwd: root,
-    stdout: "pipe",
-    stderr: "pipe",
+    args: ["--no-restart", "--error-page=src/errors/Error.astro"],
+    timeoutMs: 25_000,
   });
-  server = child;
-  const decoder = new TextDecoder();
-  const collect = async (stream: ReadableStream<Uint8Array>) => {
-    for await (const chunk of stream) output += decoder.decode(chunk);
-  };
-  void collect(child.stdout);
-  void collect(child.stderr);
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      await fetch(`${BASE}/__hmr_ping`);
-      return;
-    } catch {
-      await Bun.sleep(100);
-    }
-  }
-  throw new Error(`the dev server did not start:\n${output}`);
+  BASE = server.url;
 }, 30_000);
 
 afterAll(async () => {
-  server?.kill();
-  await server?.exited;
+  await server?.stop();
   if (root) await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -110,7 +92,7 @@ function expectScriptsSettled(html: string, directive: string): void {
 
 test("a dev page renders its islands, and their component and renderer URLs serve modules", async () => {
   const { status, html } = await page("/");
-  expect({ status, output }).toMatchObject({ status: 200 });
+  expect({ status, output: server?.output() }).toMatchObject({ status: 200 });
   expect(html).toContain("vue 1</button>");
   expect(html).toContain("label v1");
   expect(html).toContain("child v1");

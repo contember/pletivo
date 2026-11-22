@@ -5,11 +5,11 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 import { __resetForTests } from "../../packages/pletivo/src/astro-host/runner";
 import { prepare } from "../../packages/pletivo/src/prepare/index";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture-nuasite-nua");
-const cli = path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts");
 
 afterEach(() => {
   __resetForTests();
@@ -17,26 +17,18 @@ afterEach(() => {
 
 describe("@nuasite/nua markdown on the unified() processor", () => {
   describe("dev", () => {
-    let server: ReturnType<typeof Bun.spawn> | undefined;
+    let server: DevServer | undefined;
     let html: string;
     let mdxHtml: string;
 
     beforeAll(async () => {
-      const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-      const port = probe.port;
-      probe.stop(true);
-      server = Bun.spawn(["bun", cli, "dev", "--host", "127.0.0.1", "--port", String(port), "--no-restart"], {
-        cwd: fixtureRoot,
-        stdout: "ignore",
-        stderr: "inherit",
-      });
-      html = await fetchWhenUp(`http://127.0.0.1:${port}/`);
-      mdxHtml = await fetchWhenUp(`http://127.0.0.1:${port}/mdx-page`);
+      server = await startDevServer({ cwd: fixtureRoot, args: ["--host", "127.0.0.1", "--no-restart"], timeoutMs: 45_000 });
+      html = await fetchWhenUp(server, "/");
+      mdxHtml = await fetchWhenUp(server, "/mdx-page");
     }, 60_000);
 
     afterAll(async () => {
-      server?.kill();
-      await server?.exited;
+      await server?.stop();
     });
 
     test("renders the CMS youtube directive", () => {
@@ -65,12 +57,13 @@ describe("@nuasite/nua markdown on the unified() processor", () => {
 });
 
 /** The page body once the dev server answers it with a 200. */
-async function fetchWhenUp(url: string): Promise<string> {
+async function fetchWhenUp(server: DevServer, pathname: string): Promise<string> {
+  const url = `${server.url}${pathname}`;
   const deadline = Date.now() + 50_000;
   while (Date.now() < deadline) {
     const response = await fetch(url).catch(() => undefined);
     if (response?.ok) return await response.text();
     await Bun.sleep(250);
   }
-  throw new Error(`dev server did not serve ${url} in time`);
+  throw new Error(`dev server did not serve ${url} in time:\n${server.output()}`);
 }
