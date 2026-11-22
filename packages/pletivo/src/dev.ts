@@ -1039,6 +1039,8 @@ async function devWithContentRuntime(projectRoot: string, config: PletivoConfig)
       message() {},
     },
   });
+  // `--port 0` binds a free port; the printed URL, request origins and astro:server:start need that one.
+  config.port = server.port ?? config.port;
 
   // In-memory cache of resized images, keyed by `<pathname>|<targetFormat>`.
   // Avoids re-encoding the same transform on every page load (e.g. a logo

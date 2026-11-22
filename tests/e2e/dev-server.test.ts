@@ -1,34 +1,20 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import path from "path";
 import { dev } from "../../packages/pletivo/src/dev";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 const fixtureRoot = path.join(import.meta.dir, "../fixture");
-const PORT = 4567 + Math.floor(Math.random() * 1000);
-const BASE = `http://localhost:${PORT}`;
 
-let serverProcess: ReturnType<typeof Bun.spawn>;
+let server: DevServer | undefined;
+let BASE: string;
 
 beforeAll(async () => {
-  // Start dev server as a subprocess to avoid blocking
-  serverProcess = Bun.spawn(
-    ["bun", "run", path.join(import.meta.dir, "../../packages/pletivo/src/cli.ts"), "dev", String(PORT)],
-    { cwd: fixtureRoot, stdout: "pipe", stderr: "pipe" },
-  );
+  server = await startDevServer({ cwd: fixtureRoot });
+  BASE = server.url;
+}, 30_000);
 
-  // Wait for server to be ready
-  for (let i = 0; i < 30; i++) {
-    try {
-      await fetch(BASE);
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  throw new Error("Dev server did not start in time");
-});
-
-afterAll(() => {
-  serverProcess.kill();
+afterAll(async () => {
+  await server?.stop();
 });
 
 describe("dev server - pages", () => {
@@ -146,7 +132,7 @@ describe("dev server - HMR", () => {
   });
 
   test("WebSocket connection to /__hmr opens", async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}/__hmr`);
+    const ws = new WebSocket(`${BASE.replace(/^http/, "ws")}/__hmr`);
 
     const opened = await new Promise<boolean>((resolve) => {
       ws.onopen = () => resolve(true);

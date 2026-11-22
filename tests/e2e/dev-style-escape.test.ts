@@ -2,12 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { startDevServer, type DevServer } from "../support/dev-server";
 
 // A page's own CSS is inlined as `<style>`; a `</style` inside it must not end the element early.
 const repoRoot = path.join(import.meta.dir, "../..");
 const runtime = path.join(repoRoot, "packages/runtime/src");
-const PORT = 7800 + Math.floor(Math.random() * 1000);
-const BASE = `http://localhost:${PORT}`;
 
 const CSS = '.a::before{content:"</style><b>x</b>"}.b::before{content:"</STYLE><b>y</b>"}';
 
@@ -18,7 +17,8 @@ function page(marker: string): string {
 }
 
 let root: string;
-let serverProcess: ReturnType<typeof Bun.spawn>;
+let server: DevServer | undefined;
+let BASE: string;
 
 beforeAll(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "pletivo-dev-style-escape-"));
@@ -41,24 +41,12 @@ beforeAll(async () => {
     await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
     await fs.writeFile(path.join(root, rel), content);
   }
-  serverProcess = Bun.spawn(
-    ["bun", "run", path.join(repoRoot, "packages/pletivo/src/cli.ts"), "dev", String(PORT), "--no-restart"],
-    { cwd: root, stdout: "pipe", stderr: "pipe" },
-  );
-  for (let i = 0; i < 50; i++) {
-    try {
-      await fetch(BASE);
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  throw new Error("Dev server did not start in time");
-});
+  server = await startDevServer({ cwd: root, args: ["--no-restart"] });
+  BASE = server.url;
+}, 30_000);
 
 afterAll(async () => {
-  serverProcess.kill();
-  await serverProcess.exited;
+  await server?.stop();
   await fs.rm(root, { recursive: true, force: true });
 });
 
