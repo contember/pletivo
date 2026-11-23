@@ -7,9 +7,15 @@ on:
   # and must still be tested.
   pull_request:
 
+# A new push cancels the running check of the same ref; a running main build is never cancelled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
@@ -85,6 +91,7 @@ jobs:
 
   build-example:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
