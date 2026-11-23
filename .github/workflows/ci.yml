@@ -7,7 +7,7 @@ on:
   # and must still be tested.
   pull_request:
 
-# A new push supersedes the running check of the same ref; main runs to completion.
+# A new push cancels the running check of the same ref; a running main build is never cancelled.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
